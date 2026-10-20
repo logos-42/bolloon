@@ -223,7 +223,6 @@ export interface ExecuteOptions {
  */
 export async function executeContractSkill(opts: ExecuteOptions): Promise<ExecuteResult> {
   const { contract, skillDir, input } = opts;
-  const issues: string[] = [];
   const inChk = validateResourceInput(contract, input);
   if (!inChk.ok) {
     return {

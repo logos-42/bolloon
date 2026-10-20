@@ -277,7 +277,7 @@ function stripUnclosedToolCallTags(text: string): string {
     { tag: '[TOOL_CALL]', closeTag: '[/TOOL_CALL]', openRe: /\[TOOL_CALL\]/g },
   ];
   let result = text;
-  for (const { tag, closeTag, openRe } of startTags) {
+  for (const { closeTag, openRe } of startTags) {
     let m: RegExpExecArray | null;
     while ((m = openRe.exec(result)) !== null) {
       // 检查 startIdx 之后是否还有 closeTag

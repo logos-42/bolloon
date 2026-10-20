@@ -161,6 +161,29 @@ export const CLI_KNOWN_COMMAND_HEADS: ReadonlySet<string> = new Set([
     '/world',
     '/chat',
     '/x402',
+    // 2026-10-20: 会话/上下文/信息命令组 (leo: 补齐会话管理命令面)
+    '/new',
+    '/reset',
+    '/clear',
+    '/redraw',
+    '/history',
+    '/save',
+    '/retry',
+    '/undo',
+    '/title',
+    '/status',
+    '/context',
+    '/ctx',
+    '/usage',
+    '/version',
+    '/v',
+    '/diff',
+    '/update',
+    '/quit',
+    '/exit',
+    '/refine',
+    '/stop',
+    '/whoami',
   ]);
 const _require = createRequire(import.meta.url);
 const _BOLLOON_VERSION = ((): string => {
@@ -2122,6 +2145,319 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     return;
   }
 
+
+  // 2026-10-20: 会话/上下文/信息命令组 (leo: 补齐会话管理命令面)
+  //   全部走 session-commands.ts 的纯函数 (格式化/计算), 这里只接线。
+  if (cmd === '/new' || cmd === '/reset') {
+    // 新会话 (裸 /new = 当前 channel 开新会话; /new session 走上面老分支; /new agent 走更上面)
+    try {
+      const { readFile, writeFile } = await import('fs/promises');
+      const { join } = await import('path');
+      const home = process.env.HOME || '/tmp';
+      const channelsPath = join(home, '.bolloon', 'sessions', 'channels.json');
+      const newSessionId = `sess_${Date.now()}`;
+      let saved = false;
+      try {
+        const parsed = JSON.parse(await readFile(channelsPath, 'utf-8'));
+        const channels: any[] = Array.isArray(parsed) ? parsed : parsed?.channels || [];
+        for (const c of channels) {
+          if (cliActiveChannelId && c.id === cliActiveChannelId) { c.currentSessionId = newSessionId; saved = true; }
+          else if (!cliActiveChannelId && c.id === channels[0]?.id) { c.currentSessionId = newSessionId; saved = true; }
+        }
+        await writeFile(channelsPath, JSON.stringify(Array.isArray(parsed) ? channels : { ...parsed, channels }, null, 2), 'utf-8');
+      } catch { /* 无 channels.json → 仅提示 */ }
+      try {
+        const a = await getAgent();
+        if (a && (a as any).messageHistory) (a as any).messageHistory = [];
+      } catch { /* 非致命 */ }
+      appendLine(`${C_OK}✓ 已新建会话${RESET} session=${C_DIM}${newSessionId}${RESET}${saved ? ` (channel: ${cliActiveChannelId || 'default'})` : ''}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/${cmd} 失败: ${String(e.message || e).slice(0, 200)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/clear') {
+    // 清空当前会话消息区 (transcriptStore) — 面板/状态栏不动
+    try {
+      const { transcriptStore, panelStore } = await import('./cli/stores.js');
+      if (transcriptStore.get().length) transcriptStore.set([]);
+      void panelStore;
+      appendLine(`${C_DIM}🗑 已清空当前会话区 (消息历史仍落盘, 可用 /history 回看)${RESET}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/clear 失败: ${String(e?.message || e).slice(0, 120)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/redraw') {
+    // 强制重绘: suspend + resume (与 resize 重建同一机制)
+    try {
+      suspendInk();
+      setTimeout(() => { try { resumeInk(); } catch { /* 重建失败不致命 */ } }, 0);
+      appendLine(`${C_DIM}🖥 已触发重绘${RESET}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/redraw 失败: ${String(e?.message || e).slice(0, 120)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/history' || cmd.startsWith('/history ')) {
+    try {
+      const n = Number(trimmed.slice('/history'.length).trim()) || 20;
+      const a = await getAgent();
+      const { buildHistoryText } = await import('./cli/session-commands.js');
+      const msgs = ((a as any).messageHistory ?? []) as any[];
+      const h = buildHistoryText(msgs as any, n);
+      if (!h.total) { appendLine(`${C_DIM}当前会话还没有消息${RESET}`); return; }
+      appendLine(`${C_ACCENT}会话历史 (最近 ${h.shown}/${h.total} 条):${RESET}`);
+      for (const line of h.lines) appendLine(`  ${line}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/history 失败: ${String(e?.message || e).slice(0, 150)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/save' || cmd.startsWith('/save ')) {
+    // /save [json|md] [file] — 导出当前会话 (默认 md 到 ~/.bolloon/exports/)
+    try {
+      const arg = trimmed.slice('/save'.length).trim();
+      const fmtMatch = /^(json|md)(?:\s|$)/.exec(arg);
+      const fmt = (fmtMatch ? fmtMatch[1] : 'md') as 'md' | 'json';
+      const fileArg = fmtMatch ? arg.slice(fmtMatch[1].length).trim() : arg;
+      const a = await getAgent();
+      const { buildSaveDoc } = await import('./cli/session-commands.js');
+      const msgs = ((a as any).messageHistory ?? []) as any[];
+      const { writeFile, mkdir } = await import('fs/promises');
+      const { join } = await import('path');
+      const home = process.env.HOME || '/tmp';
+      const dir = join(home, '.bolloon', 'exports');
+      await mkdir(dir, { recursive: true });
+      const file = fileArg
+        ? (path.isAbsolute(fileArg) ? fileArg : join(process.cwd(), fileArg))
+        : join(dir, `session-${cliSessionKey || Date.now()}.${fmt}`);
+      const title = cliSessionPreview || cliSessionKey || '';
+      const doc = buildSaveDoc(msgs as any, fmt, { title, sessionKey: cliSessionKey || undefined, exportedAt: new Date().toISOString() });
+      await writeFile(file, doc, 'utf-8');
+      appendLine(`${C_OK}✓ 已导出 ${fmt.toUpperCase()} 会话${RESET} → ${C_DIM}${file}${RESET} ${C_DIM}(${msgs.length} 条消息)${RESET}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/save 失败: ${String(e?.message || e).slice(0, 150)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/retry') {
+    // 重发最后一条用户输入 (完整复用正常消息路径: 思考动画/工具上屏/回复框全走)
+    const last = (globalThis as any).__bolloonLastUserInput;
+    if (!last || typeof last !== 'string' || !last.trim()) { appendLine(`${C_WARN}还没有可重发的用户输入${RESET}`); return; }
+    appendLine(`${C_DIM}↻ 重发: ${last.slice(0, 120)}${last.length > 120 ? '…' : ''}${RESET}`);
+    return processInputInner(last, comm);
+  }
+
+  if (cmd === '/undo' || cmd.startsWith('/undo ')) {
+    // 回退 N 轮 (从 messageHistory 去掉最后 N 条用户消息及之后的回复)
+    try {
+      const n = Math.max(1, Math.min(Number(trimmed.slice('/undo'.length).trim()) || 1, 50));
+      const a = await getAgent();
+      const h = ((a as any).messageHistory ?? []) as any[];
+      if (h.length === 0) { appendLine(`${C_DIM}当前会话没有可回退的内容${RESET}`); return; }
+      // 从尾部倒数第 N 个 user 消息处截断 (保留其之前的历史)
+      let userCount = 0; let cutAt = h.length;
+      for (let i = h.length - 1; i >= 0; i--) {
+        if (h[i]?.role === 'user') { userCount++; if (userCount === n) { cutAt = i; break; } }
+      }
+      const removed = h.length - cutAt;
+      if (removed <= 0) { appendLine(`${C_DIM}没有可回退的轮次${RESET}`); return; }
+      h.splice(cutAt, h.length - cutAt);
+      appendLine(`${C_OK}↩ 已回退 ${n} 轮${RESET} ${C_DIM}(移除 ${removed} 条消息, 剩 ${h.length} 条)${RESET}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/undo 失败: ${String(e?.message || e).slice(0, 150)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/title' || cmd.startsWith('/title ')) {
+    // /title [名字] — 查看 / 设置当前会话标题
+    try {
+      const arg = trimmed.slice('/title'.length).trim();
+      const { resolveTitleArg } = await import('./cli/session-commands.js');
+      const store = new SessionStore();
+      const r = resolveTitleArg(arg);
+      const existing = cliSessionPreview || '';
+      if (!r.set) {
+        appendLine(`${C_ACCENT}当前会话标题:${RESET} ${existing ? existing : `${C_DIM}${cliSessionKey || '—'} (无标题, 用 /title <名字> 设置)${RESET}`}`);
+        return;
+      }
+      if (cliSessionKey) await store.updateMetadata(cliSessionKey, { title: r.set });
+      await refreshSessionTitle(cliSessionKey);
+      appendLine(`${C_OK}✓ 会话标题已设为:${RESET} ${r.set}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/title 失败: ${String(e?.message || e).slice(0, 150)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/status') {
+    // 状态总览: 会话 + 上下文 + 运行时长
+    try {
+      const cm = (await import('./bootstrap/context-manager.js')).getContextManager();
+      const usage = cm.getUsage();
+      const { formatContextUsage } = await import('./cli/session-commands.js');
+      const a = await getAgent();
+      appendLine(`${C_ACCENT}● 会话状态${RESET}`);
+      appendLine(`  ${C_DIM}会话:${RESET} ${cliSessionKey || '—'}  ${C_DIM}channel:${RESET} ${cliActiveChannelId || '—'}  ${C_DIM}agent:${RESET} ${cliAgentName || '—'}`);
+      appendLine(`  ${C_DIM}运行:${RESET} ${fmtDuration(Date.now() - cliStartTime)}  ${C_DIM}消息:${RESET} ${(a as any).messageHistory?.length ?? 0} 条`);
+      appendLine(`  ${C_DIM}上下文:${RESET} ${formatContextUsage(usage)}`);
+    } catch (e: any) {
+      appendLine(`${C_WARN}⚠ /status 部分失败: ${String(e?.message || e).slice(0, 120)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/context' || cmd === '/ctx' || cmd.startsWith('/context ') || cmd.startsWith('/ctx ')) {
+    // 上下文窗口详情
+    try {
+      const cm = (await import('./bootstrap/context-manager.js')).getContextManager();
+      const usage = cm.getUsage();
+      const { formatContextUsage } = await import('./cli/session-commands.js');
+      appendLine(`${C_ACCENT}上下文窗口${RESET}`);
+      appendLine(`  ${formatContextUsage(usage)}`);
+      appendLine(`  ${C_DIM}阈值:${RESET} 压缩 ${Math.round(cm.getConfig().compressionThreshold * 100)}% · 警告 ${Math.round(cm.getConfig().warningThreshold * 100)}% · 上限 ${cm.getConfig().maxTokens} tokens`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/context 失败: ${String(e?.message || e).slice(0, 120)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/usage') {
+    // token 用量简表
+    try {
+      const cm = (await import('./bootstrap/context-manager.js')).getContextManager();
+      const usage = cm.getUsage();
+      const { formatContextUsage } = await import('./cli/session-commands.js');
+      appendLine(`${C_ACCENT}用量:${RESET} ${formatContextUsage(usage)}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/usage 失败: ${String(e?.message || e).slice(0, 120)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/version' || cmd === '/v') {
+    appendLine(`${C_ACCENT}Bolloon ${_BOLLOON_VERSION}${RESET} ${C_DIM}(CLI · ${process.platform}/${process.arch})${RESET}`);
+    return;
+  }
+
+  if (cmd === '/diff' || cmd.startsWith('/diff ')) {
+    // git 工作区变更
+    try {
+      const { execSync } = await import('child_process');
+      const scope = trimmed.slice('/diff'.length).trim();
+      const staged = scope === 'staged' || scope === '--staged';
+      const stat = execSync(`git status --short && git diff ${staged ? '--cached' : ''} --stat`, { encoding: 'utf-8', timeout: 10000, cwd: process.cwd() }).toString();
+      appendLine(`${C_ACCENT}git 变更:${RESET}`);
+      appendLine(stat.trim() ? `  ${C_DIM}${stat.trim().replace(/\n/g, '\n  ')}${RESET}` : `  ${C_DIM}(工作区干净)${RESET}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/diff 失败 (非 git 仓库?): ${String(e?.message || e).slice(0, 150)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/update' || cmd.startsWith('/update ')) {
+    // 检查更新 (复用 update-commands 的检查逻辑)
+    try {
+      const { buildUpdatePlan, renderUpdatePlan } = await import('./utils/update-manager.js');
+      const { resolveBolloonHome } = await import('./setup/setup-store.js');
+      const home = resolveBolloonHome();
+      appendLine(`${C_DIM}正在检查更新…${RESET}`);
+      const plan = await buildUpdatePlan({ home });
+      if (plan.check.status === 'update_available') {
+        appendLine(`${C_ACCENT}有新版本可用:${RESET}`);
+        appendLine(renderUpdatePlan(plan).split('\n').map((l: string) => `  ${l}`).join('\n'));
+      } else if (plan.check.status === 'up_to_date') {
+        appendLine(`${C_OK}✓ 已是最新版本${RESET} ${C_DIM}(${plan.currentVersion})${RESET}`);
+      } else {
+        appendLine(`${C_WARN}⚠ 更新检查不可用: ${plan.check.status}${plan.check.reason ? ` — ${plan.check.reason}` : ''}${RESET}`);
+      }
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/update 失败: ${String(e?.message || e).slice(0, 150)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/quit' || cmd === '/exit') {
+    // 与文本 exit/quit 同一退出纪律 (先存档再告别)
+    try {
+      const note = await archiveSessionOnExit(cliSessionKey);
+      if (note) appendLine(note);
+    } catch { /* 非致命 */ }
+    appendLine(`\n${CYAN}👋 再见！${RESET}`);
+    isRunning = false;
+    return;
+  }
+
+  if (cmd === '/refine' || cmd.startsWith('/refine ')) {
+    // 手动触发一次经验复盘 (fire-and-forget, 不阻塞)
+    try {
+      const a = await getAgent();
+      const { buildTurnSummary } = await import('./cli/session-commands.js');
+      const { runExperienceReview } = await import('./agents/experience-review.js');
+      const { getMinimax } = await import('./llm/pi-ai.js');
+      const msgs = ((a as any).messageHistory ?? []) as any[];
+      const turnSummary = buildTurnSummary(msgs as any);
+      if (turnSummary.length < 40) { appendLine(`${C_WARN}⚠ 当前会话太短 (${turnSummary.length} 字), 不值得复盘 — 再聊几轮再来${RESET}`); return; }
+      appendLine(`${C_ACCENT}🧠 正在复盘本会话 (25s 超时, 不阻塞)…${RESET}`);
+      void runExperienceReview({
+        turnSummary,
+        force: true,
+        chat: async (prompt: string) => {
+          const r: any = await getMinimax().chat(prompt);
+          if (typeof r === 'string') return r;
+          return String(r?.reply ?? r?.content ?? r?.text ?? '');
+        },
+        log: (m) => { /* 结果单独上屏 */ },
+      }).then((r) => {
+        appendLine(r?.reviewed
+          ? (r?.applied ? `${C_OK}✓ 已沉淀经验${RESET}${r?.file ? ` ${C_DIM}→ ${r.file.split('/').pop()}${RESET}` : ''}` : `${C_DIM}审了但没写: ${r?.reason || '无'}${RESET}`)
+          : `${C_DIM}没审: ${r?.reason || '无'}${RESET}`);
+      }).catch((e: any) => {
+        appendLine(`${C_WARN}⚠ 复盘失败: ${String(e?.message || e).slice(0, 120)}${RESET}`);
+      });
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/refine 失败: ${String(e?.message || e).slice(0, 150)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/stop') {
+    // 停止当前后台循环 (与 /loop stop 同语义)
+    try {
+      const { listJobs } = await import('./cron/jobs-store.js');
+      const jobs = await listJobs();
+      const running = jobs.filter((j: any) => j?.enabled);
+      appendLine(`${C_ACCENT}⏹ 后台状态:${RESET}`);
+      appendLine(`  ${C_DIM}定时任务:${RESET} ${jobs.length} 个 (启用 ${running.length})${C_DIM} — 用 /cron off <id> 停单个${RESET}`);
+      appendLine(`  ${C_DIM}循环:${RESET} 用 /loop stop 停止${C_DIM} · 运行: 用 /pause <runId> 暂停${RESET}`);
+      if (pendingQueue.length) { const n = pendingQueue.length; pendingQueue.length = 0; appendLine(`  ${C_WARN}已清空待执行队列 (${n} 条)${RESET}`); }
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/stop 失败: ${String(e?.message || e).slice(0, 150)}${RESET}`);
+    }
+    return;
+  }
+
+  if (cmd === '/whoami') {
+    // 当前身份摘要
+    try {
+      appendLine(`${C_ACCENT}当前身份:${RESET}`);
+      appendLine(`  ${C_DIM}agent:${RESET} ${cliAgentName || '—'}  ${C_DIM}channel:${RESET} ${cliActiveChannelId || '—'}`);
+      const a = await getAgent();
+      const id = (a as any).identityDoc || (globalThis as any).__bolloonUserDid;
+      if (id?.did) appendLine(`  ${C_DIM}did:${RESET} ${id.did}`);
+      else appendLine(`  ${C_DIM}did:${RESET} ${(globalThis as any).__bolloonUserDid || '—'}`);
+    } catch (e: any) {
+      appendLine(`${C_WARN}⚠ /whoami 部分失败: ${String(e?.message || e).slice(0, 120)}${RESET}`);
+    }
+    return;
+  }
 
   // /net — Agent 网络快捷命令 (join/status/ctx, 2026-09-08)
   if (cmd === '/net' || cmd.startsWith('/net ')) {
@@ -4102,6 +4438,20 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     appendLine(`  ${C_ACCENT}/new agent${RESET}  创建新智能体 channel  ${C_DIM}/new agent <名字>${RESET}`);
     appendLine(`  ${C_ACCENT}/new session${RESET}  开新会话  ${C_DIM}清空当前 channel 消息窗口${RESET}`);
     appendLine(`  ${C_ACCENT}/now${RESET}    当前状态总览  ${C_DIM}智能体/运行时间/上下文 tokens/消息数${RESET}`);
+    appendLine(`  ${C_ACCENT}/status${RESET}  会话状态  ${C_DIM}会话/channel/agent/运行时长/上下文${RESET}`);
+    appendLine(`  ${C_ACCENT}/context${RESET}  上下文窗口详情  ${C_DIM}/ctx 同义 · 用量/阶段/阈值${RESET}`);
+    appendLine(`  ${C_ACCENT}/usage${RESET}    token 用量  ${C_DIM}当前/上限/阶段/上次压缩${RESET}`);
+    appendLine(`  ${C_ACCENT}/history${RESET}  会话历史  ${C_DIM}/history [N] 最近 N 条 (默认 20)${RESET}`);
+    appendLine(`  ${C_ACCENT}/save${RESET}     导出会话  ${C_DIM}/save [md|json] [文件] · 默认 ~/.bolloon/exports/${RESET}`);
+    appendLine(`  ${C_ACCENT}/retry${RESET}    重发最后一条用户输入`);
+    appendLine(`  ${C_ACCENT}/undo${RESET}     回退 N 轮  ${C_DIM}/undo [N] · 从 messageHistory 截断${RESET}`);
+    appendLine(`  ${C_ACCENT}/title${RESET}    设置会话标题  ${C_DIM}/title <名字> · 无参看当前${RESET}`);
+    appendLine(`  ${C_ACCENT}/clear${RESET}    清空当前会话区  ${C_DIM}/redraw 强制重绘${RESET}`);
+    appendLine(`  ${C_ACCENT}/diff${RESET}     git 工作区变更  ${C_DIM}/diff staged 看暂存区${RESET}`);
+    appendLine(`  ${C_ACCENT}/version${RESET}  版本  ${C_DIM}/v 同义 · /update 检查更新${RESET}`);
+    appendLine(`  ${C_ACCENT}/refine${RESET}   复盘本会话  ${C_DIM}回合后经验沉淀 (force)${RESET}`);
+    appendLine(`  ${C_ACCENT}/stop${RESET}     后台状态/停止  ${C_DIM}定时任务/循环/运行/队列${RESET}`);
+    appendLine(`  ${C_ACCENT}/whoami${RESET}   当前身份  ${C_DIM}agent/channel/did${RESET}`);
     appendLine(`  ${C_ACCENT}/session${RESET} 当前会话信息  ${C_DIM}channel/agent/消息窗口${RESET}`);
     appendLine(`  ${C_ACCENT}/loop${RESET}   循环状态/启动  ${C_DIM}/loop <目标> (| <完成标准>)${RESET}`);
     appendLine(`  ${C_ACCENT}/memory${RESET} 记忆摘要  ${C_DIM}memory-compressor 落盘摘要${RESET}`);
@@ -4207,6 +4557,8 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     // 双横线分割
     appendLine(`${C_DIM}${'─'.repeat(8)} · ${'─'.repeat(8)}${RESET}`);
     appendLine(renderUserMessage(trimmed));
+    // 2026-10-20: 记录最后一条用户输入 (/retry 重发用)
+    (globalThis as any).__bolloonLastUserInput = trimmed;
     // 2026-10-15: 回合开始清上一轮残留的阶段性预览缓存 (上一轮最终回复后无 step_start, 会残留)
     pendingPreview = null;
     // 启动思考动画

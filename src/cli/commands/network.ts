@@ -103,18 +103,6 @@ async function collectFacts(): Promise<NetworkFacts> {
 }
 
 /** registry 预热 (有界): CLI 一次性命令里不许无限等 OrbitDB/IPFS */
-async function warmRegistryBounded(ms: number): Promise<boolean> {
-  try {
-    const { warmAgentRegistry } = await import('../../agents/agent-registry.js');
-    return await Promise.race([
-      warmAgentRegistry().then((v) => !!v),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), ms)),
-    ]);
-  } catch {
-    return false;
-  }
-}
-
 function factsHuman(f: NetworkFacts, head: string): string {
   const out: string[] = [title(head)];
   out.push(line('DID', f.did));

@@ -164,19 +164,6 @@ export class SessionStore {
    *   老会话一律 ENOENT (`/sessions` 里那些 `real-*:default` 全是 Preview `—`, 也续不上)。
    *   这里: 先试新名, 不存在再试老名; 老名存在时**顺手迁移**成新名 (迁移失败就继续读老名)。
    */
-  private async resolveExisting(key: string): Promise<string> {
-    const canonical = this.pathFor(key);
-    try { await fs.access(canonical); return canonical; } catch { /* 试老名 */ }
-    const legacy = path.join(this.cacheDir, `${key}.json`);
-    try {
-      await fs.access(legacy);
-      try { await fs.rename(legacy, canonical); } catch { return legacy; }   // 迁移失败也能读
-      return canonical;
-    } catch {
-      throw new Error(`SessionStore: session not found: ${key}`);
-    }
-  }
-
   pathFor(key: string): string {
     if (!key || key.includes('/') || key.includes('..')) {
       throw new Error(`SessionStore: invalid key ${JSON.stringify(key)}`);
@@ -355,6 +342,7 @@ export class SessionStore {
    */
   async updateMetadata(key: string, patch: Record<string, unknown>): Promise<void> {
     if (!key || key.includes('/') || key.includes('..')) throw new Error(`SessionStore: invalid key ${JSON.stringify(key)}`);
+    await fs.mkdir(this.cacheDir, { recursive: true });
     const file = await this.resolveWritePath(key);
     let raw: any = null;
     try { raw = JSON.parse(await fs.readFile(file, 'utf-8')); }

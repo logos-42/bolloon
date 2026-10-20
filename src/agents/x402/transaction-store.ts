@@ -13,7 +13,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import {
-  newTransactionId, event, type TransactionRecord, type TransactionStatus, type InfoItemMetadata,
+  event, type TransactionRecord, type TransactionStatus, type InfoItemMetadata,
 } from './transaction-protocol.js';
 import {
   migrateTransactionRecord, deriveSettlementFact, checkLifecycleMove, canTransitionSettlement, isSettlementFact, hasPaymentEvidence,
@@ -99,11 +99,6 @@ export interface BeginInput {
   providerDid?: string;
   goalId?: string;
   runId?: string;
-}
-
-function reqMarkerPath(requestId: string, home: string): string {
-  const safe = String(requestId).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
-  return path.join(transactionsDir(home), `.req-${safe}`);
 }
 
 /**

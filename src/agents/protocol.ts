@@ -45,7 +45,6 @@ export class AgentProtocol {
   private peerId: string;
   private identityName: string;
   private pendingTasks: Map<string, Task> = new Map();
-  private taskQueue: Task[] = [];
   private autoSendThreshold = 0.7;
   private autonomousMode = true;
 
