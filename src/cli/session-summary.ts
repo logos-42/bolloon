@@ -114,7 +114,10 @@ export async function summarizeSession(
   const tail = tailFrom.map(m => `${m.role}: ${clip(String(m.content), 300)}`).join('\n');
 
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), Math.max(2000, opts.timeoutMs ?? 12_000));
+  // 2026-10-20: 默认超时 12s → 25s —— 实测 glm-5.3-flash 一次小 chat ~11s (kv 装配+推理),
+  //   12s 正好卡在刀口上 ⇒ 回合结束/退出存档的标题时常 source=raw (startup.log 有一串
+  //   「没拿到标题 (source=raw)」为证)。不卡退出流程: 调用方各自有兜底 (退出强杀 25s)。
+  const timer = setTimeout(() => ac.abort(), Math.max(2000, opts.timeoutMs ?? 25_000));
   try {
     const llm = getMinimax();
     const res = await llm.chat(buildPrompt(head, tail), SYS, ac.signal, undefined, 'auto-compact', 'session-summary') as unknown;

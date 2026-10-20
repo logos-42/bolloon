@@ -1027,8 +1027,12 @@ function handleCliSigint(): void {
   cliAbortArmed = false;
   cliTurnActor = null;
   try { (globalThis as any).__inkRequestExit?.(); } catch { /* */ }
-  // 兜底: 清理路径挂住时强制退出 (与原 requestExit 同款)
-  setTimeout(() => process.exit(0), 2000).unref?.();
+  // 兜底: 清理路径挂住时强制退出 (与原 requestExit 同款)。
+  // 2026-10-20 (leo: 「退出终端的时候的摘要怎么消失了」): 原来 2s 就 process.exit ——
+  //   而退出流程要跑 存档 + AI 标题 (summarizeSession, LLM 实测 ~11s, 超时上限 12s)
+  //   ⇒ 每次都在总结中途被杀: 存档行/标题/再见👋 全部消失, 会话 metadata 永远没 title。
+  //   放宽到 25s (≥ 12s 总结超时 + 存档余量); 正常路径自己在末尾 process.exit(0)。
+  setTimeout(() => process.exit(0), 25_000).unref?.();
 }
 
 /**
