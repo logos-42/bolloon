@@ -6,7 +6,6 @@
 
 const R = '\x1b[0m';
 const BOLD = '\x1b[1m';
-const DIM = '\x1b[2m';
 const UNDER = '\x1b[4m';
 const CYAN = '\x1b[36m';
 const GREEN = '\x1b[32m';

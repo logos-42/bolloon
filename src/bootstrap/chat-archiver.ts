@@ -234,11 +234,9 @@ export async function compressMonthlyArchive(opts: CompressOpts): Promise<Compre
   const agentId = sanitizeId(opts.agentId);
   const publicKey = opts.publicKey;
   const yearMonth = opts.yearMonth || peerFs.currentYearMonth();
-  const home = opts.home || HOME;
 
   const summaryPath = getPeerSummaryPath(agentId, publicKey, yearMonth);
   const cursorPath = getPeerSummaryCursorPath(agentId, publicKey, yearMonth);
-  const archivePath = peerFs.getPeerChatPath(publicKey, yearMonth);
 
   // 读归档
   const lines = await readArchiveLines(publicKey, yearMonth);

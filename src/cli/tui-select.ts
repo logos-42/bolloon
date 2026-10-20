@@ -897,7 +897,6 @@ export interface MaskedInputResult { value: string; eof: boolean; cancelled: boo
  */
 export function tuiAskMasked(opts: MaskedInputOptions): Promise<MaskedInputResult> {
   const out = opts.out ?? process.stdout;
-  const color = opts.color ?? ansiEnabled(out);
   const cap = opts.maskCap ?? 24;
   let value = '';
   let done = false;

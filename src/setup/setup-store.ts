@@ -248,8 +248,6 @@ export function gateFor(stage: SetupStage | SetupFaultStage, readiness: SetupRea
 
 export async function evaluateSetup(opts: EvaluateOptions = {}): Promise<Evaluation> {
   const bolloonHome = opts.bolloonHome ?? resolveBolloonHome();
-  const now = opts.now ? opts.now() : Date.now();
-  const ttl = opts.connectivityTtlMs ?? 24 * 60 * 60 * 1000;
   const prev = (await readSetupState(bolloonHome)) || emptySetupState();
   const reasons: string[] = [];
   const why: SetupState['readinessWhy'] = { basic: [], agent: [], durable: [], network: [] };

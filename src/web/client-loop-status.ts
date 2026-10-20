@@ -22,7 +22,6 @@ let loopBarLastSummary: string = '';
 
 const loopStatusBar = document.getElementById('loop-status-bar') as HTMLElement | null;
 const loopStatusText = document.getElementById('loop-status-text');
-const loopStatusMeta = document.getElementById('loop-status-meta');
 
 function renderLoopStatusBar(tool: string | undefined, content: string | undefined): void {
   if (!loopStatusBar || !loopStatusText) return;

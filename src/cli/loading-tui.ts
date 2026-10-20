@@ -21,7 +21,6 @@ import { mdInline } from './markdown.js';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
-const DIM = '\x1b[2m';
 
 // Bolloon Web UI 配色 truecolor ANSI
 function fg(r: number, g: number, b: number): string { return `\x1b[38;2;${r};${g};${b}m`; }
@@ -36,7 +35,6 @@ const C_MUTED     = fg(0x60, 0x60, 0x58);  // #606058
 const C_OK        = fg(0x22, 0xc5, 0x5e);  // #22c55e
 const C_ERROR     = fg(0xef, 0x44, 0x44);  // #ef4444
 const C_WARN      = fg(0xf5, 0x9e, 0x0b);  // #f59e0b
-const C_BORDER    = fg(0x3a, 0x3a, 0x36);  // #3a3a36 (暗描边)
 const C_BORDER_BRIGHT = fg(0x8a, 0x8a, 0x7e);  // #8a8a7e (2026-08-07: 对话框边框提亮, 告别灰白)
 
 const HIDE = '\x1b[?25l';
@@ -181,9 +179,6 @@ export function termHeight(): number {
   return typeof r === 'number' && r > 8 ? r : 24;
 }
 
-function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*m/g, '');
-}
 
 /** 显示宽度: CJK / 全角符号算 2, 其余算 1 (ANSI 转义不计入) */
 export function dispWidth(s: string): number {

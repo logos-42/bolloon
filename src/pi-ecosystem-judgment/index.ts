@@ -499,7 +499,6 @@ function extractFrontmatter(content: string): Record<string, unknown> {
   const lines = match[1].split('\n');
 
   let currentKey = '';
-  let currentIndent = 0;
 
   for (const line of lines) {
     const indent = line.search(/\S/);

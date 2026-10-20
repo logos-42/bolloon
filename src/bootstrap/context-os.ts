@@ -257,7 +257,6 @@ export async function readContextAssets(
   home?: string,
   agentId?: string
 ): Promise<ContextLayerListing[]> {
-  const root = getContextOsRoot(home);
   const kw = String(keyword || '').trim().toLowerCase();
   const wanted = layer ? [resolveLayer(layer)].filter(Boolean).map((l) => l!.key) : CONTEXT_OS_LAYERS.map((l) => l.key);
   const out: ContextLayerListing[] = [];

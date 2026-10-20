@@ -24,7 +24,6 @@
 import type { Message, StageResult, StageOptions } from './types.js';
 
 const DEFAULT_COLLAPSE_PAIRS = 5;
-const DEFAULT_SUMMARY = '[collapsed: N earlier rounds — summary not yet generated]';
 
 export function isContextCollapseEnabled(): boolean {
   return process.env.BOLLOON_CONTEXT_COLLAPSE === '1';
