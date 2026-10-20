@@ -4,8 +4,11 @@ export default defineConfig({
   test: {
     // 只匹配 *.test.ts (vitest 单元测试), 排除:
     // 2026-09-05: testTimeout 20000 — 重 async 测试 (IndexedDB/数据扫描) 在全量并行下超过默认 5s 误超时
-    testTimeout: 20000,
-    hookTimeout: 20000,
+    // 2026-10-20: 20000 → 60000 — supervisor/goal-flywheel/mcp 等真落盘集成测试在 pre-commit 钩子
+    //   并行负载下 wall-clock 被顶过 20s 误超时 (空载单跑同批用例仅 ~8s, 非回归, 属 §5.2.1 负载假红)。
+    //   放宽到 60s 让钩子稳定过门; 真卡死仍会被捕获 (不会无限等)。
+    testTimeout: 60000,
+    hookTimeout: 60000,
     // 只匹配 *.test.ts (vitest 单元测试), 排除:
     // - *.spec.ts: playwright e2e 规范
     // - 误命名为 .test.ts 但实际是 tsx 脚本 (顶层 async function + console.log, 无 describe/it)

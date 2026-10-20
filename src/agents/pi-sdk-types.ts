@@ -183,6 +183,13 @@ export interface AgentSession {
   createSkillGuard?(): (name: string, params: Record<string, unknown>) => Promise<{ allow: boolean; reason?: string; rejectedBy?: string }>;
   /** K5: 本会话的 Actor (由 session factory 在**会话身份已知时**绑定; 状态迁移见 plan-channel-actor.ts) */
   actor?: ChannelActor;
+  /**
+   * **只读快照**: 当前会话消息历史。
+   * 2026-10-20 补: actor 模式下本体在 `actor.state.messageHistory`, 实例上没有该字段 ⇒ CLI 会话命令
+   * (/undo /history /save /refine /status 等) `(a as any).messageHistory` 全读成 undefined, `/undo` 恒报
+   * 「没有可回退的内容」。这里给公开只读访问器 (返回浅拷贝快照, 不暴露内部数组), 写路径仍走 `replaceHistory` 漏斗。
+   */
+  readonly messageHistory: Message[];
   /** K5 第 4 步: 绑定 actor 并收养绑定前已有的本地历史 (注册键必须是会话身份) */
   attachActor?(actor: ChannelActor): void;
   /** K5 步骤⑦: 把一次性请求里的绑定落到位 (channelId/agentId/goalId/resumeRunId) */

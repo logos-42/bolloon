@@ -93,3 +93,23 @@ export function buildTurnSummary(messages: CliMsg[], maxChars = 2000): string {
     .slice(-maxChars);
   return text.trim();
 }
+
+/**
+ * /undo [N] — 从尾部倒数第 N 个 user 消息处截断 (纯计算, 不改任何状态)。
+ * 返回截断后的数组 + 移除条数; 没有第 N 个 user ⇒ 原样返回 removed=0。
+ * 2026-10-20: 抽成纯函数是因为 `/undo` 的写路径必须走 `replaceHistory` 漏斗 (actor 模式),
+ * 不能进来就 splice —— 否则对 messageHistory 快照操作, 本体不动, /undo 恒报告「已回退」但什么都没发生。
+ */
+export function undoTruncate(messages: CliMsg[], n = 1): { next: CliMsg[]; removed: number } {
+  const count = Math.max(1, Math.floor(Number.isFinite(n) && n > 0 ? n : 1));
+  let userCount = 0;
+  let cutAt = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'user') {
+      userCount++;
+      if (userCount === count) { cutAt = i; break; }
+    }
+  }
+  if (cutAt === -1) return { next: messages, removed: 0 };
+  return { next: messages.slice(0, cutAt), removed: messages.length - cutAt };
+}

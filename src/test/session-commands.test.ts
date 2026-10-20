@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   stripAnsi, messageSummary, buildHistoryText, buildSaveDoc, resolveTitleArg,
-  formatContextUsage, buildTurnSummary, type CliMsg,
+  formatContextUsage, buildTurnSummary, undoTruncate, type CliMsg,
 } from '../cli/session-commands.js';
 
 const msgs = (): CliMsg[] => [
@@ -126,5 +126,35 @@ describe('buildTurnSummary', () => {
   it('超过 maxChars 截尾', () => {
     const long = Array.from({ length: 30 }, (_, i): CliMsg => ({ role: 'user', content: `内容${i}`.repeat(100) }));
     expect(buildTurnSummary(long, 500).length).toBeLessThanOrEqual(500);
+  });
+});
+
+describe('undoTruncate', () => {
+  it('默认回退 1 轮: 从最后一条 user 处截断 (连带其后的回复)', () => {
+    const { next, removed } = undoTruncate(msgs());
+    expect(removed).toBe(2); // 「删掉死代码」+「已删除 134 行死类」
+    expect(next.map(m => m.content)).toEqual([
+      '帮我看看这个仓库',
+      '\u001b[32m好的, 正在扫描…\u001b[0m 仓库结构如下', // 纯计算不剥 ANSI (渲染层负责)
+      'read_file: src/index.ts ok',
+    ]);
+  });
+  it('回退 2 轮: 截到倒数第 2 条 user (本例即开头, 全部移除)', () => {
+    const { next, removed } = undoTruncate(msgs(), 2);
+    expect(removed).toBe(5);
+    expect(next).toEqual([]);
+  });
+  it('没有第 N 个 user 时原样返回 removed=0 (不误删)', () => {
+    const { next, removed } = undoTruncate(msgs(), 99);
+    expect(removed).toBe(0);
+    expect(next).toHaveLength(5);
+  });
+  it('空会话安全返回', () => {
+    expect(undoTruncate([])).toEqual({ next: [], removed: 0 });
+  });
+  it('非法 N (0/负/NaN) 回退默认 1', () => {
+    expect(undoTruncate(msgs(), 0).removed).toBe(2);
+    expect(undoTruncate(msgs(), -5).removed).toBe(2);
+    expect(undoTruncate(msgs(), NaN as any).removed).toBe(2);
   });
 });

@@ -199,6 +199,35 @@ describe('PiAgentSession.saveCurrentSession', { timeout: 30000 }, () => {
       'second reply',
     ]);
   });
+
+  it('messageHistory 只读访问器 = actor.state 快照 (2026-10-20 补缺口)', async () => {
+    const session = await createAgentSession({
+      cwd: process.cwd(),
+      peerId: testPrefix + 'MH',
+      sessionStore: testStore,
+    });
+    session.replaceHistory([
+      { role: 'user', content: '问题 1', timestamp: 1000 },
+      { role: 'assistant', content: '回答 1', timestamp: 1100 },
+    ]);
+    // 访问器读出与本体一致
+    expect(session.messageHistory.map(m => m.content)).toEqual(['问题 1', '回答 1']);
+    expect(session.messageHistory).not.toBe((session as any).actor.state.messageHistory); // 是快照不是引用
+    // 快照修改不影响本体
+    session.messageHistory.pop();
+    expect((session as any).actor.state.messageHistory.length).toBe(2);
+  });
+
+  it('messageHistory 访问器在私有 actor (无身份) 下也工作', async () => {
+    const session = await createAgentSession({
+      cwd: process.cwd(),
+      peerId: testPrefix + 'MH2',
+      sessionStore: testStore,
+    });
+    session.replaceHistory([{ role: 'user', content: '只有一条', timestamp: 1 }]);
+    expect(session.messageHistory).toHaveLength(1);
+    expect(session.messageHistory[0].content).toBe('只有一条');
+  });
 });
 
 describe('PiAgentSession — peekSessionHistory (不修改状态)', { timeout: 30000 }, () => {

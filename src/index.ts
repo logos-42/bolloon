@@ -2088,9 +2088,11 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
         await writeFile(channelsPath, JSON.stringify(Array.isArray(parsed) ? channels : { ...parsed, channels }, null, 2), 'utf-8');
       } catch { /* 无 channels.json → 仅提示 */ }
       // 重置 agent 消息历史 (新会话空窗口)
+      // 2026-10-20: 走 replaceHistory 漏斗 —— `(a as any).messageHistory = []` 对 getter-only 属性
+      //   在 ESM strict 下抛 TypeError 被 catch 吞掉, 旧实现从没清成过 (新会话带着旧历史)。
       try {
         const a = await getAgent();
-        if (a && (a as any).messageHistory) (a as any).messageHistory = [];
+        if (a && typeof (a as any).replaceHistory === 'function') (a as any).replaceHistory([]);
       } catch { /* 非致命 */ }
       appendLine(`${C_OK}✓ 已新建会话${RESET} session=${C_DIM}${newSessionId}${RESET}${saved ? ` (channel: ${cliActiveChannelId || 'default'})` : ''}`);
     } catch (e: any) {
@@ -2168,7 +2170,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       } catch { /* 无 channels.json → 仅提示 */ }
       try {
         const a = await getAgent();
-        if (a && (a as any).messageHistory) (a as any).messageHistory = [];
+        if (a && typeof (a as any).replaceHistory === 'function') (a as any).replaceHistory([]);
       } catch { /* 非致命 */ }
       appendLine(`${C_OK}✓ 已新建会话${RESET} session=${C_DIM}${newSessionId}${RESET}${saved ? ` (channel: ${cliActiveChannelId || 'default'})` : ''}`);
     } catch (e: any) {
@@ -2273,17 +2275,22 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     try {
       const n = Math.max(1, Math.min(Number(trimmed.slice('/undo'.length).trim()) || 1, 50));
       const a = await getAgent();
-      const h = ((a as any).messageHistory ?? []) as any[];
-      if (h.length === 0) { appendLine(`${C_DIM}当前会话没有可回退的内容${RESET}`); return; }
-      // 从尾部倒数第 N 个 user 消息处截断 (保留其之前的历史)
-      let userCount = 0; let cutAt = h.length;
-      for (let i = h.length - 1; i >= 0; i--) {
-        if (h[i]?.role === 'user') { userCount++; if (userCount === n) { cutAt = i; break; } }
+      const { undoTruncate } = await import('./cli/session-commands.js');
+      // 2026-10-20: 读走公开只读访问器 (快照), 写走 replaceHistory 漏斗 (actor 模式本体在 actor.state)。
+      //   旧实现直接 splice `(a as any).messageHistory` —— 那个字段从来不存在 (恒 undefined),
+      //   /undo 恒报「当前会话没有可回退的内容」; 且截断后从不落盘 (重启丢)。
+      const snapshot = (a as any).messageHistory ?? [];
+      const { next, removed } = undoTruncate(snapshot as any[], n);
+      if (removed <= 0) { appendLine(`${C_DIM}当前会话没有可回退的内容${RESET}`); return; }
+      (a as any).replaceHistory?.(next);
+      appendLine(`${C_OK}↩ 已回退 ${n} 轮${RESET} ${C_DIM}(移除 ${removed} 条消息, 剩 ${next.length} 条)${RESET}`);
+      // 2026-10-20: 截断后落盘 —— 否则内存改了磁盘存档还是旧的, 重启后 undo 白做 (log 自标缺口)。
+      if (cliSessionKey && typeof (a as any).saveCurrentSession === 'function') {
+        try { await (a as any).saveCurrentSession(cliSessionKey); appendLine(`${C_DIM}已写回会话存档${RESET}`); }
+        catch (e2: any) { appendLine(`${C_WARN}⚠ 落盘失败 (内存已回退, 重启后不保留): ${String(e2?.message || e2).slice(0, 120)}${RESET}`); }
+      } else {
+        appendLine(`${C_DIM}(无会话 key, 只改了内存; 退出时正常存档会一并带上)${RESET}`);
       }
-      const removed = h.length - cutAt;
-      if (removed <= 0) { appendLine(`${C_DIM}没有可回退的轮次${RESET}`); return; }
-      h.splice(cutAt, h.length - cutAt);
-      appendLine(`${C_OK}↩ 已回退 ${n} 轮${RESET} ${C_DIM}(移除 ${removed} 条消息, 剩 ${h.length} 条)${RESET}`);
     } catch (e: any) {
       appendLine(`${C_ERROR}/undo 失败: ${String(e?.message || e).slice(0, 150)}${RESET}`);
     }

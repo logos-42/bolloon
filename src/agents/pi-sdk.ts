@@ -312,6 +312,16 @@ export class PiAgentSession implements AgentSession {
   }
 
   /**
+   * **只读快照**: 当前会话消息历史 (浅拷贝, 不暴露内部数组本体)。
+   * 2026-10-20 补: actor 模式下本体在 `actor.state.messageHistory`, 没有这个访问器时
+   * CLI 会话命令 (`(a as any).messageHistory`) 全读成 undefined —— /undo /history /save /refine
+   * 集体空转, /status /session /loop 消息数恒 0。写路径不许走它 (要走 `replaceHistory` 漏斗)。
+   */
+  get messageHistory(): Message[] {
+    return [...((this.actor?.state?.messageHistory ?? []) as Message[])];
+  }
+
+  /**
    * **K5 步骤⑦ — 把一次性请求里的绑定落到位** (入口不再散着设字段: 只交一个请求)。
    * 写入都走访问器 ⇒ 本体落进 `actor.state` (步骤③ 起就是这样); 没给的不覆盖 (与环境变量"只覆盖显式给出的"同秩)。
    */
