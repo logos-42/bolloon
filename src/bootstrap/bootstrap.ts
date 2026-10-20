@@ -86,7 +86,11 @@ export async function bootstrapBolloon(opts: {
       for (const s of scanResult.suggestions) byKind.set(`${s.kind}:${s.action}`, (byKind.get(`${s.kind}:${s.action}`) || 0) + 1);
       return [...byKind.entries()].slice(0, 5).map(([k, n]) => `${k}×${n}`).join(' ');
     })();
-    console.log(`[bootstrap] 类 B 启动扫描完成: ${scanResult.suggestions.length} 条建议${dhSummary ? ` (${dhSummary})` : ''} —— 处理入口: Web 判断力面板 📊自适应 / POST /api/judgments/adaptive-apply`);
+    // 2026-10-20 (leo: 「/api/judgments/adaptive-apply 没有过滤」): 行尾不再拼 API 入口 URL ——
+    //   这是给开发者的信息 (routes-judgments.ts 文档头里有), 拼在终端行里超宽折行后 URL 单独成行
+    //   露在面板上; 且实测该行本身能被 log-gate 正确吞掉 (isStartupLogLine=true), 漏的是某条
+    //   绕过闸门的旁路 —— 行变短了, 哪条路漏也不再产生可见的 URL 尾巴。
+    console.log(`[bootstrap] 类 B 启动扫描完成: ${scanResult.suggestions.length} 条建议${dhSummary ? ` (${dhSummary})` : ''} —— 处理入口: Web 判断力面板 📊自适应`);
   } catch (err) {
     errors.push(`scan: ${(err as Error).message}`);
     console.warn('[bootstrap] 启动扫描失败 (非致命):', err);
