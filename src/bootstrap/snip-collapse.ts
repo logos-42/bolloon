@@ -80,7 +80,7 @@ export function snipHistory(
   // Step 3 (提前): 窗口内也截断过长 tool 结果 — 2026-08-06 fix: 原来在 Step 2 return 之后,
   //   窗口内消息永远走不到 tool 截断 (budgeted.length <= maxMessages 时提前返回).
   //   originalLength 保留最早值 (budget-reduce 已记录原始长度, 不覆盖).
-  const trimToolResults = (list: CollapsedMessage[], boundaryProtected = false): CollapsedMessage[] =>
+  const trimToolResults = (list: CollapsedMessage[]): CollapsedMessage[] =>
     list.map(m => {
       if (m.role === 'tool' && m.content.length > maxToolResultChars && m.transform !== 'snip') {
         return {
@@ -97,7 +97,6 @@ export function snipHistory(
   if (budgeted.length <= maxMessages) return trimToolResults(budgeted);
 
   const keepCount = maxMessages;
-  const toRemove = budgeted.length - keepCount;
 
   // 2026-08-06 重写: 原实现 protectedToolChain 计数逻辑混乱 (assistant 分支不重置,
   //   条件 `budgeted.length - i > protectedToolChain` 语义错误), 且占位符路径只在

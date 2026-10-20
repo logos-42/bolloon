@@ -22,12 +22,6 @@ import type { Message, StageResult, StageOptions } from './types.js';
 const DEFAULT_COLLAPSE_PAIRS = 5;
 const CACHE_DIR = () => path.join(process.env.HOME || os.homedir() || '/tmp', '.bolloon', 'sessions', 'compaction-cache');
 
-function cacheKey(history: Message[], collapsePairs: number): string {
-  const slice = history.slice(0, collapsePairs * 2);
-  const joined = slice.map((m) => `${m.role}:${m.content}`).join('|');
-  return crypto.createHash('sha1').update(joined).digest('hex').slice(0, 12);
-}
-
 async function readCache(scope: string, key: string): Promise<string | null> {
   try {
     const file = path.join(CACHE_DIR(), `${scope}_${key}.json`);

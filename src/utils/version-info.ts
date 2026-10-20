@@ -35,7 +35,6 @@ import {
   resolveUpdateChannel, distTagForChannel, channelKindOf, devIdentity, baseVersionOf,
   isDevIdentity, devShaFromIdentity, parseVersion, compareVersions, isKnownVersion,
   checkExitCode, REFUSED_STATUSES, CHECK_STATUSES, describeSourceIdentity,
-  envValue,
   type InstallMethod, type UpdateSource, type UpdateChannel, type ChannelKind, type CheckStatus,
 } from './version-identity.js';
 

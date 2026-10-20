@@ -139,23 +139,6 @@ export class HealthMonitor implements HealthCheckProvider {
     try {
       const usage = process.memoryUsage();
       const heapUsedPercent = (usage.heapUsed / usage.heapTotal) * 100;
-      const rssPercent = (usage.rss / (1024 * 1024 * 1024)) * 100; // GB
-
-      // 获取系统总内存 (macOS/Linux)
-      let systemMemoryPercent = 0;
-      try {
-        if (process.platform === 'darwin' || process.platform === 'linux') {
-          const { execSync } = require('child_process');
-          if (process.platform === 'darwin') {
-            const total = execSync('sysctl -n hw.memsize').toString().trim();
-            const free = execSync('vm_stat | grep "Pages free" | awk \'{print $3}\' | tr -d "."');
-            const pageSize = execSync('sysctl -n vm.pagesize').toString().trim();
-            systemMemoryPercent = ((parseInt(free) * parseInt(pageSize)) / parseInt(total)) * 100;
-          }
-        }
-      } catch {
-        // 忽略系统内存获取失败
-      }
 
       const isHealthy = heapUsedPercent < 80;
 
