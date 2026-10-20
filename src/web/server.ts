@@ -1703,16 +1703,22 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
   selfImproveEnabled = options.selfImprove ?? false;
   // 2026-08-02: channelRunState 是模块级 (triggerRemoteFollowup 访问), 每次启动清空避免残留
   channelRunState.clear();
-  // 防止 P2P DHT 超时等错误导致进程崩溃
-  process.on('unhandledRejection', (reason, promise) => {
-    console.error('[警告] 未处理的 Promise 拒绝:', reason);
-  });
-  // 优雅关闭信号
-  process.on('SIGTERM', () => cleanupAndExit('SIGTERM'));
-  process.on('SIGINT', () => cleanupAndExit('SIGINT'));
+  // 2026-10-20: embedded (CLI 内嵌 headless) 跳过信号注册 —— CLI 自己有两级 Ctrl+C 语义
+  //   (handleCliSigint: 一次=中断回合, 两次=退出+存档), cleanupAndExit 的 process.exit(0) 会把它短路掉。
+  if (!options.embedded) {
+    // 防止 P2P DHT 超时等错误导致进程崩溃
+    process.on('unhandledRejection', (reason, promise) => {
+      console.error('[警告] 未处理的 Promise 拒绝:', reason);
+    });
+    // 优雅关闭信号
+    process.on('SIGTERM', () => cleanupAndExit('SIGTERM'));
+    process.on('SIGINT', () => cleanupAndExit('SIGINT'));
+  }
 
   // 启动前检查残存锁文件
-  checkStaleLock(port);
+  // 2026-10-20: embedded 跳过 —— checkStaleLock 会 SIGTERM 杀掉锁区间内活着的进程,
+  //   CLI 内嵌启动绝不许杀掉用户正跑着的桌面实例; writeLock 同理不写 (不占桌面版的锁位)。
+  if (!options.embedded) checkStaleLock(port);
 
   // Bolloon Bootstrap (幂等, 重复调不会重复挂定时器)
   // 这里独立调一次以保证 CLI-only 模式 (无 index.ts 引导) 也能 bootstrap
@@ -8748,7 +8754,8 @@ currentServer.on('clientError', (err, socket) => {
           try { socket.end(); } catch {}
         });
         activeServer = currentServer;
-        writeLock(currentPort);
+        // 2026-10-20: embedded 不写锁 (见 createWebServer 顶部注释)
+        if (!options.embedded) writeLock(currentPort);
         resolve({ app, server: currentServer, port: currentPort });
       });
     };

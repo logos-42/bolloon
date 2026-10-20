@@ -6864,6 +6864,32 @@ async function main() {
     console.info = originalInfo;
     process.stdout.write = originalStdoutWrite;
 
+    // 2026-10-20 (leo: 「cli 模式不起 HTTP 端口也要能跑」): CLI 面板自己不监听 HTTP, 但一批智能体工具
+    //   (list_pending_friend_requests / list_remote_channels / send_to_remote_channel / contacts /pair
+    //   /addfriend / x402 …) 的实现是 fetch http://127.0.0.1:${PORT||54188}/api/* —— 没有服务在听就全体
+    //   秒败 (ECONNREFUSED, 实测 23-93ms 全红)。好友申请/远端 channel 的 v3 状态与 P2P 接线只存在于
+    //   createWebServer (server.ts 单一事实源), 给工具再造一套直调实现 = 第二条执行路径 (违反架构分层)
+    //   ⇒ 同进程懒起一个 **headless 内嵌服务**: 不开浏览器 · 只绑 loopback · 已有 bolloon 服务在线
+    //   (桌面版) 就复用不起 · 不抢 port-lock · 不挂信号 (CLI 自己管退出)。
+    //   fire-and-forget: 不阻塞面板首帧; 就绪前工具仍会拿到明确失败, agent 可重试。
+    void (async () => {
+      const embeddedPort = parseInt(process.env.PORT || '54188');
+      try {
+        // 已有服务在线 (桌面版 / 另一个终端) ⇒ 直接复用, 不重复起
+        const probe = await fetch(`http://127.0.0.1:${embeddedPort}/api/friend-requests`, { signal: AbortSignal.timeout(1500) }).catch(() => null);
+        if (probe) { bootNotice('info', `内嵌服务跳过: ${embeddedPort} 已有 bolloon 服务在线 (复用)`); return; }
+      } catch { /* 探测异常 = 视为不在线, 继续自起 */ }
+      try {
+        const { createWebServer } = await import('./web/server.js');
+        const { port: actualPort } = await createWebServer(embeddedPort, { embedded: true });
+        // 工具端读 process.env.PORT —— 必须跟实际绑定端口对齐 (端口被占时 server 自动 +1)
+        process.env.PORT = String(actualPort);
+        bootNotice('info', `CLI 内嵌服务就绪: http://127.0.0.1:${actualPort} (headless, 不开浏览器)`);
+      } catch (err: any) {
+        bootNotice('warn', `CLI 内嵌服务启动失败 (好友申请/远端 channel 等工具不可用): ${String(err?.message || err).slice(0, 120)}`);
+      }
+    })();
+
     await startCLI(commReady ?? Promise.resolve(null));
   }
   } catch (e) {

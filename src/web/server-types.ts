@@ -127,4 +127,13 @@ export interface SSEClient {
 export interface CreateWebServerOptions {
   selfImprove?: boolean;
   host?: string;
+  /**
+   * **CLI 内嵌 headless 模式** (2026-10-20, leo: 「cli 模式不起 HTTP 端口也要能跑」):
+   * 同进程起 server 但不开浏览器。为 true 时:
+   *  · 跳过 SIGINT/SIGTERM/unhandledRejection 注册 —— CLI 自己有两级 Ctrl+C 语义 (中断回合/完整退出+存档),
+   *    server 的 cleanupAndExit 会 process.exit(0) 把它短路掉;
+   *  · 跳过 port-lock 的读/写 —— checkStaleLock 会 SIGTERM 杀掉锁区间内**活着的**进程,
+   *    CLI 内嵌启动绝不允许杀掉用户正跑着的桌面实例。
+   */
+  embedded?: boolean;
 }
