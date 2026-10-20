@@ -2122,29 +2122,27 @@ ${await this.buildStableMemoryBlock()}
     // 2026-07-17 Bug 1 修: 注入 messageHistory (hydrateMessageHistory 从 session JSON 回灌的) 到 system prompt
     //   pivot loop execute() 内部自己维护 messageHistory, 跟 pi-sdk 的 actor 的 messageHistory 隔离,
     //   不注入的话 LLM 看不到历史对话, 每次都是新对话.
-    // 2026-10-16 (leo: prompt 比重降低, 流程由 kernel/意图驱动): 压缩历史注入 —
-    //   20 条 × 2000 = 40K 上限吃满 systemPrompt; 历史只为给 pivot 首轮"上次做到哪"的锚,
-    //   细节靠 contextHint (memory 摘要) 与工具补。8 条 × 300, 首尾保真。
-    const historyLines: string[] = [];
+    // 2026-10-20 (跨轮上下文接续修复): 原方案 = 压缩摘要塞 system (8 条 × 300 字符), 实测模型对
+    //   上一轮"基本失忆" (多步工具过程全丢, 只剩卡通版两行)。改为把上一轮历史以**真实消息**种子
+    //   灌进 pivot 的 messageHistory (execute 的 initialHistory 参数) — buildContext() 全文序列化
+    //   进本轮 LLM 上下文。用户/助手消息保真 (截断上限放宽到 1.2K/2.5K), 末位是本轮输入
+    //   (pivot 自己 push), 排除。顺带: system 不再随历史增长变化, IMMUTABLE PREFIX 更稳
+    //   (对齐 kv-prefix-cache 的 [stable system] + [append-only history] + [CURRENT TURN] 设计)。
+    const priorTurnHistory: Array<{ role: string; content: string }> = [];
     const histAll = (this.actor!.state.messageHistory as Message[]);
-    const historyToInject = histAll.slice(-8, -1);
-    for (const m of historyToInject) {
-      const roleLabel = m.role === 'user' ? '用户' : m.role === 'assistant' ? '你' : m.role === 'tool' ? '工具结果' : m.role;
-      // 工具结果只留首行 (JSON 常上千字符, 全量塞进 system 是浪费)
+    const historyToSeed = histAll.slice(-13, -1);
+    for (const m of historyToSeed) {
       let text = String(m.content || '');
-      if (m.role === 'tool') text = text.split('\n')[0].slice(0, 150);
-      else text = text.slice(0, 300);
-      if (text) historyLines.push(`[${roleLabel}]: ${text}`);
+      if (m.role === 'user') text = text.slice(0, 1200);
+      else text = text.slice(0, 2500);
+      if (text) priorTurnHistory.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: text });
     }
     // 首条消息保留完整一点 (会话起点 / 用户最初意图, 是"根目标"锚)
-    if (histAll.length > 8) {
+    if (histAll.length > 13) {
       const first = histAll[0];
-      const firstText = String(first?.content || '').slice(0, 400);
-      if (firstText) historyLines.unshift(`[${first?.role === 'user' ? '用户' : '你'}]: ${firstText}`);
+      const firstText = String(first?.content || '').slice(0, 600);
+      if (firstText) priorTurnHistory.unshift({ role: first.role === 'assistant' ? 'assistant' : 'user', content: firstText });
     }
-    const historyBlock = historyLines.length > 0
-      ? `\n\n【历史对话 (最近 ${historyLines.length} 条, 压缩摘要)】\n${historyLines.join('\n')}\n【历史对话结束】`
-      : '';
 
     const onCompact = async () => {
       // no-op (best-effort hook for future pi-sdk/pivot history sync)
@@ -2154,7 +2152,7 @@ ${await this.buildStableMemoryBlock()}
     await this.piHarness().sessionStart(this.harnessCtx());
     let result: any;
     try {
-      result = await loop.execute(input, llmWithHarness, systemPrompt + historyBlock, this.runCtx.eventSink ?? undefined, this.runCtx.abortSignal ?? undefined, onCompact);
+      result = await loop.execute(input, llmWithHarness, systemPrompt, this.runCtx.eventSink ?? undefined, this.runCtx.abortSignal ?? undefined, onCompact, priorTurnHistory);
       // 2026-10-12 (leo: 「没有根据上下文加载刻度」): pivot 的 messageHistory 是 process-local,
       //   `estimateHistoryTokens()` 读 actor 的旧历史 ⇒ 状态栏上下文刻度恒 0.00% 的根因。
       //   pivot 自己累计的 `state.totalTokens` 才是这一轮**真实**消耗 —— 直接用它上报 ContextManager,

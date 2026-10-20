@@ -386,6 +386,12 @@ export class WorkflowPivotLoop {
      *   异步: PiAgent 触发 compactPipeline, 这里 await 等折叠完再继续.
      */
     onApproachingTokenBudget?: () => Promise<void>,
+    /**
+     * 2026-10-20 (跨轮上下文接续): 上一轮对话以真实消息种子灌进 messageHistory,
+     *   buildContext() 会把它们全文序列化进本轮 LLM 上下文 —— 之前跨轮历史只有
+     *   system 里每条 300 字符的压缩摘要, 模型对上一轮基本失忆。
+     */
+    initialHistory?: Array<{ role: string; content: string }>,
   ): Promise<LoopResult> {
     this.streamCallback = streamCallback;
     this.state = this.createInitialState();
@@ -396,8 +402,8 @@ export class WorkflowPivotLoop {
     // 重置 compact 状态 — 这次 execute 第一次 iter 仍用全量
     this.compactedThisRun = false;
     this.vlog(`[pivot] execute: input chars=${input.length}, systemPrompt chars=${systemPrompt.length}, signal=${!!signal}, continuationHeader chars=${this.continuationSystemHeader?.length ?? 0}`);
-    this.messageHistory = [{ role: 'user', content: input }];
-    
+    this.messageHistory = [...(initialHistory ?? []), { role: 'user', content: input }];
+
     // Analyze task complexity and adapt config
     const taskProfile = analyzeTaskComplexity(input);
     const effectiveConfig = this.adaptConfigForTask(taskProfile);
@@ -406,9 +412,13 @@ export class WorkflowPivotLoop {
     // 2026-07-06: 但累计 totalTokens = systemPrompt + sum(replies), 每 iter LLM 反 ~3-10K
     //   旧公式 budget=11K*1.2=13K, 5 iter 累计 5 × 11K + replies = ~70K → 12-13K 处直接 break.
     //   修法: budget = systemPrompt × 1.2 × maxIterations, 容纳 N 次 prompt + N-1 次 reply.
+    // 2026-10-20: 跨轮种子历史也吃预算, 一起计入 (否则种子一大就在预算中途被 break)
+    const seededHistoryChars = (initialHistory ?? []).reduce(
+      (n, m) => n + String(m.content || '').length, 0,
+    );
     effectiveConfig.maxTokenBudget = Math.max(
       effectiveConfig.maxTokenBudget,
-      Math.ceil(systemPrompt.length * 1.2 * effectiveConfig.maxIterations),
+      Math.ceil((systemPrompt.length + seededHistoryChars) * 1.2 * effectiveConfig.maxIterations),
     );
 
     this.emit({
