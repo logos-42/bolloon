@@ -90,14 +90,12 @@ export class PiSessionManager implements SocialSessionProvider {
   private channelsPath: string;
   private initialized: boolean = false;
   private sessionDir: string;
-  private cwd: string;
   private sharedContext: GlobalSharedContextManager;
   private agentId: string;
   /** 2026-10-01: persona 归属的 agent (channel 的 agentId); 空 = 老行为 (全局 persona.json) */
   private personaScopeId?: string;
 
   constructor(agentId: string, cwd: string, personaScopeId?: string) {
-    this.cwd = cwd;
     this.sessionDir = path.join(cwd, '.port_sessions');
     this.agentId = agentId;
     this.personaScopeId = personaScopeId ? String(personaScopeId) : undefined;

@@ -383,7 +383,6 @@ export class OrbitDBAdapter implements CIDDatabase {
 
   async version(cid: string): Promise<CIDRecord[]> {
     await this.ensure();
-    const chain: CIDRecord[] = [];
     let cur = await this.load(cid);
     // 从目标 CID 往回找最老, 再正序返回
     const rev: CIDRecord[] = [];

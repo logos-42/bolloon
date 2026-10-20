@@ -296,16 +296,6 @@ export class LLMJudgmentClient {
     }
 
     try {
-      // 调用 LLM
-      // 优先用 systemPromptResolver (从 layer 读), fallback 静态 systemPrompt
-      const systemPrompt = this.promptConfig.systemPromptResolver
-        ? await this.promptConfig.systemPromptResolver()
-        : this.promptConfig.systemPrompt;
-      const messages: ChatMessage[] = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ];
-
       const response = await this.model.chat(userPrompt);
 
       // 解析 JSON 输出

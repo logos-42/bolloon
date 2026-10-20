@@ -137,7 +137,7 @@ export class StartupVerifier {
     this.addCheck('network');
     this.startCheck('network');
     try {
-      const res = await fetch('https://www.google.com/generate_204', {
+      await fetch('https://www.google.com/generate_204', {
         signal: AbortSignal.timeout(5000)
       });
       this.completeCheck('network', true, 'Internet connection available');

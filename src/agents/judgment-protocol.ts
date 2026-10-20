@@ -182,7 +182,7 @@ function ensureListeners(transport: IrohTransport): void {
     const frame = decodeFrame(msg.payload);
     if (!frame) return;
     const dissent = frame.payload as JudgmentDissent;
-    await onDissentReceived(transport, dissent);
+    await onDissentReceived(dissent);
   });
 
   transport.onMessage('judgment_align', async (msg) => {
@@ -311,7 +311,7 @@ async function onAskReceived(transport: IrohTransport, ask: JudgmentAsk): Promis
   await sendDissentInternal(transport, ask.proposerNodeId, dissent);
 }
 
-async function onDissentReceived(transport: IrohTransport, dissent: JudgmentDissent): Promise<void> {
+async function onDissentReceived(dissent: JudgmentDissent): Promise<void> {
   console.log(`[judgment-protocol] dissent 收到: ${dissent.dissents.length} 反方 for ask ${dissent.askId.slice(0, 8)} from ${dissent.fromNodeId.slice(0, 12)}`);
   const chain = await readChain(dissent.askId);
   if (!chain) {

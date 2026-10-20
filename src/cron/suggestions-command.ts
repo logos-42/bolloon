@@ -101,7 +101,7 @@ export async function handleSuggestionsCommand(
       const entry = findCatalogEntry(key);
       if (!entry) return { text: `目录里没有 ${key}。用 /suggestions catalog 看。` };
       // 有 schedule + prompt → 直接生成 cron job; 否则先塞一条建议
-      const s = await addSuggestion(
+      await addSuggestion(
         { dedupKey: entry.dedupKey, summary: entry.summary, source: 'system' },
         home,
       );
