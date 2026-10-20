@@ -293,4 +293,121 @@ export function registerPaidInfoTools(ctx: ToolRegistryContext): void {
       }
     },
   });
+
+  // ---- 判断力资产 x402 化 (2026-10-20): 判断力资产可被外部节点付费调用 ----
+  ctx.tools.set('x402_judgment_publish', {
+    name: 'x402_judgment_publish',
+    description: '发布一条本机判断力资产 (judgeness description) 为 x402 付费信息: 外部节点付费调用后拿到 5 维评分 + 依据 + 作用域。价格与收款地址来自参数或 channel 钱包。判断力资产 id 用 judgment_list 查。',
+    parameters: {
+      jd_id: '判断力资产 id (jd-xxx, 必填)',
+      price_amount: '单价 (如 0.002; 默认 0)',
+      currency: '计价币种: USDC | ETH (默认 USDC)',
+      network: '结算网络: base | base-sepolia | sepolia | mainnet (默认 base-sepolia)',
+      pay_to: '收款地址 0x… (可选, 默认用 channel 钱包地址)',
+      title: '可选: 上架标题 (默认 "判断力资产 <jd-id>")',
+    },
+    execute: async (args) => {
+      try {
+        const jdId = String(args.jd_id || '').trim();
+        if (!jdId) return { success: false, error: 'jd_id 必填 (用 judgment_list 查可用 id)' };
+        let payTo = String(args.pay_to || '').trim();
+        if (!payTo && ctx.getChannelWallet) {
+          const w = await ctx.getChannelWallet().catch(() => null);
+          if (w?.walletAddress) payTo = w.walletAddress;
+        }
+        if (!payTo) {
+          return { success: false, error: '缺少收款地址: 传 pay_to, 或先给当前 channel 绑定钱包 (wallet_create)' };
+        }
+        const { publishJudgenessAsPaidInfo, sellingUrl } = await import('../../judgeness/paid-export.js');
+        const { item } = await publishJudgenessAsPaidInfo(jdId, {
+          amount: String(args.price_amount ?? '0'),
+          currency: String(args.currency || 'USDC').toUpperCase() === 'ETH' ? 'ETH' : 'USDC',
+          network: String(args.network || 'base-sepolia'),
+          payTo,
+          title: String(args.title || '').trim() || undefined,
+        });
+        return {
+          success: true,
+          output: `✅ 判断力资产已上架 (外部节点可付费调用)\n  jd: ${jdId}\n  信息 id: ${item.id}\n  价格: ${item.price.amount} ${item.price.currency} @ ${item.price.network}\n  收款: ${item.price.payTo}\n  内容哈希: ${item.contentHash}\n  售卖端点: ${sellingUrl(item.id)}\n  外部节点: x402_judgment_fetch(url="${sellingUrl(item.id)}")`,
+        };
+      } catch (e: any) {
+        return { success: false, error: `发布失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    },
+  });
+
+  ctx.tools.set('x402_judgment_call', {
+    name: 'x402_judgment_call',
+    description: '付费调用外部节点的判断力资产 (x402, 像连 API 一样): 传问题/场景, 对方基于该判断力资产返回裁决 (verdict/confidence/reasoning)。付款走标准 x402 自动支付 (402 → 签名付款 → 重试)。',
+    parameters: {
+      url: '判断力资产售卖端点 (必填, 如 http://host:54188/api/x402/info/<id>)',
+      question: '要判断的问题/场景 (必填)',
+      context: '可选: 背景上下文',
+      max_payment: '可接受的最高单价 (如 0.01; 超过则拒付)',
+      network: '可选: 限定网络',
+    },
+    execute: async (args) => {
+      const url = String(args.url || '').trim();
+      const question = String(args.question || '').trim();
+      if (!url) return { success: false, error: 'url 必填' };
+      if (!question) return { success: false, error: 'question 必填 (要判断的问题/场景)' };
+      try {
+        let privateKey = '';
+        if (ctx.getChannelWallet) {
+          const w = await ctx.getChannelWallet().catch(() => null);
+          if (w?.encryptedPrivateKey) {
+            try {
+              const { decryptChannelWallet } = await import('./x402Pay.js');
+              const dec = await decryptChannelWallet(
+                {
+                  encryptedPrivateKey: w.encryptedPrivateKey,
+                  encryptedPrivateKeyIv: w.encryptedPrivateKeyIv,
+                  walletAddress: w.walletAddress,
+                },
+                w.did,
+              );
+              privateKey = dec?.privateKey || '';
+            } catch { /* 解密失败 → 走到无 key 分支 */ }
+          }
+        }
+        const callUrl = /\/call$/i.test(url) ? url : `${url.replace(/\/+$/, '')}/call`;
+        const { x402Fetch } = await import('./x402Pay.js');
+        const r = await x402Fetch({
+          url: callUrl,
+          method: 'POST',
+          body: JSON.stringify({
+            question,
+            context: String(args.context || '').trim() || undefined,
+          }),
+          privateKey: privateKey || undefined,
+          network: String(args.network || '').trim() || undefined,
+          maxPaymentAmount: String(args.max_payment || '').trim() || undefined,
+        });
+        if (!r.success) {
+          const data = r.data as any;
+          const hint = data?.accepts?.[0] ? ` (需付款 ${data.accepts[0].amount} ${data.accepts[0].asset || ''})` : '';
+          return { success: false, error: `${r.error || '调用失败'}${hint}` };
+        }
+        const body = r.data as any;
+        const j = body?.judgment;
+        const lines = [
+          `✅ 判断力资产调用完成: ${body?.itemId || url}`,
+          `  付款: ${body?.payment?.amount ?? '?'} ${body?.payment?.currency ?? ''} (${body?.payment?.mode ?? '?'})${body?.payment?.txHash ? ` tx=${String(body.payment.txHash).slice(0, 24)}…` : ''}`,
+        ];
+        if (j) {
+          lines.push(
+            `  裁决: ${j.verdict} (把握度 ${j.confidence})`,
+            `  理由: ${j.reasoning}`,
+          );
+          if (j.values?.length) lines.push(`  价值: ${j.values.join(' · ')}`);
+        } else {
+          lines.push(`  判断服务不可用: ${body?.judgmentError || '未知'} (已付费用方拿到资产本体, 见下)`);
+          lines.push('  资产本体:', String(body?.asset || '').slice(0, 1500));
+        }
+        return { success: true, output: lines.join('\n') };
+      } catch (e: any) {
+        return { success: false, error: `调用失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    },
+  });
 }

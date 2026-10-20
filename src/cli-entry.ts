@@ -293,6 +293,7 @@ async function handleX402Command(x402Args: string[]): Promise<void> {
     console.log('  bolloon x402 balance <address> [options]  # 查询钱包余额');
     console.log('  bolloon x402 pay <endpoint> [--with-memo] # 买方自己发 EIP-3009 授权转账 (nonce 带订单标识 BOL1)');
     console.log('  bolloon x402 pending list|show|sign       # 卖方本机签名交付 (私钥不离开本机)');
+    console.log('  bolloon x402 judgment publish|call|try|list # 判断力资产 x402 化 (付费调用)');
     console.log('');
     console.log(`${BOLD}选项:${RESET}`);
     console.log('  --private-key <0x...>  自动支付钱包私钥，也可用 X402_PRIVATE_KEY');
@@ -312,6 +313,13 @@ async function handleX402Command(x402Args: string[]): Promise<void> {
   if (sub === 'pending') {
     const { x402PendingCommand } = await import('./cli/x402-seller-command.js');
     process.exit(await x402PendingCommand(rest));
+    return;
+  }
+
+  // 2026-10-20: 判断力资产 x402 化 —— 发布 / 付费调用 / 本地试调用
+  if (sub === 'judgment') {
+    const { x402JudgmentCommand } = await import('./cli/x402-judgment-command.js');
+    process.exit(await x402JudgmentCommand(rest));
     return;
   }
 

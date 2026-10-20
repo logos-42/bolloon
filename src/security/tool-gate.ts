@@ -106,6 +106,8 @@ const TOOL_WHITELIST = new Set<string>([
   'skill_export', 'skill_import', 'skill_share',
   // 2026-09-13: 微支付信息服务 (x402 付费信息 + 验真)
   'x402_info_publish', 'x402_info_list', 'x402_info_unpublish', 'x402_info_buy', 'x402_info_verify',
+  // 2026-10-20: 判断力资产 x402 化 (发布 / 付费调用)
+  'x402_judgment_publish', 'x402_judgment_call',
 ]);
 
 export const gateWhitelist: GateResult = { gate: 'whitelist', allowed: true };

@@ -175,6 +175,105 @@ export function registerX402InfoRoutes(app: any): void {
     res.json({ enabled: directPaymentEnabled(), paymentPath: directPaymentPath(':id'), ...directHealth() });
   });
 
+  // ---- 判断力资产「调用」端点 (2026-10-20): 外部节点像连 API 一样付费调用 ----
+  //   POST /api/x402/info/:id/call   body: { question, context? }
+  //   无 X-PAYMENT → 402 (accepts 与 GET 逐字同款); 付款核验同 GET /info/:id
+  //   付款通过 → 用该判断力资产生成判断 → 200 { judgment, payment }
+  //   判断生成依赖卖方本机 LLM; LLM 不可用 → 降级返回资产本体 (付费不白付)
+  app.post('/api/x402/info/:id/call', async (req: any, res: any) => {
+    try {
+      const id = String(req.params.id);
+      const stored = await getStoredInfo(id);
+      if (!stored) return res.status(404).json({ error: '信息不存在' });
+
+      const baseUrl = `${req.protocol || 'http'}://${req.headers?.host || `127.0.0.1:${process.env.PORT || 54188}`}`;
+      const resourceUrl = `${baseUrl}/api/x402/info/${id}`;
+      const requirements = buildPaymentRequired(stored.item, resourceUrl);
+      const paymentHeader = req.headers?.['x-payment'] || req.headers?.['X-PAYMENT'];
+
+      // 未付款 → 标准 402 (与 GET 逐字同款, 防绕行)
+      if (!paymentHeader) {
+        return res.status(402)
+          .set('X-PAYMENT-REQUIRED', JSON.stringify(requirements.accepts))
+          .json({ ...requirements, error: '需要 x402 微支付' });
+      }
+
+      const pay = await checkAndSettlePayment({
+        paymentHeader: String(paymentHeader),
+        requirements,
+        expectedItemId: stored.item.id,   // 凭据必须绑定这条资源
+      });
+      if (!pay.ok) {
+        return res.status(402).json({ ...requirements, error: pay.error });
+      }
+
+      // 只服务判断力资产 (内容里带「判断力资产」标题)
+      if (!String(stored.content || '').includes('判断力资产')) {
+        return res.status(400).json({ error: '该资源不是判断力资产, 不能用 call 端点 (内容请走 GET /api/x402/info/:id)' });
+      }
+
+      const question = String(req.body?.question || '').trim();
+      if (!question) return res.status(400).json({ error: 'question 必填 (要判断的问题/场景)' });
+      const context = String(req.body?.context || '').trim() || undefined;
+
+      // 付款回执 header (与 GET 同款)
+      res.set('X-PAYMENT-RESPONSE', pay.receipt || '');
+
+      let judgment: any = null;
+      let judgmentError: string | undefined;
+      try {
+        const { judgeWithAsset } = await import('../judgeness/call-service.js');
+        const { getMinimax } = await import('../constraints/index.js');
+        const llm = getMinimax();
+        judgment = await judgeWithAsset({
+          assetText: stored.content,
+          question,
+          context,
+          llm: async (system, user) => {
+            if (!llm || typeof llm.chat !== 'function') return null;
+            const r = await llm.chat(user, system);
+            return r?.reply ? String(r.reply) : null;
+          },
+        });
+      } catch (e: any) {
+        judgmentError = `判断服务异常: ${String(e?.message || e).slice(0, 160)}`;
+      }
+
+      if (!judgment) {
+        // 诚实降级: 判断生成失败, 交付资产本体 (钱不能白付, 也不假装判断成功)
+        return res.json({
+          itemId: stored.item.id,
+          judgment: null,
+          judgmentError: judgmentError || '卖方判断服务不可用 (LLM 未就绪或输出不可解析)',
+          payment: {
+            mode: pay.mode === 'facilitator' ? 'facilitator' : pay.mode === 'direct' ? 'direct' : 'local-dev',
+            receipt: String(pay.receipt || ''),
+            txHash: pay.txHash,
+            amount: stored.item.price.amount,
+            currency: stored.item.price.currency,
+            payer: pay.payer,
+          },
+          asset: stored.content,   // 付费方拿到判断力资产本体
+        });
+      }
+
+      return res.json({
+        itemId: stored.item.id,
+        judgment,
+        payment: {
+          mode: pay.mode === 'facilitator' ? 'facilitator' : pay.mode === 'direct' ? 'direct' : 'local-dev',
+          receipt: String(pay.receipt || ''),
+          txHash: pay.txHash,
+          amount: stored.item.price.amount,
+          currency: stored.item.price.currency,
+          payer: pay.payer,
+        },
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
   // ---- 买方辅助: 代付 + 验真 ----
   app.post('/api/x402/info/buy', async (req: any, res: any) => {
     try {
