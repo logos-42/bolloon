@@ -22,7 +22,6 @@
  *   - 全部操作 atomic (write tmp + rename), 避免半截文件
  */
 import * as fs from 'fs/promises';
-import * as fsSync from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';

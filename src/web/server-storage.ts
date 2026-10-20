@@ -12,7 +12,6 @@
  */
 
 import * as fs from 'fs/promises';
-import * as fsSync from 'fs';
 import * as path from 'path';
 import { channelsPaths, assertTestWriteTarget } from '../agents/agent-identity-store.js';
 import {

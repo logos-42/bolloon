@@ -18,7 +18,6 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import * as crypto from 'crypto';
 
 export const BEAT_MS = 10_000;       // 心跳间隔
 export const STALE_MS = 30_000;      // 心跳过期阈值 (3 倍间隔)

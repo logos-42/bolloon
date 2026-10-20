@@ -14,7 +14,6 @@
  */
 // @ts-ignore — hyperswarm 没官方 .d.ts
 import Hyperswarm from 'hyperswarm';
-import crypto from 'crypto';
 import { EventEmitter } from 'events';
 // @ts-ignore — b4a 没官方 .d.ts
 import b4a from 'b4a';

@@ -22,7 +22,6 @@
 
 import * as os from 'os';
 import * as fs from 'fs';
-import * as path from 'path';
 import {
   type CliFlags, type CommandResult, type Code, type Envelope, type NextAction,
   okEnvelope, failEnvelope, notImplemented, envelopeForState,

@@ -6,7 +6,6 @@
  * 量大的会话级 jsonl 走自己路径 (lifecycle-hooks 等), 跟本 logger 无关.
  */
 import * as fs from 'fs';
-import * as path from 'path';
 import { mainLogPath, logsDir } from './paths';
 
 const MAX_BYTES = 5 * 1024 * 1024;

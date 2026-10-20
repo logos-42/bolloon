@@ -10,7 +10,6 @@
  * - critical 触发 reject; warning 触发 log + 允许
  */
 
-import * as path from 'path';
 import * as os from 'os';
 
 export type GuardSeverity = 'critical' | 'warning' | 'info';

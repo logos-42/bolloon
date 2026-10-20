@@ -10,7 +10,6 @@
  */
 
 import { spawn } from 'child_process';
-import * as fs from 'fs';
 import { checkCommand, checkWritePath } from './shell-guard.js';
 
 /**

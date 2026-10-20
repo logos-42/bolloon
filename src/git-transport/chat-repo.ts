@@ -3,7 +3,6 @@
 // 全部用 child_process.spawn('git', ...) — 不引 simple-git / nodegit.
 
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { spawn } from 'child_process';
