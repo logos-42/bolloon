@@ -186,7 +186,7 @@
       "id": "current-status.md",
       "type": "chapter",
       "label": "Bolloon 当前状态",
-      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize, organize-result-box, unreported-escape, loop-completeness-check, write-file-default-permit, cli-kubo-autostart, terminal-tool, denylist-only-guard, js-yaml-esm-fix, dep-upgrade-2026-09-08, cli-fast-start, zero-install-warnings, agent-gateway-bootstrap, mobile-gateway, qr-scan-join, net-command, shared-context, ios-appintents-deeplink, circuit-relay-v2, p2p-circuit-inbound, next-tools-2026-09-13, clarify-channel, browser-cdp, computer-use, patch-tool, setup-wizard, skill-share-ipfs, x402-paid-info, paid-info-verify, x402-direct-payment, x402-onchain-verify, cron-tick-lock, cron-dnd-quiet, mobile-tap-network, gateway-join-closed-loop, gateway-join-tool, deepseek-reasoning-content, address-broadcast-tofu, npm-0.4.23, npm-0.4.24, npm-0.5.0, mobile-self-join, delegate-real-execution, ios-sim-join-e2e, pkg-rename-hibs-bolloon, compliance-privacy-gate, adaptive-icon, store-flavor, permissions-doc, durable-run, run-store, run-state-machine, checkpoint, recovery-protocol, phase-0, acceptance-matrix, api-runs, cli-runs, durable-run-m1-hard-constraint, persistence-strict, run-lock, corrupt-fallback, degradations, update-protocol, version-info, install-identity, update-manager, update-state, update-lock, doctor, publish-gate, bare-word-commands, runtime-bootstrap, install-protocol, path-config, package-manager, doctor, open-tasks-public-projection, public-open-tasks-2026-09-23, task-open-announcement-live-2026-09-24, skill-doc-cli-parity-2026-09-24, task-announce-board-docs, task-group-channel-docs, x402-order-identity, eip-3009-bol1-nonce, x402-buyer-pay-cli, v0.5.4-tui-session-wallet, bolloon-native-macro-kernel-2026-10-02, web-render-silent-noop-2026-10-02, mobile-web-bundle-selfcontained-2026-10-02]",
+      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize, organize-result-box, unreported-escape, loop-completeness-check, write-file-default-permit, cli-kubo-autostart, terminal-tool, denylist-only-guard, js-yaml-esm-fix, dep-upgrade-2026-09-08, cli-fast-start, zero-install-warnings, agent-gateway-bootstrap, mobile-gateway, qr-scan-join, net-command, shared-context, ios-appintents-deeplink, circuit-relay-v2, p2p-circuit-inbound, next-tools-2026-09-13, clarify-channel, browser-cdp, computer-use, patch-tool, setup-wizard, skill-share-ipfs, x402-paid-info, paid-info-verify, x402-direct-payment, x402-onchain-verify, cron-tick-lock, cron-dnd-quiet, mobile-tap-network, gateway-join-closed-loop, gateway-join-tool, deepseek-reasoning-content, address-broadcast-tofu, npm-0.4.23, npm-0.4.24, npm-0.5.0, mobile-self-join, delegate-real-execution, ios-sim-join-e2e, pkg-rename-hibs-bolloon, compliance-privacy-gate, adaptive-icon, store-flavor, permissions-doc, durable-run, run-store, run-state-machine, checkpoint, recovery-protocol, phase-0, acceptance-matrix, api-runs, cli-runs, durable-run-m1-hard-constraint, persistence-strict, run-lock, corrupt-fallback, degradations, update-protocol, version-info, install-identity, update-manager, update-state, update-lock, doctor, publish-gate, bare-word-commands, runtime-bootstrap, install-protocol, path-config, package-manager, doctor, open-tasks-public-projection, public-open-tasks-2026-09-23, task-open-announcement-live-2026-09-24, skill-doc-cli-parity-2026-09-24, task-announce-board-docs, task-group-channel-docs, x402-order-identity, eip-3009-bol1-nonce, x402-buyer-pay-cli, v0.5.4-tui-session-wallet, bolloon-native-macro-kernel-2026-10-02, web-render-silent-noop-2026-10-02, mobile-web-bundle-selfcontained-2026-10-02, phone-pair-reverse-2026-10-17]",
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/current-status.md"
@@ -244,6 +244,15 @@
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/executable-resource-protocol.md"
+    },
+    {
+      "id": "experience-review.md",
+      "type": "protocol",
+      "label": "回合后复盘 → 经验沉淀库: 从「368 次触发 0 条落库」到两条根因修通 (reply 字段 + 空回复重问)",
+      "tags": "[experience, review, post-turn, pi-sdk, chat-result, reply-field, empty-reply, retry, minimax, glm, acceptance, mutation]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/experience-review.md"
     },
     {
       "id": "facilitator-paths.md",
@@ -334,6 +343,15 @@
       "stage": "draft",
       "audience": "self",
       "source_file": "docs/wiki/intent-network-vision.md"
+    },
+    {
+      "id": "judgment-system.md",
+      "type": "protocol",
+      "label": "判断力系统全景: 注入三条路 + 演化四层 + 三个缺口补齐 (D-hook 接 CLI / evolve 留痕 / 节流 key)",
+      "tags": "[judgment, injection-gate, negative-guard, evolve, detect-hook, adaptive-scan, causal-judge, monitor-gate, dhook, acceptance]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/judgment-system.md"
     },
     {
       "id": "kernel-design-principles.md",
@@ -1035,6 +1053,16 @@
     },
     {
       "from": "index.md",
+      "to": "judgment-system.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "experience-review.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
       "to": "cli-startup-panel.md",
       "type": "references"
     },
@@ -1520,16 +1548,16 @@
     }
   ],
   "stats": {
-    "node_count": 71,
-    "edge_count": 175,
+    "node_count": 73,
+    "edge_count": 177,
     "node_types": {
       "meta": 16,
-      "protocol": 19,
+      "protocol": 21,
       "chapter": 35,
       "claim": 1
     },
     "edge_types": {
-      "references": 173,
+      "references": 175,
       "supersedes": 2
     }
   }
