@@ -256,7 +256,7 @@ export class ChannelJudgmentEngine {
    * 主判断方法
    */
   async decide(context: JudgmentContext): Promise<JudgmentResult> {
-    const { conversationHistory, currentMessage } = context;
+    const { currentMessage } = context;
 
     // 添加到历史
     this.contextHistory.push(currentMessage);
@@ -281,16 +281,7 @@ export class ChannelJudgmentEngine {
    * LLM 判断（需要集成 LLM）
    */
   private async llmDecide(context: JudgmentContext): Promise<JudgmentResult> {
-    // 构建 prompt
-    const historyStr = context.conversationHistory
-      .slice(-5)
-      .map((m, i) => `[${i}]: ${m}`)
-      .join('\n');
-
-    const prompt = JUDGMENT_PROMPTS.userTemplate
-      .replace('{current_message}', context.currentMessage)
-      .replace('{history}', historyStr || '无')
-      .replace('{sender_name}', context.senderName || 'Unknown');
+    // 构建 prompt (LLM 集成待接入)
 
     // TODO: 调用 LLM
     // 这里需要集成 llmConfigStore
@@ -304,10 +295,6 @@ export class ChannelJudgmentEngine {
    * 不使用硬编码关键词，而是基于语义理解
    */
   private quickDecide(context: JudgmentContext): JudgmentResult {
-    const { conversationHistory, currentMessage } = context;
-    const lower = currentMessage.toLowerCase();
-    const fullContext = conversationHistory.join(' ').toLowerCase();
-
     // ========================================
     // Prompt 注入式判断
     // ========================================
@@ -338,7 +325,7 @@ export class ChannelJudgmentEngine {
       gate: gateDecision.gate,
       skills,
       reason: gateDecision.reason,
-      result: this.generateResult(gateDecision.gate, skills),
+      result: this.generateResult(gateDecision.gate),
       confidence: gateDecision.confidence,
       approach: gateDecision.approach
     };
@@ -358,9 +345,6 @@ export class ChannelJudgmentEngine {
 
     // 上下文敏感性检测
     const hasContextHistory = conversationHistory.length > 0;
-    const lastMessage = hasContextHistory
-      ? conversationHistory[conversationHistory.length - 1].toLowerCase()
-      : '';
 
     // ========================================
     // Prompt 注入的判断逻辑
@@ -461,9 +445,8 @@ export class ChannelJudgmentEngine {
     confidence: number;
     approach: JudgmentResult['approach'];
   } {
-    const { conversationHistory, currentMessage } = context;
+    const { currentMessage } = context;
     const lower = currentMessage.toLowerCase();
-    const fullContext = conversationHistory.join(' ').toLowerCase();
 
     // Gate 优先级判断（从高到低）
 
@@ -540,7 +523,7 @@ export class ChannelJudgmentEngine {
   /**
    * 生成 Harness 结果
    */
-  private generateResult(gate: Gate, skills: string[]): string {
+  private generateResult(gate: Gate): string {
     const results: Record<Gate, string> = {
       0: '',
       1: '建议采用分层架构：表现层、业务层、数据层分离',

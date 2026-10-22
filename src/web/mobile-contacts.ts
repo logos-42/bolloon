@@ -15,7 +15,7 @@
 
 import {
   canonicalGrantPayload, canonicalRevocationPayload, presetForChoice,
-  type SignableGrant, type SignableRevocation, type GrantLevel, type GrantChannels,
+  type SignableGrant, type SignableRevocation, type GrantLevel,
 } from '../agents/contacts/grant-payload.js';
 
 export interface StorageLike {

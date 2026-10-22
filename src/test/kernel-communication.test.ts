@@ -82,7 +82,8 @@ describe('K8 第二步门: 各通道自带状态台账 (按符号核, 不按行�
     expect(scanChannelStateLedger(STATE, { readFile })).toEqual([]);
     // 口径: 35 个是"文件里出现的状态符号", 其中 **31 个**才是 K8 要收口的对象
     // 2026-10-02 补登 (漏了两个真状态: channelRunState / didFixTimer) ⇒ 35/31 → 37/33
-    expect(countChannelStateSymbols(STATE)).toEqual({ total: 37, target: 33 });
+    // 2026-10-22 死代码清理删 task-runner `redelivered` ⇒ 37/33 → 36/32
+    expect(countChannelStateSymbols(STATE)).toEqual({ total: 36, target: 32 });
     expect(countChannelStateSymbols(STATE).total).toBe(K8_PROGRESS.perChannelStateSymbols);
     expect(countChannelStateSymbols(STATE).target).toBe(K8_PROGRESS.k8TargetSymbols);
     expect(K8_PER_CHANNEL_STATE).toHaveLength(10);

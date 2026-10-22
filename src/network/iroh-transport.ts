@@ -610,7 +610,7 @@ export class IrohTransport {
     }
 
     // 清理 pending requests
-    for (const [id, pending] of this.pendingRequests) {
+    for (const [, pending] of this.pendingRequests) {
       clearTimeout(pending.timeout);
       pending.reject(new Error('Shutting down'));
     }

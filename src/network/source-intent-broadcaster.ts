@@ -29,7 +29,6 @@ import {
   ReleaseMsg,
   CommitIntentMsg,
   LineRange,
-  rangesOverlap,
 } from './source-intent.js';
 
 export interface BroadcasterOptions {

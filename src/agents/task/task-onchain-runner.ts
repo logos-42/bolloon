@@ -222,7 +222,6 @@ export async function runTaskOnchain(opts: RunTaskOnchainOptions): Promise<RunTa
   const txHashes: { create?: string; proof?: string; release?: string } = {};
   const statuses: string[] = [];
   let execResult: { ok: boolean; reason?: string } | undefined;
-  let resultDigest: string | undefined;
   let deliveredContent = '';
   let fidelity: { ok: boolean; issues?: string[] } = { ok: false };
   let outChk: { ok: boolean; issues?: string[] } = { ok: false };
@@ -271,7 +270,6 @@ export async function runTaskOnchain(opts: RunTaskOnchainOptions): Promise<RunTa
     txHashes.create = loop.txHashes.create; txHashes.proof = loop.txHashes.proof; txHashes.release = loop.txHashes.release;
     loopVerified = loop.verified; loopReason = loop.verifiedReason;
     execResult = loop.execution ? { ok: loop.execution.ok, reason: loop.execution.reason } : undefined;
-    resultDigest = loop.execution?.resultDigest;
     for (const s of loop.steps) statuses.push(`${s.method}:${s.chainStatus}`);
     mark('acquire', loop.verified ? '链上闭环成立 (create/proof/release)' : `链上闭环未成立: ${loopReason.slice(0, 60)}`);
   } else {

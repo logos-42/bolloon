@@ -476,7 +476,6 @@ export function validateBaseUrlShape(raw: string): { ok: true; url: string } | {
   return { ok: true, url };
 }
 
-const CONFIG_HASH_FIELDS = ['provider', 'model', 'baseUrl', 'protocol'] as const;
 
 /** 稳定摘要: 同样的 provider/model/baseUrl/protocol 一定得到同样的 hash */
 export function configHashOf(sel: { provider: string; model: string; baseUrl: string; protocol?: string }): string {

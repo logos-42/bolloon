@@ -127,11 +127,6 @@ function humanFail(head: string, env: { code: Code; message: string; next_action
   return `${title(head)}\n  ✗ ${env.message}${extra}\n  code: ${env.code} · 下一步: ${env.next_action ?? '无需额外动作'}`;
 }
 
-function taskKeyArg(flags: CliFlags): string | null {
-  const v = flags.positionals[2] || opt(flags, '--task-key');
-  return v && TASK_KEY_RE.test(String(v).trim()) ? String(v).trim().toLowerCase() : null;
-}
-
 /** 链配置 (缺 → CHAIN_NOT_CONFIGURED, 列出缺哪些; 绝不猜地址) */
 async function loadCfg(opts: { requireToken?: boolean } = {}): Promise<{ ok: true; cfg: any } | { ok: false; envelope: Envelope }> {
   const CFG: any = await import('../../agents/chain/chain-config.js');

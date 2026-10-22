@@ -55,7 +55,6 @@ import {
   takeStartupPanelNotes, clearBufferedNotices,
 } from './cli/startup-notice.js';
 import { clipboardWrite } from './cli/clipboard.js';
-import * as dbgFs from 'fs';
 
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
 
@@ -193,7 +192,6 @@ const _BOLLOON_VERSION = ((): string => {
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
-const DIM = '\x1b[2m';
 
 // Bolloon Web UI 配色 truecolor ANSI — 与 loading-tui.ts 一致
 function fg(r: number, g: number, b: number): string { return `\x1b[38;2;${r};${g};${b}m`; }
@@ -212,13 +210,6 @@ const MAGENTA = C_ERROR;
 const WHITE  = C_TEXT;
 const GRAY   = C_DIM;
 const BLUE   = C_DIM;
-const BG_WHITE = '\x1b[47m';
-const BG_BLUE = '\x1b[44m';
-const BLACK = '\x1b[30m';
-const MOVE_UP = '\x1b[A';
-const CLEAR_LINE = '\x1b[2K';
-const HIDE_CURSOR = '\x1b[?25l';
-const SHOW_CURSOR = '\x1b[?25h';
 
 /**
  * 统一出口 (2026-10-01, 用户: 「还是UI有污染」)。
@@ -528,7 +519,7 @@ async function bootstrapP2P(
     const shortId = conn.publicKey.substring(0, 8);
     s.info(`🔌 连接: ${shortId}...`);
     const all: Map<string, P2PConnection> = (comm as any).connections as Map<string, P2PConnection>;
-    for (const [k, v] of all) {
+    for (const [, v] of all) {
       if (v.publicKey === conn.publicKey) {
         rawStreams.set(v['id'], (comm as any)['__pendingStream']);
         break;
@@ -961,10 +952,6 @@ function safeParse<T>(s: string): T | null {
   try { return JSON.parse(s) as T; } catch { return null; }
 }
 
-function rpcErr(code: string, msg: string): string {
-  return `ERR|${JSON.stringify({ code, msg })}`;
-}
-
 // ---------------------------------------------------------------------------
 // CLI with persistent bottom prompt
 // 2026-07-28: 改用 readline.createInterface + replReadline 循环
@@ -1198,12 +1185,6 @@ function getStatus(): string {
   return `${__left}${__live}${__noteStr}`;
 }
 
-function statusBarLine(): string {
-  const dur = cliStartTime ? fmtDuration(Date.now() - cliStartTime) : '0s';
-  const usage = getCliCtxUsage();
-  return `${C_ACCENT}${statusModelName()}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${C_ACCENT}${dur}${RESET} ${C_DIM}│${RESET} ${buildContextBar(usage)}`;
-}
-
 /**
  * 启动会话面板 — 按类别展示启动加载的 skills (真实类别 = 目录名去掉 frontmatter.name 后缀),
  * 每类一行 (前 6 名 + '+N more'), 结尾 totals; skills/tools 并行 (各 2.5s 预算), 失败静默.
@@ -1229,7 +1210,6 @@ function buildBootBox(face: string[], banner: string[], rest: string[]): string 
 
   let useFace = face;
   const faceW0 = face.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
-  const restMax0 = rest.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
   /**
    * 2026-09-30 (leo: 「我说的 logo 是面板里面的小吉祥物, 它看不到了」):
    *   原来的判据是「吉祥物 + 最宽内容行 > 内宽 ⇒ **把吉祥物整块丢掉**」——
@@ -1756,7 +1736,6 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
   // run-end 经验整理: 收集本轮连续成功的工具 (≥2 个自动写候选, 颜文字加载)
   const runEndOkSteps: Array<{ status: string; name: string; output?: string }> = [];
   // each iteration
-  let lastToolEvent: { tool: string; args: any } | null = null;
 
   // ===== 2026-09-13: clarify — 有等待回答的问题时, 这一行输入就是回答 =====
   //   (斜杠命令照旧可用; 想显式回答用 /answer <文本>)
@@ -2026,7 +2005,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
         ch.did = idt.did;
         ch.publicKey = idt.publicKey;
       } catch { /* DID 生成失败不阻塞创建 */ }
-      const channels = await updateChannels((chs) => [...chs, ch]);
+      await updateChannels((chs) => [...chs, ch]);
       // 2026-08-12 (TaskFix): CLI 创建的 agent 同步写 agents.json + 关联 channelId —
       //   与 server 创建 channel 逻辑对齐. 否则 CLI 创建的 agent 不在 agents.json,
       //   重启后 server 的 healMissingChannels 只能从 agents.json 恢复 → 该 agent 永远消失.
@@ -2788,7 +2767,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       const { getSupervisor } = await import('./agents/execution-supervisor.js');
       const { wakeReport, listRunnableGoals, formatGoalLine } = await import('./agents/goal-store.js');
       const { USER_VISIBLE_STATE_LABELS } = await import('./agents/goal-flywheel/types.js');
-      const { runnable, skipped } = await listRunnableGoals({ now: Date.now() });
+      const { runnable } = await listRunnableGoals({ now: Date.now() });
       const st = getSupervisor().status();
       appendLine(`${C_DIM}supervisor: owner=${st.owner} running=${st.running ? 'yes' : 'no'} tick=${st.tickIntervalMs}ms lease=${st.leaseTtlMs}ms dryRun=${st.dryRun ? 'yes' : 'no'} ticks=${st.ticks}${RESET}`);
       // 2026-09-16 (2-C.2): 宿主状态里的最近一次"执行器解析"阶段报告 —— 回答"这个 Goal 为什么没被执行、卡在哪一阶段"
@@ -4056,7 +4035,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
   // /email — 邮件配置管理; /email <host:port:user:from> 设置 / /email clear 清除 (2026-08-08)
   if (cmd === '/email') {
     try {
-      const { readFile, writeFile, mkdir } = await import('fs/promises');
+      const { readFile } = await import('fs/promises');
       const { join } = await import('path');
       const p = join(process.env.HOME || '/tmp', '.bolloon', 'smtp.json');
       let cfg: any = null;
@@ -4590,7 +4569,6 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     inkSetThinking(true);
 
     const a = await getAgent();
-    const boxW = Math.min(termWidth() - 2, 76);
     // 工具调用显示由 tui-shell 的 onStream handler 处理
 
     cliTurnStartedAt = Date.now(); cliTurnReplyBytes = 0; cliTurnToolCount = 0;
@@ -4995,25 +4973,6 @@ async function runToolCommand(
     peers: comm?.getConnections().length || 0
   };
 
-  const toolLabels: Record<string, string> = {
-    'read': '读取文档',
-    'summarize': '总结文档',
-    'improve': '改进文档',
-    'prompt': 'AI 对话',
-    'agents': '列出 Agent',
-    'register-agent': '注册 Agent',
-    'delegate': '委派任务',
-    'context': '全局上下文',
-    'global-agents': 'Agent 注册表',
-    'add-action': '添加行动',
-    'peers': '列出节点',
-    'broadcast': '广播消息',
-    'identity': '显示身份',
-    'logs': '操作日志',
-    'tools': '可用工具'
-  };
-
-  const label = toolLabels[tool] || tool;
   const thinking = s.Thinking();
 
   try {
@@ -6594,9 +6553,6 @@ async function main() {
   const originalInfo = console.info;
   const originalStdoutWrite = process.stdout.write.bind(process.stdout);
 
-  const isSdkLog = (msg: string): boolean => {
-    return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(msg);
-  };
 
   const isCLIInteractive = mode === 'cli' && !isNonInteractive;
   if (isCLIInteractive) {

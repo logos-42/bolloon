@@ -23,7 +23,6 @@ export class IrohIntegration {
   private irohNodeId: string | null = null;
   private registration: IdentityRegistration | null = null;
   private messageHandlers: Map<string, (msg: IrohMessage, from: string) => void> = new Map();
-  private discoveredPeers: Map<string, IrohDiscoveryResult> = new Map();
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private connectedPeers: Set<string> = new Set();
 

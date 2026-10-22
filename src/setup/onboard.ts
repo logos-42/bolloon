@@ -546,7 +546,6 @@ export async function runOnboard(opts: OnboardOptions): Promise<OnboardResult> {
 export class ScriptedIO implements OnboardIO {
   readonly log: string[] = [];
   private answers: string[];
-  private stepAnswers: Record<string, string> = {};
   constructor(answers: (string | { select: string })[] = []) {
     this.answers = answers.map((a) => (typeof a === 'string' ? a : a.select));
   }

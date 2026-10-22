@@ -140,7 +140,6 @@ export async function updateSkill(name: string, opts: UpdateSkillOptions): Promi
     // 重建 frontmatter
     const { parseSkillFile } = await import('./skill-loader.js');
     const meta = await parseSkillFile(file);
-    const fm = meta?.frontmatter || {};
     const fmLines: string[] = [];
     fmLines.push(`name: ${safeName}`);
     fmLines.push(`description: ${String(opts.description ?? meta?.description ?? '').replace(/\n/g, ' ').slice(0, 200)}`);

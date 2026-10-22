@@ -7,7 +7,6 @@
 
 import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
-import { createInterface } from 'readline';
 
 // ==================== 类型 ====================
 
@@ -183,18 +182,6 @@ function sendRequest(inst: LspServerInstance, method: string, params: unknown): 
     const req: LspRequest = { jsonrpc: '2.0', id, method, params };
     const body = JSON.stringify(req);
     const header = `Content-Length: ${Buffer.byteLength(body, 'utf-8')}\r\n\r\n`;
-
-    const rl = createInterface({ input: inst.process.stdout! });
-    const onLine = (line: string) => {
-      try {
-        const resp: LspResponse = JSON.parse(line);
-        if (resp.id === id) {
-          rl.close();
-          if (resp.error) reject(new Error(resp.error.message));
-          else resolve(resp.result);
-        }
-      } catch { /* skip non-JSON lines (content-length headers) */ }
-    };
 
     // LSP 响应是 header + body, 先读 Content-Length 头再读 body
     let buffer = '';

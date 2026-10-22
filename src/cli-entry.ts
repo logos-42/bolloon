@@ -42,7 +42,6 @@ const _require = createRequire(import.meta.url);
 const TASK_SUBCOMMANDS = new Set(['send', 'list', 'status', 'cancel', 'retry', 'result', 'inbox', 'accept', 'reject', 'run', 'complete', 'publish', 'board', 'claim', 'announce', 'trail', 'post', 'group']);
 
 
-const isWindows = process.platform === 'win32';
 
 // ANSI 颜色 — Bolloon Web UI 配色 truecolor
 function _fg(r: number, g: number, b: number): string { return `\x1b[38;2;${r};${g};${b}m`; }
@@ -856,25 +855,6 @@ async function handleEngineCommand(engineArgs: string[]): Promise<void> {
 
   console.error(`未知引擎子命令: ${sub}`);
   process.exit(1);
-}
-
-// 执行 Node.js 脚本
-async function runNodeScript(scriptPath: string, additionalArgs: string[]) {
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, [scriptPath, ...additionalArgs], {
-      stdio: 'inherit',
-      env: { ...process.env }
-    });
-
-    child.on('error', reject);
-    child.on('exit', (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`进程退出，代码: ${code}`));
-      }
-    });
-  });
 }
 
 // 启动 Electron

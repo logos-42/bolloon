@@ -100,16 +100,6 @@ export function layoutBudget(opts: { rows: number; cols: number; popupRows?: num
   };
 }
 
-// 2026-09-08: React.memo — msgs 引用不变时跳过重渲染 (配合虚拟化 slice, status tick 不再整表重绘)
-const Messages: React.FC<{ msgs: string[] }> = React.memo(({ msgs }) => (
-  <Box flexDirection="column" flexGrow={1} justifyContent="flex-start">
-    {msgs.map((m, i) => {
-      const clean = m.replace(/\x1b\[[0-9;]*m/g, '');
-      return clean.trim() ? <Text key={i}>{clean ? m : ''}</Text> : null;
-    })}
-  </Box>
-));
-
 // ─── 组件: 弹出选择窗 ────────────────────────────────────────────────────────
 
 interface MentionPopupProps {

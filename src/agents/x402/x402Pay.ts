@@ -116,7 +116,7 @@ export async function x402Pay(params: X402PayParams): Promise<X402PayResult> {
   }
 
   try {
-    const { createWalletClient, http, parseEther, formatEther } = await import('viem');
+    const { createWalletClient, http, parseEther } = await import('viem');
     const { privateKeyToAccount } = await import('viem/accounts');
     const { base, baseSepolia, mainnet, sepolia } = await import('viem/chains');
 

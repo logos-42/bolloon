@@ -6,7 +6,7 @@
  */
 
 import { llmConfigStore, type ModelProvider } from './config-store.js';
-import { PiAIModel, type ChatMessage } from './pi-ai.js';
+import { PiAIModel } from './pi-ai.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { fileURLToPath } from 'url';

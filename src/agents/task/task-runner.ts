@@ -472,7 +472,6 @@ export async function runTask(opts: RunTaskOptions): Promise<TaskRunResult> {
 
   // 内容没拿到 (复用的交易不带内容, 或交付阶段被打断) → 补交付, 不重付
   let deliveredContent = String(trade?.envelope?.content ?? '');
-  let redelivered = false;
   if (!deliveredContent && (trade?.record as any)?.paymentReceipt) {
     const seller2 = await startLocalSeller();
     let ref: { ok: boolean; content?: string; error?: string };
@@ -483,7 +482,6 @@ export async function runTask(opts: RunTaskOptions): Promise<TaskRunResult> {
     }
     if (ref.ok) {
       deliveredContent = String(ref.content || '');
-      redelivered = true;
       trade = { ...trade, ok: true };
       mark('acquire', '已付款但没交付 → 用同一支付凭据补交付 (没有再付款)');
       await recordStep(run.runId, { tool: 'x402_redeliver', ok: true, summary: '补交付成功 (同一凭据, 无第二笔付款)' });

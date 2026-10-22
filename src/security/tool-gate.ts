@@ -9,7 +9,6 @@
  * 任何 gate failed = 拒绝 tool 调用 + 返回 reason
  */
 
-import * as os from 'os';
 import { auditToolOutput } from './builtin-guards.js';
 
 export type GateId = 'whitelist' | 'schema' | 'channel' | 'rate' | 'inject' | 'output' | 'blacklist';

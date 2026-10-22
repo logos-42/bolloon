@@ -194,16 +194,6 @@ async function resolveTokenDomain(
 }
 
 /** 极简 ABI 解码 string (只处理 offset+len+data) */
-function decodeAbiString(hex: string): string | null {
-  const h = String(hex || '').replace(/^0x/, '');
-  if (h.length < 128) return null;
-  try {
-    const off = Number(BigInt(`0x${h.slice(0, 64)}`)) * 2;
-    const len = Number(BigInt(`0x${h.slice(off, off + 64)}`));
-    return Buffer.from(h.slice(off + 64, off + 64 + len * 2), 'hex').toString('utf-8');
-  } catch { return null; }
-}
-
 /**
  * `bolloon x402 pay <endpoint> [--with-memo]` —— 返回退出码。
  *   0 = 卖方端点 202/200 且 (带 memo 时) 订单自证成功; 1 = 失败 (原因写清); 2 = 用法/参数错

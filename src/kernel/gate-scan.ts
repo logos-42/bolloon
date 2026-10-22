@@ -585,7 +585,6 @@ export function scanRunIdSeed(
   //   两种形状**相加仍必须恰好 1 处**, 且仍只在 `seedRunContext` 体内 (循环内新增读取由上面的"总访问数 == 冻结值"覆盖)。
   const seedInHelper = (helper.match(/composeRunSeed\(\s*this\.actor!\.state\.activeRun\b/g) || []).length
     + (helper.match(/runId: this\.actor!\.state\.activeRun\b/g) || []).length;
-  const seedAnywhere = (code.match(/runId: this\.currentRunId\b/g) || []).length;
   if (seedInHelper !== opts.seedReads) {
     out.push({ rule: 'runid-seed-count', file: 'agents/pi-sdk.ts', line: 1, what: `seedRunContext 体内播种读取 ${seedInHelper} 处 ≠ 冻结 ${opts.seedReads}` });
   }

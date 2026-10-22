@@ -372,7 +372,6 @@ export class HarnessEngTestSkill extends BaseSkill {
   async execute(params: Record<string, unknown>): Promise<string> {
     const action = params.action as string;
     const plan = params.plan as string;
-    const frozen = params.frozen as boolean;
 
     this.log('Executing test engineering');
 

@@ -332,7 +332,7 @@ export async function chatPull(opts: { repoDir: string; since?: string; roleOver
   if (fetch.code !== 0) {
     return { ok: false, newCommits: 0, newMessages: [], reason: `git fetch failed: ${fetch.stderr.trim().split('\n').slice(-1)[0]}` };
   }
-  const rebase = await runGit(['pull', '--rebase', '--autostash'], { cwd: repoDir });
+  await runGit(['pull', '--rebase', '--autostash'], { cwd: repoDir });
 
   // 收集新增消息: 对比 rev-list HEAD~ <self-cursor-sha>..HEAD 的 .comm/* 变更
   const cursor = readJsonSafe<{ lastHead?: string }>(paths.cursorFile, {});

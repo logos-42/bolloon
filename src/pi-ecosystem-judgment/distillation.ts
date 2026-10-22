@@ -9,7 +9,6 @@
  *            Confidence + Evidence
  */
 
-import * as path from 'path';
 import {
   Judgment,
   JudgmentType,
@@ -17,7 +16,6 @@ import {
   DistillationRequest,
   createJudgment,
   updateJudgmentConfidence,
-  getAllJudgments,
 } from './index.js';
 import { getModel, type PiAIModel } from '../llm/pi-ai.js';
 
@@ -205,22 +203,6 @@ async function llmDistill(
   const historyText = conversationHistory
     ? conversationHistory.slice(-5).join('\n')
     : 'No history';
-
-  const prompt = `从以下人类输入中提取判断力原理。
-
-输入类型: ${trigger}
-输入内容: ${rawInput}
-上下文: ${context}
-对话历史:
-${historyText}
-
-请提取：
-1. type: rule(明确规则) | preference(偏好) | trajectory(行为轨迹) | reward(奖励信号)
-2. content: 凝练后的原理（简洁，1-2句话）
-3. confidence: 0.0-1.0 的置信度
-4. evidence: 支持证据（如有）
-
-直接输出JSON格式，不需要解释。`;
 
   try {
     const response = await llmModel.chat(

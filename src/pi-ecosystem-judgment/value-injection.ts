@@ -198,9 +198,6 @@ export async function getSituationallyRelevantJudgments(
 
   const { maxJudgments = 10, minScore = 0.3 } = options;
 
-  const historyText = history.length > 0
-    ? `对话历史：\n${history.slice(-3).map((h, i) => `[${i + 1}] ${h}`).join('\n')}`
-    : '无对话历史';
 
   const batchSize = 5;
   const results: SituationMatch[] = [];
@@ -379,7 +376,7 @@ function generateSituationBasedValues(matches: SituationMatch[], mode: ValueInje
     .sort((a, b) => b[1].weight - a[1].weight);
 
   for (let i = 0; i < Math.min(sorted.length, 5); i++) {
-    const [value, { weight, count }] = sorted[i];
+    const [value, { weight }] = sorted[i];
     const stars = '★'.repeat(Math.ceil(weight * 5));
     lines.push(`${i + 1}. **${value}** ${stars} (${(weight * 100).toFixed(0)}% 相关度)`);
   }

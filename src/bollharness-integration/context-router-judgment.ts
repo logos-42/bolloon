@@ -16,9 +16,6 @@
 
 import {
   match as contextMatch,
-  getFragments,
-  loadFragment,
-  type ContextRouter,
 } from './context-router.js';
 import {
   getCombinedJudgments,

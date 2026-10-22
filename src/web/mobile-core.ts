@@ -698,7 +698,6 @@ export const core = {
 
   peers: {
     async list(): Promise<any[]> {
-      const local = await (await import('./mobile-data.js')).getChannels();
       try {
         const { getMobileP2PState } = await import('./mobile-p2p.js');
         const st = getMobileP2PState();

@@ -105,8 +105,6 @@ export class AgentRegistry {
   private ownEndpoint: AgentEndpoint | null = null;
   private keyPair: KeyPair | null = null;
   private keyPairPath: string;
-  private relayMode: boolean = false;
-  private pendingRelayMessages: Map<string, { data: Uint8Array; hops: number }[]> = new Map();
 
   constructor() {
     this.registryPath = AGENT_REGISTRY_PATH;
@@ -657,8 +655,6 @@ export class AgentMessaging {
       console.log(`[Messaging] Unknown agent: ${did}`);
       return false;
     }
-
-    const message = `${type}:${payload}`;
 
     try {
       await p2pNetwork.sendMessage(agent.peerId, type, payload);

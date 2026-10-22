@@ -126,7 +126,7 @@ export const K8_PER_CHANNEL_STATE: readonly K8PerChannelState[] = [
     symbols: ['outboxPath', 'processPendingInbox'].map(T),
     why: 'P2P 聊天工具侧出站 + 待办处理' },
   { file: 'src/agents/task/task-runner.ts', kind: 'resume',
-    symbols: ['ResumeResult', 'resumeTask', 'redelivered', 'refetchDeliveredContent'].map(T),
+    symbols: ['ResumeResult', 'resumeTask', 'refetchDeliveredContent'].map(T),
     why: '任务运行器自带恢复 (含 x402 内容重取/重投递语义)' },
 ];
 
@@ -159,8 +159,9 @@ export const K8_PROGRESS: K8Progress = {
   // ⚠️ 2026-10-02 **补登**: 上一版漏了两个真状态符号 (`channelRunState` / `didFixTimer`) ⇒ 35 → 37。
   //    这是**纠正漏登**不是范围扩张 (棘轮拦的是"通道自己状态变多", 不是"把已存在的登记上来")。
   //    同一次提交里 `didFixRunning` (通道自己的全局单飞) 被**真删掉** —— 收口本身是减项, 只是它先前没被登记。
-  perChannelStateSymbols: 37,   // 10 文件 / 37 个状态符号 (含 4 个范围外)
-  k8TargetSymbols: 33,          // 其中 **33** 个属 K8 收口对象 (棘轮: 只许减)
+  // 2026-10-22 **同步 -1**: 死代码清理删 task-runner `redelivered` (T, k8-target) ⇒ 37/33 → 36/32。
+  perChannelStateSymbols: 36,   // 10 文件 / 36 个状态符号 (含 4 个范围外)
+  k8TargetSymbols: 32,          // 其中 **32** 个属 K8 收口对象 (棘轮: 只许减)
   runStateSites: 20,            // 下一大目标的迁移工作面 (棘轮: 只许减)
 };
 

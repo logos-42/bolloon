@@ -27,7 +27,7 @@ import { parseSkillFile as parseSkillFileLoose } from './skill-loader.js';
 import { parseSkillFile, SkillMeta, defaultSkillPaths } from './skill-loader.js';
 import { getUserSkillsDir } from './skill-writer.js';
 import {
-  collectSkillBundle, parseSkillBundle, installSkillBundle,
+  collectSkillBundle,
   type SkillBundle,
 } from './skill-share.js';
 
@@ -473,25 +473,6 @@ export class SkillsManager {
     if (tx.ok) await this.onRegistryChanged({ home: opts.home ?? this.home, action: 'install', name: tx.name }).catch(() => null);
     return { ok: tx.ok, name: tx.name, error: tx.error, skill: tx.skill };
   }
-
-  /** @deprecated 旧的"直接写正式目录"实现 (保留对照, 不再被 import/install 调用) */
-  private async installLegacy(bundleJson: string, opts: { home?: string; cwd?: string; force?: boolean; source?: SkillSource; sourceRef?: string } = {}): Promise<{ ok: boolean; name?: string; error?: string; skill?: SkillRecord }> {
-    const parsed = parseSkillBundle(bundleJson);
-    if (!parsed.ok || !parsed.bundle) return { ok: false, error: parsed.error || '包格式非法' };
-    const inst = await installSkillBundle(parsed.bundle, { home: opts.home ?? this.home, cwd: opts.cwd ?? this.cwd, force: opts.force });
-    if (!inst.ok) return { ok: false, error: inst.error };
-    const h = opts.home ?? this.home;
-    this.cache = null;
-    const after = await this.inspect(parsed.bundle.name, { home: h });
-    if (after) {
-      await this.patchRegistry(parsed.bundle.name, {
-        status: 'installed', source: opts.source || 'imported', sourceRef: opts.sourceRef || 'local-bundle',
-        trust: 'unverified', contentHash: after.contentHash, version: after.version,
-      }, h);
-    }
-    return { ok: true, name: parsed.bundle.name, skill: (await this.inspect(parsed.bundle.name, { home: h })) || undefined };
-  }
-
 
   // ── 事务型导入 (2-G.3, 2026-09-16) ───────────────────────────────────────
   /**

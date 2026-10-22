@@ -176,7 +176,6 @@ export function registerMobileTaskRoutes(app: Express, opts: MobileTaskRouteOpts
       const auth = await authorize(req, res, kind);
       if (!auth.ok) return;
       const request = auth.req;
-      const ownerDid = String((req?.body?.action?.ownerDid || '') || '');
 
       if (kind === 'group_create' || kind === 'group_join' || kind === 'group_leave') {
         const { createGroup, joinGroup, leaveGroup } = await import('../agents/gateway-group.js');

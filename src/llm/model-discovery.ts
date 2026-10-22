@@ -121,7 +121,6 @@ import {
   snippetOf,
   resolveChainBaseUrl,
   DEFAULT_PROBE_TIMEOUT_MS,
-  PROBE_FAILURE_ZH,
   type ProbeFailureClass,
   type TimeoutFlag,
 } from './connection-probe.js';

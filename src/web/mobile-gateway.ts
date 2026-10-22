@@ -36,14 +36,12 @@ export function setDesktopBaseUrl(url: string): void {
 }
 
 function defaultStorage(): { get(): MobileMember[]; set(m: MobileMember[]): void } {
-  let mem: MobileMember[] = [];
   return {
     get: () => {
       try { const s = typeof localStorage !== 'undefined' ? localStorage.getItem(MEMBERS_KEY) : null; return s ? (JSON.parse(s) as MobileMember[]) : []; }
       catch { return []; }
     },
     set: (m) => {
-      mem = m;
       try { if (typeof localStorage !== 'undefined') localStorage.setItem(MEMBERS_KEY, JSON.stringify(m)); } catch { /* 忽略 */ }
     },
   };

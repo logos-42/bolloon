@@ -1,5 +1,5 @@
-import type { WorkflowStep, StepResult, Workflow } from './workflow-engine.js';
-import type { ActionSummary, AgentInfo, CooperationTask, CooperationType } from '../social/global-shared-context.js';
+import type { WorkflowStep, Workflow } from './workflow-engine.js';
+import type { AgentInfo, CooperationTask, CooperationType } from '../social/global-shared-context.js';
 import type { PivotLoopConfig, LoopResult } from './workflow-pivot-loop.js';
 
 export interface AgentSessionConfig {

@@ -538,7 +538,7 @@ export async function runLocalAgent(goal: string): Promise<string> {
 // 能力范围: 手机 WebView 能做的 (身份/钱包/入网/P2P/信息查询), 不假装能做 fs/shell。
 // 2026-10-07: persona 注入 — 性格/价值观/兴趣/说话方式来自 mobile-persona (设置 → 性格)。
 import { loadPersona, buildPersonaPrompt } from './mobile-persona.js';
-import { MobileMemory, MobileCache, quickHash, type MobileMemoryKind, type MobileRelationKind } from './mobile-memory.js';
+import { MobileMemory, MobileCache, quickHash } from './mobile-memory.js';
 
 // ── 生命周期 / task / process 记录 ─────────────────────────────────────────
 export type MobileLifecycle = 'idle' | 'running' | 'paused' | 'done' | 'cancelled' | 'error';

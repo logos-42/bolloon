@@ -128,9 +128,8 @@ export function registerJudgmentsRoutes(app: Express): void {
   // 蒸馏 B 触发 (人类点按钮) — 同步执行演化对齐
   app.post('/api/judgments/distill-from-conversation', async (req, res) => {
     try {
-      const { channelId, messageId, recentTurns } = req.body as {
+      const { channelId, recentTurns } = req.body as {
         channelId?: string;
-        messageId?: string;
         recentTurns?: number;
       };
       if (!channelId) {

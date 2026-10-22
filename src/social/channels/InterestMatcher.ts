@@ -120,7 +120,6 @@ export class InterestMatcher {
   ): Array<{ channel: SocialChannel | ChannelPresence; score: number }> {
     const capabilities = persona?.capabilities || [];
     const interests = persona?.interests || [];
-    const topic = persona?.interests?.join(', ') || '';
 
     const matches: Array<{ channel: SocialChannel | ChannelPresence; score: number }> = [];
 

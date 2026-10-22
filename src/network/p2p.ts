@@ -200,10 +200,8 @@ export class P2PNetwork {
   /** 2026-09-11: 中继服务是否真的起来 (identify 在广播 hop 协议) */
   private relayServerEnabled = false;
   private relayMaxReservations = RELAY_MAX_RESERVATIONS;
-  private requestResponseManager: RequestResponseManager = new RequestResponseManager();
   private pendingResponseHandlers: Map<string, (response: string, from: string) => void> = new Map();
   private pendingRequests: Map<string, PendingRequestInfo> = new Map();
-  private requestTimeoutMs: number = 30000;
 
   // 新增: 消息存储层
   private messageStore: any = null;
@@ -1042,23 +1040,6 @@ export class P2PNetwork {
     } catch (e) {
       console.warn(`[P2P] Failed to send response to ${peerId}:`, e);
       throw e;
-    }
-  }
-
-  /**
-   * Handle incoming request messages and route to appropriate handlers
-   */
-  private handleRequest(type: string, payload: string, requestId: string, fromPeerId: string, did?: string): void {
-    const handler = this.messageHandlers.get(type);
-    if (handler) {
-      // Forward raw payload; callers register with onMessage() and adapt as needed.
-      handler(new TextEncoder().encode(payload), fromPeerId, did);
-    }
-
-    // Check if there's a response handler registered
-    const responseHandler = this.pendingResponseHandlers.get(type);
-    if (responseHandler) {
-      responseHandler(payload, fromPeerId);
     }
   }
 

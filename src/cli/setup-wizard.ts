@@ -14,7 +14,7 @@
 
 import * as readline from 'readline';
 import {
-  evaluateSetup, readConfigFacts, resolveBolloonHome,
+  evaluateSetup, resolveBolloonHome,
 } from '../setup/setup-store.js';
 import { runOnboard, type OnboardIO, type OnboardMode } from '../setup/onboard.js';
 // 2026-09-27: 启动期"续跑前言"闸门 (默认不上屏 → 面板一行 + 显式查询命令; verbose 逐字回流)
@@ -331,7 +331,6 @@ function onboardIO(io: WizardIO): OnboardIO {
       return String(opts?.defaultValue ?? '');
     },
     askHidden: async (q) => {
-      const { askHiddenLine } = await import('./setup-wizard.js').catch(() => ({ askHiddenLine: null })) as any;
       return io.ask(q, { hidden: true });   // WizardIO 已支持 hidden (不回显)
     },
     confirm: async (q, d = true) => {
@@ -426,7 +425,6 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
   // 真干了活 (有步骤不是 skipped) 或没走通 → 前言必须先落屏: 那是"发生了什么/哪儿卡住"的唯一上下文
   if (quiet && (!res.ok || res.steps.some((s) => s.status !== 'skipped'))) flushQuiet();
 
-  const cfg = await readConfigFacts(bolloonHome).catch(() => null);
   return {
     ok: res.ok,
     userName: res.state.inputs.name,

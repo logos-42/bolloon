@@ -10,7 +10,6 @@
  */
 
 import * as fs from 'fs';
-import * as path from 'path';
 
 export type Severity = 'P0' | 'P1' | 'P2';
 

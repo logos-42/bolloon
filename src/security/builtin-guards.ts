@@ -10,7 +10,6 @@
  * - critical 触发 reject; warning 触发 log + 允许
  */
 
-import * as os from 'os';
 
 export type GuardSeverity = 'critical' | 'warning' | 'info';
 export interface GuardHit {
@@ -110,7 +109,6 @@ export function guardNoNetworkLeak(args: Record<string, unknown>): GuardHit | nu
 // 4. no-recursive-tool: tool args 不含调用 tool 的迹象
 // ============================================================
 
-const TOOL_NAME_HINTS = ['tool', 'mcp_', 'pi_ecosystem', 'bollharness'];
 const RECURSIVE_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /\bexec(?:ute)?[_(tool|shell_exec|bash)\b]/, label: 'recursive tool call' },
   { re: /\bdispatch_to_agent\b/, label: 'agent dispatch loop' },
@@ -118,9 +116,6 @@ const RECURSIVE_PATTERNS: Array<{ re: RegExp; label: string }> = [
 
 export function guardNoRecursiveTool(args: Record<string, unknown>): GuardHit | null {
   const cmd = JSON.stringify(args);
-  for (const hint of TOOL_NAME_HINTS) {
-    // args 里引用 tool 调用名是合理的 (e.g. description), 只看递归模式
-  }
   for (const { re, label } of RECURSIVE_PATTERNS) {
     if (re.test(cmd)) {
       return {

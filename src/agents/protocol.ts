@@ -219,7 +219,6 @@ export class AgentProtocol {
 
   private async handleResult(message: AgentMessage): Promise<void> {
     const result = JSON.parse(message.payload) as TaskResult;
-    const task = this.pendingTasks.get(message.taskId);
 
     if (result.needsApproval && !result.autoSent) {
       console.log('\n📋 文档处理完成，需要人工确认:');
@@ -239,7 +238,6 @@ export class AgentProtocol {
 
   private async handleImprovedResult(message: AgentMessage): Promise<void> {
     const result = JSON.parse(message.payload) as ImproveResult;
-    const task = this.pendingTasks.get(message.taskId);
 
     console.log('\n✨ 改进结果已接收:');
     console.log(`   原始文档: ${result.originalPath}`);

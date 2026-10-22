@@ -47,7 +47,6 @@ export interface CommandIntent {
  */
 export class CommandParser {
   private collaborationKeywords = ['协作', '合作', '其他', '帮忙', '请教', '团队', '分享', '交给'];
-  private improvementKeywords = ['改进', '优化', '修改', '完善', '润色', '修正'];
   private queryKeywords = ['查看', '列表', '查询', '有哪些', '谁在线'];
 
   parse(input: string, context?: string): CommandIntent {

@@ -169,7 +169,7 @@ export class ChannelAgent implements ChannelAgentSession {
 
     // Send to agent (HTTP fallback for testing)
     app.post('/send', async (req, res) => {
-      const { targetDid, targetPort, content } = req.body;
+      const { targetPort, content } = req.body;
       try {
         const resp = await fetch(`http://localhost:${targetPort}/receive`, {
           method: 'POST',

@@ -204,7 +204,6 @@ async function onAutoaddInviteReceived(
   p: HearthAutoaddInvite
 ): Promise<void> {
   // 闸 2: 检查 fromNodeId 是否在 allowlist, 且 channel 隐私策略兼容
-  const ctx: JudgenessPubkeyContext = { pubkey: p.fromNodeId, role: 'agent', channelTopic: p.channelTopic };
   const g2 = await resolveGate2(p.fromNodeId, p.channelTopic);
   if (!g2.allow) {
     // 自动回一个 block

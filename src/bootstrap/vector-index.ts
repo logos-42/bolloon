@@ -149,7 +149,7 @@ export async function buildIndex(opts: BuildIndexOptions): Promise<{ path: strin
       tf[t] = (tf[t] || 0) + 1;
     }
 
-    for (const [term, count] of Object.entries(tf)) {
+    for (const [term] of Object.entries(tf)) {
       if (!index.postings[term]) index.postings[term] = [];
       if (!index.postings[term].includes(doc.id)) index.postings[term].push(doc.id);
       index.docFreq[term] = (index.docFreq[term] || 0) + 1;
@@ -222,7 +222,7 @@ export async function addDocument(opts: AddDocOptions): Promise<InvertedIndex> {
 
   const tf: Record<string, number> = {};
   for (const t of tokens) tf[t] = (tf[t] || 0) + 1;
-  for (const [term, count] of Object.entries(tf)) {
+  for (const [term] of Object.entries(tf)) {
     if (!index.postings[term]) index.postings[term] = [];
     if (!index.postings[term].includes(opts.doc.id)) {
       index.postings[term].push(opts.doc.id);

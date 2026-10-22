@@ -518,7 +518,6 @@ export class HarnessWorkflowIntegrator {
     }
 
     const blockers: string[] = [];
-    const conditions = this.config.fast_track.conditions;
 
     // 简化检查：实际应用中需要更复杂的分析
     if (changeDescription.length > 500) {

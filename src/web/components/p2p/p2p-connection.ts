@@ -14,12 +14,10 @@ import { ConnectionStatus } from './types.js';
 import { p2pStore } from './p2p-store-memory.js';
 
 const CID_REGEX = /^Qm[a-zA-Z0-9]{44}$|^bafy[a-zA-Z0-9]{59}$|^bafk[a-zA-Z0-9]{59}$/;
-const DID_REGEX = /^did:[a-z]+:[a-zA-Z0-9]+$/;
 
 export class P2PConnectionManager {
   private peers: Map<string, ConnectedPeer> = new Map();
   private reconnectTimers: Map<string, number> = new Map();
-  private connectionAttempts: Map<string, number> = new Map();
 
   // 解析输入
   parseInput(input: string): ParsedInput {

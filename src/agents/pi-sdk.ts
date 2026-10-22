@@ -2221,10 +2221,6 @@ ${await this.buildStableMemoryBlock()}
   private resumePlan: ResumePlan | null = null;
   /** 2026-09-16 (2-C.4): 外部请求 id (工具层设; 回包必须带上才能精确匹配) */
   pendingExternalRequestId?: string;
-  /** 2026-09-16 (M3): 外部等待中 (awaiting_external) —— 收到成功步骤后回 running */
-  private awaitingExternal = false;
-  /** 2026-09-16 (M3): 熔断原因 (同一工具连续失败达上限 → needs_human) */
-  private breakerReason = '';
   /**
    * 2026-09-16 (M2-B): Supervisor 开新 Run 继续同一 Goal 时注入"上一个 Run 已成功的非幂等动作"。
    * 与 resume 的重放守卫同源 (run-store 的 buildContinuationPlan), 保证跨 Run 也不重复副作用。

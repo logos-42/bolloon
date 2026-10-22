@@ -92,7 +92,6 @@ export async function guardTick(
 ): Promise<{ action: 'beat' | 'takeover' | 'noop'; adoptedRunIds?: string[]; reason?: string }> {
   const log = opts.log || ((_l: any, _m: string) => {});
   const home = opts.home || os.homedir();
-  const beatMs = opts.beatMs ?? BEAT_MS;
   const staleMs = opts.staleMs ?? STALE_MS;
   const collect = ports.collectActiveRunIds || (async () => []);
 

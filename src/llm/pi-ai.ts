@@ -1472,17 +1472,6 @@ ${envDetails}`,
 
   // 同步版: 旧调用点 (buildSystemPrompt 是同步)
   // 保留但内部用 sync fallback; 后续可改成 async
-  private buildSystemPrompt(context?: string): string {
-    const envDetails = this.getEnvironmentDetails();
-    return `You are a friendly AI assistant in a P2P document collaboration network.
-
-## User Working Directory
-${context || process.cwd()}
-
-## Environment
-${envDetails}`;
-  }
-
   private getEnvironmentDetails(): string {
     return `
 ## Available Workflows

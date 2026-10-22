@@ -43,7 +43,7 @@ export function unregisterWidget(name: string): void {
 
 /** 重新执行所有 widget 的 render (数据/间隔刷新) */
 export function refreshWidgets(): void {
-  for (const [name, w] of widgets) {
+  for (const [, w] of widgets) {
     try { w.text = w.render(); } catch { /* 单个 widget 渲染失败不致命 */ }
   }
   emit();

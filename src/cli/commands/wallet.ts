@@ -18,7 +18,7 @@ import * as path from 'path';
 import {
   type CliFlags, type CommandResult, type Code, type NextAction,
   okEnvelope, failEnvelope,
-  line, title, hint, plain, opt, optAll, has,
+  line, title, hint, plain, opt, optAll,
 } from '../protocol-envelope.js';
 
 export const WALLET_USAGE = `

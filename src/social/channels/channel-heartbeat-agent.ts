@@ -496,7 +496,6 @@ export class ChannelHeartbeatAgent {
   }> {
     // 获取对话历史
     const history = this.peerDialogueHistory.get(fromDid) || [];
-    const historyMessages = history.map(e => e.message);
 
     // 通过 Channel Agent 处理
     const result = await this.channelAgent.receiveMessage(fromName, content);

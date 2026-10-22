@@ -118,7 +118,6 @@ const GATE_CONFIGS: Record<Gate, GateConfig> = {
 export class GateStateMachine {
   private state: GateState;
   private coordinator: AgentCoordinator;
-  private reviewAgentContext: Map<number, string> = new Map();
 
   constructor() {
     this.state = this.initState();
@@ -438,7 +437,7 @@ ${userInput.substring(0, 1000)}
     ];
 
     try {
-      const results = await this.coordinator.dispatch(
+      await this.coordinator.dispatch(
         subtasks.map(t => t.description).join(' ||| '),
         1
       );

@@ -138,7 +138,7 @@ import { createIrohDelegateTransport } from './iroh-delegate-transport.js';
 import { verifyMessage, isAddress, getAddress } from 'viem';
 // 2026-07-05: peer 目录管理 + manifest 协议
 import * as peerFs from '../network/peer-fs.js';
-import { type AgentManifest, type AgentManifestEntry, type ManifestGroup, type ManifestFunction, type ManifestExportment, type ManifestScience } from '../agents/agent-manifest-protocol.js';
+import { type AgentManifest, type AgentManifestEntry } from '../agents/agent-manifest-protocol.js';
 import { loadLocalResources, writeRemoteResources } from '../network/peer-resource-bridge.js';
 
 /**
@@ -279,7 +279,7 @@ async function loadLocalSubAgents(): Promise<any[]> {
 const REMOTE_CACHE_FILE = `${process.env.HOME || '/tmp'}/.bolloon/remote-channels-cache.json`;
 async function loadRemoteChannelCacheFromDisk(): Promise<void> {
   try {
-    const { readFile, mkdir } = await import('fs/promises');
+    const { readFile } = await import('fs/promises');
     const { existsSync } = await import('fs');
     if (!existsSync(REMOTE_CACHE_FILE)) return;
     const raw = await readFile(REMOTE_CACHE_FILE, 'utf-8');
@@ -925,7 +925,7 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
 
       // 2. 跑 LLM (复用 Phase 1 的 buildJudgmentHint — 注入 channel 的 judgment)
       const { getMinimax } = await import('../constraints/index.js');
-      const llm = getMinimax();
+      getMinimax();
       // v3 新增: 在 prompt 头部标记"这是远端访客", 让 AI 知道对方不是自己 owner
       const visitorHint = `[系统上下文] 消息来源: 远端访客 (P2P 连接, publicKey=${senderKey.substring(0, 12)}...). 对方不是你 owner, 是通过 P2P 网络访问你这个 channel 的合作者. 称呼对方时可用 "远端访客" / "朋友" / "合作者", 不要叫 "用户".\n\n`;
       // v3 新增: 也注入 channel 目录给 LLM (B 的 channel 也可以 @-mention 其他)
@@ -1139,7 +1139,7 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
 
   // v3 新增: --collab CLI 派任务过来, 对方 web 收到后跑 LLM 干活, 回结果
   if (op === 'agent.collab.run') {
-    const { requestId, task, fromPublicKey, fromRole, timeoutMs } = parsed.payload || {};
+    const { requestId, task, fromPublicKey, fromRole } = parsed.payload || {};
     if (!requestId || !task) {
       console.warn(`[v3-collab] agent.collab.run 缺少 requestId/task`);
       return;
@@ -5280,12 +5280,10 @@ fetchState();
       // 2026-07-06: 全局 contextHint 硬裁 — MiniMax-M3 context window 8K token ≈ 32K 字符
       //   如果 contextHint 超过 14K 字符 (留 ~18K 给 userText + LLM 输出 + system), 主动截断
       const CONTEXT_LIMIT = 14000;
-      let contextTruncated = false;
       if (contextHint.length > CONTEXT_LIMIT) {
         const originalLen = contextHint.length;
         contextHint = contextHint.slice(0, CONTEXT_LIMIT);
         contextHint += `\n[系统上下文] (...剩余 ${originalLen - CONTEXT_LIMIT} 字符因 context window 限制已截断, 完整内容请用 /judgments 查)\n`;
-        contextTruncated = true;
         console.warn(`[chat] channel=${channelId} contextHint truncated: ${originalLen} -> ${contextHint.length} chars`);
       }
       try {
@@ -5406,7 +5404,7 @@ fetchState();
       try {
         const { appendChatArchive } = await import('../bootstrap/chat-archiver.js');
         // 找到这条消息涉及到的远端 peer (从 routeMentionsInReply 的结果推断 — 简单起见直接遍历 remoteChannels)
-        const localChannels2 = (await loadChannels());
+        await loadChannels();
         const remoteChannels2: any[] = [];
         for (const [peerPk, list] of remoteChannelCache.entries()) {
           for (const ch of list) {
@@ -7043,7 +7041,7 @@ app.post('/active-channel', async (req, res) => {
       // v3P2PRef 直接连到目标 publicKey (用 hyperswarm 的 joinPeer API)
       const swarm = (v3P2PRef as any).swarm;
       if (!swarm) return res.status(503).json({ error: 'swarm not available' });
-      const conn = await swarm.joinPeer(Buffer.from(targetPublicKey, 'hex'));
+      await swarm.joinPeer(Buffer.from(targetPublicKey, 'hex'));
       console.log(`[v3] 已主动 joinPeer ${targetPublicKey.substring(0, 12)}...`);
 
       // 自动持久化 (默认开启) — 之后启动自动重连
@@ -7773,12 +7771,6 @@ app.post('/active-channel', async (req, res) => {
       if (did) {
         // 广播连接请求
         if (p2pCommunicator) {
-          const payload = JSON.stringify({
-            type: 'connect_request',
-            requesterDid: did,
-            targetDid: did,
-            timestamp: Date.now()
-          });
           // 广播到网络
           console.log(`[连接] 广播连接请求: ${did}`);
         }
@@ -8057,13 +8049,6 @@ app.post('/active-channel', async (req, res) => {
     });
   });
 
-  function emitConnectProgress(sessionId: string, data: any) {
-    const client = connectProgressClients.get(sessionId);
-    if (client) {
-      client.write(`data: ${JSON.stringify(data)}\n\n`);
-    }
-  }
-
   // 取消连接
   app.post('/api/p2p/connect/cancel', async (req, res) => {
     const { sessionId } = req.body;
@@ -8233,7 +8218,7 @@ app.post('/active-channel', async (req, res) => {
   // 更新连接状态
   app.post('/api/p2p/connection-status', async (req, res) => {
     try {
-      const { id, status, channelId } = req.body;
+      const { status, channelId } = req.body;
       const sessionProvider = app.locals.sessionProvider;
       if (sessionProvider && channelId) {
         await sessionProvider.setChannelInfo(channelId, {
@@ -8278,7 +8263,7 @@ app.post('/active-channel', async (req, res) => {
   // P2P 工具调用
   app.post('/api/p2p/tool-call', async (req, res) => {
     try {
-      const { tool, targetDid, payload } = req.body;
+      const { tool, payload } = req.body;
 
       let result;
       switch (tool) {
@@ -8547,7 +8532,7 @@ app.post('/active-channel', async (req, res) => {
 
   // 设 runtime override (存盘, 下次 promptStream 入口读取生效)
   app.post('/api/permission-mode', async (req: any, res: any) => {
-    const { resolvePermissionMode, ALL_PERMISSION_MODES } = await import('../agents/permission-mode.js');
+    const { ALL_PERMISSION_MODES } = await import('../agents/permission-mode.js');
     const mode = String(req.body?.mode || '');
     if (!ALL_PERMISSION_MODES.includes(mode as any)) {
       return res.status(400).json({
