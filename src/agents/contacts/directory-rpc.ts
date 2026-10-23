@@ -28,7 +28,9 @@ export interface DirectoryLookupRpc {
   op: string;
   payload: {
     rpcId: string;
-    phone: string;
+    phone: string;          // 兼容旧字段名; 实际承载 contact 值 (phone 或 email)
+    kind?: 'phone' | 'email'; // 2026-10-23: 缺省按值嗅探
+    contact?: string;       // 新字段名 (与 tools/server 的 contact 口径一致), 缺省回落 phone
     fromPublicKey?: string;
   };
 }
@@ -47,8 +49,17 @@ export interface DirectoryLookupReply {
 }
 
 /** 构造查询帧 (供发送侧用) */
-export function buildLookupRpc(rpcId: string, phone: string, fromPublicKey?: string): DirectoryLookupRpc {
-  return { v: 3, op: DIRECTORY_LOOKUP_OP, payload: { rpcId, phone, fromPublicKey } };
+export function buildLookupRpc(
+  rpcId: string,
+  phone: string,
+  fromPublicKey?: string,
+  kind?: 'phone' | 'email',
+): DirectoryLookupRpc {
+  return {
+    v: 3,
+    op: DIRECTORY_LOOKUP_OP,
+    payload: { rpcId, phone, contact: phone, kind, fromPublicKey },
+  };
 }
 
 /** 构造回复帧 (供接收侧用) */

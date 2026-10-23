@@ -1435,17 +1435,19 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
     return;
   }
 
-  // 跨机手机号目录查询 (2026-10-23): 对方问「这个手机号在不在你目录里」
+  // 跨机手机号/邮箱目录查询 (2026-10-23): 对方问「这个联系方式在不在你目录里」
   // 语义 = 设计稿方案 A (pepper 在目录服务端): 条目是"我"发布的, 我用自己的 pepper 验证。
   if (op === 'agent.directory.lookup') {
     try {
-      const phone = String(parsed.payload?.phone || '');
+      const value = String(parsed.payload?.phone || parsed.payload?.contact || '');
+      const kind = parsed.payload?.kind === 'email' ? 'email' : parsed.payload?.kind === 'phone' ? 'phone' : undefined;
       const rpcId = String(parsed.payload?.rpcId || '');
-      const { lookupPhone, isPlausiblePhone } = await import('../agents/contacts/human-directory.js');
-      const found = isPlausiblePhone(phone) ? await lookupPhone(phone) : { found: false };
+      const { lookupPhone, isPlausibleContact, sniffKind } = await import('../agents/contacts/human-directory.js');
+      const targetKind = kind || sniffKind(value);
+      const found = isPlausibleContact(value, targetKind) ? await lookupPhone(value, undefined, targetKind) : { found: false };
       const reply = JSON.stringify({
         v: 3, op: 'agent.directory.lookup.reply',
-        payload: { rpcId, found: !!found.found, did: found.did, publicKeyHex: found.publicKeyHex, displayName: found.displayName },
+        payload: { rpcId, kind: targetKind, found: !!found.found, did: found.did, publicKeyHex: found.publicKeyHex, displayName: found.displayName },
       });
       await comm.sendToConnection(conn.id, reply);
     } catch (err) {
@@ -7119,14 +7121,16 @@ app.post('/active-channel', async (req, res) => {
   // 与本地 lookupPhone 同形状: { found, did?, publicKeyHex?, displayName?, via? }
   app.post('/api/contacts/directory/remote-lookup', async (req, res) => {
     try {
-      const phone = String(req.body?.phone || '').trim();
-      const { lookupPhone, isPlausiblePhone } = await import('../agents/contacts/human-directory.js');
-      if (!isPlausiblePhone(phone)) return res.status(400).json({ ok: false, error: '手机号格式不正确' });
+      const value = String(req.body?.phone ?? req.body?.contact ?? '').trim();
+      const kind = req.body?.kind === 'email' ? 'email' : req.body?.kind === 'phone' ? 'phone' : undefined;
+      const { lookupPhone, isPlausibleContact, sniffKind } = await import('../agents/contacts/human-directory.js');
+      const targetKind = kind || sniffKind(value);
+      if (!isPlausibleContact(value, targetKind)) return res.status(400).json({ ok: false, error: targetKind === 'email' ? '邮箱格式不正确' : '手机号格式不正确' });
 
       // 1. 先查本地
-      const local = await lookupPhone(phone);
+      const local = await lookupPhone(value, undefined, targetKind);
       if (local.found) {
-        return res.json({ ok: true, source: 'local', found: true, did: local.did, publicKeyHex: local.publicKeyHex, displayName: local.displayName });
+        return res.json({ ok: true, source: 'local', kind: targetKind, found: true, did: local.did, publicKeyHex: local.publicKeyHex, displayName: local.displayName });
       }
 
       // 2. P2P 广播查询
@@ -7136,7 +7140,7 @@ app.post('/active-channel', async (req, res) => {
       const rpcId = `dir-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const { buildLookupRpc, DIRECTORY_LOOKUP_TIMEOUT_MS } = await import('../agents/contacts/directory-rpc.js');
       const fromPk = v3P2PRef?.getPublicKey?.() || '';
-      const rpc = JSON.stringify(buildLookupRpc(rpcId, phone, fromPk));
+      const rpc = JSON.stringify(buildLookupRpc(rpcId, value, fromPk, targetKind));
 
       const result = await new Promise<any>((resolve) => {
         const timer = setTimeout(() => {
