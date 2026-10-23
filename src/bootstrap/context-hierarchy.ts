@@ -20,6 +20,7 @@
  */
 
 import * as fs from 'fs/promises';
+import { existsSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -83,6 +84,38 @@ export function resolveProjectPaths(cwd: string): { project: string; projectRule
     projectRulesDir: path.posix.join(cwd, '.claude', 'rules'),
     local: path.posix.join(cwd, 'CLAUDE.local.md'),
   };
+}
+
+/**
+ * 项目规则向上查找 (2026-10-23, 对标 Hermes 的 `.hermes.md` 设计: 父目录走到 git root):
+ * 从 cwd 逐级向上找最近的 `Bolloon.md` (或 AGENTS.md), 命中即停, 以 git root 为边界。
+ * 返回命中的目录 (不含 git 仓库则返回 cwd 本身)。
+ *
+ * Hermes 原文设计: `.hermes.md` "Walks parents up to the git root, stops at git root",
+ * 让规则可以从仓库根继承到任意子目录 —— Bolloon 之前只读 <cwd>/Bolloon.md (无继承)。
+ *
+ * 纯函数 (同步, 无 IO): 返回候选路径列表由调用方 stat/read 判定。
+ */
+export function findProjectRulesRoot(cwd: string): { root: string; candidates: string[] } {
+  let dir = path.resolve(cwd);
+  const seen = new Set<string>();
+  while (dir && !seen.has(dir)) {
+    seen.add(dir);
+    if (fsExistsSync(path.join(dir, '.git'))) return { root: dir, candidates: Array.from(seen) };
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return { root: path.resolve(cwd), candidates: [path.resolve(cwd)] };
+}
+
+/** 同步存在性检查 (findProjectRulesRoot 用; 不阻塞主流程) */
+function fsExistsSync(p: string): boolean {
+  try {
+    return existsSync(p);
+  } catch {
+    return false;
+  }
 }
 
 // ============================================================
@@ -180,16 +213,35 @@ export async function collectHierarchyLayers(opts: CollectHierarchyOptions): Pro
   const home = opts.home ?? process.env.HOME ?? os.homedir() ?? '/tmp';
   const managedPath = opts.limits?.paths?.managed ?? DEFAULT_PATHS.managed;
   const userPath = opts.limits?.paths?.user ?? resolveUserPath(home);
-  const projectPath = opts.limits?.paths?.project ?? path.join(opts.cwd, 'Bolloon.md');
-  const projectRulesDir = opts.limits?.paths?.projectRulesDir ?? path.join(opts.cwd, '.claude', 'rules');
+  // 2026-10-23 (对标 Hermes .hermes.md): project 层规则从 git root 向上继承 —
+  // 显式 limits.paths 优先 (测试/调用方钉死), 否则用 findProjectRulesRoot 找到的仓库根。
+  const rulesRoot = opts.limits?.paths?.project
+    ? { root: path.dirname(opts.limits.paths.project), candidates: [path.dirname(opts.limits.paths.project)] }
+    : findProjectRulesRoot(opts.cwd);
+  const projectPath = opts.limits?.paths?.project ?? path.join(rulesRoot.root, 'Bolloon.md');
+  const projectRulesDir = opts.limits?.paths?.projectRulesDir ?? path.join(rulesRoot.root, '.claude', 'rules');
   const localPath = opts.limits?.paths?.local ?? path.join(opts.cwd, 'CLAUDE.local.md');
 
-  const [managed, user, project, local] = await Promise.all([
+  const [managed, user, projectRaw, local] = await Promise.all([
     readRuleFile(managedPath).then((c) => c ? truncate(c, limits.managed!) : null),
     readRuleFile(userPath).then((c) => c ? truncate(c, limits.user!) : null),
     readProjectLayer(projectPath, projectRulesDir, limits.project!),
     readRuleFile(localPath).then((c) => c ? truncate(c, limits.local!) : null),
   ]);
+
+  // 2026-10-23 (对标 Hermes project-context-files): 项目规则是外部可控输入,
+  // 过 input-scanner 注入扫描, 命中注入信号 → 整层丢弃 (fail-closed, 防 prompt injection 进 system)。
+  let project: string | null = projectRaw;
+  if (projectRaw) {
+    try {
+      const { scanInput } = await import('../security/input-scanner.js');
+      const verdict = scanInput(projectRaw, { source: 'other' }).verdict;
+      if (verdict === 'block' || verdict === 'warn') {
+        console.warn(`[context-hierarchy] 项目规则命中注入扫描 (${verdict}) — 该层已丢弃 (含 ${projectRaw.length} 字符规则)`);
+        project = null;
+      }
+    } catch { /* 扫描器失败不阻塞, 保底放行 (与 input-scanner fail-open 默认一致) */ }
+  }
 
   return { managed, user, project, local };
 }
