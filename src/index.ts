@@ -1809,7 +1809,17 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
         try {
           const { lookupPhone, isPlausiblePhone } = await import('./agents/contacts/human-directory.js');
           if (!isPlausiblePhone(phone)) { appendLine(`${C_WARN}手机号格式不正确: ${phone}${RESET}`); return; }
-          const r = await lookupPhone(phone, process.env.HOME);
+          let r = await lookupPhone(phone, process.env.HOME);
+          if (!r.found) {
+            // 本地未命中 → 跨机查询 (P2P broadcast)
+            const port = process.env.PORT || '54188';
+            const rr = await fetch(`http://127.0.0.1:${port}/api/contacts/directory/remote-lookup`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ phone }),
+            }).catch(() => null);
+            const rd = rr ? await rr.json().catch(() => null) : null;
+            if (rd?.ok && rd.found) r = { found: true, did: rd.did, publicKeyHex: rd.publicKeyHex, displayName: rd.displayName };
+          }
           if (!r.found) { appendLine(`${C_WARN}未找到该手机号的账号 (对方未发布目录或已撤销, 与不存在同义)${RESET}`); return; }
           if (!r.publicKeyHex) { appendLine(`${C_WARN}对方已发布目录但未公开 P2P 公钥, 暂时无法直接加好友${RESET}`); return; }
           appendLine(`${GRAY}正在向 ${r.displayName || r.did?.slice(0, 20)} 发送好友申请…${RESET}`);

@@ -363,6 +363,8 @@ let agentHeartbeat: import('../social/agent-heartbeat.js').AgentHeartbeat | null
 let watchdogRef: any = null;
 // v3: 等待中的 history RPC (B 端 chat-history endpoint 用) — rpcId → { resolve, reject }
 const v3PendingHistoryGets: Map<string, { resolve: (data: any) => void; reject: (err: Error) => void }> = new Map();
+// 2026-10-23: 等待中的跨机目录查询 — rpcId → { replies, resolve(首个命中或超时聚合), timer }
+const v3PendingDirectoryLookups: Map<string, { replies: any[]; resolve: (data: any) => void; timer: NodeJS.Timeout }> = new Map();
 let channelSessions: Map<string, AgentSession> = new Map(); // key: channelId
 
 // ============ 2026-08-02: 远端对话本地镜像 (替代 localStorage 缓存) ============
@@ -1430,6 +1432,52 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
   if (op === 'agent.resource.get.reply') {
     // 由 caller 端通过 rpcId 解析 (这里只 log)
     console.log(`[v3-manifest] 收到 agent.resource.get.reply (agentId=${parsed.payload?.agentId}, body=${(parsed.payload?.body || '').length} chars)`);
+    return;
+  }
+
+  // 跨机手机号目录查询 (2026-10-23): 对方问「这个手机号在不在你目录里」
+  // 语义 = 设计稿方案 A (pepper 在目录服务端): 条目是"我"发布的, 我用自己的 pepper 验证。
+  if (op === 'agent.directory.lookup') {
+    try {
+      const phone = String(parsed.payload?.phone || '');
+      const rpcId = String(parsed.payload?.rpcId || '');
+      const { lookupPhone, isPlausiblePhone } = await import('../agents/contacts/human-directory.js');
+      const found = isPlausiblePhone(phone) ? await lookupPhone(phone) : { found: false };
+      const reply = JSON.stringify({
+        v: 3, op: 'agent.directory.lookup.reply',
+        payload: { rpcId, found: !!found.found, did: found.did, publicKeyHex: found.publicKeyHex, displayName: found.displayName },
+      });
+      await comm.sendToConnection(conn.id, reply);
+    } catch (err) {
+      console.warn(`[v3-directory] lookup 处理失败: ${(err as Error).message}`);
+      try {
+        await comm.sendToConnection(conn.id, JSON.stringify({
+          v: 3, op: 'agent.directory.lookup.reply',
+          payload: { rpcId: String(parsed.payload?.rpcId || ''), found: false, error: String((err as Error).message || err) },
+        }));
+      } catch { /* 忽略 */ }
+    }
+    return;
+  }
+
+  // 对方回目录查询结果 (发起侧按 rpcId 解析; 收集式: 命中即定案, miss 只记, 超时聚合)
+  if (op === 'agent.directory.lookup.reply') {
+    const rpcId = String(parsed.payload?.rpcId || '');
+    const p = v3PendingDirectoryLookups.get(rpcId);
+    if (p) {
+      if (parsed.payload?.found) {
+        clearTimeout(p.timer);
+        v3PendingDirectoryLookups.delete(rpcId);
+        p.resolve({
+          found: true, did: parsed.payload?.did, publicKeyHex: parsed.payload?.publicKeyHex,
+          displayName: parsed.payload?.displayName, via: conn.publicKey,
+        });
+      } else {
+        // miss → 记录, 不 resolve (等超时聚合; 首个命中仍会定案)
+        p.replies.push({ found: false, via: conn.publicKey });
+      }
+      console.log(`[v3-directory] 目录查询 reply 已收集: rpcId=${rpcId.slice(0, 8)} found=${!!parsed.payload?.found} (共 ${p.replies.length + (parsed.payload?.found ? 1 : 0)} 个)`);
+    }
     return;
   }
 
@@ -7061,6 +7109,56 @@ app.post('/active-channel', async (req, res) => {
     } catch (err: any) {
       console.error('[v3] p2p-connect 失败:', err);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===== 2026-10-23: 跨机手机号目录查询 (P2P broadcast + rpcId 聚合) =====
+  // 用法: POST /api/contacts/directory/remote-lookup { phone }
+  // 语义: 本地 lookup miss → 向所有在线 peers 发 agent.directory.lookup →
+  //       等 reply (DIRECTORY_LOOKUP_TIMEOUT_MS) → 首个命中定案, 全 miss 聚合返回。
+  // 与本地 lookupPhone 同形状: { found, did?, publicKeyHex?, displayName?, via? }
+  app.post('/api/contacts/directory/remote-lookup', async (req, res) => {
+    try {
+      const phone = String(req.body?.phone || '').trim();
+      const { lookupPhone, isPlausiblePhone } = await import('../agents/contacts/human-directory.js');
+      if (!isPlausiblePhone(phone)) return res.status(400).json({ ok: false, error: '手机号格式不正确' });
+
+      // 1. 先查本地
+      const local = await lookupPhone(phone);
+      if (local.found) {
+        return res.json({ ok: true, source: 'local', found: true, did: local.did, publicKeyHex: local.publicKeyHex, displayName: local.displayName });
+      }
+
+      // 2. P2P 广播查询
+      if (!p2pCommunicator) {
+        return res.json({ ok: true, source: 'none', found: false, note: 'P2P 未就绪, 且本地未命中' });
+      }
+      const rpcId = `dir-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const { buildLookupRpc, DIRECTORY_LOOKUP_TIMEOUT_MS } = await import('../agents/contacts/directory-rpc.js');
+      const fromPk = v3P2PRef?.getPublicKey?.() || '';
+      const rpc = JSON.stringify(buildLookupRpc(rpcId, phone, fromPk));
+
+      const result = await new Promise<any>((resolve) => {
+        const timer = setTimeout(() => {
+          v3PendingDirectoryLookups.delete(rpcId);
+          resolve({ found: false, source: 'p2p-timeout', replies: 0 });
+        }, DIRECTORY_LOOKUP_TIMEOUT_MS);
+        v3PendingDirectoryLookups.set(rpcId, { replies: [], resolve, timer });
+        // broadcast 到所有活跃连接
+        p2pCommunicator.broadcast(rpc).catch((err: any) => {
+          clearTimeout(timer);
+          v3PendingDirectoryLookups.delete(rpcId);
+          resolve({ found: false, source: 'p2p-broadcast-error', error: String(err?.message || err) });
+        });
+      });
+
+      if (result.found) {
+        return res.json({ ok: true, source: 'p2p', found: true, did: result.did, publicKeyHex: result.publicKeyHex, displayName: result.displayName, via: result.via });
+      }
+      res.json({ ok: true, source: result.source || 'p2p-miss', found: false, note: '本地与在线节点均未命中 (对方未发布目录或不在线)' });
+    } catch (err: any) {
+      console.error('[v3-directory] remote-lookup 失败:', err);
+      res.status(500).json({ ok: false, error: String(err?.message || err) });
     }
   });
 

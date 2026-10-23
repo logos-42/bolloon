@@ -198,7 +198,21 @@ export function registerContactTools(ctx: ToolCtx, chain: ContactChain): string[
       const { lookupPhone, isPlausiblePhone } = await import('./human-directory.js');
       const phone = text(args.phone);
       if (!isPlausiblePhone(phone)) return { success: false, error: '手机号格式不正确' };
-      const r = await lookupPhone(phone);
+      let r = await lookupPhone(phone);
+      if (!r.found) {
+        // 2026-10-23: 本地未命中 → 跨机 P2P 目录查询
+        try {
+          const port = process.env.PORT || '54188';
+          const resp = await fetch(`http://127.0.0.1:${port}/api/contacts/directory/remote-lookup`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone }),
+          });
+          if (resp.ok) {
+            const d = await resp.json();
+            if (d?.found) r = { found: true, did: d.did, publicKeyHex: d.publicKeyHex, displayName: d.displayName };
+          }
+        } catch { /* 降级: 只有本地目录 */ }
+      }
       if (!r.found) return { success: true, found: false, note: '未找到 (对方未注册目录或已撤销)' };
       return { success: true, found: true, did: r.did, publicKeyHex: r.publicKeyHex || null, displayName: r.displayName || null, note: '已找到, 可用 directory.add_friend 发起好友请求' };
     },
@@ -212,8 +226,22 @@ export function registerContactTools(ctx: ToolCtx, chain: ContactChain): string[
       const { lookupPhone, isPlausiblePhone } = await import('./human-directory.js');
       const phone = text(args.phone);
       if (!isPlausiblePhone(phone)) return { success: false, error: '手机号格式不正确' };
-      const r = await lookupPhone(phone);
-      if (!r.found) return { success: true, found: false, note: '未找到 (对方未注册目录或已撤销)' };
+      let r = await lookupPhone(phone);
+      if (!r.found) {
+        // 2026-10-23: 本地未命中 → 跨机 P2P 目录查询 (与本机 server 配合)
+        try {
+          const port = process.env.PORT || '54188';
+          const resp = await fetch(`http://127.0.0.1:${port}/api/contacts/directory/remote-lookup`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone }),
+          });
+          if (resp.ok) {
+            const d = await resp.json();
+            if (d?.found) r = { found: true, did: d.did, publicKeyHex: d.publicKeyHex, displayName: d.displayName };
+          }
+        } catch { /* 降级: 只有本地目录 */ }
+      }
+      if (!r.found) return { success: true, found: false, note: '未找到 (对方未注册目录或已撤销, 本地与在线节点均未命中)' };
       if (!r.publicKeyHex) return { success: false, found: true, did: r.did, error: '对方已公开目录但未发布 P2P 公钥, 暂时无法直接发好友请求' };
       try {
         const port = process.env.PORT || '54188';
