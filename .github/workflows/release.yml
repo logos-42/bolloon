@@ -37,22 +37,10 @@ jobs:
       - run: npm run build:all
       # 手搓 bundle 避开 electron-builder walker (1.1G @rayhanadev OOM)
       - run: npm run app:bundle
-      - name: Package as DMG (optional, uses create-dmg)
+      # 品牌化「拖到应用程序文件夹」安装窗 (hdiutil+osascript, 不依赖 create-dmg)
+      - name: Package as DMG (branded drag-to-install)
         run: |
-          if command -v create-dmg &>/dev/null; then
-            create-dmg \
-              --volname "Bolloon Agent" \
-              --window-pos 200 120 \
-              --window-size 800 400 \
-              --icon-size 100 \
-              --icon "Bolloon Agent.app" 200 190 \
-              --app-drop-link 600 185 \
-              --no-internet-enable \
-              "release/Bolloon Agent-${{ github.ref_name }}-mac.dmg" \
-              "release/mac-arm64/Bolloon Agent.app" || echo "create-dmg failed, falling back to tarball"
-          else
-            echo "create-dmg not installed, skipping DMG"
-          fi
+          bash scripts/make-dmg.sh "release/mac-arm64/Bolloon Agent.app" "release/Bolloon Agent-${{ github.ref_name }}-mac.dmg" || echo "DMG 生成失败, 回退 tarball"
       - name: Fallback tarball
         if: always()
         run: |
@@ -82,6 +70,10 @@ jobs:
       - run: npm ci
       - run: npm run build:all
       - run: npm run app:bundle
+      # 品牌化「拖到应用程序文件夹」安装窗 (hdiutil+osascript, 不依赖 create-dmg)
+      - name: Package as DMG (branded drag-to-install)
+        run: |
+          bash scripts/make-dmg.sh "release/mac-x64/Bolloon Agent.app" "release/Bolloon Agent-${{ github.ref_name }}-mac-x64.dmg" || echo "DMG 生成失败, 回退 tarball"
       - name: Fallback tarball
         run: |
           cd "release/mac-x64"
@@ -89,7 +81,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: bolloon-desktop-mac-x64
-          path: release/*.tar.gz
+          path: |
+            release/*.dmg
+            release/*.tar.gz
           if-no-files-found: warn
 
   # ============ Windows desktop ============

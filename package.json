@@ -43,6 +43,7 @@
     "electron:pack": "electron-builder --dir",
     "app:bundle": "node scripts/build-app-bundle.cjs",
     "app:bundle:open": "node scripts/build-app-bundle.cjs && open \"release/mac-x64/Bolloon Agent.app\"",
+    "build:dmg": "bash scripts/make-dmg.sh \"release/mac-x64/Bolloon Agent.app\" \"release/Bolloon Agent-mac-x64.dmg\"",
     "smoke:esm": "node scripts/smoke-esm.mjs",
     "check:token": "node scripts/solc-compile.mjs",
     "build:ios-web": "node scripts/build-ios-web.mjs",
@@ -197,6 +198,30 @@
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "notarize": false
+    },
+    "dmg": {
+      "background": "build/dmg-background.png",
+      "backgroundColor": "#F4F63D",
+      "window": {
+        "width": 1316,
+        "height": 996
+      },
+      "iconSize": 160,
+      "iconTextSize": 14,
+      "contents": [
+        {
+          "x": 360,
+          "y": 500,
+          "type": "file"
+        },
+        {
+          "x": 956,
+          "y": 500,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "format": "ULFO"
     },
     "linux": {
       "target": [
