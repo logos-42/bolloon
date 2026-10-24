@@ -156,7 +156,8 @@
         "from": "build",
         "to": "build",
         "filter": [
-          "**/*"
+          "trayTemplate.png",
+          "tray.png"
         ]
       }
     ],
