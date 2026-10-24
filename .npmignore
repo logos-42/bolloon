@@ -30,9 +30,6 @@ scripts/
 # to set bin/bolloon.cjs executable and create user data dirs.
 !scripts/postinstall.js
 
-# Lefthook / git hooks config
-lefthook.yml
-
 # Playwright test artifacts
 .playwright-mcp/
 

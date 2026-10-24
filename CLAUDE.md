@@ -52,11 +52,6 @@ python3 scripts/supersede_check.py               # supersede/contradicts
 - 下列 `*.test.ts` 实际是 tsx 集成脚本（顶层 async + console.log），vitest 会 "No test suite found"——用 `npx tsx` 单跑：
   - `human-value-store` / `iroh-communication` / `iroh-transport` / `llm-judgment-integration` / `storage-integration`
 
-### 提交前检查（lefthook）
-
-- `vitest-bail` + `tsc-check` + `validate-system-prompt-layers` 并行自动跑
-- 不要把 `LEFTHOOK=0` 加进 workflow（2026-07-06 已废弃全局禁用策略）
-
 ## 关键架构
 
 ```

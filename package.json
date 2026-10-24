@@ -128,7 +128,6 @@
     "electron-builder": "^26.16.1",
     "esbuild": "^0.28.2",
     "fake-indexeddb": "^6.2.5",
-    "lefthook": "^2.1.12",
     "playwright": "^1.63.0",
     "solc": "^0.8.20",
     "tsx": "^4.23.13",
