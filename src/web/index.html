@@ -113,7 +113,13 @@
           <span>◧</span>
           <span data-zh="链上浏览器" data-en="Chain explorer">链上浏览器</span>
         </a>
-        <div class="user-avatar" id="user-avatar" title="点击查看 DID 身份">
+        <!-- 2026-10-24 (用户): 自动更新按钮放侧边栏 — 有更新就变亮, 点击一条龙更新 -->
+        <button class="section-action update-btn" id="update-btn" title="检查并安装更新">
+          <span class="update-icon">⟳</span>
+          <span class="update-text" id="update-text">检查更新</span>
+          <span class="update-dot" id="update-dot" title="有新版本" style="display:none;"></span>
+        </button>
+        <div class="user-avatar" id="user-avatar" title="点击设置头像 / 个人资料">
           <span class="avatar-letter" id="avatar-letter">?</span>
         </div>
         <div class="user-info">
@@ -201,7 +207,36 @@
       </header>
 
       <!-- P2P Network Modal (React) -->
-      <div id="p2p-modal-root"></div>
+      <!-- 2026-10-24 (用户): 个人资料 / 头像设置 modal (个人身份相关) -->
+    <div class="modal" id="profile-modal">
+      <div class="modal-content" style="max-width:440px;">
+        <div class="modal-header">
+          <h3>个人资料</h3>
+          <button id="profile-modal-close" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="profile-avatar-preview" id="profile-avatar-preview">
+            <span id="profile-avatar-letter">?</span>
+          </div>
+          <label class="profile-label">选择头像图标</label>
+          <div class="profile-emoji-grid" id="profile-emoji-grid"></div>
+          <label class="profile-label">头像底色</label>
+          <div class="profile-color-grid" id="profile-color-grid"></div>
+          <label class="profile-label">昵称</label>
+          <input id="profile-name-input" class="profile-name-input" type="text" maxlength="40" placeholder="输入昵称" />
+          <div class="profile-did-row">
+            <span class="profile-label">身份 DID</span>
+            <span class="profile-did" id="profile-did"></span>
+          </div>
+          <div class="profile-actions">
+            <button id="profile-account-btn" class="btn-secondary" title="绑定 / 管理登录账号">账号绑定</button>
+            <button id="profile-save-btn" class="btn-primary">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="p2p-modal-root"></div>
 
       <!-- Task Queue Modal -->
       <div id="task-modal" class="modal">

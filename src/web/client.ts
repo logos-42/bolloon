@@ -3155,11 +3155,12 @@ async function loadUserIdentity() {
     if (didEl) didEl.textContent = identity.didShort ? `did:key:${identity.didShort}` : '';
     if (letterEl) letterEl.textContent = letter;
 
-    // 2026-08-09: 点击左下角 avatar → 打开登录 modal (GitHub/Google/邮箱/手机号骨架)
+    // 2026-10-24 (用户): 渲染自定义头像 (emoji | 颜色 | 图片) + 点击打开个人资料设置 (个人身份相关)
+    renderAvatarFromIdentity(identity);
     const avatarEl = document.getElementById('user-avatar');
     if (avatarEl) {
       avatarEl.style.cursor = 'pointer';
-      avatarEl.onclick = () => { openAuthModal(); };
+      avatarEl.onclick = () => { openProfileModal(); };
     }
 
     // 2026-08-02: 点击名字 → 内联编辑 (PUT /api/user/identity)
@@ -3254,6 +3255,162 @@ async function refreshAuthAccounts() {
       }
     }
   } catch { /* 静默 */ }
+}
+
+// ── 2026-10-24 (用户): 侧边栏更新按钮 + 个人资料/头像设置 ──
+const PROFILE_EMOJIS = ['🙂','😎','🤖','👤','🦊','🐱','🐶','🌟','🔥','💧','🍀','⚡','🎯','🧠','💎','🚀','🌈','🍋','🛸','🎩'];
+const PROFILE_COLORS = ['#eefa06','#c4d640','#7bdff2','#f2b632','#f28b82','#b388ff','#81c995','#ffab91'];
+
+function isAvatarImage(a: string): boolean { return a.startsWith('data:') || a.startsWith('http'); }
+function isAvatarColor(a: string): boolean { return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(a); }
+
+function applyAvatarTo(preview: HTMLElement | null, letterEl: HTMLElement | null, a: string, name: string): void {
+  if (!preview || !letterEl) return;
+  preview.style.background = ''; preview.style.backgroundImage = ''; letterEl.style.fontSize = '';
+  const initial = (name || '?').charAt(0).toUpperCase();
+  if (isAvatarImage(a)) { preview.style.background = `#222 center/cover no-repeat url("${a}")`; letterEl.textContent = ''; }
+  else if (isAvatarColor(a)) { preview.style.background = a; letterEl.textContent = initial; }
+  else if (a) { preview.style.background = 'transparent'; letterEl.textContent = a; letterEl.style.fontSize = '30px'; }
+  else { letterEl.textContent = initial; }
+}
+
+function renderAvatarFromIdentity(identity: any): void {
+  applyAvatarTo(
+    document.getElementById('user-avatar'),
+    document.getElementById('avatar-letter'),
+    identity?.avatar || '',
+    identity?.name || '',
+  );
+}
+
+async function checkUpdateStatus(showBusy = false): Promise<void> {
+  const btn = document.getElementById('update-btn');
+  const text = document.getElementById('update-text');
+  const dot = document.getElementById('update-dot');
+  if (!btn) return;
+  try {
+    if (showBusy && text) text.textContent = '检查中…';
+    const res = await fetch('/api/update/check');
+    const data = await res.json();
+    if (data.error) { if (text) text.textContent = '检查失败'; return; }
+    if (data.hasUpdate) {
+      btn.classList.add('has-update');
+      if (dot) dot.style.display = '';
+      if (text) text.textContent = `更新到 v${data.latest}`;
+      (btn as HTMLElement).dataset.latest = String(data.latest || '');
+    } else {
+      btn.classList.remove('has-update');
+      if (dot) dot.style.display = 'none';
+      if (text) text.textContent = '已是最新';
+      setTimeout(() => { const t = document.getElementById('update-text'); if (t && !btn.classList.contains('has-update')) t.textContent = '检查更新'; }, 2500);
+    }
+  } catch { if (text) text.textContent = '检查失败'; }
+}
+
+async function applyUpdateFlow(): Promise<void> {
+  const btn = document.getElementById('update-btn');
+  const text = document.getElementById('update-text');
+  const dot = document.getElementById('update-dot');
+  if (!btn) return;
+  if (!btn.classList.contains('has-update')) { await checkUpdateStatus(true); return; }
+  if (text) text.textContent = '更新中…';
+  btn.classList.add('updating');
+  try {
+    const res = await fetch('/api/update/apply', { method: 'POST' });
+    const data = await res.json();
+    btn.classList.remove('updating');
+    if (data.success) {
+      btn.classList.remove('has-update');
+      if (dot) dot.style.display = 'none';
+      if (text) text.textContent = '✓ 已更新';
+      setTimeout(() => { if (confirm(`已更新到 v${data.to || ''}。现在重启应用以生效吗?`)) location.reload(); }, 250);
+    } else {
+      if (text) text.textContent = '更新失败';
+      setTimeout(() => { const t = document.getElementById('update-text'); if (t) t.textContent = '重试更新'; }, 2500);
+    }
+  } catch {
+    btn.classList.remove('updating');
+    if (text) text.textContent = '更新失败';
+  }
+}
+
+async function openProfileModal(): Promise<void> {
+  const modal = document.getElementById('profile-modal');
+  if (!modal) return;
+  let identity: any = {};
+  try { const r = await fetch('/api/user/identity'); if (r.ok) identity = await r.json(); } catch { /* ignore */ }
+  const nameInput = document.getElementById('profile-name-input') as HTMLInputElement | null;
+  if (nameInput) nameInput.value = identity.name || '';
+  const didEl = document.getElementById('profile-did');
+  if (didEl) didEl.textContent = identity.didShort ? `did:key:${identity.didShort}` : '';
+  const curAvatar = identity.avatar || '';
+  (window as any).__profileAvatar = curAvatar;
+  const preview = document.getElementById('profile-avatar-preview');
+  const pLetter = document.getElementById('profile-avatar-letter');
+  applyAvatarTo(preview, pLetter, curAvatar, identity.name || '');
+  const eg = document.getElementById('profile-emoji-grid');
+  const cg = document.getElementById('profile-color-grid');
+  if (eg) {
+    eg.innerHTML = '';
+    PROFILE_EMOJIS.forEach((em) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = em;
+      if (curAvatar === em) b.classList.add('active');
+      b.onclick = () => { eg.querySelectorAll('button').forEach(x => x.classList.remove('active')); b.classList.add('active'); (window as any).__profileAvatar = em; applyAvatarTo(preview, pLetter, em, identity.name || ''); cg?.querySelectorAll('button').forEach(x => x.classList.remove('active')); };
+      eg.appendChild(b);
+    });
+  }
+  if (cg) {
+    cg.innerHTML = '';
+    PROFILE_COLORS.forEach((col) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.style.background = col; b.title = col;
+      if (curAvatar.toLowerCase() === col) b.classList.add('active');
+      b.onclick = () => { cg.querySelectorAll('button').forEach(x => x.classList.remove('active')); b.classList.add('active'); (window as any).__profileAvatar = col; applyAvatarTo(preview, pLetter, col, identity.name || ''); eg?.querySelectorAll('button').forEach(x => x.classList.remove('active')); };
+      cg.appendChild(b);
+    });
+  }
+  modal.classList.add('active');
+}
+
+async function saveProfile(): Promise<void> {
+  const nameInput = document.getElementById('profile-name-input') as HTMLInputElement | null;
+  const name = nameInput?.value?.trim() || '';
+  const avatar = (window as any).__profileAvatar || '';
+  try {
+    const r = await fetch('/api/user/identity', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name || undefined, avatar }),
+    });
+    if (r.ok) {
+      const updated = await r.json();
+      renderAvatarFromIdentity(updated);
+      const nm = document.getElementById('user-name'); if (nm) nm.textContent = updated.name || '匿名';
+      const dl = document.getElementById('user-did'); if (dl) dl.textContent = updated.didShort ? `did:key:${updated.didShort}` : '';
+      document.getElementById('profile-modal')?.classList.remove('active');
+      if (typeof showSimpleToast === 'function') showSimpleToast('✓ 资料已保存');
+    } else if (typeof showSimpleToast === 'function') { showSimpleToast('保存失败'); }
+  } catch { if (typeof showSimpleToast === 'function') showSimpleToast('保存失败'); }
+}
+
+function bindProfileAndUpdate(): void {
+  const ub = document.getElementById('update-btn');
+  if (ub) ub.addEventListener('click', () => { void applyUpdateFlow(); });
+  const pmClose = document.getElementById('profile-modal-close');
+  if (pmClose) pmClose.onclick = () => document.getElementById('profile-modal')?.classList.remove('active');
+  const pmSave = document.getElementById('profile-save-btn');
+  if (pmSave) pmSave.onclick = () => { void saveProfile(); };
+  const pmAccount = document.getElementById('profile-account-btn');
+  if (pmAccount) pmAccount.onclick = () => { if (typeof openAuthModal === 'function') openAuthModal(); };
+  const pm = document.getElementById('profile-modal');
+  if (pm) pm.addEventListener('click', (e) => { if (e.target === pm) pm.classList.remove('active'); });
+  // 后台静默检查更新 (有更新则侧边栏按钮变亮)
+  setTimeout(() => { void checkUpdateStatus(false); }, 4000);
+}
+
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindProfileAndUpdate);
+  else bindProfileAndUpdate();
 }
 
 async function openAuthModal() {
@@ -3365,6 +3522,15 @@ async function init() {
   } else {
     await createChannel('默认会话');
   }
+
+  // 2026-10-24 (用户): 侧边栏「会话」(P2P 好友 / Agent 网络) 与「我的意图」每次进入 Web 默认折叠
+  try {
+    document.getElementById('remote-agents-section')?.classList.add('collapsed');
+    const gt = document.getElementById('gateway-toggle');
+    const gl = document.getElementById('gateway-list');
+    if (gt && gl) { gt.textContent = '▶'; gl.style.display = 'none'; }
+    if (typeof toggleWorldIntentCol === 'function') toggleWorldIntentCol(false);
+  } catch { /* 静默: 元素缺失不影响主流程 */ }
 }
 
 // P2P Network Modal - React Version

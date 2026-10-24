@@ -160,13 +160,12 @@ export function registerFirstRunIpc(): void {
  * 未 ready 时无论 flag 有没有都弹 (初始化没完成的机器不能装作已配置)。
  */
 export async function maybeShowFirstRun(parent: BrowserWindow): Promise<void> {
+  // 2026-10-24 (用户): 弹窗不用每次进去都出现 — 改为**仅首次**弹 (只看 flag, 看过就不再弹)。
+  //   旧逻辑: setup 未 ready 时每次启动都弹; 但 IPNS 未 ready 的机器会每次弹欢迎窗, 烦。
+  //   setup 事实仍由 SetupStore 管 (readSetupFact), 与"要不要弹欢迎窗"解耦。
+  if (hasSeenFirstRun()) return;
   const fact = readSetupFact();
-  if (fact.ready && hasSeenFirstRun()) return;
-  if (!fact.ready) {
-    log(`初始化未就绪 (stage=${fact.stage}, gate=${fact.gate}) — 弹出引导 (flag=${hasSeenFirstRun() ? '已看过' : '未看过'})`);
-  } else {
-    log('首启 — 弹出引导');
-  }
+  log(`首启 — 弹出引导 (stage=${fact.stage})`);
   await showFirstRunOverlay(parent);
   app.addRecentDocument(firstRunFlagPath()); // 跟踪最近文档, 让 user 知道有这文件
 }

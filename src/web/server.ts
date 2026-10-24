@@ -4388,21 +4388,62 @@ fetchState();
   });
 
   // 2026-08-02: 修改左下角用户名 (写回 ~/.bolloon/identity/user.json)
+  // 2026-10-24: 扩展支持 avatar (emoji | 颜色 hex | dataURL 图片) — 个人资料设置
   app.put('/api/user/identity', async (req, res) => {
     try {
-      const { name } = req.body || {};
-      const newName = String(name || '').trim().slice(0, 40);
-      if (!newName) return res.status(400).json({ error: 'name 必填' });
+      const { name, avatar } = req.body || {};
       const identity = await loadOrCreateUserIdentity();
-      identity.name = newName;
+      if (name !== undefined) {
+        const newName = String(name || '').trim().slice(0, 40);
+        if (!newName) return res.status(400).json({ error: 'name 不能为空' });
+        identity.name = newName;
+      }
+      if (avatar !== undefined) {
+        // emoji 串 / 颜色 hex / dataURL; 限长防滥用 (图片 dataURL 截断到 ~200KB)
+        identity.avatar = String(avatar).slice(0, 200000);
+      }
       userIdentityCache = identity;
       const { mkdirSync, writeFileSync } = await import('fs');
       mkdirSync(IDENTITY_DIR, { recursive: true });
       writeFileSync(`${IDENTITY_DIR}/user.json`, JSON.stringify(identity, null, 2), { mode: 0o600 });
-      console.log(`[user-identity] 名字已更新: ${newName}`);
+      console.log(`[user-identity] 资料已更新: name=${identity.name} avatar=${(identity.avatar || '').slice(0, 16)}`);
       res.json(identity);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ========== 应用更新 (2026-10-24): 检查 + 一条龙更新, 供桌面端侧边栏「更新」按钮 ==========
+  app.get('/api/update/check', async (_req, res) => {
+    try {
+      const { checkForUpdate } = await import('../utils/update-manager.js');
+      const { resolveBolloonHome } = await import('../setup/setup-store.js');
+      const home = resolveBolloonHome();
+      const r = await checkForUpdate({ home, force: true });
+      const hasUpdate = r.status === 'update_available' && !!r.latestVersion;
+      res.json({
+        hasUpdate,
+        current: r.currentVersion,
+        latest: r.latestVersion || r.currentVersion,
+        status: r.status,
+        installMethod: r.installMethod,
+        message: hasUpdate ? `发现新版本 ${r.latestVersion}` : (r.reason || '已是最新版本'),
+      });
+    } catch (err: any) {
+      // 检查失败绝不谎报"已是最新"
+      res.status(500).json({ hasUpdate: false, error: err?.message || String(err) });
+    }
+  });
+
+  app.post('/api/update/apply', async (_req, res) => {
+    try {
+      const { applyUpdate } = await import('../utils/update-manager.js');
+      const { resolveBolloonHome } = await import('../setup/setup-store.js');
+      const home = resolveBolloonHome();
+      const r = await applyUpdate({ home, strategy: 'now' });
+      res.json({ success: !!r.ok, to: r.to, from: r.from, stage: r.stage, reason: r.reason });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || String(err) });
     }
   });
 

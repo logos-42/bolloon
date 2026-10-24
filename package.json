@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.6.8",
+  "version": "0.6.9",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
   "main": "dist/cli-entry.js",
@@ -201,7 +201,6 @@
     },
     "dmg": {
       "background": "build/dmg-background.png",
-      "backgroundColor": "#F4F63D",
       "window": {
         "width": 1316,
         "height": 996

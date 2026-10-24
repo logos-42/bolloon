@@ -5107,3 +5107,57 @@ body:has(> .api-config-page) {
   .gw-modal { max-width: 94%; padding: 14px; }
   .gw-chat { height: 60vh; }
 }
+
+/* ===== 2026-10-24 (用户): 侧边栏更新按钮 + 个人资料 modal ===== */
+.update-btn { position: relative; color: var(--text-muted, #8a8a86); }
+.update-btn .update-icon { display: inline-block; transition: transform .4s; }
+.update-btn:hover .update-icon { transform: rotate(180deg); }
+.update-btn .update-dot {
+  width: 8px; height: 8px; border-radius: 50%; margin-left: auto;
+  background: var(--accent, #eefa06);
+  box-shadow: 0 0 8px var(--accent-glow, rgba(238,250,6,.8));
+}
+.update-btn.has-update {
+  color: var(--accent, #eefa06);
+  background: rgba(238,250,6,0.10);
+  animation: update-pulse 1.6s ease-in-out infinite;
+}
+.update-btn.has-update .update-icon { color: var(--accent, #eefa06); }
+.update-btn.updating { opacity: .85; }
+.update-btn.updating .update-icon { animation: spin 1s linear infinite; }
+@keyframes update-pulse {
+  0%,100% { box-shadow: inset 0 0 0 1px rgba(238,250,6,.35), 0 0 6px rgba(238,250,6,.2); }
+  50%     { box-shadow: inset 0 0 0 1px rgba(238,250,6,.6), 0 0 16px rgba(238,250,6,.45); }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 个人资料 / 头像设置 */
+.profile-avatar-preview {
+  width: 72px; height: 72px; border-radius: 50%; margin: 4px auto 14px;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 34px; font-weight: 700; color: #1a1a18;
+  background-size: cover; background-position: center;
+  box-shadow: 0 0 16px var(--accent-glow);
+}
+.profile-label { display: block; font-size: 12px; color: var(--text-muted, #8a8a86); margin: 10px 0 6px; }
+.profile-emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+.profile-emoji-grid button {
+  font-size: 20px; padding: 6px 0; border: 1px solid var(--border);
+  border-radius: 8px; background: transparent; cursor: pointer; transition: all .15s;
+}
+.profile-emoji-grid button:hover { background: rgba(238,250,6,0.12); }
+.profile-emoji-grid button.active { border-color: var(--accent); background: rgba(238,250,6,0.18); }
+.profile-color-grid { display: flex; gap: 8px; flex-wrap: wrap; }
+.profile-color-grid button {
+  width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent;
+  cursor: pointer; transition: transform .15s;
+}
+.profile-color-grid button.active { border-color: #fff; transform: scale(1.15); }
+.profile-name-input {
+  width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: 13px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+}
+.profile-did-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.profile-did { font-size: 11px; color: var(--text-muted, #8a8a86); font-family: ui-monospace, monospace; word-break: break-all; }
+.profile-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
