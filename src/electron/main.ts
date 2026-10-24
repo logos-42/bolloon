@@ -36,13 +36,13 @@ app.whenReady().then(async () => {
   createTray(getMainWindow);
 
   // 启动自动更新检查（后台，不阻塞 UI）。
-  // 安装成功后用 app.relaunch() 自动重启以应用新版本（避免单实例锁冲突）。
+  // 2026-10-24 (P0): 桌面端尚未接入签名/公证/发布更新源, 暂不自动安装重启 —— onUpdated 只记录不退出,
+  //   否则 checkAndUpdate 发现新版本时会 app.exit(0) 直接杀掉整个 app (白屏/闪退)。
   void (async () => {
     try {
       await checkAndUpdate({
         onUpdated: () => {
-          app.relaunch();
-          app.exit(0);
+          log('[auto-update] 发现新版本 (桌面端暂不自动重启, 请手动更新)', 'warn');
         },
       });
     } catch {

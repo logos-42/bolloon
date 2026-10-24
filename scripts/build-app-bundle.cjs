@@ -24,7 +24,12 @@ const ELECTRON_APP = path.join(ELECTRON_DIST, 'Electron.app');
 const APP_NAME = 'Bolloon Agent';
 const PRODUCT_NAME = 'Bolloon Agent';
 const APP_ID = 'com.hibs.bolloon';
-const OUTPUT_DIR = path.join(ROOT, 'release', 'mac-arm64');
+// 2026-10-24: 架构跟随宿主 (CI 上 macos-14=arm64 / macos-13=x64 各出一份),
+//   可用 BOLLOON_DESKTOP_ARCH 覆盖 (但 electron 二进制仍须与宿主架构一致, 交叉打不了)
+const DESKTOP_ARCH = process.env.BOLLOON_DESKTOP_ARCH || process.arch;
+const OUTPUT_DIR = path.join(ROOT, 'release', `mac-${DESKTOP_ARCH}`);
+// 2026-10-24: 版本号不再写死 (老脚本硬编码 0.1.42, 与 package.json 脱节) —— 单一真源
+const PKG_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 const TARGET_APP = path.join(OUTPUT_DIR, `${APP_NAME}.app`);
 
 function log(msg) {
@@ -54,9 +59,9 @@ function writeInfoPlist(appPath) {
   <key>CFBundleIdentifier</key>
   <string>${APP_ID}</string>
   <key>CFBundleVersion</key>
-  <string>0.1.42</string>
+  <string>${PKG_VERSION}</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.42</string>
+  <string>${PKG_VERSION}</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundlePackageType</key>
@@ -121,16 +126,75 @@ function main() {
   log(`Copying dist/`);
   copyDir(path.join(ROOT, 'dist'), path.join(appContentDir, 'dist'));
 
-  log(`Copying package.json`);
-  fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(appContentDir, 'package.json'));
+  log(`Copying package.json (with electron-builder extraMetadata)`);
+  // 2026-10-24: 不能直接拷仓库 package.json —— 它的 main 是 CLI 入口 (dist/cli-entry.js),
+  //   electron-builder 靠 build.extraMetadata 把它改成 Electron 主进程入口; 手搓脚本必须自己应用,
+  //   否则启动的是 CLI (实测: spawn ERR_INVALID_ARG_TYPE 崩在 cli-entry)。
+  const pkgRaw = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const extraMeta = (pkgRaw.build && pkgRaw.build.extraMetadata) || {};
+  const appPkg = {
+    name: pkgRaw.name,
+    productName: pkgRaw.build && pkgRaw.build.productName,
+    version: pkgRaw.version,
+    description: pkgRaw.description,
+    author: pkgRaw.author,
+    license: pkgRaw.license,
+    // 2026-10-24: main 取 electron 入口; 但 type 必须 module —— dist/web/server.js 是 ESM,
+    //   若设 commonjs (electron-builder extraMetadata 默认) 会让 web server 子进程 SyntaxError 秒退 ⇒ 白屏。
+    //   (electron 主入口是 CJS, Electron 主进程对主脚本有专门加载路径, 不受 type:module 影响)
+    main: extraMeta.main,
+    type: 'module',
+  };
+  fs.writeFileSync(path.join(appContentDir, 'package.json'), JSON.stringify(appPkg, null, 2));
+  // 2026-10-24: 写入打包标记, 供 src/electron/config.ts 的 isDev 判定 (手搓包 app.isPackaged 不可靠)
+  fs.writeFileSync(path.join(appContentDir, '.bolloon-packaged'), '');
 
-  log(`Copying node_modules/ (excluding devDeps) — this is the slow part`);
+  // 2026-10-24: electron 主进程链 (dist/electron-build) 是 CommonJS, 其余 dist/ 是 ESM
+  //   (根 type:module)。Electron 加载主进程按「最近的 package.json」判模块形态 ——
+  //   dist/electron-build 必须自带 {"type":"commonjs"}, 否则 require/module.exports 崩。
+  //   build:electron 已通过 scripts/electron-build-marker.cjs 写入; 这里幂等补一道
+  //   (单独跑 app:bundle 不走 build:electron 时也不缺)。
+  {
+    const ebDir = path.join(appContentDir, 'dist', 'electron-build');
+    fs.mkdirSync(ebDir, { recursive: true });
+    fs.writeFileSync(path.join(ebDir, 'package.json'), JSON.stringify({ type: 'commonjs' }, null, 2) + '\n');
+  }
+
+  log(`Copying node_modules/ (prod closure only) — this is the slow part`);
   // 不能用 rsync 因为 OOM, 用 cp -R
   const srcNm = path.join(ROOT, 'node_modules');
   const dstNm = path.join(appContentDir, 'node_modules');
   fs.mkdirSync(dstNm, { recursive: true });
-  // 排除大且 dev-only 的 packages, 但 @rayhanadev 必须保留 (生产代码用)
-  const entries = fs.readdirSync(srcNm);
+  // 2026-10-24: 老实现按顶层目录全拷 ⇒ devDependencies (vitest/typescript/electron…) 全进包, 2.0G。
+  //   改为只拷 `npm ls --omit=dev --all --parseable` 的生产闭包; 只取顶层包 (嵌套随父包递归带走)。
+  const entries = (() => {
+    let out = '';
+    try {
+      out = execSync('npm ls --omit=dev --all --parseable', {
+        cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024,
+      });
+    } catch (e) {
+      out = (e && e.stdout) || '';
+    }
+    const tops = new Set();
+    for (const line of out.split('\n')) {
+      const abs = line.trim();
+      if (!abs || !abs.includes('node_modules')) continue;
+      const rel = path.relative(srcNm, abs);
+      if (!rel || rel.startsWith('..')) continue;
+      const parts = rel.split(path.sep);
+      // 只保留顶层 (含 @scope/name 两段); 嵌套 node_modules 由父包递归带走
+      if (parts.includes('node_modules')) continue;
+      if (parts.length === 1) tops.add(parts[0]);
+      else if (parts.length === 2) tops.add(parts.join('/'));
+    }
+    // 空闭包 (npm ls 失败) ⇒ 回退到全量, 保证能跑而不是打出坏包
+    if (!tops.size) {
+      log('[warn] npm ls 未给出生产闭包, 回退为全量拷贝');
+      return fs.readdirSync(srcNm).filter((n) => !n.startsWith('.'));
+    }
+    return [...tops].filter((n) => fs.existsSync(path.join(srcNm, n.split('/')[0])));
+  })();
   let count = 0;
   for (const name of entries) {
     if (name.startsWith('.')) continue;
@@ -140,8 +204,11 @@ function main() {
       // 跳过 .bin, .cache, .package-lock.json
       const base = path.basename(s);
       if (base === '.bin' || base === '.cache' || base === '.package-lock.json') return false;
-      // 跳过 doc/test/assets 巨型 dir, 运行时不需要
-      if (base === 'test' || base === 'docs' || base === '__tests__') return false;
+      // 2026-10-24: 只跳过运行期绝对用不到的「文件」(编译产物/类型/文档), 不跳目录 ——
+      //   依赖里有些运行期必需文件恰好放在 test/ docs/ 目录下 (如 viem 的 _esm/actions/test/), 跳目录会缺模块。
+      if (/\.(?:map|d\.ts)$/.test(base)) return false;
+      if (/^(?:README|CHANGELOG|LICENSE|AUTHORS|NOTICE)(?:\..*)?$/i.test(base)) return false;
+      if (/\.(?:md|markdown|markdown\.md)$/i.test(base)) return false;
       return true;
     }});
     count++;
@@ -156,11 +223,25 @@ function main() {
     copyDir(binSrc, path.join(appContentDir, 'bin'));
   }
 
-  // 复制 build/ → Resources/build/ (tray 图标用)
+  // 复制 build/ 的**图标** → Resources/build/ (tray/window 图标用)
+  // 2026-10-24: 老实现整目录 copyDir ⇒ 把 dd/ ipa/ mobile-web/ 等产物 (486M) 全打进包。
+  //   运行期只需要 tray.png / icon.png。
   const buildSrc = path.join(ROOT, 'build');
   if (fs.existsSync(buildSrc)) {
-    log(`Copying build/ → Resources/build/`);
-    copyDir(buildSrc, path.join(TARGET_APP, 'Contents', 'Resources', 'build'));
+    // 2026-10-24: 手搓包里 app.isPackaged=false, buildResourcesDir() 回退到 app/build,
+    //   所以图标要同时放进 Resources/build (packaged 态) 和 app/build (手搓态), 否则托盘图标缺失。
+    const targets = [
+      path.join(TARGET_APP, 'Contents', 'Resources', 'build'),
+      path.join(appContentDir, 'build'),
+    ];
+    for (const dir of targets) {
+      fs.mkdirSync(dir, { recursive: true });
+      for (const f of ['tray.png', 'trayTemplate.png', 'icon.png', 'icon.icns', 'icon.ico']) {
+        const from = path.join(buildSrc, f);
+        if (fs.existsSync(from)) fs.copyFileSync(from, path.join(dir, f));
+      }
+    }
+    log(`Copied build icons → Resources/build/ + app/build/ (tray.* / icon.*)`);
   }
 
   log(`Done. App bundle: ${TARGET_APP}`);

@@ -1903,21 +1903,26 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
   // 2026-08-03: 后台自动安装/启动本地 Kubo (IPFS+IPNS 发布用, 全自动零手动).
   //   fire-and-forget, 不阻塞 server 启动; 首次下载 ~100MB 需 1-2 分钟.
   //   装好后 publish_did / DID 发布自动走 IPFS+IPNS; 没装好则降级本地模式.
-  (async () => {
-    try {
-      const sdk = await import('@diap/sdk');
-      const checkKuboSetup = (sdk as any).checkKuboSetup;
-      if (typeof checkKuboSetup !== 'function') return;
-      const setup = await checkKuboSetup(true, true);
-      if (setup?.ready && setup?.daemonRunning) {
-        console.log('[ipfs] 本地 Kubo 就绪 (自动安装/启动) → DID 发布支持 IPFS+IPNS');
-      } else {
-        console.log('[ipfs] Kubo 不可用, DID 发布降级本地模式 (可用 publish_did 工具重试)');
+  // 2026-10-24: 桌面端 (electron spawn) 设 BOLLOON_SKIP_KUBO=1 跳过 —— 冷启动期间拉起 Kubo 又会卡在
+  //   IPNS 发布 30s 超时 (该网络环境本就发布失败); 跳过则 DID 发布自动降级内存 CID 并跳过 IPNS,
+  //   启动从 ~60s 降到 ~30s。本地对话等核心功能不依赖 Kubo; 用户真要发布可用 publish_did 工具。
+  if (process.env.BOLLOON_SKIP_KUBO !== '1') {
+    (async () => {
+      try {
+        const sdk = await import('@diap/sdk');
+        const checkKuboSetup = (sdk as any).checkKuboSetup;
+        if (typeof checkKuboSetup !== 'function') return;
+        const setup = await checkKuboSetup(true, true);
+        if (setup?.ready && setup?.daemonRunning) {
+          console.log('[ipfs] 本地 Kubo 就绪 (自动安装/启动) → DID 发布支持 IPFS+IPNS');
+        } else {
+          console.log('[ipfs] Kubo 不可用, DID 发布降级本地模式 (可用 publish_did 工具重试)');
+        }
+      } catch (e) {
+        console.warn('[ipfs] Kubo 自动安装失败 (非致命):', (e as Error)?.message?.slice(0, 120));
       }
-    } catch (e) {
-      console.warn('[ipfs] Kubo 自动安装失败 (非致命):', (e as Error)?.message?.slice(0, 120));
-    }
-  })();
+    })();
+  }
 
   // 2026-08-06: ContextManager 事件 → SSE broadcast (CLI/Web 状态栏实时同步)
   try {
@@ -2152,28 +2157,38 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
 
     console.log(`P2P 身份已生成: ${p2pIdentity.did}`);
 
-    // 尝试发布 DID 到 IPFS
-    try {
-      const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
-      // 2026-08-09: 归属用户 DID — 智能体身份归属用户唯一身份 (DID 文档带 controller+alsoKnownAs)
+    // 尝试发布 DID 到 IPFS —— 2026-10-24: 改为后台非阻塞。
+    //   原 await auth.registerAgent 内部走 IPNS 发布, 网络不可达/无超时会无限挂起,
+    //   阻塞下方 listen() → 整个 app 永久卡在"初始化 P2P/IPFS"。
+    //   registerAgent 失败本就降级为"本地模式"(catch), 故放后台不影响 UI 启动;
+    //   P2P 跨节点能力在后台就绪后自动可用, 核心本地功能不依赖它。
+    void (async () => {
       try {
-        const owner = await loadOrCreateUserIdentity();
-        if (owner?.did) auth.setOwnerDid(owner.did);
-      } catch { /* 归属设置失败不阻塞 */ }
-      await auth.registerAgent({ name, services: [] }, kp, '');
-      console.log('P2P DID 已发布到 IPFS');
-    } catch (e) {
-      console.log('P2P DID 本地模式运行');
-    }
+        const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+        // 2026-08-09: 归属用户 DID — 智能体身份归属用户唯一身份 (DID 文档带 controller+alsoKnownAs)
+        try {
+          const owner = await loadOrCreateUserIdentity();
+          if (owner?.did) auth.setOwnerDid(owner.did);
+        } catch { /* 归属设置失败不阻塞 */ }
+        await auth.registerAgent({ name, services: [] }, kp, '');
+        console.log('P2P DID 已发布到 IPFS');
+      } catch (e) {
+        console.log('P2P DID 本地模式运行');
+      }
+    })();
 
     // v3: 完全用 P2PDirect 取代 @diap/sdk 的 HyperswarmCommunicator
     // 原因: @diap/sdk 的 sendToConnection 是 stub, 不真发数据
     // 这里故意不启动 p2pCommunicator (保持 null), 让 P2PDirect 独占 hyperswarm 通道
+    // 2026-10-24: start/joinTopic 也加防御性超时 —— hyperswarm DHT 连接在网络差时可能长时间挂起,
+    //   同样会阻塞 listen(); 超时即降级为"无 P2P"但不影响核心 UI。
     try {
       const { P2PDirect } = await import('../network/p2p-direct.js');
       v3P2PRef = new P2PDirect({ name: 'v3' });
-      await v3P2PRef.start();
-      await v3P2PRef.joinTopic(Buffer.from('bolloon-agent-harness'));
+      const withTimeout = <T>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+        Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`${label} 超时 ${ms}ms`)), ms))]);
+      await withTimeout(v3P2PRef.start(), 20_000, 'P2PDirect.start');
+      await withTimeout(v3P2PRef.joinTopic(Buffer.from('bolloon-agent-harness')), 20_000, 'P2PDirect.joinTopic');
 
       v3P2PRef.on('data', (evt: any) => {
         try {
@@ -9044,4 +9059,24 @@ export async function openBrowser(url: string) {
       console.error('打开浏览器失败:', err.message);
     }
   });
+}
+
+// 2026-10-24: 允许作为独立进程被 Electron 主进程 spawn (ELECTRON_RUN_AS_NODE=1)。
+//   旧逻辑: electron/server.ts 用 spawn 起 dist/web/server.js, 但该文件只是个**库** (export createWebServer),
+//   独立运行从不调用 createWebServer ⇒ 永远不监听 ⇒ 主进程等不到 BOLLOON_PORT= ⇒ 窗口加载死端口 → 白屏。
+//   触发条件: 显式环境变量 BOLLOON_STANDALONE_SERVER=1 (由 electron/server.ts 的 spawn env 注入),
+//   不再依赖 process.argv[1] 比对 —— ELECTRON_RUN_AS_NODE 下 argv 解析不可靠, 实测比对失败导致永不自启。
+const __shouldSelfStart = process.env.BOLLOON_STANDALONE_SERVER === '1' || (typeof process.argv[1] === 'string' && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]));
+if (__shouldSelfStart) {
+  const port = parseInt(process.env.PORT || process.env.ELECTRON_PORT || '54188', 10) || 54188;
+  const host = process.env.BOLLOON_HOST;
+  console.log(`[web] 自启内嵌服务 (standalone), port=${port} host=${host || 'default'}`);
+  createWebServer(port, { embedded: true, ...(host ? { host } : {}) })
+    .then(() => {
+      // listen 回调已输出 BOLLOON_PORT=<port> 契约行, Electron 主进程据此 resolve(actualPort)
+    })
+    .catch((err) => {
+      console.error('[web] 内嵌服务启动失败:', err);
+      process.exit(1);
+    });
 }

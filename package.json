@@ -31,7 +31,7 @@
     "build:web": "npx tsx scripts/build-web.ts",
     "build:rokid-sdk": "npm --prefix ../rokid run build",
     "test:rokid-sdk": "npm --prefix ../rokid test",
-    "build:electron": "tsc -p tsconfig.electron.json",
+    "build:electron": "tsc -p tsconfig.electron.json && node scripts/electron-build-marker.cjs",
     "build:all": "npm run build:main && npm run build:web && npm run build:electron && npm run build:cli",
     "start": "node dist/index.js",
     "dev": "tsx -r dotenv/config src/index.ts",
@@ -42,7 +42,7 @@
     "electron:build": "npm run build:electron && electron-builder",
     "electron:pack": "electron-builder --dir",
     "app:bundle": "node scripts/build-app-bundle.cjs",
-    "app:bundle:open": "node scripts/build-app-bundle.cjs && open \"release/mac-arm64/Bolloon Agent.app\"",
+    "app:bundle:open": "node scripts/build-app-bundle.cjs && open \"release/mac-x64/Bolloon Agent.app\"",
     "smoke:esm": "node scripts/smoke-esm.mjs",
     "check:token": "node scripts/solc-compile.mjs",
     "build:ios-web": "node scripts/build-ios-web.mjs",
@@ -95,6 +95,7 @@
     "blockstore-fs": "^4.0.1",
     "datastore-fs": "^12.0.1",
     "dotenv": "^17.4.2",
+    "electron-updater": "^6.8.11",
     "ethers": "^6.17.0",
     "express": "^5.2.1",
     "helia": "^7.1.10",
@@ -160,31 +161,65 @@
       }
     ],
     "extraMetadata": {
-      "main": "dist/electron-build/electron.js",
-      "type": "commonjs"
+      "main": "dist/electron-build/electron.js"
     },
     "win": {
       "target": [
         {
           "target": "nsis",
           "arch": [
-            "x64"
+            "x64",
+            "arm64"
           ]
         }
       ],
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": true
     },
     "mac": {
       "target": [
-        "dmg"
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
-      "icon": "build/icon.icns"
+      "icon": "build/icon.icns",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "notarize": false
     },
     "linux": {
       "target": [
-        "AppImage"
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "category": "Utility",
+      "maintainer": "Bolloon <bolloon@localhost>",
+      "synopsis": "Bolloon Agent — 本地优先的智能体桌面端"
     },
     "nsis": {
       "oneClick": false,
@@ -200,6 +235,14 @@
       "node_modules/@x402/**/*",
       "node_modules/libp2p/**/*",
       "node_modules/@libp2p/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "logos-42",
+        "repo": "bolloon",
+        "releaseType": "release"
+      }
     ]
   }
 }

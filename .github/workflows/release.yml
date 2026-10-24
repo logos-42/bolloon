@@ -66,6 +66,32 @@ jobs:
             release/*.tar.gz
           if-no-files-found: warn
 
+
+  # ============ macOS desktop (x64) ============
+  # 2026-10-24: 手搓 bundle 按宿主架构输出 —— macos-14=arm64 / macos-13=x64 各出一份
+  desktop-mac-x64:
+    name: macOS Desktop (x64)
+    runs-on: macos-13
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build:all
+      - run: npm run app:bundle
+      - name: Fallback tarball
+        run: |
+          cd "release/mac-x64"
+          tar -czf "../Bolloon Agent-${{ github.ref_name }}-mac-x64.tar.gz" "Bolloon Agent.app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bolloon-desktop-mac-x64
+          path: release/*.tar.gz
+          if-no-files-found: warn
+
   # ============ Windows desktop ============
   desktop-win:
     name: Windows Desktop
@@ -83,7 +109,9 @@ jobs:
       - name: electron-builder Windows
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --x64 --publish never
+          # 2026-10-24 (leo: 暂不签名, 直接绕过) — 阻止 electron-builder 自动发现本机证书
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --win --x64 --arm64 --publish never
       - uses: actions/upload-artifact@v4
         with:
           name: bolloon-desktop-win
@@ -108,12 +136,14 @@ jobs:
       - name: electron-builder Linux
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --linux --x64 --publish never
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --linux --x64 --arm64 --publish never
       - uses: actions/upload-artifact@v4
         with:
           name: bolloon-desktop-linux
           path: |
             release/*.AppImage
+            release/*.deb
             release/latest-linux.yml
 
   # ============ iOS (Capacitor) ============

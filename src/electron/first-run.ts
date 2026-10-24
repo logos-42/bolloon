@@ -58,10 +58,15 @@ const OVERLAY_HTML = `
 <p>所有数据在卸载后仍保留 — 想清理就手动删除 ~/.bolloon/。</p>
 <button class="btn" id="ok">知道了</button>
 <script>
-  const ok = document.getElementById('ok');
-  ok.addEventListener('click', () => window.electronAPI.markFirstRunSeen());
-  document.getElementById('data').textContent = window.electronAPI.getDataPathSync?.() || '';
-  document.getElementById('logs').textContent = window.electronAPI.getLogsPathSync?.() || '';
+const ok = document.getElementById('ok');
+// 2026-10-24: 原先只调 markFirstRunSeen, 主进程监听的 first-run:ack 从没被触发 → modal 关不掉。
+// 改为: 写标记后由页面自己 window.close() 关闭本 BrowserWindow, 主进程在 'closed' 里 resolve。
+ok.addEventListener('click', () => {
+  void window.electronAPI.markFirstRunSeen();
+  window.close();
+});
+document.getElementById('data').textContent = window.electronAPI.getDataPathSync?.() || '';
+document.getElementById('logs').textContent = window.electronAPI.getLogsPathSync?.() || '';
 </script>
 </body>
 </html>
@@ -119,20 +124,21 @@ export function showFirstRunOverlay(parent: BrowserWindow): Promise<void> {
       minimizable: false,
       maximizable: false,
       title: 'Welcome',
+      // 2026-10-24: 缺 preload ⇒ window.electronAPI undefined ⇒ data/logs 路径空白 + 点"知道了"抛错关不掉。
+      //   OVERLAY_HTML 依赖 electronAPI.getDataPathSync / markFirstRunSeen, 必须与主窗口同一 preload。
+      webPreferences: {
+        preload: path.join(__dirname, '..', 'electron-preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
     });
 
     const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(OVERLAY_HTML);
     overlay.loadURL(dataUrl);
 
-    // 一次性的 IPC handler, 关闭后清掉避免累积
-    const handler = () => {
-      markFirstRunSeen();
-      overlay.close();
-    };
-    ipcMain.once('first-run:ack', handler);
-
+    // 页面点 "知道了" 会先 markFirstRunSeen 再 window.close() (见 OVERLAY_HTML), 这里只在关闭后 resolve。
+    // 旧实现监听 first-run:ack, 但该 channel 从未被发送 → modal 关不掉, 已改为页面自关。
     overlay.on('closed', () => {
-      ipcMain.removeListener('first-run:ack', handler);
       resolve();
     });
   });
