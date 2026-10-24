@@ -378,7 +378,11 @@ export interface SignatureAuditEntry {
   payloadDigest: string;
 }
 
-const auditFile = (h?: string): string => path.join(bolloonHome(), 'wallet-signatures.jsonl');
+// 2026-10-24 (回归修): 2bfb463 的 env 收口把 h 参数吞了 —— recordSignatureAudit/readSignatureAudit
+//   传了 home 也写进真实 ~/.bolloon (task-contract / chain-wallet-authorization / network-pulse-consistency 三条红,
+//   TDD 的隔离 temp home 全失效)。语义恢复: 传 h ⇒ <h>/.bolloon · 不传 ⇒ bolloonHome()。
+const auditFile = (h?: string): string =>
+  path.join(h ? path.join(h, '.bolloon') : bolloonHome(), 'wallet-signatures.jsonl');
 
 export async function recordSignatureAudit(entry: Omit<SignatureAuditEntry, 'at' | 'payloadDigest'> & { payloadDigest?: string }, h?: string): Promise<void> {
   const row: SignatureAuditEntry = { at: Date.now(), payloadDigest: entry.payloadDigest || '', ...entry } as SignatureAuditEntry;

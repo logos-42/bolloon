@@ -349,8 +349,36 @@ let gwActiveChat: { id: string; name: string } | null = null;
 const gwMsgCache = new Map<string, any[]>(); // groupId -> messages
 
 function gwToast(text: string): void {
-  try { (window as any).showToast?.(text); } catch { /* 忽略 */ }
+  // 2026-10-24 (bugfix): 原来调的是挂 window 上的 showToast —— 全仓根本没有这个函数,
+  //   所有 Agent 网络/gateway 反馈 (邀请/建群/加入) 只进 console ⇒ 用户点按钮"完全无反应"。
+  //   改调本模块真实存在的 showSimpleToast (右下角 3s toast, z-index 10005 > modal)。
+  try { showSimpleToast(text); } catch { /* 忽略 */ }
   console.log('[gateway]', text);
+}
+
+/**
+ * 2026-10-24 (bugfix): 复制链接 —— 不再"调了 clipboard 就当成功"。
+ * 顺序: navigator.clipboard (需 secure context) → execCommand 回退 → 返回 false 让调用方如实报。
+ */
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* 掉到回退 */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch { return false; }
 }
 
 function gwEsc(s: unknown): string {
@@ -369,7 +397,7 @@ function gwModal(html: string): { root: HTMLElement; close: () => void } {
   return { root: overlay, close };
 }
 
-async function loadGatewaySidebar(): Promise<void> {
+async function loadGatewaySidebar(retry = 0): Promise<void> {
   try {
     const [g, n] = await Promise.all([
       fetch('/api/gateway/groups').then((r) => r.json()).catch(() => ({ groups: [] })),
@@ -378,6 +406,12 @@ async function loadGatewaySidebar(): Promise<void> {
     gwGroups = Array.isArray(g.groups) ? g.groups : [];
     gwNetworks = Array.isArray(n.networks) ? n.networks : [];
     renderGatewaySidebar();
+    // 2026-10-24 (bugfix): 冷启动竞态 — 内嵌服务 (IPFS/P2P/DID 引导 30~140s) 没就绪时
+    //   /api/gateway/* 可能返回空, 拉到空列表只能干等 30s 轮询 ⇒ 用户以为"群聊没了"。
+    //   首次空就 3s / 8s 各补一次 (上限 2 次, 真空账号也只是多两次只读请求)。
+    if (gwGroups.length === 0 && retry < 2) {
+      setTimeout(() => { void loadGatewaySidebar(retry + 1); }, retry === 0 ? 3000 : 8000);
+    }
   } catch { /* 忽略 */ }
 }
 
@@ -498,18 +532,36 @@ function openGroupChat(id: string, name: string): void {
           <button class="gw-chat-invite" title="复制群邀请链接">🔗 邀请</button>
         </span>
       </div>
+      <!-- 2026-10-24 (bugfix): 邀请链接可视区 —— 自动复制失败时也能手选复制, 不再"点了没反应" -->
+      <div class="gw-chat-link" style="display:none;"></div>
       <div class="gw-chat-msgs" id="gw-msgs-${id}"><div class="gw-msg-empty">加载中...</div></div>
       <div class="gw-chat-input-row">
         <input class="gw-chat-input" id="gw-input-${id}" placeholder="发消息给群成员... (Enter 发送)" />
         <button class="gw-chat-send">发送</button>
       </div>
     </div>`);
+  // 2026-10-24 (bugfix): 邀请 = 取链接 → 真复制 → **如实反馈** (成功/失败都说, 失败把链接摆出来)
   root.querySelector('.gw-chat-invite')?.addEventListener('click', async () => {
-    const r = await fetch(`/api/gateway/groups/${id}/link`).then((x) => x.json()).catch(() => null);
-    if (r?.link) {
-      try { await navigator.clipboard.writeText(r.link); } catch { /* 忽略 */ }
-      gwToast('群邀请链接已复制, 分享给其他 Agent');
-    } else gwToast('获取链接失败');
+    const btn = root.querySelector('.gw-chat-invite') as HTMLButtonElement | null;
+    const box = root.querySelector('.gw-chat-link') as HTMLElement | null;
+    if (btn) { btn.disabled = true; btn.textContent = '获取中...'; }
+    try {
+      const r = await fetch(`/api/gateway/groups/${encodeURIComponent(id)}/link`)
+        .then((x) => x.json()).catch(() => null);
+      if (!r?.link) {
+        gwToast(`获取群邀请链接失败${r?.error ? ': ' + r.error : ' (服务未就绪)'}`);
+        return;
+      }
+      if (box) {
+        box.style.display = 'block';
+        box.textContent = r.link;
+        box.title = r.link;
+      }
+      const ok = await copyTextToClipboard(r.link);
+      gwToast(ok ? '✅ 群邀请链接已复制, 分享给其他 Agent' : '⚠️ 自动复制失败 — 链接已显示在群名下方, 请手选复制');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🔗 邀请'; }
+    }
   });
   const sendBtn = root.querySelector('.gw-chat-send') as HTMLButtonElement;
   const input = root.querySelector('.gw-chat-input') as HTMLInputElement;
@@ -3141,69 +3193,36 @@ async function checkApiConfig() {
   }
 }
 
-// 2026-07-28: 加载 DID 身份 → 渲染左下角头像 + DID 名
+// 2026-07-28: 加载 DID 身份 → 渲染头像 + DID 名 (2026-10-24: 头像移到折叠态侧边栏底部, 名字进 title/modal)
 async function loadUserIdentity() {
   try {
     const res = await fetch('/api/user/identity');
     if (!res.ok) return;
     const identity = await res.json();
-    const letter = identity.name ? identity.name.charAt(0).toUpperCase() : '?';
+    // 2026-10-24: #user-name/#user-did 行随左下角账号块一起移除 (折叠态窄条放不下文字,
+    //   名字走头像 title + 个人资料 modal; 内联改名也随 modal 的昵称输入框保留) —
+    //   两个 getElementById 留 null 守卫, 防旧 dist/移动端壳仍渲染它们时静默失效。
     const nameEl = document.getElementById('user-name');
     const didEl = document.getElementById('user-did');
     const letterEl = document.getElementById('avatar-letter');
     if (nameEl) nameEl.textContent = identity.name || '匿名';
     if (didEl) didEl.textContent = identity.didShort ? `did:key:${identity.didShort}` : '';
-    if (letterEl) letterEl.textContent = letter;
+    if (letterEl) letterEl.textContent = identity.name ? identity.name.charAt(0).toUpperCase() : '?';
 
     // 2026-10-24 (用户): 渲染自定义头像 (emoji | 颜色 | 图片) + 点击打开个人资料设置 (个人身份相关)
+    //   2026-10-24 (用户二次): 头像移到折叠态侧边栏底部 (.collapsed-footer) — 窄条放不下名字,
+    //   把名字写进 title  tooltip (个人资料 modal 里仍有完整名字/DID)
     renderAvatarFromIdentity(identity);
     const avatarEl = document.getElementById('user-avatar');
     if (avatarEl) {
       avatarEl.style.cursor = 'pointer';
+      avatarEl.title = identity.name ? `个人资料 (${identity.name})` : '个人资料';
       avatarEl.onclick = () => { openProfileModal(); };
     }
 
-    // 2026-08-02: 点击名字 → 内联编辑 (PUT /api/user/identity)
+    // 2026-10-24: 内联改名随 #user-name 行一起移除 — 改名走「个人资料」modal 的昵称输入框
     if (nameEl) {
-      nameEl.onclick = () => {
-        const current = nameEl.textContent || '';
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.value = current;
-        input.maxLength = 40;
-        input.style.cssText = 'width:100%;background:var(--bg);border:1px solid var(--accent);border-radius:4px;color:var(--text);font-size:12px;padding:2px 6px;';
-        nameEl.replaceWith(input);
-        input.focus();
-        input.select();
-        const commit = async (save) => {
-          const newName = input.value.trim();
-          if (save && newName && newName !== current) {
-            try {
-              const r = await fetch('/api/user/identity', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: newName }),
-              });
-              if (r.ok) {
-                const updated = await r.json();
-                nameEl.textContent = updated.name || newName;
-                const letterEl2 = document.getElementById('avatar-letter');
-                if (letterEl2) letterEl2.textContent = (updated.name || '?').charAt(0).toUpperCase();
-                if (typeof showSimpleToast === 'function') showSimpleToast('✓ 名字已更新');
-              }
-            } catch (e) { /* 静默 */ }
-          }
-          // 恢复 span (无论保存与否)
-          if (!input.isConnected) return;
-          nameEl.textContent = input.value.trim() || current;
-          input.replaceWith(nameEl);
-        };
-        input.onblur = () => commit(true);
-        input.onkeydown = (e) => {
-          if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
-          if (e.key === 'Escape') { input.blur(); commit(false); }
-        };
-      };
+      nameEl.title = '点击修改名字';
     }
   } catch (e) {
     // 静默失败 — 不影响主聊天
@@ -3257,7 +3276,9 @@ async function refreshAuthAccounts() {
   } catch { /* 静默 */ }
 }
 
-// ── 2026-10-24 (用户): 侧边栏更新按钮 + 个人资料/头像设置 ──
+// ── 2026-10-24 (用户): 折叠态底部簇的更新按钮 + 个人资料/头像设置 ──
+//   (三者 2026-10-24 同日从展开态左下角 footer 移到 #sidebar-collapsed-bar 的 .collapsed-footer:
+//    最底部个人资料 · 往上链上浏览器 · 检查更新仅有更新才出现 — CSS 见 style.css .collapsed-footer)
 const PROFILE_EMOJIS = ['🙂','😎','🤖','👤','🦊','🐱','🐶','🌟','🔥','💧','🍀','⚡','🎯','🧠','💎','🚀','🌈','🍋','🛸','🎩'];
 const PROFILE_COLORS = ['#eefa06','#c4d640','#7bdff2','#f2b632','#f28b82','#b388ff','#81c995','#ffab91'];
 
@@ -3387,6 +3408,9 @@ async function saveProfile(): Promise<void> {
       renderAvatarFromIdentity(updated);
       const nm = document.getElementById('user-name'); if (nm) nm.textContent = updated.name || '匿名';
       const dl = document.getElementById('user-did'); if (dl) dl.textContent = updated.didShort ? `did:key:${updated.didShort}` : '';
+      // 2026-10-24: 名字进折叠态头像 title (user-name 行已不在 DOM, title 是窄条里的名字载体)
+      const av = document.getElementById('user-avatar');
+      if (av) av.title = updated.name ? `个人资料 (${updated.name})` : '个人资料';
       document.getElementById('profile-modal')?.classList.remove('active');
       if (typeof showSimpleToast === 'function') showSimpleToast('✓ 资料已保存');
     } else if (typeof showSimpleToast === 'function') { showSimpleToast('保存失败'); }
@@ -3406,6 +3430,9 @@ function bindProfileAndUpdate(): void {
   if (pm) pm.addEventListener('click', (e) => { if (e.target === pm) pm.classList.remove('active'); });
   // 后台静默检查更新 (有更新则侧边栏按钮变亮)
   setTimeout(() => { void checkUpdateStatus(false); }, 4000);
+  // 2026-10-24 (用户): 「检查更新」按钮常态隐藏, 仅有更新才出现 ⇒ 只查一次不够:
+  //   运行中才发布的新版永远不亮。加周期性复查 (10min, 与 gateway 30s 刷新同思路, 量更轻)。
+  setInterval(() => { void checkUpdateStatus(false); }, 10 * 60 * 1000);
 }
 
 if (typeof document !== 'undefined') {

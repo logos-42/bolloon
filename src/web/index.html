@@ -107,25 +107,10 @@
         </ul>
       </div>
 
+      <!-- 2026-10-24 (用户): 个人资料 / 检查更新 / 链上浏览器 移出左下角 —
+           改放折叠态侧边栏 (#sidebar-collapsed-bar) 底部固定簇 .collapsed-footer;
+           展开态 footer 只留连接状态 (名字/DID/头像进「个人资料」modal 看) -->
       <div class="sidebar-footer">
-        <!-- 2026-09-22 (P7): 链上浏览器入口 (只读索引页面, 独立页 /explorer) -->
-        <a class="section-action" id="chain-explorer-link" href="/explorer" title="链上浏览器 (只读) — 索引高度 / 事件统计 / 交易时间线">
-          <span>◧</span>
-          <span data-zh="链上浏览器" data-en="Chain explorer">链上浏览器</span>
-        </a>
-        <!-- 2026-10-24 (用户): 自动更新按钮放侧边栏 — 有更新就变亮, 点击一条龙更新 -->
-        <button class="section-action update-btn" id="update-btn" title="检查并安装更新">
-          <span class="update-icon">⟳</span>
-          <span class="update-text" id="update-text">检查更新</span>
-          <span class="update-dot" id="update-dot" title="有新版本" style="display:none;"></span>
-        </button>
-        <div class="user-avatar" id="user-avatar" title="点击设置头像 / 个人资料">
-          <span class="avatar-letter" id="avatar-letter">?</span>
-        </div>
-        <div class="user-info">
-          <span class="user-name" id="user-name" title="点击修改名字" style="cursor:pointer;">加载中...</span>
-          <span class="user-did" id="user-did"></span>
-        </div>
         <div class="agent-status">
           <span class="status-dot"></span>
           <span class="status-text">已连接</span>
@@ -149,7 +134,23 @@
               <button class="collapsed-channel" data-target="gateway-add-btn" data-name="Agent 网络">🌐</button>
               <button class="collapsed-channel" data-target="wallet-btn" data-name="钱包">👛</button>
               <button class="collapsed-channel" data-target="judgments-btn" data-name="我的判断">🛡</button>
-              <button class="collapsed-channel" data-target="chain-explorer-link" data-name="链上浏览器">◧</button>
+            </div>
+            <!-- 2026-10-24 (用户): 折叠态底部固定簇 — 最底部个人资料, 往上链上浏览器;
+                 检查更新仅有更新时才出现 (常态隐藏, has-update 才 display) -->
+            <div class="collapsed-footer" id="collapsed-footer">
+              <button class="section-action update-btn" id="update-btn" title="检查并安装更新">
+                <span class="update-icon">⟳</span>
+                <span class="update-text" id="update-text">检查更新</span>
+                <span class="update-dot" id="update-dot" title="有新版本" style="display:none;"></span>
+              </button>
+              <!-- 2026-09-22 (P7): 链上浏览器入口 (只读索引页面, 独立页 /explorer) — 2026-10-24 移入折叠态底部簇 -->
+              <a class="section-action" id="chain-explorer-link" href="/explorer" title="链上浏览器 (只读) — 索引高度 / 事件统计 / 交易时间线">
+                <span>◧</span>
+                <span data-zh="链上浏览器" data-en="Chain explorer">链上浏览器</span>
+              </a>
+              <div class="user-avatar" id="user-avatar" title="点击设置头像 / 个人资料">
+                <span class="avatar-letter" id="avatar-letter">?</span>
+              </div>
             </div>
           </div>
 

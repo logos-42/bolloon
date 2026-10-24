@@ -148,6 +148,13 @@ const DEFAULT_META = (ttlDays: number): SectionMeta => ({
 const STATIC_LAYERS: Omit<PromptLayer, 'content'>[] = [
   // ── core/ ──
   { id: 'core.identity',         version: '1.0.0', priority: 50,  appliesTo: ['all'], source: 'static-md', maxChars: 800  , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  // 2026-10-24 (leo: 核心特质 — 去成长/去爱 · 合作/分享/探索 · 矛盾中平衡, 混沌中秩序):
+  //   "bolloon 开始的样子" = 每个人最短时间拼出自己的专属 agent ⇒ 特质独立成层,
+  //   不并进 identity (该层 maxChars 800 且已被截断, 追加内容进不了 prompt —
+  //   同 2026-10-19 social-proactivity 假绿教训)。appliesTo ['all'] ⇒ CLI/web 同一装配
+  //   (手机端 mobile-harness 自带 system, 同文另有一份, 见 src/web/mobile-harness.ts)。
+  //   预算: 正文 ≤ maxChars 800, core 段装配后 ≈ 6400, 仍在 TOTAL_BUDGET 8000 内 (tool.* 之后让位)。
+  { id: 'core.core-traits',      version: '1.0.0', priority: 55,  appliesTo: ['all'], source: 'static-md', maxChars: 800  , meta: DEFAULT_META(TTL_KNOWLEDGE) },
   // 2026-10-16: 停用过时的通用知识/Computer Use 提示；实际工具与知识边界由运行时提供。
   { id: 'core.knowledge',        version: '1.0.0', priority: 60,  appliesTo: ['never'], source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_KNOWLEDGE) },
   { id: 'core.tools.thin',       version: '1.0.0', priority: 70,  appliesTo: ['never'], source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_SAFETY) },

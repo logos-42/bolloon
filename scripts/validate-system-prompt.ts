@@ -26,6 +26,7 @@ const MAX_CHARS: Record<string, number> = {
   'core/hibs_reminders': 0,   // 停用 (was 800)
   'core/refusal': 800,
   'core/social-proactivity': 800, // 2026-10-19 新增 (与 registry STATIC_LAYERS 手同步)
+  'core/core-traits': 800,       // 2026-10-24 新增 (与 registry STATIC_LAYERS 手同步)
   'core/tone': 0,            // 停用 (2026-10-16, was 500 — 通用语气提示, 由 persona/纪律段覆盖)
   'core/wellbeing': 0,       // 停用 (2026-10-16, was 600 — 通用健康护栏, 注入过多)
   'core/evenhandedness': 0,  // 停用 (2026-10-16, was 300 — 通用立场提示, 与本地 agent 无关)

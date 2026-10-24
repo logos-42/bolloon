@@ -169,8 +169,72 @@ body {
   gap: 8px;
   padding: 8px;
   overflow-y: auto;
-  max-height: calc(100vh - 120px);
+  /* 2026-10-24 (用户): 底部固定簇 (.collapsed-footer) 进来后, 图标组从"写死 max-height"
+     改为 flex 吃剩余空间 — 图标再多也是它滚, 底部那簇永远吸底不被挤走 */
+  flex: 1 1 auto;
+  min-height: 0;
 }
+
+/* ===== 2026-10-24 (用户): 折叠态底部固定簇 — 最底部个人资料, 往上链上浏览器, 检查更新仅有更新才出现 ===== */
+.collapsed-footer {
+  margin-top: auto;
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 8px 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* 窄条里的入口 (链上浏览器 / 检查更新) 改成图标按钮形态, 与 .collapsed-channel 同几何 */
+.sidebar-collapsed .section-action {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  gap: 0;
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  color: var(--text-muted, #8a8a86);
+  font-size: 16px;
+  font-weight: 400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  text-decoration: none;
+  transition: var(--transition);
+}
+.sidebar-collapsed .section-action:hover {
+  background: var(--bg-active);
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: none;
+  transform: none;
+}
+/* 窄条只留图标: 文字段隐藏 (DOM 保留 — 语言切换 data-zh/data-en 与 JS 取 text 照旧) */
+.sidebar-collapsed .section-action [data-zh],
+.sidebar-collapsed .section-action .update-text { display: none; }
+
+/* 检查更新: 常态隐藏, 仅有更新 (has-update) 才出现 */
+.sidebar-collapsed #update-btn { display: none; }
+.sidebar-collapsed #update-btn.has-update {
+  display: flex;
+  color: var(--accent, #eefa06);
+  background: rgba(238, 250, 6, 0.10);
+  border-color: var(--accent, #eefa06);
+}
+.sidebar-collapsed .update-btn .update-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  margin-left: 0;
+}
+
+/* 折叠态头像稍大一号, 作"个人资料"入口 (最底部) */
+.sidebar-collapsed .user-avatar { width: 36px; height: 36px; }
 
 .collapsed-channel {
   width: 40px;
@@ -5070,6 +5134,15 @@ body:has(> .api-config-page) {
   background: rgba(196, 214, 64, 0.15); color: #c4d640;
   border: 1px solid rgba(196, 214, 64, 0.4);
   border-radius: 6px; padding: 4px 10px; font-size: 11.5px; cursor: pointer;
+}
+.gw-chat-invite:disabled { opacity: 0.6; cursor: default; }
+/* 2026-10-24 (bugfix): 邀请链接可视区 (自动复制失败时手选复制) */
+.gw-chat-link {
+  margin: 8px 0 0; padding: 6px 8px; border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.12);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; line-height: 1.45; color: var(--text-muted, #9a9a96);
+  word-break: break-all; user-select: all; cursor: text;
 }
 .gw-chat-msgs {
   flex: 1; overflow-y: auto; padding: 12px 4px;
