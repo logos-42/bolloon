@@ -6,6 +6,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 import * as crypto from 'crypto';
 import {
   validateMessageInput,
@@ -1702,7 +1703,7 @@ let selfImproveEnabled = false;
 
 // ========== 端口锁 + 优雅关闭 ==========
 
-const LOCK_PATH = path.join(os.homedir(), '.bolloon', 'port.lock.json');
+const LOCK_PATH = path.join(bolloonHome(), 'port.lock.json');
 let activeServer: ReturnType<typeof createServer> | null = null;
 let cleanupDone = false;
 

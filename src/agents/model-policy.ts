@@ -52,6 +52,7 @@ import {
   type RunModelSwitchEvent,
   type RunModelSwitchMode,
 } from './run-store.js';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
 // ============================================================
 // 类型: 策略
@@ -577,7 +578,7 @@ export function pickFallbackConfig(
 // ============================================================
 
 export function modelPolicyDir(): string {
-  return path.join(os.homedir(), '.bolloon', 'model-policy');
+  return path.join(bolloonHome(), 'model-policy');
 }
 
 export function modelPolicyPath(goalId: string): string {

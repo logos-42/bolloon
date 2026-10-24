@@ -33,6 +33,7 @@ export type GoalExternalSource = 'p2p' | 'delegate' | 'http' | 'contact' | 'any'
 //   用途: Goal.continuation 上与 GoalContinuationRecord 收敛的那几个字段 (见下)。
 import type { GoalChangeRequest, GoalContinuationRecord, GoalLifecycleState, PendingReport, UserVisibleState } from './goal-flywheel/types.js';
 import { toUserVisibleState } from './goal-flywheel/work-monitor.js';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
 export type GoalStatus =
   | 'open' | 'active' | 'recovering' | 'retry_wait' | 'awaiting_external' | 'stalled'
@@ -188,7 +189,7 @@ export interface CreateGoalOptions {
 }
 
 export function goalsDir(): string {
-  return path.join(os.homedir(), '.bolloon', 'goals');
+  return path.join(bolloonHome(), 'goals');
 }
 
 function goalPath(goalId: string): string {

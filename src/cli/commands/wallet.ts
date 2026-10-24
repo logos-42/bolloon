@@ -20,6 +20,7 @@ import {
   okEnvelope, failEnvelope,
   line, title, hint, plain, opt, optAll,
 } from '../protocol-envelope.js';
+import { bolloonHome } from '../../bootstrap/env-loader.js';
 
 export const WALLET_USAGE = `
 ${title('bolloon wallet')}
@@ -35,7 +36,7 @@ ${title('bolloon wallet')}
       **绝不输出私钥**; 审计写 ~/.bolloon/wallet-signatures.jsonl (只记摘要)。
 `;
 
-const walletFile = (): string => path.join(process.env.HOME || os.homedir(), '.bolloon', 'wallet.json');
+const walletFile = (): string => path.join(bolloonHome(), 'wallet.json');
 
 /**
  * 只读探测钱包 (不创建)。存在性检查与地址读取都走文件, 不调 `loadOrCreateWallet`
@@ -205,7 +206,7 @@ async function walletSetPolicy(flags: CliFlags): Promise<CommandResult> {
 // ── sign (P3 收尾: 受控自主签名, 唯一放行闸 = authorizeWalletSignature) ────────
 
 /** 本机签名授权策略文件 (它是**本机用户**的显式授权; CLI 参数不能凭空授予) */
-const signingPolicyFile = (): string => path.join(process.env.HOME || os.homedir(), '.bolloon', 'signing-policy.json');
+const signingPolicyFile = (): string => path.join(bolloonHome(), 'signing-policy.json');
 
 export interface LocalSigningPolicy {
   agentAuthorized: boolean;

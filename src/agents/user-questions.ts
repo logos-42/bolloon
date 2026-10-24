@@ -17,6 +17,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
 export type QuestionStatus = 'pending' | 'answered' | 'expired' | 'cancelled';
 
@@ -75,7 +76,7 @@ export class UserQuestionStore {
   private listeners = new Set<(q: UserQuestion) => void>();
   private loaded = false;
 
-  constructor(private file: string = path.join(os.homedir(), '.bolloon', 'user-questions.json')) {}
+  constructor(private file: string = path.join(bolloonHome(), 'user-questions.json')) {}
 
   /** 延迟加载 (首次访问时读盘; 失败静默 → 空列表) */
   async load(): Promise<void> {

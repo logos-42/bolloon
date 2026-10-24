@@ -20,6 +20,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
 export interface PersistedMessage {
   role: 'user' | 'assistant' | 'tool' | 'system';
@@ -60,8 +61,8 @@ export class SessionStore {
   private readonly jsonlDir: string;
 
   constructor(config: SessionStoreConfig = {}) {
-    this.cacheDir = config.cacheDir ?? path.join(os.homedir(), '.bolloon', 'sessions', 'cache');
-    this.jsonlDir = path.join(os.homedir(), '.bolloon', 'sessions', 'jsonl');
+    this.cacheDir = config.cacheDir ?? path.join(bolloonHome(), 'sessions', 'cache');
+    this.jsonlDir = path.join(bolloonHome(), 'sessions', 'jsonl');
   }
 
   get dir(): string {

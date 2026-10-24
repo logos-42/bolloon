@@ -17,6 +17,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
 export type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 
@@ -44,7 +45,7 @@ export interface Task {
   sessionKey?: string;
 }
 
-const TASK_DIR = path.join(os.homedir(), '.bolloon', 'tasks');
+const TASK_DIR = path.join(bolloonHome(), 'tasks');
 
 async function ensureDir(): Promise<void> {
   await fs.mkdir(TASK_DIR, { recursive: true });

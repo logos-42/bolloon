@@ -34,6 +34,7 @@ import { sessionStore, PersistedMessage } from './session-store.js';
 import * as taskState from './task-state.js';
 import type { Task } from './task-state.js';
 import { onGoalParked, onGoalResumed } from '../bootstrap/lifecycle-hooks.js';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
 // 注: 不引 chatArchiver — 它的 ArchiveOpts schema (publicKey + entry) 与 goal event
 // (peerDid + content) 不匹配, 容易写错字段. 改用本文件专属的 snapshot.jsonl 落盘.
@@ -115,7 +116,7 @@ export interface ListParkedFilter {
 // 内部: 落盘 + 读盘
 // ============================================================
 
-const GOALS_DIR = path.join(os.homedir(), '.bolloon', 'goals');
+const GOALS_DIR = path.join(bolloonHome(), 'goals');
 const SNAPSHOT_FILE = path.join(GOALS_DIR, 'snapshot.jsonl');
 const EVENT_FILE = path.join(GOALS_DIR, 'event.jsonl');
 

@@ -26,13 +26,14 @@ import type {
   JudgenessVisibility,
   JudgenessOpenState,
 } from './types.js';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
 // ---------------------------------------------------------------------------
 // 路径常量 (每次重读 env, 支持测试隔离)
 // ---------------------------------------------------------------------------
 
 export function homeDir(): string {
-  return process.env.BOLLOON_HOME || path.join(os.homedir(), '.bolloon');
+  return bolloonHome();
 }
 
 export function JUDGENESS_ROOT(): string {

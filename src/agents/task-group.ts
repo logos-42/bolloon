@@ -44,6 +44,7 @@ import { parseGroupLink, listGroups, groupSend, groupMessages, type GroupMessage
 // 2026-09-25: 隐私红线规则表抽到 task-public-text.ts (手机端与桌面端**同一份**)
 import { PRIVACY_RULES, NODE_IDENTITY_RULES, scanPublicText, requirePublicText, scanNodeIdentity, mask } from './task-public-text.js';
 import type { PrivacyRule, PrivacyViolation } from './task-public-text.js';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
 // 保持对外 API 不变 (老调用方/测试继续 from './task-group.js' 拿这些)
 export { PRIVACY_RULES, NODE_IDENTITY_RULES, scanPublicText, requirePublicText, scanNodeIdentity, mask };
@@ -226,7 +227,7 @@ export interface BoardAnnouncementFacts {
 }
 
 export const boardDirOf = (home?: string): string =>
-  path.join(home || process.env.HOME || os.homedir(), '.bolloon', 'tasks', 'board');
+  path.join(bolloonHome(), 'tasks', 'board');
 
 /** 公告 id 形状闸 (防目录穿越): 与 task-board 的 safeId 同形 */
 export function isAnnouncementId(id: string): boolean {

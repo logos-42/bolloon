@@ -16,8 +16,9 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
-const SECRET_DIR = process.env.BOLLOON_HOME || path.join(os.homedir(), '.bolloon');
+const SECRET_DIR = bolloonHome();
 
 export interface P2PSecret {
   version: 1;

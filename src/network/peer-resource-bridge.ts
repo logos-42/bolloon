@@ -20,8 +20,9 @@ import * as peerFs from '../network/peer-fs.js';
 import type {
   ManifestGroup, ManifestFunction, ManifestExportment, ManifestScience,
 } from '../agents/agent-manifest-protocol.js';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
-const HOME = process.env.BOLLOON_HOME || path.join(os.homedir(), '.bolloon');
+const HOME = bolloonHome();
 export const LOCAL_RESOURCES_ROOT = path.join(HOME, 'local-resources');
 
 type Category = 'groups' | 'functions' | 'exportments' | 'sciences';

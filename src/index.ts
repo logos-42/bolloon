@@ -6445,6 +6445,11 @@ function restartCurrentProcess(): void {
 }
 
 async function main() {
+  // 2026-10-23: 密钥从 `<home>/.env` 加载, 先于任何配置读取 (secrets in .env / settings in config)。
+  try {
+    const { loadDotEnvSync } = await import('./bootstrap/env-loader.js');
+    loadDotEnvSync();
+  } catch { /* 加载失败不阻塞启动 */ }
 
   try {
   const args = parseArgs();

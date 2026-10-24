@@ -46,6 +46,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { t as i18nT } from '../web/i18n.js';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 // ============================================================================
 // 硬编码兜底 (策略文件读不到时, 用这套)
 // 这是**最后一道防线** - AI 即便能改 ~/.bolloon/ 也没法删这个常量
@@ -134,8 +135,8 @@ let cachedPolicy: SelfImprovePolicy | null = null;
 let policyLoadedAt: number = 0;
 const POLICY_TTL_MS = 60_000; // 60 秒缓存 (避免每次 shell_exec 都读盘)
 
-const POLICY_PATH = path.join(os.homedir(), '.bolloon', 'self-improve-policy.json');
-const POLICY_AUDIT_PATH = path.join(os.homedir(), '.bolloon', 'self-improve-audit.log');
+const POLICY_PATH = path.join(bolloonHome(), 'self-improve-policy.json');
+const POLICY_AUDIT_PATH = path.join(bolloonHome(), 'self-improve-audit.log');
 
 /**
  * 默认策略模板 - 第一次启动时写到磁盘

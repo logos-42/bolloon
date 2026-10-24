@@ -11,6 +11,8 @@ import * as fsSync from 'fs';
 // 运行时只在这里的 initialize()/setCustomProviders() 里**调用**, 模块体不读对方的导出 (无 TDZ 风险)。
 import type { CustomProviderConfig } from './provider-registry.js';
 import { absorbLegacyProviderEntries, ensureProviderRegistryMetadataSource, getProviderRegistryEntry, normalizeCustomProviders, setCustomProviderSnapshot } from './provider-registry.js';
+// 2026-10-23: env key 覆盖 — envKeyNamesOf 是 provider→API key 环境变量名的唯一真源
+import { envKeyNamesOf } from './model-selection.js';
 
 export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'mimo' | 'grok' | 'local';
 
@@ -50,8 +52,15 @@ function configDir(): string {
 }
 // 2026-08-07: llm-config.json → bolloon-config.json (统一配置文件名, Bolloon 自己有写权限)
 //   initialize() 会做一次迁移: 旧文件存在且新文件不存在 → 复制旧内容, 之后统一读写新文件
-const CONFIG_PATH = path.join(configDir(), 'bolloon-config.json');
-const LEGACY_CONFIG_PATH = path.join(configDir(), 'llm-config.json');
+// 2026-10-24: 路径必须**每次调用时**解析 —— 旧实现是模块加载时算死的常量,
+//   之后改 BOLLOON_HOME (桌面版按 OS 规范目录注入 / 测试临时目录) 全部失效,
+//   store 会继续读写首次 import 时的那个目录。configDir() 本身是动态的, 这里对齐。
+function configPath(): string {
+  return path.join(configDir(), 'bolloon-config.json');
+}
+function legacyConfigPath(): string {
+  return path.join(configDir(), 'llm-config.json');
+}
 
 export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
   openai: {
@@ -331,15 +340,15 @@ class LLMConfigStore {
       await fs.mkdir(configDir(), { recursive: true });
       // 2026-08-07: 迁移 — 旧 llm-config.json 存在且新 bolloon-config.json 不存在时复制旧内容
       try {
-        await fs.access(CONFIG_PATH);
+        await fs.access(configPath());
       } catch {
         try {
-          const legacy = await fs.readFile(LEGACY_CONFIG_PATH, 'utf-8');
-          await fs.writeFile(CONFIG_PATH, legacy, { mode: 0o600 });
+          const legacy = await fs.readFile(legacyConfigPath(), 'utf-8');
+          await fs.writeFile(configPath(), legacy, { mode: 0o600 });
           console.log('[config-store] 已迁移 llm-config.json → bolloon-config.json');
         } catch { /* 旧文件也不存在 → 走默认配置 */ }
       }
-      const data = await fs.readFile(CONFIG_PATH, 'utf-8');
+      const data = await fs.readFile(configPath(), 'utf-8');
       const loadedConfig = JSON.parse(data);
 
       // 确保加载的配置包含所有默认供应商，缺失的用默认值补充
@@ -366,6 +375,19 @@ class LLMConfigStore {
       const activeProvider = loadedConfig.activeProvider as ModelProvider;
       if (!activeProvider || !this.isSelectableProvider(activeProvider, loadedConfig)) {
         loadedConfig.activeProvider = 'ollama';
+      }
+
+      // 2026-10-23 (secrets in .env / settings in config):
+      //   磁盘 config 里留的是设置; API key 优先从环境变量取 (.env 由 env-loader 启动时灌入)。
+      //   env 有 key → 覆盖文件值 (文件里的 key 可留空/旧值); 文件里已填且 env 无 → 保留。
+      //   这样 `~/.bolloon/.env` 成为密钥真源, `bolloon-config.json` 不再明文存 key。
+      for (const provider of Object.keys(loadedConfig.providers) as ModelProvider[]) {
+        const names = envKeyNamesOf(provider);
+        const envKey = names.map((n) => process.env[n]).find((v) => v && v.trim() !== '');
+        if (envKey) {
+          const pc = loadedConfig.providers[provider] as ProviderConfig;
+          if (pc) pc.apiKey = envKey.trim();
+        }
       }
 
       this.config = loadedConfig;
@@ -396,7 +418,7 @@ class LLMConfigStore {
     if (!this.config) return;
     this.config.updatedAt = new Date().toISOString();
     // 2026-08-07: mode 0o600 — 仅当前用户可读写 (含 API key 的敏感配置); Bolloon 自身进程可写
-    await fs.writeFile(CONFIG_PATH, JSON.stringify(this.config, null, 2), { mode: 0o600 });
+    await fs.writeFile(configPath(), JSON.stringify(this.config, null, 2), { mode: 0o600 });
   }
 
   /** 配置文件签名 (mtime+size); 不存在时返回 'missing' */
@@ -667,12 +689,12 @@ class LLMConfigStore {
 
   /** 配置文件绝对路径 (统一入口/锁/迁移都从这里取, 不再各自拼) */
   configFilePath(): string {
-    return CONFIG_PATH;
+    return configPath();
   }
 
   /** 旧文件名 (迁移输入) */
   legacyConfigFilePath(): string {
-    return LEGACY_CONFIG_PATH;
+    return legacyConfigPath();
   }
 
   /**

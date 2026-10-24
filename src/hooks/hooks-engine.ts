@@ -16,6 +16,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
 import { getMinimax } from '../constraints/index.js';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
 // ============== 类型 ==============
 
@@ -108,7 +109,7 @@ export class HooksEngine {
   private configPath: string;
 
   constructor(home?: string) {
-    this.configPath = path.join(home || os.homedir(), '.bolloon', 'hooks.yaml');
+    this.configPath = path.join(bolloonHome(), 'hooks.yaml');
   }
 
   /** 注册一个 hook */

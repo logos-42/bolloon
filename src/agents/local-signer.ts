@@ -14,6 +14,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
 export interface LocalSigner {
   /** did:key:z... (公开) */
@@ -26,7 +27,7 @@ export interface LocalSigner {
 
 /** 本机身份文件 (与 network-pulse 快照签名同源: ~/.bolloon/identity.json) */
 export function identityFile(home?: string): string {
-  return path.join(home || process.env.HOME || os.homedir(), '.bolloon', 'identity.json');
+  return path.join(bolloonHome(), 'identity.json');
 }
 
 /**

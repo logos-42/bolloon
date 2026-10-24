@@ -18,6 +18,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { canonicalize } from './network-pulse.js';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
 export const TASK_PROTOCOL = 'bolloon-task/1';
 
@@ -377,7 +378,7 @@ export interface SignatureAuditEntry {
   payloadDigest: string;
 }
 
-const auditFile = (h?: string): string => path.join(h || process.env.HOME || os.homedir(), '.bolloon', 'wallet-signatures.jsonl');
+const auditFile = (h?: string): string => path.join(bolloonHome(), 'wallet-signatures.jsonl');
 
 export async function recordSignatureAudit(entry: Omit<SignatureAuditEntry, 'at' | 'payloadDigest'> & { payloadDigest?: string }, h?: string): Promise<void> {
   const row: SignatureAuditEntry = { at: Date.now(), payloadDigest: entry.payloadDigest || '', ...entry } as SignatureAuditEntry;

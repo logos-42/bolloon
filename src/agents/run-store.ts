@@ -23,6 +23,7 @@ import * as crypto from 'crypto';
 
 /** 只引用类型 —— 快照**由调用方**算好传进来, run-store 不去解析模型配置 (记录层只管事实) */
 import type { RunModelConfig } from '../llm/model-selection.js';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
 export type RunSurface = 'cli' | 'web' | 'mobile' | 'cron' | 'delegate';
 
@@ -249,7 +250,7 @@ const DEFAULT_HARNESS: HarnessConfig = {
 };
 
 export function runsDir(): string {
-  return path.join(os.homedir(), '.bolloon', 'runs');
+  return path.join(bolloonHome(), 'runs');
 }
 
 /**
@@ -282,7 +283,7 @@ export interface PersistenceDegradation {
 function degradationPaths(): string[] {
   return [
     path.join(runsDir(), '_degradations.jsonl'),
-    path.join(os.homedir(), '.bolloon', 'run-degradations.jsonl'),
+    path.join(bolloonHome(), 'run-degradations.jsonl'),
   ];
 }
 
@@ -344,7 +345,7 @@ async function coreWrite<T>(op: string, runId: string | undefined, fn: () => Pro
 /** 单次运行的预算 (可从 ~/.bolloon/harness.json 覆盖) */
 export async function readHarnessConfig(): Promise<HarnessConfig> {
   try {
-    const raw = await fs.readFile(path.join(os.homedir(), '.bolloon', 'harness.json'), 'utf8');
+    const raw = await fs.readFile(path.join(bolloonHome(), 'harness.json'), 'utf8');
     const j = JSON.parse(raw);
     return {
       maxSteps: Number(j.maxSteps) > 0 ? Number(j.maxSteps) : DEFAULT_HARNESS.maxSteps,

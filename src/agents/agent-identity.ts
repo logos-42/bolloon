@@ -17,13 +17,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { KeyManager } from '@diap/sdk';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
-const AGENT_KEYS_DIR = path.join(os.homedir(), '.bolloon', 'agent-keys');
+const AGENT_KEYS_DIR = path.join(bolloonHome(), 'agent-keys');
 
 /** 读取用户唯一 DID (与 server loadOrCreateUserIdentity 同源, 归属字段用) */
 export function getUserOwnerDid(): string {
   try {
-    const f = path.join(os.homedir(), '.bolloon', 'identity', 'user.json');
+    const f = path.join(bolloonHome(), 'identity', 'user.json');
     if (fs.existsSync(f)) {
       const j = JSON.parse(fs.readFileSync(f, 'utf-8'));
       if (j.did) return j.did;

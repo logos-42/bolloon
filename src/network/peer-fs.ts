@@ -25,10 +25,11 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { bolloonHome } from '../bootstrap/env-loader.js';
 
 // ============== 路径常量 ==============
 
-const HOME = process.env.BOLLOON_HOME || path.join(os.homedir(), '.bolloon');
+const HOME = bolloonHome();
 const PEERS_ROOT = path.join(HOME, 'peers');
 
 /** publicKey hex → 短哈希, 用于目录名防超长 */
