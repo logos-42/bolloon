@@ -128,12 +128,23 @@
           </aside>
 
           <!-- 2026-10-06 (用户): 左侧导航收起的恢复条 — 收起后滑出的方式不留下展开按钮就打不开, 补窄条 + 展开按钮 -->
+          <!-- 2026-10-24 (用户): 收缩后要有"摘要图标" — 以图标形式汇总主板块, 点击即展开并直达对应功能 -->
           <div class="sidebar-collapsed hidden" id="sidebar-collapsed-bar">
             <button class="expand-btn" id="sidebar-expand-btn" title="展开侧边栏">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="9 18 15 12 9 6"></polyline>
               </svg>
             </button>
+            <div class="collapsed-channels" id="collapsed-channels">
+              <button class="collapsed-channel" data-target="tab-world" data-name="世界">🌍</button>
+              <button class="collapsed-channel" data-target="tab-chat" data-name="聊天">💬</button>
+              <button class="collapsed-channel" data-target="new-channel-btn" data-name="新建智能体">＋</button>
+              <button class="collapsed-channel" data-target="add-p2p-peer-btn" data-name="P2P 好友">👥</button>
+              <button class="collapsed-channel" data-target="gateway-add-btn" data-name="Agent 网络">🌐</button>
+              <button class="collapsed-channel" data-target="wallet-btn" data-name="钱包">👛</button>
+              <button class="collapsed-channel" data-target="judgments-btn" data-name="我的判断">🛡</button>
+              <button class="collapsed-channel" data-target="chain-explorer-link" data-name="链上浏览器">◧</button>
+            </div>
           </div>
 
           <main class="main">

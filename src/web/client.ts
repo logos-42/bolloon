@@ -3078,6 +3078,19 @@ if (sidebarExpandBtn) {
   sidebarExpandBtn.addEventListener('click', expandSidebar);
 }
 
+// 2026-10-24 (用户): 侧边栏收缩后的"摘要图标" — 点击即展开侧边栏并直达对应功能
+document.querySelectorAll('#collapsed-channels .collapsed-channel').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const targetId = btn.getAttribute('data-target');
+    const target = targetId ? document.getElementById(targetId) : null;
+    expandSidebar();
+    if (target) {
+      // 让展开动画先跑一帧再触发, 避免被 collapsed 态的 hidden 影响
+      requestAnimationFrame(() => target.click());
+    }
+  });
+});
+
 if (newChannelBtn) {
   newChannelBtn.addEventListener('click', () => {
     createChannel('智能体');

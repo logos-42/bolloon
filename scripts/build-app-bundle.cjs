@@ -56,6 +56,8 @@ function writeInfoPlist(appPath) {
   <string>${APP_NAME}</string>
   <key>CFBundleExecutable</key>
   <string>Electron</string>
+  <key>CFBundleIconFile</key>
+  <string>electron.icns</string>
   <key>CFBundleIdentifier</key>
   <string>${APP_ID}</string>
   <key>CFBundleVersion</key>

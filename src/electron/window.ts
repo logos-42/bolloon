@@ -44,7 +44,7 @@ function buildLoadingUrl(port: number): string {
 </style></head><body>
   <div class="spinner"></div>
   <div class="t">正在启动 Bolloon Agent…</div>
-  <div class="s" id="st">初始化本地服务 (首次约 1–2 分钟)</div>
+  <div class="s" id="st">正在准备本地环境, 请稍候…</div>
 <script>
   const PORT=${port};
   // 2026-10-24: 必须用 127.0.0.1 而不是 localhost —— server 只 bind IPv4 loopback
@@ -58,8 +58,8 @@ function buildLoadingUrl(port: number): string {
       if(r.ok){ location.href=tryUrl; return; }
     }catch(e){}
     n++;
-    if(n===5) document.getElementById('st').textContent='仍在初始化 P2P / IPFS 节点…';
-    if(n===30) document.getElementById('st').textContent='首次启动较慢, 请稍候 (最长约 2 分钟)';
+    if(n===5) document.getElementById('st').textContent='正在初始化本地服务…';
+    if(n===30) document.getElementById('st').textContent='首次启动较慢, 请稍候…';
     setTimeout(probe,1000);
   }
   probe();
