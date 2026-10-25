@@ -19,6 +19,8 @@ pub mod setup;
 pub mod subagents;
 pub mod judgeness;
 pub mod documents;
+pub mod task_group;
+pub mod wallet;
 pub use kernel_loop::*;
 pub use group_chat::*;
 pub use task_board::*;
