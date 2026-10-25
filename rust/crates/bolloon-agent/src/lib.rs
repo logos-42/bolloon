@@ -27,6 +27,8 @@ pub mod migration;
 pub mod lsp;
 pub mod git;
 pub mod terminal;
+pub mod home;
+pub mod runtime;
 pub use kernel_loop::*;
 pub use group_chat::*;
 pub use task_board::*;

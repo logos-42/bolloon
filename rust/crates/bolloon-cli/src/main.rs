@@ -129,16 +129,9 @@ fn env_provider_or(default: &str) -> String {
     std::env::var("BOLLOON_BASE_URL").unwrap_or_else(|_| default.to_string())
 }
 
-/// rust 原生版数据目录 (与 web server 同一口径)
+/// rust 原生版数据目录 — **单一真源** (CLI/Web/App/SDK 同一口径: BolloonHome)
 fn data_dir() -> std::path::PathBuf {
-    let home = std::env::var("BOLLOON_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::env::var("HOME")
-                .map(|h| std::path::PathBuf::from(h).join(".bolloon"))
-                .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))
-        });
-    home.join("rust")
+    bolloon_agent::home::BolloonHome::resolve().root().to_path_buf()
 }
 
 fn memory_path() -> std::path::PathBuf {

@@ -26,7 +26,8 @@ pub struct PivotConfig {
 impl Default for PivotConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 50,
+            // 本批冻结: 轮次循环上限 200 (长期执行), 工具调用次数不限
+            max_iterations: 200,
             quality_threshold: 0.7,
             tool_timeout_ms: 120_000,
             no_progress_rounds: 10,
@@ -212,12 +213,18 @@ mod tests {
     fn max_iterations_enforced_not_adaptive_crushed() {
         let cfg = PivotConfig { max_iterations: 3, ..Default::default() };
         let mut st = PivotState::default();
-        for i in 0..3 {
+        for _ in 0..3 {
             decide_round(&mut st, "一般", &[], &cfg);
         }
         assert!(st.done);
         assert_eq!(st.reason, Some(LoopEndReason::MaxIterations));
         assert_eq!(st.round, 3);
+    }
+
+    #[test]
+    fn default_cap_is_200_tools_unlimited() {
+        // 本批冻结: 轮次上限 200 (长期执行); 工具调用次数不限 (分类里没有任何工具计数上限)
+        assert_eq!(PivotConfig::default().max_iterations, 200);
     }
 
     #[test]

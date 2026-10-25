@@ -28,18 +28,9 @@ use bolloon_x402::{
 use bolloon_llm::{ChatMessage, GenerateParams, LlmRuntime};
 use bolloon_p2p::{GroupAcl, GroupStore, KeyPair};
 
-/// rust 原生版数据目录 (与 TS 版 `~/.bolloon` 共存, 子目录隔离)
+/// rust 原生版数据目录 — **单一真源** (CLI/Web/App/SDK 同一口径: BolloonHome)
 fn data_dir() -> std::path::PathBuf {
-    let home = std::env::var("BOLLOON_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs_home().join(".bolloon")
-        });
-    home.join("rust")
-}
-
-fn dirs_home() -> std::path::PathBuf {
-    std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))
+    bolloon_agent::home::BolloonHome::resolve().root().to_path_buf()
 }
 
 /// 服务状态（从上层注入）

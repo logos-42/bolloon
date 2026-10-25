@@ -117,6 +117,14 @@ Web 接线: `/api/judgment` (top-N 注入门 + 入库即演化, action 如实回
 
 **调试实录**: missing_for 的 seen 污染 bug (push 时提前 insert 导致 pop 被 continue 跳过, 链断在 head) —— 分离 queued/visited 两集合修复; Python hashlib.sha3_256 ≠ keccak256 的 padding 坑再次出现 (E2E 里用 Rust 侧算的 nonce 真值)。
 
+## 2026-10-25 第八批 (运行语义冻结: 单一真源/快照冻结/长执行 runtime, 342 测试全绿)
+
+| Rust 模块 | 冻结语义 |
+| --- | --- |
+| **`bolloon-agent/home`** (8 测试) | **CLI/Web/App/SDK 同一路径加载**: `BOLLOON_HOME`(缺省 ~/.bolloon) 下 `rust/` 子目录, env 一处解析四端共享 (真跑: CLI 写记忆 → Web 读同一份); **智能体专属目录** `agents/<id>/` (memory.json / soul.md / agent.md / sessions, agent_id 校验拒路径穿越); **文档快照冻结** `DocSnapshot::freeze` (内容+hash+盘状态): 运行期间盘上改动不影响快照 (快照即真源), `disk_drifted` 只标记"下一会话要 re-freeze", 缺失文档给内置缺省 |
+| **`bolloon-agent/runtime`** (12 测试) | **AgentRuntime 多 session/多 agent 并发**: registry per-agent 独立快照+memory, per-session 独立历史, 跨 agent 访问拒; **每轮 system prompt 注入**: `assemble_system_prompt` = [快照稳定层 soul+agent+memory 摘录] + [动态层当前轮], 稳定层逐字不变 (测试钉: 三轮 stable 相等、盘改不见、re-freeze 后生效); **长执行 loop**: 上限 **200 轮** (冻结常量 MAX_ROUNDS, 跑满如实收尾不冒充完成), **工具调用次数不限** (单轮 20 工具真测), **无畏并发** (join_all 同时发起, 20×20ms 总耗时 ≪ 串行 400ms, 测试钉), **错误恢复** (工具失败/LLM 全重试失败 → 错误进上下文继续不中断), **超时重试** (指数退避 llm_retries=2), **目标 review** (goal_criteria 逐条核对, 未过打回继续直至上限, review 纯函数) |
+| web/cli env 收口 | 两处 `data_dir()` 删本地口径, 统一走 `BolloonHome::resolve()` (单一真源, 四端共享); workflow 默认迭代 50 → **200** + 冻结测试 |
+
 ## DIAP Rust SDK (本机 /Users/apple/Downloads/DIAP_Rust_SDK)
 
 同日更新: 0.2.7→**0.3.0** (edition 2021→2024, rust-version 1.99, ed25519-dalek 2→3) + iroh 1.4 API 对齐 (`NodeAddr`→`EndpointAddr`, `builder(presets::N0)`, `addr()/id()`, `remote_id()`)。3 个 examples 修复对齐新 API, `cargo build --examples` 0 警告过; **lib 测试 46 passed / 0 failed / 4 ignored** (修 nonce_manager/did_cache 测试缺 `async` — edition 2024 必需; key_generator 测试对齐废弃函数空占位语义; noir_embedded/noir_universal 测试输入自洽 + 默认 backend 未启用时切 Simplified)。crates.io 下载走 rsproxy 镜像 (直连超时/代理 SSL reset, 2026-10-25 实测)。提交 `fdbef37` + `aa9ec66`。
