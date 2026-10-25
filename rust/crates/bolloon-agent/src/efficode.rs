@@ -592,6 +592,15 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedPacket, EfficodeError> {
         None
     };
 
+    // 逐段自描述: 解析结束位置必须正好落在 CRC 段起点
+    // (中间有垃圾 = 报错, 不许"能解多少解多少" —— 对齐 TS EFFICODE_TRAILING_BYTES)
+    if pos != rest.len() {
+        return Err(EfficodeError::Truncated(
+            format!("解析在 {pos}B 结束, 但段总长 {}B —— 中间有 {}B 垃圾", rest.len(), rest.len() - pos),
+            pos,
+        ));
+    }
+
     // CRC 硬门最后验: 段解析都成立, 再对内容完整性把关
     let expected = u32::from_be_bytes(crc_bytes.try_into().unwrap());
     let actual = crc32(body_all);

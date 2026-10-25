@@ -292,7 +292,7 @@ pub async fn run_long_loop_controlled(
         }
 
         // LLM 调用 (超时重试: 指数退避)
-        let _idx = ((round - 1) as usize).min(driver.replies.len().saturating_sub(1));
+        let idx = ((round - 1) as usize).min(driver.replies.len().saturating_sub(1));
         let want_fail = driver.fail_rounds.get((round - 1) as usize).copied().unwrap_or(0);
         let mut recoveries: Vec<String> = Vec::new();
         let mut reply = String::new();

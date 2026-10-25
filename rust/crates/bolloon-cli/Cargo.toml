@@ -26,3 +26,4 @@ bolloon-p2p = { path = "../bolloon-p2p" }
 chrono.workspace = true
 ureq = { version = "2", features = ["json"] }
 hex.workspace = true
+libc.workspace = true

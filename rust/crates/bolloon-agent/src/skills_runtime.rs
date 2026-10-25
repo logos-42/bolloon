@@ -268,7 +268,9 @@ mod tests {
         e.promote(&c, 1).unwrap();
         // 重复内容拒
         let c2 = e.distill("# 别的名字\n正文", "r2").unwrap();
-        // 注意: body 是整段 (含名字行), 改名字行 = body 变 → 不算重复; 模拟真重复:
+        // 注意: body 是整段 (含名字行), 改名字行 = body 变 → 不算重复 (如实固化这条语义)
+        assert!(e.promote(&c2, 2).is_ok(), "只改名字 ⇒ body 不同 ⇒ 不是同一件, 不误杀");
+        // 模拟真重复:
         assert!(matches!(
             e.promote(&SkillCandidate {
                 name: "方法 A".into(),

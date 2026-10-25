@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-use crate::home::BolloonHome;
+use crate::home::{AgentDocs, BolloonHome};
 use crate::memory_db::MemoryDb;
 use crate::skills_runtime::SkillsRegistry;
 
@@ -51,6 +51,8 @@ pub struct StepReport {
 #[derive(Debug)]
 pub struct BootstrapContext {
     pub home: BolloonHome,
+    /// 冻结的文档三件套快照 (soul / agent / memory) — runtime 组装 system prompt 的真源
+    pub docs: AgentDocs,
     pub identity_did: String,
     pub memory_db: MemoryDb,
     pub skills: SkillsRegistry,
@@ -91,11 +93,12 @@ pub fn bootstrap(
         }};
     }
 
-    // 1. home (目录族就绪)
-    let _: () = run_step!(BootstrapStep::Home, || -> Result<(), String> {
+    // 1. home (目录族就绪 + 冻结文档快照)
+    let docs = run_step!(BootstrapStep::Home, || -> Result<AgentDocs, String> {
         home.ensure_agent(agent_id).map_err(|e| e.to_string())?;
         std::fs::create_dir_all(home.logs_dir()).map_err(|e| e.to_string())?;
-        Ok(())
+        // 文档缺失 = 空快照 + 内置缺省 (不造假内容, 但也不让 prompt 少一层)
+        AgentDocs::freeze(&home, agent_id).map_err(|e| e.to_string())
     });
 
     // 2. identity (DID 身份文件; 有则读, 无则留给调用方建 —— 不在这里造假身份)
@@ -131,7 +134,7 @@ pub fn bootstrap(
     let _: () = run_step!(BootstrapStep::Cron, || -> Result<(), String> { Ok(()) });
     let _: () = run_step!(BootstrapStep::Heartbeat, || -> Result<(), String> { Ok(()) });
 
-    Ok(BootstrapContext { home, identity_did, memory_db, skills, reports })
+    Ok(BootstrapContext { home, docs, identity_did, memory_db, skills, reports })
 }
 
 #[cfg(test)]
@@ -156,6 +159,10 @@ mod tests {
         assert!(ctx.skills.index_for_prompt().contains("review"));
         // agent 目录族已建
         assert!(ctx.home.agent_dir("a1").unwrap().is_dir());
+        // 文档三件套已冻结进上下文 (runtime 组装 prompt 用; 缺失 = 内置缺省, 不空)
+        assert_eq!(ctx.docs.agent_id, "a1");
+        assert!(ctx.docs.soul.content.contains("合作"), "soul 有内置缺省");
+        assert!(ctx.docs.agent.content.contains("Bolloon 智能体"));
         // memory.db 落在 home
         assert!(ctx.home.root().join("memory.db").exists());
     }

@@ -23,6 +23,19 @@ pub enum MemoryLayer {
     Temporary,
 }
 
+impl MemoryLayer {
+    /// 从层名解析 (Display 的逆; 未知/空 → None, 不猜最接近的层)
+    pub fn parse(s: Option<&str>) -> Option<Self> {
+        Some(match s?.trim() {
+            "run_fact" => Self::RunFact,
+            "lesson" => Self::Lesson,
+            "decision" => Self::Decision,
+            "temporary" => Self::Temporary,
+            _ => return None,
+        })
+    }
+}
+
 impl std::fmt::Display for MemoryLayer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {

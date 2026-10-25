@@ -168,6 +168,16 @@ Web 接线: `/api/judgment` (top-N 注入门 + 入库即演化, action 如实回
 | CLI | `status` **tip 栏**: 有更新才输出一行 `tip: ⬆ 有新版本 X 可用 — 运行 bolloon update install`; `update check` (当前/状态/有无更新+说明) + `update install` (同 web 一条龙, 完成自动重启) |
 | e2e | GitHub Release 真网检查: latest tag = **v0.6.10** = 当前 → `update_available:false` ⇒ 按钮不显示 (真实生效); 页面含隐藏按钮与 install 调用 |
 
+## 2026-10-25 第十四批 (世界模式 + bolloon 色系深/浅主题, e2e 8/8)
+
+| 项 | 落地 |
+| --- | --- |
+| **bolloon 色系** | 原 TS `src/web/style.css` 变量逐字搬入: 深色 `--bg:#1a1a18 / --accent:#c4d640 / --glow:#ffd166 / --user-bg:linear-gradient(135deg,#c4d640,#a4b630)`; 浅色 `--bg:#f0f0e8 / --accent:#8a9430 / --glow:#b77900` (此前是 hushforge 蓝色系) |
+| **深/浅主题切换** | 三态按钮 `◐跟随系统 → ☾深色 → ☀浅色` (header 右侧), `data-theme` 属性 + localStorage 持久化; 无显式选择时 `prefers-color-scheme` 跟随系统 |
+| **世界模式 (对齐 TS routes-world)** | 端点: `/api/intents` (增删) · `/api/opportunities` (按意图重打分 + 校准环过滤 + 信箱置顶) · `/opportunities/{id}/ignore|accept` · `/api/world/profile|watch|inbox|stats`; UI: header `🌍 世界` tab + 徽章, 主区 world-view (机会卡片带 score/**透明 reason**/scope 图标 🌐🎴) + 右侧意图列 (chip 可删 + 添加 + stats), 输入框 `/world` `/chat` 命令就地切面板 (不发消息), 15s 轮询 |
+| **校准环** | 忽略的机会**同源不再流入** (e2e 钉: opp-000 忽略后 feed 中消失); 信箱卡片 score=2.0 恒置顶 |
+| e2e | 8/8: 机会流非空 → 加意图重打分 (match:1/2 透明) → 忽略校准 → 接受 → 信箱置顶 → profile/watch/stats → 意图移除 → 页面结构 |
+
 **协同修订 (第十三批期间)**: efficode 压缩扩展 (compression 字段 + pick_algo/compress_block, 数据块首字节恒写算法 id "解码端按 id 解不猜"); 群邀请**生成时守卫** (过期时刻≤当下直接拒, 不生成注定失效的邀请 — 双闸: 生成+验证); prompt identity 文案改稿 ("你是 hibs 组织的智能体")。三方修订全部纳入 436 测试。
 
 | Rust 模块 | 冻结语义 |

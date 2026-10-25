@@ -1,0 +1,979 @@
+//! 原生 UI 数据面 — Hushfusion Forge 前端期望的全部端点 (像素级复刻的数据面)
+//!
+//! 端点 (与 hushforge 布局的 index.html 一一对应):
+//! - GET  /api/bootstrap      → {state:{agents,sessions,profile,settings,active_agent_id,active_session_id}, update}
+//! - POST /api/agents         → 创建智能体 (首个会话同建); POST /api/agents/update
+//! - POST /api/sessions       → 新会话; /branch /update /delete /truncate /share
+//! - POST /api/profile        → 昵称/头像; POST /api/settings → provider/model/tools
+//! - GET  /api/models         → {providers:[{name,display,has_key,default}], write_tools, secret_set}
+//! - POST /api/chat → {reply}; POST /api/chat/stream (SSE delta/done); /api/chat/status|stop
+//! - GET  /api/room           → {messages,members,groups,state,active_group_id}; /new|start|stop|guide|close
+//! - GET  /api/auth/requests  → clarity 授权队列; /api/auth/decide; POST /api/auth/request
+//!
+//! 诚实边界: chat/stream 为分块 SSE (协议形状与前端一致; 真 token 流待接 LLM 流式);
+//! room 交流引擎为消息通路 (多 agent 自动轮流发言待接 LLM); agent DID 为轻量派生 (显示层);
+//! room orbitdb 状态 = 本地 oplog (跨机复制待接 BlockExchange 真传输)。
+
+use std::sync::atomic::Ordering;
+
+use axum::extract::{Path as AxumPath, Query, State};
+use axum::response::sse::{Event, Sse};
+use axum::Json;
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+
+use crate::server::{data_dir, AppState};
+
+// ────────────────────────── 数据模型 (前端视图形状) ──────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentView {
+    pub id: String,
+    pub name: String,
+    pub did: String,
+    #[serde(default)]
+    pub avatar: String,
+    #[serde(default)]
+    pub persona: String,
+    #[serde(default)]
+    pub workspace: String,
+    #[serde(default)]
+    pub global_dir: String,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiMessage {
+    pub role: String, // user | assistant
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+    pub time: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub streaming: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiSession {
+    pub id: String,
+    pub agent_id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub messages: Vec<UiMessage>,
+    #[serde(default)]
+    pub pinned: bool,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
+pub struct UserProfile {
+    pub name: String,
+    pub did: String,
+    #[serde(default)]
+    pub avatar: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct UiSettings {
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub tools: Vec<String>,
+}
+
+/// clarity 授权请求 (workspace 外路径; authDlg 形状)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AuthRequest {
+    pub id: String,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub op: String, // fs | shell
+    pub path: String,
+    /// 敏感路径不可授权 (系统禁止, 智能体也无法读取)
+    pub sensitive: bool,
+    pub status: String, // pending | allow_once | allow_project | allow_full | deny
+}
+
+pub const WRITE_TOOLS: &[&str] = &["shell", "python.run", "mem", "tasks"];
+
+fn sensitive_path(path: &str) -> bool {
+    let p = path.to_lowercase();
+    p.starts_with("/etc")
+        || p.starts_with("/private/var")
+        || p.contains("/.ssh")
+        || p.contains("id_rsa")
+        || p.contains("id_ed25519")
+        || p.starts_with("/system")
+}
+
+// ────────────────────────── NativeState (持久化) ──────────────────────────
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct NativeState {
+    pub agents: Vec<AgentView>,
+    pub sessions: Vec<UiSession>,
+    pub profile: UserProfile,
+    pub settings: UiSettings,
+    pub auth: Vec<AuthRequest>,
+    /// room 运行态 (group_id → running)
+    pub room_running: std::collections::HashMap<String, bool>,
+    // ── 世界模式 (对齐 TS routes-world: 意图 / 机会流 / 校准环 / 信箱) ──
+    /// 意图标签 (世界按意图重打分)
+    pub intents: Vec<String>,
+    /// 校准环: 忽略的机会 id (同源不再流入)
+    pub ignored: Vec<String>,
+    /// 已接受的机会 id
+    pub accepted: Vec<String>,
+    /// 世界信箱 (外部智能体投递的卡片; 置顶)
+    pub inbox: Vec<serde_json::Value>,
+    pub active_group: String,
+    pub next_agent: u64,
+    pub next_session: u64,
+    pub next_auth: u64,
+}
+
+impl NativeState {
+    pub fn load(dir: &std::path::Path) -> Self {
+        let path = dir.join("native-state.json");
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            if let Ok(s) = serde_json::from_str::<NativeState>(&raw) {
+                return s;
+            }
+        }
+        Self {
+            profile: UserProfile {
+                name: "用户".into(),
+                did: String::new(),
+                avatar: String::new(),
+            },
+            ..Default::default()
+        }
+    }
+
+    pub fn save(&self, dir: &std::path::Path) {
+        let path = dir.join("native-state.json");
+        if let Ok(raw) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::create_dir_all(dir);
+            let _ = std::fs::write(path, raw);
+        }
+    }
+
+    /// 默认头像 (SVG 渐变, 与 hushforge svgAvatar 同形; seed → 色相)
+    pub fn svg_avatar(seed: &str) -> String {
+        let mut h: u64 = 0;
+        for ch in seed.chars() {
+            h = (h.wrapping_mul(31).wrapping_add(ch as u64)) % 360;
+        }
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" data-bolloon-avatar="1"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl({h},88%,66%)"/><stop offset="1" stop-color="hsl({},72%,38%)"/></linearGradient><radialGradient id="hh" cx="30%" cy="22%" r="70%"><stop offset="0" stop-color="rgba(255,255,255,.55)"/><stop offset="1" stop-color="rgba(255,255,255,0)"/></radialGradient></defs><rect width="96" height="96" rx="48" fill="url(#g)"/><circle cx="48" cy="48" r="46" fill="url(#hh)"/><circle cx="70" cy="28" r="12" fill="rgba(255,255,255,.20)"/><path d="M22 68 Q48 42 74 68" stroke="rgba(255,255,255,.40)" stroke-width="5" fill="none" stroke-linecap="round"/><circle cx="36" cy="45" r="5" fill="#fff" opacity=".92"/><circle cx="60" cy="45" r="5" fill="#fff" opacity=".92"/></svg>"##,
+            (h + 42) % 360
+        );
+        format!("data:image/svg+xml;utf8,{}", urlencoding_encode(&svg))
+    }
+}
+
+/// 最小 URL 编码 (encodeURIComponent 子集)
+fn urlencoding_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.as_bytes() {
+        let c = *b;
+        if c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')') {
+            out.push(c as char);
+        } else {
+            out.push_str(&format!("%{c:02X}"));
+        }
+    }
+    out
+}
+
+fn now_ms() -> u64 {
+    chrono::Utc::now().timestamp_millis() as u64
+}
+
+// ────────────────────────── bootstrap / models / version ──────────────────────────
+
+/// GET /api/bootstrap (前端期望形状)
+pub async fn bootstrap_native(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    if fs.profile.did.is_empty() {
+        fs.profile.did = st.identity.did.as_str().to_string();
+    }
+    if fs.agents.is_empty() {
+        // 首启: 内置一个默认智能体 (用户在 UI 里可再建)
+        fs.next_agent += 1;
+        let id = format!("agent-{:03}", fs.next_agent);
+        fs.agents.push(AgentView {
+            id: id.clone(),
+            name: "Bolloon 智能体".into(),
+            did: st.identity.did.as_str().into(),
+            avatar: NativeState::svg_avatar(&id),
+            persona: String::new(),
+            workspace: String::new(),
+            global_dir: String::new(),
+            created_at_ms: now_ms(),
+        });
+        fs.next_session += 1;
+        let sid = format!("sess-{:04}", fs.next_session);
+        fs.sessions.push(UiSession {
+            id: sid,
+            agent_id: id,
+            title: "新对话".into(),
+            messages: vec![],
+            pinned: false,
+            created_at_ms: now_ms(),
+        });
+    }
+    let update = native_update_info(&st);
+    let payload = serde_json::json!({
+        "state": {
+            "agents": fs.agents,
+            "sessions": fs.sessions,
+            "profile": fs.profile,
+            "settings": fs.settings,
+            "active_agent_id": fs.agents.first().map(|a| a.id.clone()).unwrap_or_default(),
+            "active_session_id": fs.sessions.first().map(|s| s.id.clone()).unwrap_or_default(),
+            "did": st.identity.did.as_str(),
+            "messages": [],
+        },
+        "update": update,
+        "version": st.version,
+    });
+    fs.save(&data_dir());
+    drop(fs);
+    Json(payload)
+}
+
+fn native_update_info(st: &AppState) -> serde_json::Value {
+    struct Src;
+    impl bolloon_agent::updater::UpdateSource for Src {
+        fn latest_version(&self) -> Result<String, String> {
+            let body: serde_json::Value = ureq::get(
+                "https://api.github.com/repos/logos-42/bolloon/releases/latest",
+            )
+            .timeout(std::time::Duration::from_secs(5))
+            .set("User-Agent", "bolloon-updater")
+            .call()
+            .map_err(|e| e.to_string())?
+            .into_json()
+            .map_err(|e| e.to_string())?;
+            body["tag_name"].as_str().map(|s| s.to_string()).ok_or_else(|| "无 tag".into())
+        }
+        fn download(&self) -> Result<Vec<u8>, String> {
+            Err("install 走 install()".into())
+        }
+    }
+    let info = bolloon_agent::updater::check(&Src);
+    serde_json::json!({
+        "available": info.update_available,
+        "latest": info.latest,
+        "current": info.current,
+    })
+}
+
+/// GET /api/version (重启等待轮询)
+pub async fn version(State(st): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "version": st.version }))
+}
+
+/// GET /api/models (前端形状)
+pub async fn models(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let providers: Vec<serde_json::Value> = st
+        .llm
+        .provider_ids()
+        .iter()
+        .map(|id| {
+            let cfg = st.llm.provider(id);
+            serde_json::json!({
+                "name": id,
+                "display": id,
+                "default": cfg.map(|c| c.default_model.clone()).unwrap_or_default(),
+                "has_key": cfg.map(|c| c.api_key.is_some()).unwrap_or(false),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({
+        "providers": providers,
+        "write_tools": WRITE_TOOLS,
+        "secret_set": {},
+    }))
+}
+
+// ────────────────────────── agents ──────────────────────────
+
+/// POST /api/agents (创建; 首个会话同建)
+pub async fn create_agent(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    fs.next_agent += 1;
+    let id = format!("agent-{:03}", fs.next_agent);
+    let name = req["name"].as_str().unwrap_or("智能体").to_string();
+    let did = {
+        use sha2::Digest;
+        let d = sha2::Sha256::digest(id.as_bytes());
+        format!("did:pi:{}", bolloon_p2p::b58_encode(&d[..20]))
+    };
+    let avatar = req["avatar"]
+        .as_str()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| NativeState::svg_avatar(&format!("{name}{id}")));
+    let agent = AgentView {
+        id: id.clone(),
+        name,
+        did,
+        avatar,
+        persona: req["persona"].as_str().unwrap_or_default().into(),
+        workspace: req["workspace"].as_str().unwrap_or_default().into(),
+        global_dir: req["global_dir"].as_str().unwrap_or_default().into(),
+        created_at_ms: now_ms(),
+    };
+    fs.next_session += 1;
+    let session = UiSession {
+        id: format!("sess-{:04}", fs.next_session),
+        agent_id: id.clone(),
+        title: "新对话".into(),
+        messages: vec![],
+        pinned: false,
+        created_at_ms: now_ms(),
+    };
+    fs.agents.push(agent.clone());
+    fs.sessions.push(session.clone());
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "agent": agent, "session": session }))
+}
+
+/// POST /api/agents/update
+pub async fn update_agent(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    let id = req["id"].as_str().unwrap_or_default().to_string();
+    let Some(a) = fs.agents.iter_mut().find(|a| a.id == id) else {
+        return Json(serde_json::json!({ "error": "智能体不存在" }));
+    };
+    if let Some(v) = req["name"].as_str() {
+        a.name = v.into();
+    }
+    if let Some(v) = req["avatar"].as_str() {
+        a.avatar = v.into();
+    }
+    if let Some(v) = req["persona"].as_str() {
+        a.persona = v.into();
+    }
+    if let Some(v) = req["workspace"].as_str() {
+        a.workspace = v.into();
+    }
+    if let Some(v) = req["global_dir"].as_str() {
+        a.global_dir = v.into();
+    }
+    let a = a.clone();
+    fs.save(&data_dir());
+    Json(serde_json::to_value(a).unwrap())
+}
+
+// ────────────────────────── sessions ──────────────────────────
+
+/// POST /api/sessions (新会话)
+pub async fn create_session(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    let agent_id = req["agent_id"].as_str().unwrap_or_default().to_string();
+    fs.next_session += 1;
+    let s = UiSession {
+        id: format!("sess-{:04}", fs.next_session),
+        agent_id,
+        title: "新对话".into(),
+        messages: vec![],
+        pinned: false,
+        created_at_ms: now_ms(),
+    };
+    fs.sessions.push(s.clone());
+    fs.save(&data_dir());
+    Json(serde_json::to_value(s).unwrap())
+}
+
+/// POST /api/sessions/branch (从某条消息分叉)
+pub async fn branch_session(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    let sid = req["session_id"].as_str().unwrap_or_default();
+    let idx = req["message_index"].as_u64().unwrap_or(0) as usize;
+    let Some(src) = fs.sessions.iter().find(|s| s.id == sid).cloned() else {
+        return Json(serde_json::json!({ "error": "会话不存在" }));
+    };
+    let mut ns = src.clone();
+    fs.next_session += 1;
+    ns.id = format!("sess-{:04}", fs.next_session);
+    ns.title = format!("{} (分支)", src.title);
+    ns.messages = src.messages.iter().take(idx + 1).cloned().collect();
+    ns.pinned = false;
+    fs.sessions.push(ns.clone());
+    fs.save(&data_dir());
+    Json(serde_json::to_value(ns).unwrap())
+}
+
+/// POST /api/sessions/update (重命名/置顶)
+pub async fn update_session(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    let id = req["id"].as_str().unwrap_or_default().to_string();
+    let Some(s) = fs.sessions.iter_mut().find(|s| s.id == id) else {
+        return Json(serde_json::json!({ "error": "会话不存在" }));
+    };
+    if let Some(t) = req["title"].as_str() {
+        s.title = t.into();
+    }
+    if let Some(p) = req["pinned"].as_bool() {
+        s.pinned = p;
+    }
+    let s = s.clone();
+    fs.save(&data_dir());
+    Json(serde_json::to_value(s).unwrap())
+}
+
+/// POST /api/sessions/delete
+pub async fn delete_session(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    let id = req["id"].as_str().unwrap_or_default().to_string();
+    fs.sessions.retain(|s| s.id != id);
+    let active = fs.sessions.first().map(|s| s.id.clone()).unwrap_or_default();
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "active_session_id": active }))
+}
+
+/// POST /api/sessions/truncate (编辑已发消息: 截断后重发)
+pub async fn truncate_session(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    let id = req["id"].as_str().unwrap_or_default().to_string();
+    let from = req["from_index"].as_u64().unwrap_or(0) as usize;
+    if let Some(s) = fs.sessions.iter_mut().find(|s| s.id == id) {
+        s.messages.truncate(from);
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true }))
+}
+
+/// POST /api/sessions/share (分享链接)
+pub async fn share_session(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let id = req["id"].as_str().unwrap_or_default().to_string();
+    Json(serde_json::json!({ "url": format!("/share/{id}") }))
+}
+
+// ────────────────────────── profile / settings ──────────────────────────
+
+/// POST /api/profile
+pub async fn set_profile(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    if let Some(n) = req["name"].as_str() {
+        fs.profile.name = n.into();
+    }
+    if let Some(a) = req["avatar"].as_str() {
+        fs.profile.avatar = a.into();
+    }
+    let p = fs.profile.clone();
+    fs.save(&data_dir());
+    Json(serde_json::to_value(p).unwrap())
+}
+
+/// POST /api/settings
+pub async fn set_settings(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    if let Some(p) = req["provider"].as_str() {
+        fs.settings.provider = p.into();
+    }
+    if let Some(m) = req["model"].as_str() {
+        fs.settings.model = m.into();
+    }
+    if let Some(t) = req["tools"].as_array() {
+        fs.settings.tools = t
+            .iter()
+            .filter_map(|x| x.as_str().map(|s| s.into()))
+            .collect();
+    }
+    let s = fs.settings.clone();
+    fs.save(&data_dir());
+    Json(serde_json::to_value(s).unwrap())
+}
+
+// ────────────────────────── chat (SSE 形状) ──────────────────────────
+
+async fn generate_reply(st: &AppState, text: &str) -> String {
+    let has_key = st
+        .llm
+        .provider_ids()
+        .iter()
+        .any(|id| st.llm.provider(id).map(|c| c.api_key.is_some()).unwrap_or(false));
+    if !has_key {
+        return format!(
+            "收到：「{}」\n\n当前未配置 LLM API Key（BOLLOON_API_KEY），我还不能真正思考。配置后这条消息会走真模型。\n\n在此期间我可以：管理待办清单、写记忆、发任务公告、发起群聊邀请、执行钱包工具。",
+            text
+        );
+    }
+    format!("（模型通路已配置）收到：「{text}」。真 token 流式生成待接 bolloon_llm::LlmRuntime 流式接口。")
+}
+
+/// POST /api/chat → {reply} (非流式降级)
+pub async fn chat(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let text = req["message"].as_str().unwrap_or_default().to_string();
+    let reply = generate_reply(&st, &text).await;
+    Json(serde_json::json!({ "reply": reply }))
+}
+
+/// POST /api/chat/stream (SSE; 前端 streamChat 协议: event delta/done)
+pub async fn chat_stream(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> impl axum::response::IntoResponse {
+    let text = req["message"].as_str().unwrap_or_default().to_string();
+    let reply = generate_reply(&st, &text).await;
+    let chunks: Vec<String> = {
+        let chars: Vec<char> = reply.chars().collect();
+        chars.chunks(24).map(|c| c.iter().collect()).collect()
+    };
+    let full = reply.clone();
+    let stream = futures::stream::iter(
+        chunks
+            .into_iter()
+            .map(|chunk| {
+                Ok::<_, std::convert::Infallible>(Event::default()
+                    .event("delta")
+                    .data(serde_json::json!({ "text": chunk }).to_string()))
+            })
+            .collect::<Vec<_>>(),
+    )
+    .chain(futures::stream::once(async move {
+        Ok::<_, std::convert::Infallible>(
+            Event::default().event("done").data(serde_json::json!({ "reply": full }).to_string()),
+        )
+    }));
+    Sse::new(stream)
+}
+
+/// GET /api/chat/status (前端 resumeRunning 轮询)
+pub async fn chat_status() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "running": false, "text": "" }))
+}
+
+/// POST /api/chat/stop
+pub async fn chat_stop() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": true }))
+}
+
+// ────────────────────────── room (群聊兼容层) ──────────────────────────
+
+/// GET /api/room → {messages, members, groups, state, active_group_id}
+pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let groups = st.groups.list_groups().await;
+    let active = {
+        let fs = st.forge.lock().await;
+        if fs.active_group.is_empty() {
+            groups.first().map(|g| g.id.clone()).unwrap_or_default()
+        } else {
+            fs.active_group.clone()
+        }
+    };
+    let entries = st.groups.read(&active, 0, 200).await;
+    let running = st
+        .forge
+        .lock()
+        .await
+        .room_running
+        .get(&active)
+        .copied()
+        .unwrap_or(false);
+    let msgs: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "agent_id": m.sender.as_str(),
+                "agent_name": m.sender.as_str(),
+                "kind": "discuss",
+                "text": m.content,
+                "created_at": m.timestamp.to_rfc3339(),
+            })
+        })
+        .collect();
+    let members: Vec<serde_json::Value> = st
+        .forge
+        .lock()
+        .await
+        .agents
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "agent_id": a.id, "agent_name": a.name,
+                "status": if running { "thinking" } else { "idle" },
+            })
+        })
+        .collect();
+    let group_views: Vec<serde_json::Value> = groups
+        .iter()
+        .map(|g| serde_json::json!({ "id": g.id, "topic": g.name, "running": running }))
+        .collect();
+    Json(serde_json::json!({
+        "messages": msgs,
+        "members": members,
+        "groups": group_views,
+        "state": { "running": running, "turn": 0, "max_turns": 0, "topic": "", "participants": [] },
+        "active_group_id": active,
+        "orbit_status": "local-oplog",
+        "channel": "orbitdb",
+    }))
+}
+
+/// POST /api/room/new (新建群组)
+pub async fn room_new(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let id = format!("gw-{:x}", now_ms() % 0xffff_ffff);
+    let info = st
+        .groups
+        .create_group(id.clone(), format!("群组 {}", now_ms() % 10_000), st.identity.did.clone(), bolloon_p2p::GroupAcl::Open)
+        .await;
+    st.forge.lock().await.active_group = info.id.clone();
+    Json(serde_json::json!({ "id": info.id }))
+}
+
+/// POST /api/room/start
+pub async fn room_start(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let gid = req["group_id"].as_str().unwrap_or_default().to_string();
+    st.forge.lock().await.room_running.insert(gid.clone(), true);
+    Json(serde_json::json!({ "ok": true, "group_id": gid }))
+}
+
+/// POST /api/room/stop
+pub async fn room_stop(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let gid = req["group_id"].as_str().unwrap_or_default().to_string();
+    st.forge.lock().await.room_running.insert(gid.clone(), false);
+    Json(serde_json::json!({ "ok": true }))
+}
+
+/// POST /api/room/close
+pub async fn room_close(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let gid = req["group_id"].as_str().unwrap_or_default().to_string();
+    let mut fs = st.forge.lock().await;
+    fs.room_running.remove(&gid);
+    fs.active_group = String::new();
+    Json(serde_json::json!({ "active_group_id": "" }))
+}
+
+/// POST /api/room/guide (discuss/guide 消息; /guide = 全体强引导)
+pub async fn room_guide(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let gid = req["group_id"].as_str().unwrap_or_default().to_string();
+    let text = req["text"].as_str().unwrap_or_default().to_string();
+    let kind = req["kind"].as_str().unwrap_or("discuss").to_string();
+    let entry_kind = if kind == "guide" {
+        bolloon_p2p::EntryKind::Guide
+    } else {
+        bolloon_p2p::EntryKind::Message
+    };
+    let prefix = if kind == "guide" { "/guide " } else { "" };
+    let sig = st.identity.sign(format!("{prefix}{text}").as_bytes());
+    match st
+        .groups
+        .append(
+            &gid,
+            &st.identity.did.clone(),
+            entry_kind,
+            format!("{prefix}{text}"),
+            bolloon_p2p::b58_encode(&sig),
+        )
+        .await
+    {
+        Ok(m) => Json(serde_json::json!({ "seq": m.seq, "kind": kind })),
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+// ────────────────────────── clarity 授权队列 ──────────────────────────
+
+/// POST /api/auth/request (工具/workspace 门产生授权请求)
+pub async fn auth_request(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    fs.next_auth += 1;
+    let path = req["path"].as_str().unwrap_or_default().to_string();
+    let r = AuthRequest {
+        id: format!("auth-{:04}", fs.next_auth),
+        agent_id: req["agent_id"].as_str().unwrap_or("agent").into(),
+        agent_name: req["agent_name"].as_str().unwrap_or("智能体").into(),
+        op: req["op"].as_str().unwrap_or("fs").into(),
+        sensitive: sensitive_path(&path),
+        path,
+        status: "pending".into(),
+    };
+    fs.auth.push(r.clone());
+    Json(serde_json::to_value(r).unwrap())
+}
+
+/// GET /api/auth/requests (pending 列表)
+pub async fn auth_requests(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    let pending: Vec<&AuthRequest> = fs.auth.iter().filter(|r| r.status == "pending").collect();
+    Json(serde_json::json!({ "requests": pending }))
+}
+
+/// POST /api/auth/decide (仅一次/本项目/完全访问/拒绝; 敏感路径 allow_* 拒)
+pub async fn auth_decide(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let id = req["id"].as_str().unwrap_or_default().to_string();
+    let decision = req["decision"].as_str().unwrap_or("deny").to_string();
+    let mut fs = st.forge.lock().await;
+    let Some(r) = fs.auth.iter_mut().find(|r| r.id == id) else {
+        return Json(serde_json::json!({ "error": "请求不存在" }));
+    };
+    if r.sensitive && decision != "deny" {
+        return Json(serde_json::json!({ "error": "敏感路径不可授权" }));
+    }
+    r.status = decision.clone();
+    if decision == "allow_full" {
+        st.full_access.store(true, Ordering::SeqCst);
+    }
+    Json(serde_json::json!({ "ok": true, "status": r.status }))
+}
+
+// ────────────────────────── 更新 (前端 /api/update + apply) ──────────────────────────
+
+/// GET /api/update → {available,latest,current} (前端 updateBtn 读)
+pub async fn update(State(st): State<AppState>) -> Json<serde_json::Value> {
+    Json(native_update_info(&st))
+}
+
+/// POST /api/update/apply → 内部安装一条龙 + spawn 新进程 (旧进程随后退出)
+pub async fn update_apply(State(st): State<AppState>) -> Json<serde_json::Value> {
+    struct Src;
+    impl bolloon_agent::updater::UpdateSource for Src {
+        fn latest_version(&self) -> Result<String, String> {
+            Ok("latest".into())
+        }
+        fn download(&self) -> Result<Vec<u8>, String> {
+            let bytes = ureq::get(
+                "https://github.com/logos-42/bolloon/releases/latest/download/bolloon-bin",
+            )
+            .timeout(std::time::Duration::from_secs(120))
+            .call()
+            .map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            use std::io::Read;
+            bytes.into_reader().read_to_end(&mut out).map_err(|e| e.to_string())?;
+            Ok(out)
+        }
+    }
+    let Ok(self_path) = std::env::current_exe() else {
+        return Json(serde_json::json!({ "error": "无法定位自身二进制" }));
+    };
+    match bolloon_agent::updater::install(&Src, &self_path) {
+        Ok(report) => {
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            let new_pid = bolloon_agent::updater::restart(&self_path, &args).ok();
+            Json(serde_json::json!({
+                "installing": true, "restarting": new_pid.is_some(), "new_pid": new_pid, "report": report,
+            }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+// ────────────────────────── 世界模式 (对齐 TS routes-world.ts) ──────────────────────────
+
+/// 世界种子机会 (演示流; 真实机会由 world-watcher / P2P 投递注入)
+fn seed_world() -> Vec<(String, String, Vec<String>, Option<String>, &'static str)> {
+    vec![
+        ("世界流示例".into(), "世界持续流入 — 没有意图也保持流动".into(), vec!["world".into()], None, "world"),
+        ("合作招募 · 可控核聚变".into(), "交叉验证口径, 需要两拨人".into(), vec!["聚变".into(), "合作".into()], Some("https://example.com/1".into()), "public"),
+        ("论文共读 · 等离子体约束".into(), "每周一次线上共读".into(), vec!["等离子体".into(), "论文".into()], Some("https://example.com/2".into()), "public"),
+        ("工具共享 · efficode 规范包".into(), "付费信息, 0.01 USDC".into(), vec!["工具".into(), "规范".into()], None, "card"),
+    ]
+}
+
+/// GET /api/intents → 意图列表
+pub async fn list_intents(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    Json(serde_json::json!({ "intents": fs.intents }))
+}
+
+/// POST /api/intents → 加意图 (去空去重)
+pub async fn add_intent(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let tag = req["tag"].as_str().unwrap_or_default().trim().to_string();
+    if tag.is_empty() {
+        return Json(serde_json::json!({ "error": "意图不能为空" }));
+    }
+    let mut fs = st.forge.lock().await;
+    if !fs.intents.contains(&tag) {
+        fs.intents.push(tag.clone());
+    }
+    let intents = fs.intents.clone();
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "intents": intents }))
+}
+
+/// POST /api/intents/remove → 删意图
+pub async fn remove_intent(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let tag = req["tag"].as_str().unwrap_or_default().to_string();
+    let mut fs = st.forge.lock().await;
+    fs.intents.retain(|t| t != &tag);
+    let intents = fs.intents.clone();
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "intents": intents }))
+}
+
+/// GET /api/opportunities → 机会流 (按意图重打分; 校准环过滤; 信箱置顶)
+pub async fn list_opportunities(
+    State(st): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let tags: Vec<String> = q
+        .get("tags")
+        .map(|t| t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+    let fs = st.forge.lock().await;
+    let use_tags = if tags.is_empty() { fs.intents.clone() } else { tags };
+    let mut items: Vec<serde_json::Value> = fs.inbox.clone(); // 信箱置顶
+    for (i, (title, summary, t, url, kind)) in seed_world().into_iter().enumerate() {
+        let id = format!("opp-{i:03}");
+        if fs.ignored.contains(&id) {
+            continue; // 校准环: 被忽略的同源不再流入
+        }
+        let (score, reason) = bolloon_agent::world::score_opportunity(&use_tags, &t);
+        items.push(serde_json::json!({
+            "id": id, "title": title, "summary": summary, "tags": t,
+            "score": score, "reason": reason, "url": url, "kind": kind,
+            "accepted": fs.accepted.contains(&id),
+        }));
+    }
+    items.sort_by(|a, b| {
+        let sa = a["score"].as_f64().unwrap_or(0.0);
+        let sb = b["score"].as_f64().unwrap_or(0.0);
+        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Json(serde_json::json!({ "opportunities": items, "intent_tags": use_tags }))
+}
+
+/// POST /api/opportunities/{id}/ignore → 校准环 (忽略后同源不再流入)
+pub async fn ignore_opportunity(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    if !fs.ignored.contains(&id) {
+        fs.ignored.push(id.clone());
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ignored": id }))
+}
+
+/// POST /api/opportunities/{id}/accept → 接受 (进 Goal 证据面)
+pub async fn accept_opportunity(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    if !fs.accepted.contains(&id) {
+        fs.accepted.push(id.clone());
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "accepted": id }))
+}
+
+/// GET /api/world/profile → 世界画像 (意图/校准环/已接受)
+pub async fn world_profile(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    Json(serde_json::json!({
+        "did": st.identity.did.as_str(),
+        "intents": fs.intents, "ignored": fs.ignored, "accepted": fs.accepted,
+    }))
+}
+
+/// GET /api/world/watch → 世界持续观察状态
+pub async fn world_watch() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "watching": true, "orbit_status": "local-oplog", "channel": "orbitdb" }))
+}
+
+/// GET /api/world/inbox → 世界信箱 (外部智能体投递)
+pub async fn world_inbox(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    Json(serde_json::json!({ "items": fs.inbox }))
+}
+
+/// POST /api/world/inbox → 投递世界卡片 (外部 agent 传入; 内容格式不限)
+pub async fn world_inbox_post(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    let card = serde_json::json!({
+        "id": format!("card-{:04}", fs.inbox.len() + 1),
+        "kind": "card",
+        "score": 2.0, // 置顶
+        "title": req["title"].as_str().unwrap_or("世界卡片"),
+        "summary": req["summary"].as_str().unwrap_or(""),
+        "scope": req["scope"].as_str().unwrap_or("public"),
+        "provider": req["provider"],
+        "media": req["media"],
+        "content": req["content"],
+    });
+    fs.inbox.push(card.clone());
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "card": card }))
+}
+
+/// GET /api/world/stats → 世界统计 (徽章数据源)
+pub async fn world_stats(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    Json(serde_json::json!({
+        "intents": fs.intents.len(),
+        "ignored": fs.ignored.len(),
+        "accepted": fs.accepted.len(),
+        "inbox": fs.inbox.len(),
+    }))
+}

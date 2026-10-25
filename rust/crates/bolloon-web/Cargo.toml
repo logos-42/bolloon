@@ -21,5 +21,7 @@ bolloon-agent = { path = "../bolloon-agent" }
 bolloon-p2p = { path = "../bolloon-p2p" }
 bolloon-x402 = { path = "../bolloon-x402" }
 ureq = { version = "2", features = ["json"] }
+sha2.workspace = true
+futures.workspace = true
 chrono.workspace = true
 hex.workspace = true

@@ -229,7 +229,7 @@ pub struct InjectionResult {
 
 /// 判断力唤起判定 (有过去的 → 经验区; 有新的预测 → 情境区)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Evocation {
+pub enum Evocation {
     /// 输入与既有判断相似 → 经验唤起
     Experience,
     /// 输入是新的/预测性的 → 情境唤起
@@ -238,6 +238,24 @@ enum Evocation {
 
 /// 预测性输入标记 (将要/计划/打算/预测/准备/接下来/明天/之后)
 const PREDICTIVE_HINTS: [&str; 8] = ["将要", "计划", "打算", "预测", "准备", "接下来", "明天", "之后"];
+
+/// 是不是预测性输入 (计划/将要…)
+pub fn is_predictive_input(user_input: &str) -> bool {
+    PREDICTIVE_HINTS.iter().any(|h| user_input.contains(h))
+}
+
+/// 走哪条唤起路径 (纯函数, 可测)
+///
+/// - 有相似命中 → 经验区 (过去的经验可用, 先验相似度排序)
+/// - 无命中 + 预测性输入 → 情境区 (没有过去可用, 用判断力前瞻风险)
+/// - 都没有 → 仍是经验区 (无经验可注入 ⇒ 由注入门如实 skip)
+pub fn evocation_of(user_input: &str, has_similar_judgment: bool) -> Evocation {
+    if is_predictive_input(user_input) && !has_similar_judgment {
+        Evocation::Predictive
+    } else {
+        Evocation::Experience
+    }
+}
 
 /// 判断力注入门 (对齐 TS injectJudgmentGate, 完全翻译 + 唤起双路径)
 ///
@@ -294,38 +312,51 @@ pub fn inject_judgment_gate(
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     // 路径 2: 预测唤起 (预测性输入 → 情境注入)
-    let predictive = PREDICTIVE_HINTS.iter().any(|h| user_input.contains(h));
+    let predictive = is_predictive_input(user_input);
+    // 唤起路径: 有过去的经验 → 经验区; 没有 + 预测性 → 情境区
+    let evocation = evocation_of(user_input, !scored.is_empty());
 
     let mut lines: Vec<String> = Vec::new();
     let mut used_ids = Vec::new();
     let mut matched = 0usize;
 
-    if !scored.is_empty() {
-        lines.push("【过去的经验 · 与当前输入相关】".into());
-        for (sim, j) in scored.iter().take(JUDGMENT_TOP_N) {
-            lines.push(format!("- {} (相似度 {:.0}%)", j.statement, sim * 100.0));
-            used_ids.push(j.id.clone());
-            matched += 1;
-        }
-    }
-    if predictive {
-        // 新的预测: 计划性输入跨域召回高置信度判断 (前瞻提示不限域)
+    // 情境区 (预测性输入): 跨域召回高置信度判断做前瞻提示
+    let push_situational = |lines: &mut Vec<String>, used_ids: &mut Vec<String>, matched: &mut usize| {
         let mut picks: Vec<&crate::judgment::Judgment> = store
             .snapshot()
             .iter()
             .filter(|j| j.status == crate::judgment::JudgmentStatus::Active)
             .collect();
         picks.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
-        if !picks.is_empty() {
-            lines.push("【新的预测 · 情境提醒】(这是计划性输入, 行动前对照这些判断)".into());
-            for j in picks.iter().take(2) {
-                lines.push(format!("- {}", j.statement));
-                if !used_ids.contains(&j.id) {
+        if picks.is_empty() {
+            return;
+        }
+        lines.push("【新的预测 · 情境提醒】(这是计划性输入, 行动前对照这些判断)".into());
+        for j in picks.iter().take(2) {
+            lines.push(format!("- {}", j.statement));
+            if !used_ids.contains(&j.id) {
+                used_ids.push(j.id.clone());
+            }
+            *matched += 1;
+        }
+    };
+
+    match evocation {
+        Evocation::Experience => {
+            if !scored.is_empty() {
+                lines.push("【过去的经验 · 与当前输入相关】".into());
+                for (sim, j) in scored.iter().take(JUDGMENT_TOP_N) {
+                    lines.push(format!("- {} (相似度 {:.0}%)", j.statement, sim * 100.0));
                     used_ids.push(j.id.clone());
+                    matched += 1;
                 }
-                matched += 1;
+            }
+            // 既是经验命中又是计划性输入 → 情境区再补一段 (两条路径可同时成立)
+            if predictive {
+                push_situational(&mut lines, &mut used_ids, &mut matched);
             }
         }
+        Evocation::Predictive => push_situational(&mut lines, &mut used_ids, &mut matched),
     }
 
     if lines.is_empty() {
@@ -547,6 +578,15 @@ mod tests {
         assert!(r.did_inject);
         assert!(r.system_addition.contains("新的预测"), "预测性输入唤起情境提醒");
         assert!(r.system_addition.contains("大额付款前先人工确认"));
+    }
+
+    #[test]
+    fn evocation_path_chosen_by_similarity_then_prediction() {
+        assert_eq!(evocation_of("做功能", false), Evocation::Experience, "无相似 + 非预测 → 经验区 (无经验可注入 ⇒ 门如实 skip)");
+        assert_eq!(evocation_of("我计划明天发起转账", false), Evocation::Predictive, "无相似 + 预测性 → 情境区");
+        assert_eq!(evocation_of("我计划明天发起转账", true), Evocation::Experience, "有过去的经验 → 经验优先");
+        assert!(is_predictive_input("接下来要做 X"));
+        assert!(!is_predictive_input("帮我写个函数"));
     }
 
     #[test]

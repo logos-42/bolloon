@@ -1,4 +1,4 @@
-//! Bolloon Web — Web UI (hushforge 布局) + HTTP API
+//! Bolloon Web — Web UI (hushforge 布局像素级复刻) + HTTP API
 //!
 //! 布局学 HUSHFUSION Forge 的 internal/webapp/assets/index.html:
 //! - 单 HTML（内嵌 CSS/JS），深色主题 CSS 变量 + prefers-color-scheme 浅色
@@ -7,5 +7,6 @@
 //!
 //! 版本 0.6.10（与 TS 版保持一致）。
 
+pub mod native;
 pub mod server;
 pub use server::*;

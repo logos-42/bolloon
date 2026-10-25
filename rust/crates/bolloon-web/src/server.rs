@@ -18,7 +18,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use bolloon_agent::{MemoryStore, TaskBoard};
+use bolloon_agent::{MemoryLayer, MemoryStore, TaskBoard};
 use bolloon_agent::judgment::JudgmentStore;
 use bolloon_agent::world::{Opportunity, OpportunityStream};
 use bolloon_agent::memory_db::MemoryDb;
@@ -32,7 +32,7 @@ use bolloon_p2p::{GroupAcl, GroupStore, KeyPair};
 use std::io::Read;
 
 /// rust 原生版数据目录 — **单一真源** (CLI/Web/App/SDK 同一口径: BolloonHome)
-fn data_dir() -> std::path::PathBuf {
+pub fn data_dir() -> std::path::PathBuf {
     bolloon_agent::home::BolloonHome::resolve().root().to_path_buf()
 }
 
@@ -56,6 +56,8 @@ pub struct AppState {
     pub memory_db: Arc<Mutex<MemoryDb>>,
     /// 完全访问权限开关 (UI 可随时开/取消; 默认关 = 走 permission 门)
     pub full_access: Arc<std::sync::atomic::AtomicBool>,
+    /// Forge 兼容层状态 (agents/sessions/profile/settings/auth 队列)
+    pub forge: Arc<Mutex<crate::native::NativeState>>,
     pub session_store: Arc<bolloon_agent::SessionStore>,
     pub version: &'static str,
 }
@@ -100,6 +102,7 @@ impl AppState {
                     .unwrap_or_else(|_| MemoryDb::open(":memory:").expect("内存库")),
             )),
             full_access: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            forge: Arc::new(Mutex::new(crate::native::NativeState::load(&dir))),
             session_store,
             version: "0.6.10",
         }
@@ -221,9 +224,48 @@ struct SendResponse {
 pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/", get(index))
-        .route("/api/bootstrap", get(bootstrap))
-        .route("/api/models", get(models))
-        .route("/api/sessions", get(sessions))
+        // 原生 UI 数据面 (前端 index.html 期望的形状: agents/sessions/profile/settings/update)
+        .route("/api/bootstrap", get(crate::native::bootstrap_native))
+        .route("/api/version", get(crate::native::version))
+        .route("/api/models", get(crate::native::models))
+        .route("/api/sessions", get(sessions).post(crate::native::create_session))
+        .route("/api/sessions/branch", post(crate::native::branch_session))
+        .route("/api/sessions/update", post(crate::native::update_session))
+        .route("/api/sessions/delete", post(crate::native::delete_session))
+        .route("/api/sessions/truncate", post(crate::native::truncate_session))
+        .route("/api/sessions/share", post(crate::native::share_session))
+        .route("/api/agents", post(crate::native::create_agent))
+        .route("/api/agents/update", post(crate::native::update_agent))
+        .route("/api/profile", post(crate::native::set_profile))
+        .route("/api/settings", post(crate::native::set_settings))
+        .route("/api/chat", post(crate::native::chat))
+        .route("/api/chat/stream", post(crate::native::chat_stream))
+        .route("/api/chat/status", get(crate::native::chat_status))
+        .route("/api/chat/stop", post(crate::native::chat_stop))
+        // 群聊 room 面板 (内部商议)
+        .route("/api/room", get(crate::native::room))
+        .route("/api/room/new", post(crate::native::room_new))
+        .route("/api/room/start", post(crate::native::room_start))
+        .route("/api/room/stop", post(crate::native::room_stop))
+        .route("/api/room/close", post(crate::native::room_close))
+        .route("/api/room/guide", post(crate::native::room_guide))
+        // clarity 授权队列 (workspace 外路径: 仅一次/本项目/完全访问/拒绝)
+        .route("/api/auth/requests", get(crate::native::auth_requests))
+        .route("/api/auth/request", post(crate::native::auth_request))
+        .route("/api/auth/decide", post(crate::native::auth_decide))
+        // 自动更新 (前端 updateBtn)
+        .route("/api/update", get(crate::native::update))
+        .route("/api/update/apply", post(crate::native::update_apply))
+        // 世界模式 (意图 / 机会流 / 校准环 / 信箱 — 对齐 TS routes-world)
+        .route("/api/intents", get(crate::native::list_intents).post(crate::native::add_intent))
+        .route("/api/intents/remove", post(crate::native::remove_intent))
+        .route("/api/opportunities", get(crate::native::list_opportunities))
+        .route("/api/opportunities/{id}/ignore", post(crate::native::ignore_opportunity))
+        .route("/api/opportunities/{id}/accept", post(crate::native::accept_opportunity))
+        .route("/api/world/profile", get(crate::native::world_profile))
+        .route("/api/world/watch", get(crate::native::world_watch))
+        .route("/api/world/inbox", get(crate::native::world_inbox).post(crate::native::world_inbox_post))
+        .route("/api/world/stats", get(crate::native::world_stats))
         .route("/api/send", post(send))
         .route("/api/health", get(health))
         // 群聊
@@ -503,16 +545,20 @@ async fn remember_memory(
 ) -> Json<serde_json::Value> {
     // 轻量 SQL 记忆库 (SQLite; 单一真源, CLI 同路径)
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-    let layer = match req.layer.as_deref() {
-        Some("lesson") => "lesson",
-        Some("decision") => "decision",
-        Some("temporary") => "temporary",
-        _ => "run_fact",
+    // 层按 MemoryLayer 解析 (未知/缺省 → run_fact; 不静默接受任意字符串)
+    let layer = MemoryLayer::parse(req.layer.as_deref()).unwrap_or(MemoryLayer::RunFact);
+    let importance = req.importance.unwrap_or(0.5);
+    let row = {
+        let db = st.memory_db.lock().await;
+        db.remember("local", &layer.to_string(), &req.content, importance, now_ms, None)
+            .map_err(|e| e.to_string())
     };
-    let db = st.memory_db.lock().await;
-    let row = db
-        .remember("local", layer, &req.content, req.importance.unwrap_or(0.5), now_ms, None)
-        .map_err(|e| e.to_string());
+    // 快照同步落盘 (memory.json): 进程重启/离线读面用同一口径
+    {
+        let mut store = st.memory.lock().await;
+        store.remember(&req.content, layer, importance, None);
+        save_memory(&data_dir(), &store);
+    }
     match row {
         Ok(r) => Json(serde_json::json!({
             "id": format!("mem-{:06}", r.id),

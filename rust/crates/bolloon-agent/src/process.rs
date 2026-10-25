@@ -228,7 +228,7 @@ mod tests {
     fn timeout_reaped_with_sigkill_semantics() {
         let mut pm = ProcessManager::new();
         let a = pm.spawn("long job", "/ws", None, 0).id.clone();
-        pm.spawn("short job", "/ws", None, 9000).id.clone();
+        pm.spawn("short job", "/ws", None, 9000);
         let killed = pm.reap_timeout(10_000, 5_000);
         assert_eq!(killed, vec![a.clone()], "只回收超时的");
         assert_eq!(pm.get(&a).unwrap().status, ProcessStatus::Killed);
