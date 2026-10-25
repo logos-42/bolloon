@@ -53,6 +53,8 @@ pub struct AppState {
     pub x402_used_txs: Arc<Mutex<std::collections::HashSet<String>>>,
     /// 轻量 SQL 记忆库 (SQLite 单文件; 与 CLI 同一路径)
     pub memory_db: Arc<Mutex<MemoryDb>>,
+    /// 完全访问权限开关 (UI 可随时开/取消; 默认关 = 走 permission 门)
+    pub full_access: Arc<std::sync::atomic::AtomicBool>,
     pub session_store: Arc<bolloon_agent::SessionStore>,
     pub version: &'static str,
 }
@@ -96,6 +98,7 @@ impl AppState {
                 MemoryDb::open(dir.join("memory.db").to_str().unwrap_or("memory.db"))
                     .unwrap_or_else(|_| MemoryDb::open(":memory:").expect("内存库")),
             )),
+            full_access: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             session_store,
             version: "0.6.10",
         }
@@ -241,6 +244,10 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/api/x402/info", post(x402_publish))
         // Clarity 一键说清楚
         .route("/api/clarity", get(clarity))
+        // 模型供应商列表 (筛选按钮弹窗数据源)
+        .route("/api/providers", get(providers))
+        // 完全访问权限开关 (可随时开/取消)
+        .route("/api/permission", get(get_permission).post(set_permission))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
@@ -555,6 +562,41 @@ async fn clarity(
         .collect();
     let sid = q.q.clone().unwrap_or_else(|| "default".into());
     Json(clarity_of(&sid, &events, &[], &[]))
+}
+
+/// 模型供应商列表 (配置里的 provider ids + 当前默认模型)
+async fn providers(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let ids = st.llm.provider_ids();
+    let items: Vec<serde_json::Value> = ids
+        .iter()
+        .map(|id| {
+            let cfg = st.llm.provider(id);
+            serde_json::json!({
+                "id": id,
+                "base_url": cfg.map(|c| c.base_url.clone()).unwrap_or_default(),
+                "model": cfg.map(|c| c.default_model.clone()).unwrap_or_default(),
+                "has_key": cfg.map(|c| c.api_key.is_some()).unwrap_or(false),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "providers": items }))
+}
+
+/// 完全访问权限: 读
+async fn get_permission(State(st): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "full_access": st.full_access.load(std::sync::atomic::Ordering::SeqCst),
+    }))
+}
+
+/// 完全访问权限: 开/取消 (随时可切)
+async fn set_permission(
+    State(st): State<AppState>,
+    Json(req): Json<std::collections::HashMap<String, bool>>,
+) -> Json<serde_json::Value> {
+    let on = req.get("full_access").copied().unwrap_or(false);
+    st.full_access.store(on, std::sync::atomic::Ordering::SeqCst);
+    Json(serde_json::json!({ "full_access": on }))
 }
 
 // ---------- 判断力 ----------

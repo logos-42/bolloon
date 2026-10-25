@@ -81,9 +81,50 @@
   button.primary{background:linear-gradient(180deg,#3a4a1a,#2a3610);color:#fff;border-color:#3a4a1a;font-weight:600}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,209,102,.55)}70%{box-shadow:0 0 0 10px rgba(255,209,102,0)}100%{box-shadow:0 0 0 0 rgba(255,209,102,0)}}
   .chat-new{display:grid;place-items:center;width:32px;height:32px;padding:0;border-radius:9px;flex:none}
-  .composer-footer{display:flex;gap:8px;padding:0 16px 12px}
+  .composer-footer{display:flex;gap:8px;padding:0 16px 12px;align-items:center;flex-wrap:wrap}
   .mini{font-size:12px;padding:5px 9px;border-radius:999px;color:var(--muted)}
   .mini:hover{color:var(--text)}
+  /* Clarity 按钮: 输入框下方显著可见 */
+  #clarityBtn{display:inline-flex;align-items:center;gap:5px;color:var(--accent);border:1px solid var(--accent);font-weight:600}
+  #clarityBtn:hover{background:rgba(196,214,64,.12);color:var(--accent)}
+  /* 完全访问开关 */
+  #fullAccessBtn{display:inline-flex;align-items:center;gap:5px}
+  #fullAccessBtn.on{color:#c0392b;border-color:#c0392b;font-weight:600}
+  #fullAccessBtn.on::before{content:"●";font-size:9px}
+  /* 空状态: 输入框居中, 有内容后落底部 */
+  main.chat-empty #chat{display:none}
+  main.chat-empty .composer-wrap{margin:auto;max-width:760px;width:100%;padding:0 24px 24px;border-top:none}
+  main.chat-empty .hero{flex:1;display:grid;place-items:center;min-height:0}
+  .hero h1{font-size:30px;font-weight:600;margin:0 0 6px;color:var(--text)}
+  .hero p{color:var(--muted);margin:0 0 28px;font-size:14px}
+  .composer-wrap{border-top:1px solid var(--line);display:flex;flex-direction:column;flex:none}
+  /* 气泡头像 + 动作行 */
+  .msg-row{position:relative}
+  .ava-bubble{width:26px;height:26px;border-radius:9px;flex:none;display:grid;place-items:center;background:var(--accent);color:#111;font-size:13px;font-weight:700;overflow:hidden;position:absolute;top:2px}
+  .ava-bubble img{width:100%;height:100%;object-fit:cover}
+  .msg-row.bot .ava-bubble{left:-36px}
+  .msg-row.user .ava-bubble{right:-36px;border-radius:50%}
+  .actions{display:flex;gap:2px;margin-top:3px;opacity:0;transition:opacity .12s}
+  .msg-row:hover .actions{opacity:1}
+  .act{display:inline-grid;place-items:center;width:26px;height:24px;padding:0;border:none;background:none;color:var(--muted);border-radius:6px}
+  .act:hover{color:var(--text);background:var(--panel2)}
+  .act svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  /* 新会话浮动按钮 (消息框内左上角) */
+  #newChatFloat{position:absolute;top:64px;left:14px;z-index:20;display:grid;place-items:center;width:32px;height:32px;padding:0;border-radius:9px;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+  main{position:relative}
+  /* 弹窗 */
+  .modal-mask{position:fixed;inset:0;background:rgba(10,15,8,.45);z-index:100;display:none;place-items:center}
+  .modal-mask.open{display:grid}
+  .modal{background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn-border);border-radius:14px;min-width:340px;max-width:440px;box-shadow:0 12px 40px rgba(0,0,0,.25);overflow:hidden}
+  .modal .m-head{display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--btn-border);font-weight:600}
+  .modal .m-head .grow{flex:1}
+  .modal .m-body{max-height:320px;overflow:auto;padding:8px}
+  .prov{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;cursor:pointer}
+  .prov:hover{background:var(--active)}
+  .prov.sel{outline:2px solid var(--accent)}
+  .prov b{font-size:13px}
+  .prov small{color:var(--muted);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px}
+  .prov .badge{margin-left:auto;font-size:10px;padding:2px 7px;border-radius:999px;border:1px solid var(--btn-border);color:var(--muted)}
   .room-head{height:54px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--line)}
   .room-head b{font-size:13px}
   .room-head .grow{flex:1}
@@ -138,25 +179,45 @@
       <div class="who"><b id="accountName">本地</b><small id="accountDid">did:pi:local</small></div>
     </div>
   </aside>
-  <main>
+  <main class="chat-empty">
     <header>
-      <button id="newSessionBtn" class="chat-new" title="新会话" aria-label="新会话">✦</button>
       <b id="agentName">Bolloon 智能体</b>
       <span id="agentDid" style="color:var(--muted)"></span>
       <span class="grow"></span>
       <button id="roomBtn" class="mini" title="打开内部商议">内部商议</button>
     </header>
-    <div id="chat"><div class="empty"><h1>我们要做什么？</h1></div></div>
-    <div class="composer">
-      <textarea id="input" placeholder="发送消息；Enter 发送，Shift+Enter 换行"></textarea>
-      <button class="primary" id="send">发送</button>
-      <button id="stopBtn" title="终止当前回复" style="display:none;width:46px">⏹</button>
-    </div>
-    <div class="composer-footer">
-      <button id="modelBtn" class="mini" title="选择模型">⚙ 模型：<span id="modelLabel">…</span></button>
-      <button id="clarityBtn" class="mini" title="一键说清楚当前状态">◎ Clarity</button>
+    <button id="newChatFloat" title="新会话（消息框左上角）" aria-label="新会话">✦</button>
+    <div class="hero"><div style="text-align:center">
+      <h1>我们要做什么？</h1>
+      <p> Bolloon · 去中心化智能体资源交流网络</p>
+    </div></div>
+    <div id="chat"></div>
+    <div class="composer-wrap">
+      <div class="composer">
+        <textarea id="input" placeholder="发送消息；Enter 发送，Shift+Enter 换行"></textarea>
+        <button class="primary" id="send">发送</button>
+        <button id="stopBtn" title="终止当前回复" style="display:none;width:46px">⏹</button>
+      </div>
+      <div class="composer-footer">
+        <button id="clarityBtn" class="mini" title="一键说清楚当前状态">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>
+          Clarity
+        </button>
+        <button id="fullAccessBtn" class="mini" title="完全访问权限（可随时取消）">🔓 完全访问</button>
+        <span class="grow"></span>
+        <button id="modelBtn" class="mini" title="模型供应商筛选">
+          <svg style="vertical-align:-2px" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h.01M15 9h.01M9 15h6"/></svg>
+          供应商：<b id="modelLabel">默认</b>
+        </button>
+      </div>
     </div>
   </main>
+  <div class="modal-mask" id="provModal">
+    <div class="modal">
+      <div class="m-head">选择模型供应商 <span class="grow"></span><button id="provClose" style="width:26px;height:26px;padding:0">×</button></div>
+      <div class="m-body" id="provList"><div class="hint" style="padding:10px">加载中…</div></div>
+    </div>
+  </div>
   <aside id="roomPanel" class="room-panel">
     <div class="room-grip" id="roomGrip"></div>
     <div class="room-head">
@@ -208,23 +269,168 @@ function mdToHTML(src) {
   return s.split("\n").map(l => l.trim() ? "<p>" + l + "</p>" : "").join("").replace(/\uE000CODE(\d+)\uE000/g, (_, i) => codes[+i] || "");
 }
 
+// ---------- SVG 图标 (气泡动作按钮) ----------
+const ICONS = {
+  copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+  branch: '<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 8.5v7M6 15c0-4 4-5.5 9.5-6.2"/></svg>',
+  share: '<svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.3M8.2 13.2l7.6 4.3"/></svg>',
+  retry: '<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 5v6h-6"/></svg>',
+  edit: '<svg viewBox="0 0 24 24"><path d="M17 3l4 4L8 20H4v-4z"/></svg>',
+  check: '<svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>',
+};
+
+function actBtn(kind, title, idx) {
+  return `<button class="act" data-act="${kind}" data-idx="${idx}" title="${title}">${ICONS[kind]}</button>`;
+}
+
+function userAvatarHTML() {
+  const av = localStorage.getItem("bolloon_avatar");
+  return av ? `<div class="ava-bubble"><img src="${av}" alt="me"/></div>` : `<div class="ava-bubble" style="background:var(--panel2);border:1px solid var(--line)">🜁</div>`;
+}
+
 function renderChat() {
   const chat = $("chat");
-  chat.innerHTML = `<div class="empty"><h1>我们要做什么？</h1></div>`;
-  if (!state) return;
-  for (const m of (state.messages || [])) {
-    chat.innerHTML = "";
+  const main = document.querySelector("main");
+  const msgs = (state && state.messages) || [];
+  // 空态居中 / 有内容落底部
+  main.classList.toggle("chat-empty", msgs.length === 0);
+  chat.innerHTML = "";
+  if (!msgs.length) return;
+  msgs.forEach((m, i) => {
     const row = document.createElement("div");
     row.className = "msg-row " + (m.role === "user" ? "user" : "bot");
+    const ava = document.createElement("div");
+    ava.innerHTML = m.role === "user" ? userAvatarHTML() : `<div class="ava-bubble" title="Bolloon">🜁</div>`;
     const msg = document.createElement("div");
     msg.className = "msg " + (m.role === "user" ? "user" : "bot");
     msg.innerHTML = mdToHTML(m.content);
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    actions.innerHTML = m.role === "user"
+      ? actBtn("copy", "复制", i) + actBtn("edit", "修改", i)
+      : actBtn("copy", "复制", i) + actBtn("branch", "分支", i) + actBtn("share", "分享", i) + actBtn("retry", "重试", i);
+    row.appendChild(ava.firstElementChild || ava);
     row.appendChild(msg);
+    row.appendChild(actions);
     chat.appendChild(row);
-  }
-  // 滚动到底
+  });
   chat.scrollTop = chat.scrollHeight;
 }
+
+// ---------- 气泡动作 ----------
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch { return false; }
+}
+
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".act");
+  if (!btn) return;
+  const idx = +btn.dataset.idx;
+  const m = (state && state.messages || [])[idx];
+  if (!m) return;
+  const kind = btn.dataset.act;
+  if (kind === "copy") {
+    const ok = await copyText(m.content);
+    btn.innerHTML = ICONS.check;
+    setTimeout(() => (btn.innerHTML = ICONS.copy), 900);
+    if (!ok) alert("复制失败 (浏览器拒绝), 请手动选择文本");
+  } else if (kind === "branch") {
+    // 分支: 复制到此为止的历史, 开新会话
+    state.messages = state.messages.slice(0, idx + 1);
+    state.active_session_id = null;
+    renderChat();
+  } else if (kind === "share") {
+    const ok = await copyText(m.content);
+    alert(ok ? "已复制, 可粘贴分享" : "复制失败");
+  } else if (kind === "retry") {
+    // 重试: 找该回复前最近一条 user 输入, 重发
+    const prev = [...state.messages.slice(0, idx)].reverse().find((x) => x.role === "user");
+    if (prev) { state.messages = state.messages.slice(0, idx); renderChat(); await doSend(prev.content); }
+  } else if (kind === "edit") {
+    // 修改: 回填输入框编辑
+    $("input").value = m.content;
+    $("input").focus();
+  }
+});
+
+// ---------- 模型供应商弹窗 ----------
+let selectedProvider = null;
+
+$("modelBtn").addEventListener("click", async () => {
+  $("provModal").classList.add("open");
+  const box = $("provList");
+  try {
+    const j = await api("/api/providers");
+    box.innerHTML = "";
+    if (!(j.providers || []).length) {
+      box.innerHTML = `<div class="hint" style="padding:10px">未配置供应商 (BOLLOON_BASE_URL / BOLLOON_API_KEY)</div>`;
+      return;
+    }
+    for (const p of j.providers) {
+      const el = document.createElement("div");
+      el.className = "prov" + (selectedProvider === p.id ? " sel" : "");
+      el.innerHTML = `<div><b>${escapeHTML(p.id)}</b><small>${escapeHTML(p.model)} · ${escapeHTML(p.base_url)}</small></div><span class="badge">${p.has_key ? "已配置 key" : "无 key"}</span>`;
+      el.addEventListener("click", () => {
+        selectedProvider = p.id;
+        $("modelLabel").textContent = p.id;
+        localStorage.setItem("bolloon_provider", p.id);
+        document.querySelectorAll(".prov").forEach((x) => x.classList.remove("sel"));
+        el.classList.add("sel");
+      });
+      box.appendChild(el);
+    }
+  } catch (e) {
+    box.innerHTML = `<div class="hint" style="padding:10px">加载失败: ${escapeHTML(e.message)}</div>`;
+  }
+});
+$("provClose").addEventListener("click", () => $("provModal").classList.remove("open"));
+$("provModal").addEventListener("click", (e) => {
+  if (e.target === $("provModal")) $("provModal").classList.remove("open");
+});
+
+// ---------- 完全访问权限 (随时开/取消) ----------
+async function refreshFullAccess() {
+  try {
+    const j = await api("/api/permission");
+    $("fullAccessBtn").classList.toggle("on", !!j.full_access);
+    $("fullAccessBtn").innerHTML = (j.full_access ? "🔓 完全访问已开启" : "🔓 完全访问");
+  } catch { /* 冷启动 */ }
+}
+
+$("fullAccessBtn").addEventListener("click", async () => {
+  const cur = $("fullAccessBtn").classList.contains("on");
+  const next = !cur;
+  try {
+    await api("/api/permission", { method: "POST", body: JSON.stringify({ full_access: next }) });
+    await refreshFullAccess();
+  } catch (e) { alert("切换失败: " + e.message); }
+});
+
+// ---------- 私有头像 (顶部显示) ----------
+function applyAvatar() {
+  const av = localStorage.getItem("bolloon_avatar");
+  const acc = $("accountAva");
+  if (av) acc.innerHTML = `<img src="${av}" style="width:100%;height:100%;object-fit:cover"/>`;
+}
+
+$("accountAva").addEventListener("click", () => {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = "image/*";
+  inp.onchange = () => {
+    const f = inp.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      localStorage.setItem("bolloon_avatar", rd.result);
+      applyAvatar();
+      renderChat();
+    };
+    rd.readAsDataURL(f);
+  };
+  inp.click();
+});
 
 async function boot() {
   state = await api("/api/bootstrap");
@@ -232,6 +438,11 @@ async function boot() {
     const didEl = $("accountDid");
     if (didEl) didEl.textContent = state.did.slice(0, 22) + "…";
   }
+  // 恢复上次的供应商选择
+  const saved = localStorage.getItem("bolloon_provider");
+  if (saved) { selectedProvider = saved; $("modelLabel").textContent = saved; }
+  applyAvatar();
+  refreshFullAccess();
   renderChat();
 }
 
@@ -379,7 +590,7 @@ $("input").addEventListener("keydown", (e) => {
 $("collapseBtn").addEventListener("click", () => $("app").classList.toggle("collapsed"));
 $("roomBtn").addEventListener("click", () => { roomGroupId = null; $("roomTitle").textContent = "内部商议"; $("app").classList.add("room-open"); });
 $("roomClose").addEventListener("click", () => { $("app").classList.remove("room-open"); clearInterval(roomTimer); });
-$("newSessionBtn").addEventListener("click", () => { if (state) { state.active_session_id = null; state.messages = []; renderChat(); } });
+$("newChatFloat").addEventListener("click", () => { if (state) { state.active_session_id = null; state.messages = []; renderChat(); } $("input").focus(); });
 $("roomGuideBtn").addEventListener("click", sendRoom);
 $("newGroupBtn").addEventListener("click", createGroup);
 $("roomInput").addEventListener("keydown", (e) => {
