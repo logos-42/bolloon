@@ -1,0 +1,16 @@
+[package]
+name = "bolloon-x402"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bolloon X402 — 订单标识 BOL1 (EIP-3009 nonce) · 付费信息协议 · 直付判定"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tiny-keccak = { version = "2", features = ["keccak"] }
+bolloon-p2p = { path = "../bolloon-p2p" }

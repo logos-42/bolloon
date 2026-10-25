@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use bolloon_agent::{MemoryLayer, MemoryStore, TaskBoard};
+use bolloon_agent::judgment::JudgmentStore;
+use bolloon_agent::world::{Opportunity, OpportunityStream};
 use bolloon_llm::{ChatMessage, GenerateParams, LlmRuntime};
 use bolloon_p2p::{GroupAcl, GroupStore, KeyPair};
 
@@ -46,6 +48,8 @@ pub struct AppState {
     pub groups: Arc<GroupStore>,
     pub tasks: Arc<Mutex<TaskBoard>>,
     pub memory: Arc<Mutex<MemoryStore>>,
+    pub judgments: Arc<Mutex<JudgmentStore>>,
+    pub world: Arc<Mutex<OpportunityStream>>,
     pub session_store: Arc<bolloon_agent::SessionStore>,
     pub version: &'static str,
 }
@@ -81,6 +85,8 @@ impl AppState {
             groups: Arc::new(GroupStore::new()),
             tasks,
             memory,
+            judgments: Arc::new(Mutex::new(JudgmentStore::new())),
+            world: Arc::new(Mutex::new(OpportunityStream::new())),
             session_store,
             version: "0.6.10",
         }
@@ -216,6 +222,10 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/api/tasks/{id}/claim", post(claim_task))
         // 记忆
         .route("/api/memory", get(recall_memory).post(remember_memory))
+        // 判断力 (注入门 top-N)
+        .route("/api/judgment", get(top_judgments).post(evolve_judgment))
+        // 世界流 (机会 feed)
+        .route("/api/world/feed", get(world_feed))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
@@ -509,6 +519,106 @@ async fn recall_memory(State(st): State<AppState>, Query(q): Query<RecallQuery>)
         })
         .collect();
     Json(serde_json::json!({ "memories": items }))
+}
+
+// ---------- 判断力 ----------
+
+async fn top_judgments(
+    State(st): State<AppState>,
+    Query(q): Query<RecallQuery>,
+) -> Json<serde_json::Value> {
+    let store = st.judgments.lock().await;
+    let picks = store.top_for_domain(q.q.as_deref().unwrap_or("all"), q.k.unwrap_or(3));
+    let items: Vec<serde_json::Value> = picks
+        .iter()
+        .map(|j| serde_json::json!({ "id": j.id, "statement": j.statement, "domain": j.domain, "confidence": j.confidence }))
+        .collect();
+    Json(serde_json::json!({ "judgments": items }))
+}
+
+#[derive(Deserialize)]
+struct EvolveJudgmentRequest {
+    statement: String,
+    /// 意图域 (缺省 all)
+    domain: Option<String>,
+    confidence: Option<f64>,
+}
+
+async fn evolve_judgment(
+    State(st): State<AppState>,
+    Json(req): Json<EvolveJudgmentRequest>,
+) -> Json<serde_json::Value> {
+    let mut store = st.judgments.lock().await;
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    let action = store.evolve(&req.statement, req.domain.as_deref().unwrap_or("all"), req.confidence.unwrap_or(0.7), now_ms);
+    let (kind, detail) = match &action {
+        bolloon_agent::judgment::EvolveAction::None => ("none", "无动作".to_string()),
+        bolloon_agent::judgment::EvolveAction::Merged { with, .. } => ("merged", format!("并入 {with}")),
+        bolloon_agent::judgment::EvolveAction::Contradicted { with } => ("contradicted", format!("与 {with} 反向 (标记给用户)")),
+        bolloon_agent::judgment::EvolveAction::Superseded { old } => ("superseded", format!("顶掉 {old}")),
+        bolloon_agent::judgment::EvolveAction::Created { id } => ("created", format!("新增 {id}")),
+    };
+    Json(serde_json::json!({ "action": kind, "detail": detail }))
+}
+
+// ---------- 世界流 ----------
+
+#[derive(Deserialize)]
+struct WorldFeedQuery {
+    /// 意图标签 (逗号分隔, 可选)
+    tags: Option<String>,
+}
+
+async fn world_feed(
+    State(st): State<AppState>,
+    Query(q): Query<WorldFeedQuery>,
+) -> Json<serde_json::Value> {
+    let mut world = st.world.lock().await;
+    // 演示种子 (真实机会由 world-watcher / P2P 投递注入; 无意图也流入, 永不空流)
+    if world.feed().is_empty() {
+        for (title, summary, tags, url) in [
+            ("世界流: 默认流入不空", "没有意图也保持世界流动", vec!["world".to_string()], None),
+            ("合作机会示例", "可控核聚变 论文合作招募", vec!["聚变".to_string(), "合作".to_string()], Some("https://example.com/1".into())),
+        ] {
+            let (score, reason) = bolloon_agent::world::score_opportunity(&tags, &[]);
+            world.push(Opportunity {
+                id: String::new(),
+                title: title.into(),
+                summary: summary.into(),
+                source: "world".into(),
+                score,
+                reason,
+                card: None,
+                url,
+            });
+        }
+        // 带意图时重打分 (透明 reason)
+        if let Some(tags) = &q.tags {
+            let intent_tags: Vec<String> = tags.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let mut rescored = Vec::new();
+            for opp in world.feed() {
+                let mut o = opp.clone();
+                let (score, reason) = bolloon_agent::world::score_opportunity(&intent_tags, &intent_tags.clone());
+                let _ = (&o, &tags);
+                o.score = score;
+                o.reason = reason;
+                rescored.push(o);
+            }
+            return Json(serde_json::json!({ "feed": rescored, "intent_tags": intent_tags }));
+        }
+    }
+    let feed: Vec<serde_json::Value> = world
+        .feed()
+        .iter()
+        .map(|o| {
+            serde_json::json!({
+                "id": o.id, "title": o.title, "summary": o.summary,
+                "source": o.source, "score": o.score, "reason": o.reason,
+                "url": o.url,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "feed": feed }))
 }
 
 // ---------- utils ----------

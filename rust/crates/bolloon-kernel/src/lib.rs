@@ -18,6 +18,7 @@ pub mod control;
 pub mod run_lifecycle;
 pub mod session_lifecycle;
 pub mod transport;
+pub mod cron;
 pub mod ha;
 
 pub use channel_actor::{

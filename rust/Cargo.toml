@@ -6,6 +6,7 @@ members = [
     "crates/bolloon-llm",
     "crates/bolloon-agent",
     "crates/bolloon-p2p",
+    "crates/bolloon-x402",
     "crates/bolloon-web",
     "crates/bolloon-cli",
 ]

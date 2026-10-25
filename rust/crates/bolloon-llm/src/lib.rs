@@ -9,4 +9,5 @@
 //! 密钥纪律：api_key 只在构造时持有，不落日志、不序列化输出。
 
 pub mod runtime;
+pub mod compaction;
 pub use runtime::*;

@@ -16,3 +16,8 @@ pub use gossip::*;
 pub fn b58_encode(bytes: &[u8]) -> String {
     bs58::encode(bytes).into_string()
 }
+
+/// b58 解码 (外部 crate 复用)
+pub fn b58_decode(s: &str) -> Option<Vec<u8>> {
+    bs58::decode(s).into_vec().ok()
+}
