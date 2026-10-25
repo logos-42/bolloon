@@ -146,6 +146,192 @@ impl GroupLog {
     }
 }
 
+// ─────────────────────── 群邀请 (分享链接 + 主动拉群) ───────────────────────
+
+/// 邀请错误
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum InviteError {
+    #[error("邀请签名无效 (伪造或被篡改)")]
+    BadSignature,
+    #[error("邀请已过期")]
+    Expired,
+    #[error("链接形状不对")]
+    BadLink,
+}
+
+/// 生成群邀请链接 (群主签 group_id, 带过期; 分享有链接)
+///
+/// 形状: `bolloon://join/<group_id>?t=<b58 sig>&exp=<epoch ms>&by=<owner-did>`
+pub fn make_invite_link(
+    group_id: &str,
+    owner_kp: &KeyPair,
+    expires_at_ms: u64,
+    now_ms: u64,
+) -> String {
+    let sig = owner_kp.sign(format!("join|{group_id}|{expires_at_ms}").as_bytes());
+    format!(
+        "bolloon://join/{}?t={}&exp={}&by={}",
+        group_id,
+        crate::b58_encode(&sig),
+        expires_at_ms,
+        owner_kp.did.as_str()
+    )
+}
+
+/// 验证邀请链接 (签名 + 过期; 通过才允许加入)
+pub fn verify_invite_link(link: &str, now_ms: u64, owner_pubkey: &[u8; 32]) -> Result<String, InviteError> {
+    let rest = link
+        .strip_prefix("bolloon://join/")
+        .ok_or(InviteError::BadLink)?;
+    let (group_id, query) = rest.split_once('?').ok_or(InviteError::BadLink)?;
+    if group_id.is_empty() {
+        return Err(InviteError::BadLink);
+    }
+    let mut token = None;
+    let mut exp = None;
+    for kv in query.split('&') {
+        if let Some(t) = kv.strip_prefix("t=") {
+            token = Some(t.to_string());
+        }
+        if let Some(e) = kv.strip_prefix("exp=") {
+            exp = e.parse::<u64>().ok();
+        }
+    }
+    let (Some(token), Some(exp)) = (token, exp) else {
+        return Err(InviteError::BadLink);
+    };
+    if now_ms > exp {
+        return Err(InviteError::Expired);
+    }
+    let sig = crate::b58_decode(&token).ok_or(InviteError::BadSignature)?;
+    let sig: [u8; 64] = sig.try_into().map_err(|_| InviteError::BadSignature)?;
+    let ok = KeyPair::verify(owner_pubkey, format!("join|{group_id}|{exp}").as_bytes(), &sig);
+    if !ok {
+        return Err(InviteError::BadSignature);
+    }
+    Ok(group_id.into())
+}
+
+/// 主动拉群: 发起者把"建群邀请"事件写上自己的 oplog (成员复制后可见, 可 join)
+///
+/// 语气友好 (payload 带 greeting); 返回邀请链接
+pub fn propose_group(
+    log: &mut OpLog,
+    kp: &KeyPair,
+    group_id: &str,
+    name: &str,
+    invitees: &[String],
+    reason: &str,
+    now_ms: u64,
+) -> Result<(OpEntry, String), OpLogError> {
+    let expires = now_ms + 7 * 24 * 3600 * 1000; // 7 天有效
+    let link = make_invite_link(group_id, kp, expires, now_ms);
+    let payload = serde_json::json!({
+        "kind": "group-invite",
+        "group_id": group_id,
+        "name": name,
+        "invitees": invitees,
+        "reason": reason,
+        "greeting": format!("想邀请你一起参与「{name}」— {reason} 有兴趣的话点链接加入 🤝"),
+        "invite_link": link,
+        "expires_at_ms": expires,
+    });
+    let entry = log.append(kp, payload, now_ms)?;
+    Ok((entry, link))
+}
+
+#[cfg(test)]
+mod invite_tests {
+    use super::*;
+
+    fn kp(seed: u8) -> KeyPair {
+        let mut s = [0u8; 32];
+        s[0] = seed;
+        KeyPair::from_seed(&s)
+    }
+
+    #[test]
+    fn invite_link_roundtrip() {
+        let owner = kp(1);
+        let link = make_invite_link("gw-123", &owner, 5000, 1000);
+        assert!(link.starts_with("bolloon://join/gw-123?t="));
+        assert!(link.contains("exp=5000"));
+        // 群主公钥验 → 通过, 返回 group_id
+        let gid = verify_invite_link(&link, 2000, &owner.public_bytes()).unwrap();
+        assert_eq!(gid, "gw-123");
+    }
+
+    #[test]
+    fn invite_expired_rejected() {
+        let owner = kp(1);
+        let link = make_invite_link("g", &owner, 1000, 1000);
+        assert_eq!(
+            verify_invite_link(&link, 2000, &owner.public_bytes()).unwrap_err(),
+            InviteError::Expired
+        );
+    }
+
+    #[test]
+    fn invite_forged_rejected() {
+        let owner = kp(1);
+        let attacker = kp(9);
+        // 攻击者伪造签名
+        let link = make_invite_link("gw-123", &attacker, 5000, 1000);
+        assert_eq!(
+            verify_invite_link(&link, 2000, &owner.public_bytes()).unwrap_err(),
+            InviteError::BadSignature
+        );
+        // 篡改 group_id
+        let link2 = make_invite_link("gw-123", &owner, 5000, 1000);
+        let tampered = link2.replace("gw-123", "gw-evil");
+        assert_eq!(
+            verify_invite_link(&tampered, 2000, &owner.public_bytes()).unwrap_err(),
+            InviteError::BadSignature
+        );
+        // 形状不对
+        assert_eq!(verify_invite_link("http://x", 1, &owner.public_bytes()).unwrap_err(), InviteError::BadLink);
+        assert_eq!(verify_invite_link("bolloon://join/", 1, &owner.public_bytes()).unwrap_err(), InviteError::BadLink);
+    }
+
+    #[test]
+    fn propose_group_writes_invite_to_oplog() {
+        // 主动拉群: 邀请事件上 oplog, 成员复制可见
+        let a = kp(1);
+        let mut log_a = OpLog::new(a.did.as_str());
+        let (entry, link) = propose_group(
+            &mut log_a,
+            &a,
+            "gw-fusion",
+            "核聚变口径复核",
+            &["did:pi:b".into(), "did:pi:c".into()],
+            "需要两拨人交叉验证",
+            1000,
+        )
+        .unwrap();
+        assert_eq!(entry.payload["kind"], "group-invite");
+        assert_eq!(entry.payload["group_id"], "gw-fusion");
+        // 语气友好
+        assert!(entry.payload["greeting"].as_str().unwrap().contains("🤝"));
+        // 邀请链接真实可验
+        let gid = verify_invite_link(&link, 1100, &a.public_bytes()).unwrap();
+        assert_eq!(gid, "gw-fusion");
+        // 成员 (有 ACL) 也能在群里说话
+        let b = kp(2);
+        let mut g = GroupLog::create("gw-fusion", a.did.as_str(), Some(vec![b.did.as_str().into()]));
+        assert!(g.say(&b, "Agent-B", "收到邀请, 加入了", 2000).is_ok());
+    }
+
+    #[test]
+    fn invite_link_has_expiry_documented() {
+        // 7 天有效期 (propose_group 语义)
+        let a = kp(1);
+        let mut log = OpLog::new(a.did.as_str());
+        let (_, link) = propose_group(&mut log, &a, "g", "n", &[], "r", 0).unwrap();
+        let exp = link.split("exp=").nth(1).unwrap().split('&').next().unwrap();
+        assert_eq!(exp.parse::<u64>().unwrap(), 7 * 24 * 3600 * 1000);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

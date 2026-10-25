@@ -151,6 +151,14 @@ Web 接线: `/api/judgment` (top-N 注入门 + 入库即演化, action 如实回
 | **AI 头像/圆角/私有头像** | bot 气泡左侧圆角方块 🜁 (bolloon 图), user 右侧圆形私有头像 (account 顶部点击上传 → dataURL → localStorage, 气泡与侧栏同步); 流光 shimmer 沿用 |
 | **创建按钮分离** | 创建智能体在左侧侧栏 (＋), **新会话在消息框左上角浮动** `#newChatFloat` (header 旧 ✦ 移除避免重复) |
 
+## 2026-10-25 第十二批 (TS prompt 借用 / 判断力唤起 / 钱包全套工具 / 群邀请链接, 423 测试全绿)
+
+| Rust 模块 | 冻结语义 |
+| --- | --- |
+| **`bolloon-agent/prompt`** (+11) | **系统提示词完全翻译 TS 版 `llm/system-prompt/registry.ts`**: PromptLayer (id/version/priority/appliesTo/maxChars) + 装配器 (过滤→priority 排序→单层截断→总预算 8000 硬限→`<!-- id@version -->` 拼接, never 层永不装配); **core.identity/core-traits/refusal 借用 TS 原文** (逐字关键句断言; 用户改稿保留: "你是 hibs 组织的智能体"); **判断力唤起核心引导**: `inject_judgment_gate` 双路径 — **有过去的经验会唤起** (jaccard 相似召回 top-3 带相似度%) + **有新的预测会唤起** (计划性输入标记: 将要/计划/打算/预测/… → 跨域高置信度情境提醒), 防重复 (already-injected 跳过), 1500 硬上限, 空库/空输入如实 skip; `build_system_prompt` 统一入口 (快照+skills+todo+judgment+history 说明, 全部层过预算门) |
+| **`bolloon-x402/wallet_tools`** (+4) | **钱包全套工具, 私钥永不泄露**: address / balance / sign_message / **transfer_with_authorization (EIP-3009 USDC 形状**, BOL1 nonce, 授权即台账扣减) / **publish_task_onchain (在已有合约上发表任务**: escrow 地址由调用方给, 公告 entry+资金授权全签名) / **purchase (x402 购买)**; **泄露扫描测试**: 全部输出的 serialize+Debug 断言不含 seed 的 hex/b58/半段, 无 private_key/seed 字段 |
+| **群聊邀请 (group_log 扩展)** (+5) | **分享链接要有**: `bolloon://join/<gid>?t=<b58 群主签名>&exp=<7 天>&by=<did>`; 验证 = 签名+过期 (伪造/篡改 gid/过期/形状不对全拒); **主动拉群**: `propose_group` 邀请事件上 oplog (带友好 greeting 🤝 + 邀请链接), 成员复制可见可加入; **群聊合作语气层** (channel.group-tone: 友好和善/主动拉群/分享有链接/接力不抢话, 仅群聊 channel 注入) |
+
 | Rust 模块 | 冻结语义 |
 | --- | --- |
 | **`bolloon-agent/home`** (8 测试) | **CLI/Web/App/SDK 同一路径加载**: `BOLLOON_HOME`(缺省 ~/.bolloon) 下 `rust/` 子目录, env 一处解析四端共享 (真跑: CLI 写记忆 → Web 读同一份); **智能体专属目录** `agents/<id>/` (memory.json / soul.md / agent.md / sessions, agent_id 校验拒路径穿越); **文档快照冻结** `DocSnapshot::freeze` (内容+hash+盘状态): 运行期间盘上改动不影响快照 (快照即真源), `disk_drifted` 只标记"下一会话要 re-freeze", 缺失文档给内置缺省 |
