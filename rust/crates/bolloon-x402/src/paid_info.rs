@@ -55,7 +55,7 @@ pub struct PaidInfoItem {
 }
 
 /// 内容信封 (付款后返回)
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PaidInfoEnvelope {
     pub protocol: String,
     pub item_id: String,

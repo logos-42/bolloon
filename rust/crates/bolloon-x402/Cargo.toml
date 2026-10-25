@@ -12,5 +12,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
 hex.workspace = true
+hmac = "0.12"
 tiny-keccak = { version = "2", features = ["keccak"] }
 bolloon-p2p = { path = "../bolloon-p2p" }

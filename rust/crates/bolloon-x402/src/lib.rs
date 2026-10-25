@@ -9,6 +9,12 @@
 pub mod order_identity;
 pub mod paid_info;
 pub mod direct_payment;
+pub mod settlement_state;
+pub mod payment_recovery;
+pub mod seller_signing;
 pub use order_identity::*;
 pub use paid_info::*;
 pub use direct_payment::*;
+pub use settlement_state::*;
+pub use payment_recovery::*;
+pub use seller_signing::*;
