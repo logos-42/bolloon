@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bolloon Agent</title>
+<style>
+  :root{
+    color-scheme:dark;
+    --bg:#000; --panel:#08090b; --panel2:#111418; --line:#252b34;
+    --text:#f2f6fa; --muted:#9aa6b2; --accent:#c4d640; --glow:#ffd166;
+    --btn-bg:#151a20; --btn-text:#f2f6fa; --btn-border:#2a323d;
+    --user-bg:#1e3a2f; --user-text:#eaf3ff; --active:#1a2430;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      color-scheme:light;
+      --bg:#f5f7fa; --panel:#fff; --panel2:#f0f3f7; --line:#dfe5ec;
+      --text:#11151a; --muted:#68727d; --accent:#5a7d0a; --glow:#b77900;
+      --btn-bg:#fff; --btn-text:#11151a; --btn-border:#d8e0ea;
+      --user-bg:#e2f0d8; --user-text:#0b1220; --active:#e8f0ff;
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;overflow:hidden}
+  #app{display:grid;grid-template-columns:284px 1fr;height:100vh;overflow:hidden;transition:grid-template-columns .18s ease}
+  #app.collapsed{grid-template-columns:66px 1fr}
+  #app.room-open{grid-template-columns:284px minmax(0,1fr) var(--roomw,360px)}
+  #app.collapsed.room-open{grid-template-columns:66px minmax(0,1fr) var(--roomw,360px)}
+  .room-panel{display:none;position:relative;background:var(--panel);border-left:1px solid var(--line);flex-direction:column;min-width:0;overflow:hidden}
+  #app.room-open .room-panel{display:flex}
+  aside{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0;overflow:hidden}
+  .brand{display:flex;align-items:center;gap:8px;padding:14px 12px 10px;font-weight:600;white-space:nowrap}
+  #collapseBtn{display:grid;place-items:center;width:32px;height:28px;padding:0;border-radius:8px;margin-left:auto;flex:none}
+  #app.collapsed .brand{justify-content:center;padding:14px 0 10px}
+  #app.collapsed #collapseBtn{display:none}
+  #app.collapsed .sec,#app.collapsed .item .txt{display:none}
+  .brand-icon{width:30px;height:30px;border-radius:9px;object-fit:cover;flex:none;box-shadow:0 0 0 1px var(--line)}
+  .side-actions{display:flex;gap:8px;padding:0 12px 10px;align-items:center}
+  .icon-btn{display:grid;place-items:center;width:38px;height:34px;padding:0}
+  .side-scroll{flex:1;overflow:auto;padding:0 8px 8px}
+  .sec{margin:8px 6px 4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .item{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;cursor:pointer;color:var(--text)}
+  .item:hover{background:var(--panel2)}
+  .item.active{background:var(--active);border:1px solid var(--line)}
+  .item .ava{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:var(--panel2);font-size:13px;overflow:hidden;flex:none}
+  .item .txt{min-width:0;flex:1}
+  .item .txt b{display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .item .txt small{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+  .account{border-top:1px solid var(--line);padding:10px 12px;display:flex;align-items:center;gap:10px;cursor:pointer}
+  .account:hover{background:var(--panel2)}
+  .account .ava{width:36px;height:36px;border-radius:50%;background:var(--panel2);display:grid;place-items:center;overflow:hidden}
+  .account .who{min-width:0;flex:1}
+  .account .who b{display:block;font-weight:600}
+  .account .who small{color:var(--muted);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  main{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+  header{height:54px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px;padding:0 14px;color:var(--muted)}
+  header b{color:var(--text)}
+  .grow{flex:1}
+  #chat{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:30px clamp(40px,10vw,180px);display:flex;flex-direction:column;gap:14px}
+  .empty{height:100%;display:grid;place-items:center;color:var(--muted)}
+  .empty h1{font-size:28px;font-weight:600;color:var(--text);margin:0}
+  .msg-row{display:flex;flex-direction:column;max-width:min(760px,78%);min-width:0}
+  .msg-row.user{align-self:flex-end;align-items:flex-end}
+  .msg-row.bot{align-self:flex-start;margin-left:36px;align-items:flex-start}
+  .msg{max-width:100%;padding:10px 12px;border-radius:12px;font-size:15px;line-height:1.55;white-space:normal}
+  .msg.user{background:var(--user-bg);color:var(--user-text);padding:8px 14px;border-radius:11px}
+  .msg.bot{background:var(--panel2);border:1px solid var(--line);position:relative}
+  .msg.bot::before{content:"";position:absolute;left:-36px;top:2px;width:26px;height:26px;border-radius:8px;background:var(--panel2);border:1px solid var(--line)}
+  .msg.bot p{margin:0 0 8px}
+  .msg.bot p:last-child{margin-bottom:0}
+  .msg.bot pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:9px;overflow:auto}
+  .msg.bot code{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:1px 4px;font-size:12px}
+  .msg.bot pre code{background:none;border:none;padding:0}
+  .composer{border-top:1px solid var(--line);padding:12px 16px 6px;display:flex;gap:8px;align-items:flex-end}
+  .composer textarea{flex:1;resize:none;height:46px;max-height:140px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:12px}
+  .composer #send{min-width:58px;display:grid;place-items:center;padding:7px 10px}
+  button{font:inherit;color:var(--btn-text);background:var(--btn-bg);border:1px solid var(--btn-border);border-radius:10px;padding:7px 10px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:linear-gradient(180deg,#3a4a1a,#2a3610);color:#fff;border-color:#3a4a1a;font-weight:600}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,209,102,.55)}70%{box-shadow:0 0 0 10px rgba(255,209,102,0)}100%{box-shadow:0 0 0 0 rgba(255,209,102,0)}}
+  .chat-new{display:grid;place-items:center;width:32px;height:32px;padding:0;border-radius:9px;flex:none}
+  .composer-footer{display:flex;gap:8px;padding:0 16px 12px}
+  .mini{font-size:12px;padding:5px 9px;border-radius:999px;color:var(--muted)}
+  .mini:hover{color:var(--text)}
+  .room-head{height:54px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--line)}
+  .room-head b{font-size:13px}
+  .room-head .grow{flex:1}
+  .room-messages{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:12px;display:flex;flex-direction:column;gap:9px}
+  .room-msg{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  .room-msg .meta{display:flex;gap:6px;align-items:center;font-size:11px;color:var(--muted);margin-bottom:4px}
+  .room-msg .meta b{color:var(--text);font-size:12px}
+  .room-msg .body{font-size:12px;line-height:1.55;color:var(--text);word-break:break-word}
+  .room-foot{flex:none;padding:10px 12px 14px;border-top:1px solid var(--line);font-size:11px;color:var(--muted)}
+  .room-composer{flex:none;display:flex;gap:6px;padding:8px 12px;border-top:1px solid var(--line);align-items:flex-end}
+  .room-composer textarea{flex:1;min-height:44px;max-height:140px;resize:vertical;font-size:12px;line-height:1.5;padding:7px 9px;border-radius:10px;background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn-border)}
+  .room-members{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:3px 0 4px;line-height:1.6;color:var(--muted)}
+  .room-members span{display:inline-flex;align-items:center;padding:2px 9px;border-radius:999px;border:1px solid var(--line);background:var(--btn-bg)}
+  .hint{color:var(--muted);font-size:12px;margin-top:8px}
+  @media(max-width:900px){
+    #app.room-open{grid-template-columns:284px 1fr}
+    .room-panel{position:fixed;right:0;top:0;bottom:0;width:min(360px,88vw);z-index:60}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <div class="brand">
+      <img class="brand-icon" id="brandLogo" alt="Bolloon" style="background:var(--accent);display:grid;place-items:center" />
+      <span>Bolloon</span>
+      <button id="collapseBtn" title="折叠侧边栏" aria-label="折叠侧边栏">☰</button>
+    </div>
+    <div class="side-actions">
+      <button class="primary icon-btn" id="newAgentBtn" title="新智能体" aria-label="新智能体">＋</button>
+    </div>
+    <div class="side-scroll">
+      <div class="sec">智能体</div>
+      <div id="agents"></div>
+      <div class="sec">会话</div>
+      <div id="sessions"></div>
+    </div>
+    <div class="account" id="account">
+      <div class="ava" id="accountAva" style="color:var(--text)">🜁</div>
+      <div class="who"><b id="accountName">本地</b><small id="accountDid">did:pi:local</small></div>
+    </div>
+  </aside>
+  <main>
+    <header>
+      <button id="newSessionBtn" class="chat-new" title="新会话" aria-label="新会话">✦</button>
+      <b id="agentName">Bolloon 智能体</b>
+      <span id="agentDid" style="color:var(--muted)"></span>
+      <span class="grow"></span>
+      <button id="roomBtn" class="mini" title="打开内部商议">内部商议</button>
+    </header>
+    <div id="chat"><div class="empty"><h1>我们要做什么？</h1></div></div>
+    <div class="composer">
+      <textarea id="input" placeholder="发送消息；Enter 发送，Shift+Enter 换行"></textarea>
+      <button class="primary" id="send">发送</button>
+    </div>
+    <div class="composer-footer">
+      <button id="modelBtn" class="mini" title="选择模型">⚙ 模型：<span id="modelLabel">…</span></button>
+    </div>
+  </main>
+  <aside id="roomPanel" class="room-panel">
+    <div class="room-head">
+      <b>内部商议</b>
+      <div class="grow"></div>
+      <button id="roomClose" title="关闭面板" style="width:28px;height:28px;padding:0">×</button>
+    </div>
+    <div id="roomMessages" class="room-messages"><div class="hint" style="padding:12px">选择至少两个智能体，发起内部交流。智能体可用 room_read / room_post 商议。</div></div>
+    <div class="room-composer">
+      <textarea id="roomInput" placeholder="交流内容（Enter 发送）"></textarea>
+      <button id="roomGuideBtn">发送</button>
+    </div>
+    <div class="room-foot">
+      <div class="room-controls" id="roomAgents"></div>
+      <div id="roomState" class="hint">未在主动交流</div>
+    </div>
+  </aside>
+</div>
+
+<script>
+let state = null;
+const $ = (id) => document.getElementById(id);
+const escapeHTML = (s) => String(s || "").replace(/[&<>"']/g, (c) => ({
+  "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+}[c]));
+
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts || {}));
+  const j = await r.json().catch(() => ({ error: "响应不是 JSON" }));
+  if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+
+function mdToHTML(src) {
+  const codes = [];
+  let s = String(src || "");
+  s = s.replace(/```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const i = codes.length;
+    codes.push(`<pre><code>${escapeHTML(code.replace(/\n$/, ""))}</code></pre>`);
+    return `\uE000CODE${i}\uE000`;
+  });
+  s = escapeHTML(s);
+  s = s.replace(/`([^`]+)`/g, "<code>$1</code>")
+       .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+       .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  return s.split("\n").map(l => l.trim() ? "<p>" + l + "</p>" : "").join("").replace(/\uE000CODE(\d+)\uE000/g, (_, i) => codes[+i] || "");
+}
+
+function renderChat() {
+  const chat = $("chat");
+  chat.innerHTML = `<div class="empty"><h1>我们要做什么？</h1></div>`;
+  if (!state) return;
+  for (const m of (state.messages || [])) {
+    chat.innerHTML = "";
+    const row = document.createElement("div");
+    row.className = "msg-row " + (m.role === "user" ? "user" : "bot");
+    const msg = document.createElement("div");
+    msg.className = "msg " + (m.role === "user" ? "user" : "bot");
+    msg.innerHTML = mdToHTML(m.content);
+    row.appendChild(msg);
+    chat.appendChild(row);
+  }
+  // 滚动到底
+  chat.scrollTop = chat.scrollHeight;
+}
+
+async function boot() {
+  state = await api("/api/bootstrap");
+  renderChat();
+}
+
+async function sendMessage() {
+  const input = $("input");
+  const text = input.value.trim();
+  if (!text) return;
+  // 立即把用户消息放上屏
+  if (!state.messages) state.messages = [];
+  state.messages.push({ role: "user", content: text });
+  renderChat();
+  input.value = "";
+  // 调 API
+  try {
+    const j = await api("/api/send", { method: "POST", body: JSON.stringify({ text, session_id: state.active_session_id || "default" }) });
+    state.messages.push({ role: "assistant", content: j.reply });
+  } catch (e) {
+    state.messages.push({ role: "assistant", content: "⚠ " + e.message });
+  }
+  renderChat();
+}
+
+// 事件绑定
+$("send").addEventListener("click", sendMessage);
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+$("collapseBtn").addEventListener("click", () => $("app").classList.toggle("collapsed"));
+$("roomBtn").addEventListener("click", () => $("app").classList.add("room-open"));
+$("roomClose").addEventListener("click", () => $("app").classList.remove("room-open"));
+$("newSessionBtn").addEventListener("click", () => { if (state) { state.active_session_id = null; state.messages = []; renderChat(); } });
+
+boot();
+</script>
+</body>
+</html>

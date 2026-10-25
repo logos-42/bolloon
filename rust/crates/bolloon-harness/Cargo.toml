@@ -1,0 +1,18 @@
+[package]
+name = "bolloon-harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bolloon Harness — 系统调用唯一门 (discover→permission→budget→execute→verify→evidence→event)"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+dashmap.workspace = true
+bolloon-kernel = { path = "../bolloon-kernel" }

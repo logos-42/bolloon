@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/bolloon-kernel",
+    "crates/bolloon-harness",
+    "crates/bolloon-llm",
+    "crates/bolloon-agent",
+    "crates/bolloon-p2p",
+    "crates/bolloon-web",
+    "crates/bolloon-cli",
+]
+
+[workspace.package]
+version = "0.6.10"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+authors = ["liuyuanjie <2844169590@qq.com>"]
+description = "Bolloon Rust Native Agent — 去中心化智能体资源交流网络 (Rust 原生版, 双内核架构)"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+futures = "0.3"
+ed25519-dalek = "2"
+sha2 = "0.10"
+bs58 = "0.5"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+dashmap = "6"
+hex = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

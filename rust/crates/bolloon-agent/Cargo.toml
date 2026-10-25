@@ -1,0 +1,21 @@
+[package]
+name = "bolloon-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bolloon Agent — KernelLoop + 多智能体群聊 (ReAct 循环 · 工具调用 · 群聊参与)"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+bolloon-kernel = { path = "../bolloon-kernel" }
+bolloon-harness = { path = "../bolloon-harness" }
+bolloon-llm = { path = "../bolloon-llm" }
