@@ -139,6 +139,18 @@ Web 接线: `/api/judgment` (top-N 注入门 + 入库即演化, action 如实回
 | **runtime 扩展** (+7) | **输入框终止/队列/中断**: `RunControl` — stop (终止按钮, 下一轮前生效, 本轮不跑) / interrupt (**本轮跑完即停, 回复保留** — 与终止语义区分, 测试钉) / queue (run 期间输入 FIFO 排队, 消费后清空); **每轮前自动 compress** (超预算丢中段保锚+当前轮); **skills 索引随每轮 system 注入** (EchoLlm 测试钉: LLM 真的看到); **cron 触发→拿锁防重叠→run→放锁** + **心跳 thinking 态**接线 |
 | Web UI | 输入框 **⏹ 终止按钮** (AbortController + AbortError 显示"已终止", 终止连队列一起清) + **queue 徽标** (run 期间输入自动排队显示"排队 N", 按序消费) |
 
+## 2026-10-25 第十一批 (UI 改版: Clarity 可见/空态居中/气泡动作/供应商弹窗/完全访问, e2e 6/6)
+
+| 需求 | 落地 |
+| --- | --- |
+| **Clarity 按钮显示出来** | 输入框下方 composer-footer, accent 描边+SVG 图标显著样式, 点击出结构化摘要 |
+| **完全访问权限, 随时取消** | `fullAccessBtn` toggle (红点态可见) + `/api/permission` GET/POST (AppState AtomicBool, 默认关 = 走 permission 门; e2e 钉: 默认关→开→取消) |
+| **输入框空态居中/有内容落底部** | `main.chat-empty` class 切换 (renderChat 按消息数): 空态 hero 居中 + composer 随居中限宽 760px, 有消息后落底部 (附带按钮随落) |
+| **模型供应商筛选按钮 (弹窗)** | composer-footer 并列 `供应商: 默认` → `/api/providers` (llm.provider_ids + base_url/model/has_key) → 弹窗列表选择 → localStorage 记忆 |
+| **SVG 动作按钮** | assistant 气泡下: 复制/分支/分享/重试; user 气泡下: 复制/修改 (内联 SVG stroke 图标, hover 显现, 复制成功打勾); 分支=截断历史开新会话, 修改=回填输入框, 重试=取前条 user 重发 |
+| **AI 头像/圆角/私有头像** | bot 气泡左侧圆角方块 🜁 (bolloon 图), user 右侧圆形私有头像 (account 顶部点击上传 → dataURL → localStorage, 气泡与侧栏同步); 流光 shimmer 沿用 |
+| **创建按钮分离** | 创建智能体在左侧侧栏 (＋), **新会话在消息框左上角浮动** `#newChatFloat` (header 旧 ✦ 移除避免重复) |
+
 | Rust 模块 | 冻结语义 |
 | --- | --- |
 | **`bolloon-agent/home`** (8 测试) | **CLI/Web/App/SDK 同一路径加载**: `BOLLOON_HOME`(缺省 ~/.bolloon) 下 `rust/` 子目录, env 一处解析四端共享 (真跑: CLI 写记忆 → Web 读同一份); **智能体专属目录** `agents/<id>/` (memory.json / soul.md / agent.md / sessions, agent_id 校验拒路径穿越); **文档快照冻结** `DocSnapshot::freeze` (内容+hash+盘状态): 运行期间盘上改动不影响快照 (快照即真源), `disk_drifted` 只标记"下一会话要 re-freeze", 缺失文档给内置缺省 |
