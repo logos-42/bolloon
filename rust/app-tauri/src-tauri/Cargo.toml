@@ -1,0 +1,26 @@
+[package]
+name = "bolloon-tauri"
+version = "0.6.10"
+edition = "2024"
+rust-version = "1.99"
+description = "Bolloon 桌面外壳 (Tauri) — 托管内嵌服务, 壳不写业务"
+
+# 独立于 workspace (tauri 依赖树大, 不拖垮主构建)
+[workspace]
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.8"
+
+# 内嵌业务服务 (核心 crate 直连, 不 spawn 子进程)
+bolloon-web = { path = "../../crates/bolloon-web" }
+bolloon-llm = { path = "../../crates/bolloon-llm" }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

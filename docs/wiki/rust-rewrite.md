@@ -105,6 +105,18 @@ Web 接线: `/api/judgment` (top-N 注入门 + 入库即演化, action 如实回
 | `bolloon-agent/migration` | migration/ | 迁移链按版本序幂等可重放; 已到目标 = no-op 不假装修了; 未知版本如实报错不跳步; 步骤失败停链 |
 | `bolloon-agent/lsp` | lsp/ | Content-Length 分帧 (粘包全解/半包如实报); 协议序门; didOpen/didChange 文档簿 (没 open 就 change 拒) |
 
+## 2026-10-25 第七批 (核心组件: orbitdb 原生实现 + git + terminal + Tauri 外壳, 321 测试全绿)
+
+| Rust 模块 | 对齐 TS | 核心纪律 |
+| --- | --- | --- |
+| **`bolloon-p2p/oplog`** (orbitdb 原生实现) | orbitdb/* (@orbitdb/core 4.x 语义) | append-only **DAG**: entry 带 prev 指针 + lamport 时钟 + Ed25519 签名 + 内容寻址 hash; **join 三重门** (hash 一致/验签/ACL 白名单, 重放去重, 乱序 prev 后到可收敛); 遍历确定性线性序 (clock+hash); **索引从 entries 重放与原逐条一致** (P2 语义); 改载荷/重算 hash 绕 hash 门也过不了签名门 |
+| **`bolloon-p2p/replication`** (复制协议) | P0/P0b 真两节点 | 三步: 交换 heads → **沿 prev 链探测缺失块** → fetch 拉块 → join 收敛; **收敛判据 = 遍历线性序一致**; 51 条全量真测 + 增量只拉缺的 21 条 + 复制后继续写双向再收敛 + **伪造 entry 接在真 head 上被 ACL 拒阻断** + 幂等 no-op; 拉块走 `BlockExchange` 端口 (跨机接同一端口) |
+| **`bolloon-agent/git`** | cli git 纪律 + git-safety 同源 | porcelain status/log/diff-stat 解析纯函数; **force-push main/master 永远拒** (即使"用户明确要求"); --no-verify/reset --hard 需显式; git config 不改; commit 风格校验 (type(scope): 中文); GitExecutor 注入真执行 |
+| **`bolloon-agent/terminal`** | terminal-tool + shell-guard | 三级分类 (ReadOnly 白名单/Mutating 走 permission 门/Dangerous 拒, **未知命令宁可保守**); 管道取最严; cd 越出工作目录拒; **门禁在 spawn 之前**; 超时进上下文不拖死循环; 输出截断保留头尾; TerminalExecutor 注入 |
+| **Tauri App 外壳** (`rust/app-tauri/`, 独立编译) | 替代 Electron | **壳不写业务**: 内嵌 bolloon-web axum 服务 (随机回环端口) + 窗口加载它; 数据目录共享 `~/.bolloon/rust/`; cargo check 全树通过 (tauri 2, 产物 ~10MB vs Electron ~800MB); 独立 workspace 不拖垮主构建 |
+
+**调试实录**: missing_for 的 seen 污染 bug (push 时提前 insert 导致 pop 被 continue 跳过, 链断在 head) —— 分离 queued/visited 两集合修复; Python hashlib.sha3_256 ≠ keccak256 的 padding 坑再次出现 (E2E 里用 Rust 侧算的 nonce 真值)。
+
 ## DIAP Rust SDK (本机 /Users/apple/Downloads/DIAP_Rust_SDK)
 
 同日更新: 0.2.7→**0.3.0** (edition 2021→2024, rust-version 1.99, ed25519-dalek 2→3) + iroh 1.4 API 对齐 (`NodeAddr`→`EndpointAddr`, `builder(presets::N0)`, `addr()/id()`, `remote_id()`)。3 个 examples 修复对齐新 API, `cargo build --examples` 0 警告过; **lib 测试 46 passed / 0 failed / 4 ignored** (修 nonce_manager/did_cache 测试缺 `async` — edition 2024 必需; key_generator 测试对齐废弃函数空占位语义; noir_embedded/noir_universal 测试输入自洽 + 默认 backend 未启用时切 Simplified)。crates.io 下载走 rsproxy 镜像 (直连超时/代理 SSL reset, 2026-10-25 实测)。提交 `fdbef37` + `aa9ec66`。
