@@ -5,5 +5,14 @@
 
 pub mod identity;
 pub mod group_store;
+pub mod envelope;
+pub mod gossip;
 pub use identity::*;
 pub use group_store::*;
+pub use envelope::*;
+pub use gossip::*;
+
+/// b58 编码 (外部 crate 复用, 不重复引依赖)
+pub fn b58_encode(bytes: &[u8]) -> String {
+    bs58::encode(bytes).into_string()
+}

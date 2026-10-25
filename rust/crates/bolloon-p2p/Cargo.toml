@@ -21,6 +21,7 @@ hex.workspace = true
 rand = "0.8"
 chrono.workspace = true
 futures.workspace = true
+bolloon-kernel = { path = "../bolloon-kernel" }
 
 # 可选 DIAP 后端：通过 feature 注入, 不在 workspace 成员里直接 path 依赖
 # （DIAP 的 cid 0.10 → yanked core2 会拖垮整个 workspace 解析; 单独仓库维护）

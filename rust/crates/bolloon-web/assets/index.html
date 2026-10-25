@@ -98,6 +98,15 @@
   .room-members{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:3px 0 4px;line-height:1.6;color:var(--muted)}
   .room-members span{display:inline-flex;align-items:center;padding:2px 9px;border-radius:999px;border:1px solid var(--line);background:var(--btn-bg)}
   .hint{color:var(--muted);font-size:12px;margin-top:8px}
+  .room-grip{position:absolute;left:0;top:0;bottom:0;width:6px;cursor:col-resize;z-index:5}
+  .room-grip:hover{background:linear-gradient(90deg,rgba(196,214,64,.25),transparent)}
+  .room-members .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--muted);margin-right:3px}
+  .room-members .dot.thinking{background:var(--glow);animation:pulse 1.2s infinite}
+  .msg.bot.streaming{position:relative}
+  .msg.bot.streaming::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:linear-gradient(110deg,transparent 30%,rgba(255,255,255,.10) 50%,transparent 70%);background-size:220% 100%;animation:shimmer 1.35s linear infinite}
+  @keyframes shimmer{0%{background-position:180% 0}100%{background-position:-80% 0}}
+  .agent-chip{cursor:pointer;padding:3px 10px;border:1px solid var(--line);border-radius:999px;font-size:11px;opacity:.5;user-select:none;background:var(--btn-bg);color:var(--btn-text)}
+  .agent-chip.on{opacity:1;border-color:var(--accent);color:var(--accent);font-weight:600}
   @media(max-width:900px){
     #app.room-open{grid-template-columns:284px 1fr}
     .room-panel{position:fixed;right:0;top:0;bottom:0;width:min(360px,88vw);z-index:60}
@@ -114,10 +123,13 @@
     </div>
     <div class="side-actions">
       <button class="primary icon-btn" id="newAgentBtn" title="新智能体" aria-label="新智能体">＋</button>
+      <button class="icon-btn" id="newGroupBtn" title="新建群聊" aria-label="新建群聊">👥</button>
     </div>
     <div class="side-scroll">
       <div class="sec">智能体</div>
       <div id="agents"></div>
+      <div class="sec">群聊</div>
+      <div id="groups"></div>
       <div class="sec">会话</div>
       <div id="sessions"></div>
     </div>
@@ -144,18 +156,21 @@
     </div>
   </main>
   <aside id="roomPanel" class="room-panel">
+    <div class="room-grip" id="roomGrip"></div>
     <div class="room-head">
-      <b>内部商议</b>
+      <b id="roomTitle">内部商议</b>
+      <span class="tag" id="roomKind">room</span>
       <div class="grow"></div>
       <button id="roomClose" title="关闭面板" style="width:28px;height:28px;padding:0">×</button>
     </div>
-    <div id="roomMessages" class="room-messages"><div class="hint" style="padding:12px">选择至少两个智能体，发起内部交流。智能体可用 room_read / room_post 商议。</div></div>
+    <div id="roomMessages" class="room-messages"><div class="hint" style="padding:12px">从左侧选择一个群聊，或点击「内部商议」发起智能体交流。</div></div>
     <div class="room-composer">
       <textarea id="roomInput" placeholder="交流内容（Enter 发送）"></textarea>
       <button id="roomGuideBtn">发送</button>
     </div>
     <div class="room-foot">
       <div class="room-controls" id="roomAgents"></div>
+      <div class="room-members" id="roomMembers"></div>
       <div id="roomState" class="hint">未在主动交流</div>
     </div>
   </aside>
@@ -211,6 +226,10 @@ function renderChat() {
 
 async function boot() {
   state = await api("/api/bootstrap");
+  if (state.did) {
+    const didEl = $("accountDid");
+    if (didEl) didEl.textContent = state.did.slice(0, 22) + "…";
+  }
   renderChat();
 }
 
@@ -233,17 +252,90 @@ async function sendMessage() {
   renderChat();
 }
 
+// ---------- 群聊 (room 面板绑定) ----------
+let roomGroupId = null;
+let roomTimer = null;
+
+async function loadGroups() {
+  try {
+    const j = await api("/api/groups");
+    const box = $("groups");
+    box.innerHTML = "";
+    for (const g of (j.groups || [])) {
+      const el = document.createElement("div");
+      el.className = "item";
+      el.innerHTML = `<div class="ava">👥</div><div class="txt"><b>${escapeHTML(g.name)}</b><small>${g.member_count} 成员</small></div>`;
+      el.addEventListener("click", () => openRoom(g));
+      box.appendChild(el);
+    }
+  } catch (e) { /* 冷启动群列表可能为空 */ }
+}
+
+async function createGroup() {
+  const name = prompt("群聊名称");
+  if (!name) return;
+  try {
+    await api("/api/groups", { method: "POST", body: JSON.stringify({ name }) });
+    await loadGroups();
+  } catch (e) { alert("建群失败: " + e.message); }
+}
+
+async function openRoom(g) {
+  roomGroupId = g.id;
+  $("app").classList.add("room-open");
+  $("roomTitle").textContent = g.name;
+  $("roomKind").textContent = g.owner === (state && state.did) ? "群主" : "成员";
+  $("roomMembers").innerHTML = `<span><span class="dot thinking"></span>${escapeHTML((state && state.did) || "did:pi:local").slice(0, 18)}…</span>`;
+  await refreshRoom();
+  clearInterval(roomTimer);
+  roomTimer = setInterval(refreshRoom, 3000);
+}
+
+async function refreshRoom() {
+  if (!roomGroupId) return;
+  try {
+    const j = await api(`/api/groups/${encodeURIComponent(roomGroupId)}/messages?after=0`);
+    const box = $("roomMessages");
+    box.innerHTML = "";
+    for (const m of (j.messages || [])) {
+      const el = document.createElement("div");
+      el.className = "room-msg";
+      el.innerHTML = `<div class="meta"><b>${escapeHTML(m.sender).slice(0, 24)}…</b><span>#${m.seq}</span></div><div class="body">${escapeHTML(m.content)}</div>`;
+      box.appendChild(el);
+    }
+    box.scrollTop = box.scrollHeight;
+  } catch (e) { /* 轮询失败静默, 下轮再试 */ }
+}
+
+async function sendRoom() {
+  const input = $("roomInput");
+  const text = input.value.trim();
+  if (!text || !roomGroupId) return;
+  input.value = "";
+  try {
+    await api(`/api/groups/${encodeURIComponent(roomGroupId)}/say`, { method: "POST", body: JSON.stringify({ text }) });
+    await refreshRoom();
+  } catch (e) {
+    $("roomState").textContent = "发送失败: " + e.message;
+  }
+}
+
 // 事件绑定
 $("send").addEventListener("click", sendMessage);
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
 $("collapseBtn").addEventListener("click", () => $("app").classList.toggle("collapsed"));
-$("roomBtn").addEventListener("click", () => $("app").classList.add("room-open"));
-$("roomClose").addEventListener("click", () => $("app").classList.remove("room-open"));
+$("roomBtn").addEventListener("click", () => { roomGroupId = null; $("roomTitle").textContent = "内部商议"; $("app").classList.add("room-open"); });
+$("roomClose").addEventListener("click", () => { $("app").classList.remove("room-open"); clearInterval(roomTimer); });
 $("newSessionBtn").addEventListener("click", () => { if (state) { state.active_session_id = null; state.messages = []; renderChat(); } });
+$("roomGuideBtn").addEventListener("click", sendRoom);
+$("newGroupBtn").addEventListener("click", createGroup);
+$("roomInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendRoom(); }
+});
 
-boot();
+boot().then(loadGroups);
 </script>
 </body>
 </html>

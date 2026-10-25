@@ -17,3 +17,7 @@ axum.workspace = true
 tower-http.workspace = true
 anyhow.workspace = true
 bolloon-llm = { path = "../bolloon-llm" }
+bolloon-agent = { path = "../bolloon-agent" }
+bolloon-p2p = { path = "../bolloon-p2p" }
+chrono.workspace = true
+hex.workspace = true

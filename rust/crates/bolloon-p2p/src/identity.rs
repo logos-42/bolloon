@@ -59,6 +59,11 @@ impl KeyPair {
         self.signing.verifying_key().to_bytes()
     }
 
+    /// 私钥种子 (持久化 identity.json 用; 调用方负责 0600)
+    pub fn secret_bytes(&self) -> [u8; 32] {
+        self.signing.to_bytes()
+    }
+
     /// 签名
     pub fn sign(&self, msg: &[u8]) -> [u8; 64] {
         use ed25519_dalek::Signer;

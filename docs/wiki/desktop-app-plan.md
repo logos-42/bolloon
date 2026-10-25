@@ -1,6 +1,15 @@
 ---
-type: plan
+title: 桌面版 App 规划 (Win/mac/Linux)
+source: session
+created: 2026-10-24
+last_confirmed: 2026-10-24
+schema_version: 2
+audience: self
+stage: current
 status: current
+confidence: high
+entity_type: chapter
+type: plan
 since: 2026-10-24
 owner: leo
 tags: [desktop, electron, packaging, release]

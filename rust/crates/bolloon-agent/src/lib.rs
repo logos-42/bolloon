@@ -5,5 +5,11 @@
 
 pub mod kernel_loop;
 pub mod group_chat;
+pub mod task_board;
+pub mod memory;
+pub mod session_store;
 pub use kernel_loop::*;
 pub use group_chat::*;
+pub use task_board::*;
+pub use memory::*;
+pub use session_store::*;

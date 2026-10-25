@@ -19,3 +19,7 @@ futures.workspace = true
 bolloon-kernel = { path = "../bolloon-kernel" }
 bolloon-harness = { path = "../bolloon-harness" }
 bolloon-llm = { path = "../bolloon-llm" }
+bolloon-p2p = { path = "../bolloon-p2p" }
+bs58.workspace = true
+hex.workspace = true
+sha2.workspace = true
