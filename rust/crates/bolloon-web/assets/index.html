@@ -150,6 +150,7 @@
     <div class="composer">
       <textarea id="input" placeholder="发送消息；Enter 发送，Shift+Enter 换行"></textarea>
       <button class="primary" id="send">发送</button>
+      <button id="stopBtn" title="终止当前回复" style="display:none;width:46px">⏹</button>
     </div>
     <div class="composer-footer">
       <button id="modelBtn" class="mini" title="选择模型">⚙ 模型：<span id="modelLabel">…</span></button>
@@ -234,24 +235,73 @@ async function boot() {
   renderChat();
 }
 
+// ---------- 发送 / 终止 / 队列 ----------
+let sendAbort = null;
+let sendBusy = false;
+const sendQueue = [];
+
 async function sendMessage() {
   const input = $("input");
   const text = input.value.trim();
   if (!text) return;
-  // 立即把用户消息放上屏
+  input.value = "";
+  if (sendBusy) {
+    // run 期间输入排队 (queue)
+    sendQueue.push(text);
+    updateQueueBadge();
+    return;
+  }
+  await doSend(text);
+  // 队列按序消费
+  while (sendQueue.length > 0) {
+    const next = sendQueue.shift();
+    updateQueueBadge();
+    await doSend(next);
+  }
+}
+
+async function doSend(text) {
   if (!state.messages) state.messages = [];
   state.messages.push({ role: "user", content: text });
   renderChat();
-  input.value = "";
-  // 调 API
+  sendBusy = true;
+  $("stopBtn").style.display = "";
+  sendAbort = new AbortController();
   try {
-    const j = await api("/api/send", { method: "POST", body: JSON.stringify({ text, session_id: state.active_session_id || "default" }) });
+    const r = await fetch("/api/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, session_id: state.active_session_id || "default" }),
+      signal: sendAbort.signal,
+    });
+    const j = await r.json();
     state.messages.push({ role: "assistant", content: j.reply });
   } catch (e) {
-    state.messages.push({ role: "assistant", content: "⚠ " + e.message });
+    const aborted = e.name === "AbortError";
+    state.messages.push({ role: "assistant", content: aborted ? "⏹ 已终止" : "⚠ " + e.message });
+  } finally {
+    sendBusy = false;
+    $("stopBtn").style.display = "none";
+    sendAbort = null;
+    renderChat();
   }
-  renderChat();
 }
+
+function stopSend() {
+  if (sendAbort) sendAbort.abort();
+  // 清空排队 (终止连队列一起清, 用户意图优先)
+  sendQueue.length = 0;
+  updateQueueBadge();
+}
+
+function updateQueueBadge() {
+  const label = $("modelLabel");
+  if (label && sendQueue.length > 0) {
+    label.textContent = `… (排队 ${sendQueue.length})`;
+  }
+}
+
+// 事件绑定在下方统一注册
 
 // ---------- 群聊 (room 面板绑定) ----------
 let roomGroupId = null;
@@ -358,6 +408,7 @@ async function showClarity() {
   }
 }
 $("clarityBtn").addEventListener("click", showClarity);
+$("stopBtn").addEventListener("click", stopSend);
 
 boot().then(loadGroups);
 </script>

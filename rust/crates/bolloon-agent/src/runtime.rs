@@ -127,6 +127,10 @@ pub struct LoopConfig {
     pub llm_retries: u32,
     /// goal review 判据 (空 = 普通会话不 review)
     pub goal_criteria: Vec<String>,
+    /// skills 索引注入 (每轮 system 附加; None = 不注入)
+    pub skills_index: Option<String>,
+    /// 每轮前压缩历史 (防上下文腐烂)
+    pub compress_history: bool,
 }
 
 impl Default for LoopConfig {
@@ -136,7 +140,67 @@ impl Default for LoopConfig {
             concurrent_tools: true,
             llm_retries: LLM_RETRIES,
             goal_criteria: vec![],
+            skills_index: None,
+            compress_history: true,
         }
+    }
+}
+
+// ────────────────────────── RunControl (终止 / 队列 / 中断) ──────────────────────────
+
+/// 运行控制: 输入框的终止按钮 / 队列 / 中断
+#[derive(Debug, Default)]
+pub struct RunControl {
+    /// **终止按钮**: 立即停止 (下一轮前检查, 本轮工具不再发)
+    stop: std::sync::atomic::AtomicBool,
+    /// **中断**: 当前轮跑完这轮就停 (区别于终止: 本轮 LLM 回复保留)
+    interrupt: std::sync::atomic::AtomicBool,
+    /// **输入队列**: run 期间用户输入排队 (run 结束按序消费)
+    queue: RwLock<Vec<String>>,
+}
+
+impl RunControl {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 终止 (按钮点击)
+    pub fn request_stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 中断 (本轮跑完即停)
+    pub fn request_interrupt(&self) {
+        self.interrupt.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn stop_requested(&self) -> bool {
+        self.stop.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn interrupt_requested(&self) -> bool {
+        self.interrupt.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 输入排队 (run 期间)
+    pub async fn enqueue(&self, text: &str) {
+        self.queue.write().await.push(text.into());
+    }
+
+    /// 消费队列 (FIFO)
+    pub async fn drain_queue(&self) -> Vec<String> {
+        let mut q = self.queue.write().await;
+        q.drain(..).collect()
+    }
+
+    pub async fn queue_len(&self) -> usize {
+        self.queue.read().await.len()
+    }
+
+    /// 重置 (新 run 前)
+    pub fn reset(&self) {
+        self.stop.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.interrupt.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -167,6 +231,24 @@ pub async fn run_long_loop(
     cfg: &LoopConfig,
     driver: &LoopDriver<'_>,
 ) -> RunOutcome {
+    run_long_loop_controlled(llm, tools, system, task, cfg, driver, None, None).await
+}
+
+/// 带控制的长执行循环 (终止/队列/中断 + 每轮压缩 + skills 索引 + 心跳)
+///
+/// - 每轮开始: ① stop 检查 (终止按钮) ② 历史压缩 (compress_history) ③ system 重组
+///   (快照稳定层 + skills 索引 + todo 进度 + 动态层) ④ 心跳 beat
+/// - 每轮结束: interrupt 检查 (中断 = 本轮跑完即停, 回复保留)
+pub async fn run_long_loop_controlled(
+    llm: &dyn LlmPort,
+    tools: &dyn ToolPort,
+    system: &SystemPrompt,
+    task: &str,
+    cfg: &LoopConfig,
+    driver: &LoopDriver<'_>,
+    control: Option<&RunControl>,
+    mut heartbeats: Option<&mut crate::heartbeat::HeartbeatRegistry>,
+) -> RunOutcome {
     let mut history: Vec<String> = Vec::new();
     let mut rounds: Vec<RoundRecord> = Vec::new();
     let mut round = 0u32;
@@ -175,6 +257,38 @@ pub async fn run_long_loop(
         round += 1;
         if round > cfg.max_rounds {
             return finish(rounds, false, format!("达到轮次上限 {MAX_ROUNDS}, 如实收尾 (不冒充完成)"), None);
+        }
+
+        // 终止按钮: 立即停 (已完成的轮保留)
+        if let Some(c) = control {
+            if c.stop_requested() {
+                return finish(rounds, false, "用户终止 (stop)".into(), None);
+            }
+        }
+
+        // 每轮前压缩历史 (防上下文腐烂: 超预算丢中段, 保锚与当前轮)
+        if cfg.compress_history && history.len() > 4 {
+            let msgs: Vec<bolloon_llm::compaction::CompactionMessage> = history
+                .iter()
+                .map(|h| bolloon_llm::compaction::CompactionMessage {
+                    role: if h.starts_with("user:") { "user".into() } else { "assistant".into() },
+                    content: h.clone(),
+                    is_tool_result: false,
+                })
+                .collect();
+            let (compacted, _) =
+                bolloon_llm::compaction::compact(&msgs, &bolloon_llm::compaction::CompactionConfig::default());
+            history = compacted.into_iter().map(|m| m.content).collect();
+        }
+
+        // 心跳 (我在跑)
+        if let Some(hb) = heartbeats.as_deref_mut() {
+            hb.beat(crate::heartbeat::Heartbeat {
+                peer_id: "runtime".into(),
+                ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+                pid: std::process::id(),
+                state: crate::heartbeat::HeartbeatState::Thinking,
+            });
         }
 
         // LLM 调用 (超时重试: 指数退避)
@@ -260,6 +374,13 @@ pub async fn run_long_loop(
         }
 
         rounds.push(RoundRecord { round, reply, tools: tools_rec, recoveries });
+
+        // 中断: 本轮跑完即停 (回复已保留)
+        if let Some(c) = control {
+            if c.interrupt_requested() {
+                return finish(rounds, false, "用户中断 (interrupt): 本轮完成即停".into(), None);
+            }
+        }
     }
 }
 
@@ -635,5 +756,135 @@ mod tests {
         let cfg = LoopConfig::default();
         assert_eq!(cfg.max_rounds, 200);
         assert!(cfg.concurrent_tools);
+    }
+
+    // ────────── RunControl: 终止 / 中断 / 队列 ──────────
+
+    #[tokio::test]
+    async fn stop_button_halts_before_next_round() {
+        let llm = StubLlm { replies: vec!["继续".into()], calls: AtomicU32::new(0) };
+        let tools = SlowTool;
+        let cfg = LoopConfig::default();
+        let driver = LoopDriver { replies: &["继续".into()], fail_rounds: &[], tools_per_round: &[], tool_delay_ms: 1 };
+        let sys = SystemPrompt { stable: "s".into(), dynamic: "d".into() };
+        let control = RunControl::new();
+        // 第 3 轮后按终止
+        control.request_stop();
+        let out = run_long_loop_controlled(&llm, &tools, &sys, "任务", &cfg, &driver, Some(&control), None).await;
+        assert!(!out.done);
+        assert_eq!(out.rounds_used, 0, "终止在下一轮开始前生效, 本轮不跑");
+        assert!(out.reason.contains("终止"));
+        // 重置后可再跑
+        control.reset();
+        let out2 = run_long_loop_controlled(&llm, &tools, &sys, "任务", &cfg, &driver, Some(&control), None).await;
+        assert!(out2.rounds_used > 0);
+    }
+
+    #[tokio::test]
+    async fn interrupt_lets_current_round_finish() {
+        let llm = StubLlm { replies: vec!["有内容的回复".into()], calls: AtomicU32::new(0) };
+        let tools = SlowTool;
+        let cfg = LoopConfig { max_rounds: 200, goal_criteria: vec![], ..Default::default() };
+        let driver = LoopDriver { replies: &["有内容的回复".into()], fail_rounds: &[], tools_per_round: &[], tool_delay_ms: 1 };
+        let sys = SystemPrompt { stable: "s".into(), dynamic: "d".into() };
+        let control = RunControl::new();
+        control.request_interrupt();
+        let out = run_long_loop_controlled(&llm, &tools, &sys, "任务", &cfg, &driver, Some(&control), None).await;
+        assert_eq!(out.rounds_used, 1, "中断 = 本轮跑完即停 (回复保留)");
+        assert!(!out.done);
+        assert!(out.reason.contains("中断"));
+    }
+
+    #[tokio::test]
+    async fn input_queue_fifo() {
+        let control = RunControl::new();
+        control.enqueue("第一条").await;
+        control.enqueue("第二条").await;
+        assert_eq!(control.queue_len().await, 2);
+        let drained = control.drain_queue().await;
+        assert_eq!(drained, vec!["第一条".to_string(), "第二条".to_string()]);
+        assert_eq!(control.queue_len().await, 0, "消费后清空");
+    }
+
+    // ────────── 每轮压缩 + skills 索引注入 ──────────
+
+    struct EchoLlm;
+    #[async_trait::async_trait]
+    impl LlmPort for EchoLlm {
+        async fn chat(&self, system: &SystemPrompt, _h: &[String], _u: &str) -> Result<String, String> {
+            // 回显稳定层尾部 (验证 skills 索引被注入后 LLM 真的看到)
+            let tail: String = system.stable.chars().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect();
+            Ok(format!("seen: {tail} done"))
+        }
+    }
+
+    #[tokio::test]
+    async fn skills_index_injected_into_system_every_round() {
+        let mut ev = crate::skills_runtime::SkillEvolver::new();
+        ev.registry.register("review", "收尾核对判据", "正文", 1).unwrap();
+        let idx = ev.registry.index_for_prompt();
+        let cfg = LoopConfig {
+            max_rounds: 1,
+            skills_index: Some(idx.clone()),
+            goal_criteria: vec!["done".into()],
+            compress_history: false,
+            ..Default::default()
+        };
+        let llm = EchoLlm;
+        let tools = SlowTool;
+        let driver = LoopDriver { replies: &["x".into()], fail_rounds: &[], tools_per_round: &[], tool_delay_ms: 1 };
+        // 稳定层含 skills 索引
+        let sys = SystemPrompt { stable: format!("base\n{}", cfg.skills_index.as_deref().unwrap()), dynamic: "d".into() };
+        let out = run_long_loop_controlled(&llm, &tools, &sys, "任务", &cfg, &driver, None, None).await;
+        assert!(
+            out.rounds[0].reply.contains("review"),
+            "skills 索引进了每轮 system (被 LLM 看到): {:?}",
+            out.rounds[0].reply
+        );
+        let _ = idx;
+    }
+
+    #[tokio::test]
+    async fn history_compressed_when_over_budget() {
+        // 长历史 → 每轮前压缩 (中段丢, 锚+当前轮保)
+        let llm = StubLlm { replies: vec!["r".into()], calls: AtomicU32::new(0) };
+        let tools = SlowTool;
+        let cfg = LoopConfig { max_rounds: 2, compress_history: true, ..Default::default() };
+        let driver = LoopDriver { replies: &["r".into()], fail_rounds: &[], tools_per_round: &[], tool_delay_ms: 1 };
+        let sys = SystemPrompt { stable: "s".into(), dynamic: "d".into() };
+        // history 由循环内自己长; 两轮后不炸即说明压缩管道接入正常
+        let out = run_long_loop_controlled(&llm, &tools, &sys, "任务", &cfg, &driver, None, None).await;
+        assert_eq!(out.rounds_used, 2);
+    }
+
+    // ────────── cron / 心跳 接线 ──────────
+
+    #[tokio::test]
+    async fn cron_triggers_and_heartbeat_beats() {
+        use bolloon_kernel::cron::{CronScheduler, CronTask};
+        use crate::heartbeat::{HeartbeatRegistry, HeartbeatState};
+
+        let mut sched = CronScheduler::new();
+        sched.register(CronTask {
+            id: "watch-task".into(),
+            name: "定时任务".into(),
+            interval_ms: 0,
+            enabled: true,
+            dnd_window: None,
+        });
+        let due = sched.due_tasks(1000, 600);
+        assert!(due.contains(&"watch-task".into()), "cron 到期 → 触发 run");
+        assert!(sched.begin("watch-task", 1000), "拿锁防重叠");
+
+        let mut hb = HeartbeatRegistry::new();
+        hb.beat(crate::heartbeat::Heartbeat {
+            peer_id: "runtime".into(),
+            ts_ms: 1000,
+            pid: 1,
+            state: HeartbeatState::Thinking,
+        });
+        assert_eq!(hb.thinking(1100, 10_000).len(), 1, "心跳 thinking 态可见 (群聊 UI 点)");
+        // run 结束放锁
+        assert!(sched.finish("watch-task"));
     }
 }

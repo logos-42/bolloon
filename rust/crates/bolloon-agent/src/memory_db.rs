@@ -34,6 +34,12 @@ pub struct MemoryDb {
     conn: Connection,
 }
 
+impl std::fmt::Debug for MemoryDb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryDb").finish_non_exhaustive()
+    }
+}
+
 impl MemoryDb {
     /// 打开 (文件不存在自动建表; `:memory:` 用于测试)
     pub fn open(path: &str) -> Result<Self, rusqlite::Error> {

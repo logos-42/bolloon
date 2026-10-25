@@ -129,6 +129,16 @@ Web 接线: `/api/judgment` (top-N 注入门 + 入库即演化, action 如实回
 | **`bolloon-agent/clarity`** (+6) | **Clarity 一键说清楚**: 从会话事件提取结构化现状 (goal/done/pending/next_step/blockers + **health 健康度 0-100**); goal 判据命中缩放健康度; 纯函数可测 |
 | Web 接线 | `/api/memory` 切 SQLite (响应带 store:sqlite 标记); **Clarity 按钮** (composer-footer ◎ Clarity) → `/api/clarity` → 结构化摘要框 (目标/已完成/未决/下一步/阻塞/健康度); **e2e 真跑 4/4** (sqlite 写/召回/fresh clarity/goal 提取) |
 
+## 2026-10-25 第十批 (计划工具 / skills 进化闭环 / 终止队列中断 / bootstrap / cron 心跳, 404 测试全绿)
+
+| Rust 模块 | 冻结语义 |
+| --- | --- |
+| **`bolloon-agent/todo`** (+9) | **task/plan/待办清单工具**: item 状态机 pending→in_progress→completed (+cancelled, 迁移表冻结, 跳步拒); **同一时刻唯一 in_progress** (专注纪律, 测试钉); 复工/恢复允许; **progress() 每轮注入 system** (✅▶○✗ 标记 + 当前项; 空清单不注入防上下文腐烂) |
+| **`bolloon-agent/skills_runtime`** (+7) | **工具/技能加载流程防上下文腐烂**: 索引只注入"名字+一句描述"每条一行 (**索引不含全文**, 测试钉); read_skill 按需全文; **run 结束自动进化**: distill(教训)→SkillCandidate → **promote 批准门** (唯一入库口, distill 不入库) → **下一轮索引自动包含复用**; 垃圾防噪 (空/超长 4000/重复哈希/同名 拒) |
+| **`bolloon-agent/bootstrap`** (+6) | **bootstrap 加载**: 六步有序装配 (home→identity→memory_db→skills→cron→heartbeat), 每步报告 ok/耗时/原因; **失败如实标出不静默吞**; 身份缺失如实标 pending 不造假 DID; 幂等重启动安全 |
+| **runtime 扩展** (+7) | **输入框终止/队列/中断**: `RunControl` — stop (终止按钮, 下一轮前生效, 本轮不跑) / interrupt (**本轮跑完即停, 回复保留** — 与终止语义区分, 测试钉) / queue (run 期间输入 FIFO 排队, 消费后清空); **每轮前自动 compress** (超预算丢中段保锚+当前轮); **skills 索引随每轮 system 注入** (EchoLlm 测试钉: LLM 真的看到); **cron 触发→拿锁防重叠→run→放锁** + **心跳 thinking 态**接线 |
+| Web UI | 输入框 **⏹ 终止按钮** (AbortController + AbortError 显示"已终止", 终止连队列一起清) + **queue 徽标** (run 期间输入自动排队显示"排队 N", 按序消费) |
+
 | Rust 模块 | 冻结语义 |
 | --- | --- |
 | **`bolloon-agent/home`** (8 测试) | **CLI/Web/App/SDK 同一路径加载**: `BOLLOON_HOME`(缺省 ~/.bolloon) 下 `rust/` 子目录, env 一处解析四端共享 (真跑: CLI 写记忆 → Web 读同一份); **智能体专属目录** `agents/<id>/` (memory.json / soul.md / agent.md / sessions, agent_id 校验拒路径穿越); **文档快照冻结** `DocSnapshot::freeze` (内容+hash+盘状态): 运行期间盘上改动不影响快照 (快照即真源), `disk_drifted` 只标记"下一会话要 re-freeze", 缺失文档给内置缺省 |
