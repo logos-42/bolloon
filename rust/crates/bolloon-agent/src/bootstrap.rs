@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-use crate::home::{AgentDocs, BolloonHome};
+use crate::home::BolloonHome;
 use crate::memory_db::MemoryDb;
 use crate::skills_runtime::SkillsRegistry;
 

@@ -93,7 +93,7 @@ pub fn compact(messages: &[CompactionMessage], cfg: &CompactionConfig) -> (Vec<C
 
     // ④ 预算削减: 丢中段 (保留首条锚 + 逐渐收缩的尾部), 丢处放摘要占位
     //    仍超预算 → 继续收尾 (尾最少保 1 条 = 当前轮永不动)
-    let mut total: usize = out.iter().map(|m| m.content.chars().count()).sum();
+    let total: usize = out.iter().map(|m| m.content.chars().count()).sum();
     if total > cfg.budget_chars && out.len() > 2 {
         let mut tail_keep = ((out.len() * 2) / 5).max(1); // 先试末 40%
         let mut cut_end;
@@ -131,7 +131,6 @@ pub fn compact(messages: &[CompactionMessage], cfg: &CompactionConfig) -> (Vec<C
             out = summarized;
             dropped = dropped_n;
         }
-        total = out.iter().map(|m| m.content.chars().count()).sum();
     }
 
     let after: usize = out.iter().map(|m| m.content.chars().count()).sum();

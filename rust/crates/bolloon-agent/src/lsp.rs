@@ -7,8 +7,6 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-
 /// LSP 错误
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum LspError {

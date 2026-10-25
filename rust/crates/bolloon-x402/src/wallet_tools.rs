@@ -11,7 +11,6 @@
 //!   sha256(pubkey)[..20] 的本地链语义; 主网 secp256k1 地址不在本文件范围
 //! - 在已有合约上发表任务: 构造任务公告 entry + 资金授权 (escrow 合约地址由调用方给)
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::order_identity::compute_order_nonce;

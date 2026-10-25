@@ -53,6 +53,8 @@ pub enum SellerError {
     DidMismatch,
     #[error("内容哈希对不上, 拒签")]
     ContentHashMismatch,
+    #[error("信封协议名不是冻结的 {}, 拒签", INFO_PROTOCOL)]
+    ProtocolMismatch,
     #[error("取件 token 无效或过期")]
     BadPickupToken,
     #[error("待办不存在")]
@@ -141,6 +143,10 @@ impl SellerPendingBook {
         }
         // 签名信封 (receiptHash 纳入签名绑定)
         let env = crate::paid_info::build_envelope(kp, &rec.item_id, content, &rec.receipt_hash, now_ms);
+        // 守卫 3: 信封协议名必须是冻结的 info 协议 (别的协议混进来 → 拒签)
+        if env.protocol != INFO_PROTOCOL {
+            return Err(SellerError::ProtocolMismatch);
+        }
         if let Some(rec) = self.pending.get_mut(pending_id) {
             rec.envelope = Some(env.clone());
         }

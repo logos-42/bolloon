@@ -159,23 +159,35 @@ pub enum InviteError {
     BadLink,
 }
 
+impl From<InviteError> for GroupLogError {
+    fn from(e: InviteError) -> Self {
+        GroupLogError::BadPayload(e.to_string())
+    }
+}
+
 /// 生成群邀请链接 (群主签 group_id, 带过期; 分享有链接)
 ///
 /// 形状: `bolloon://join/<group_id>?t=<b58 sig>&exp=<epoch ms>&by=<owner-did>`
+///
+/// `now_ms` 是**生成时**守卫: 过期时刻不晚于当下 ⇒ 链接一出生就过期 ⇒ 直接拒
+/// (不生成"注定失效"的邀请, 也不静默改过期时间)
 pub fn make_invite_link(
     group_id: &str,
     owner_kp: &KeyPair,
     expires_at_ms: u64,
     now_ms: u64,
-) -> String {
+) -> Result<String, InviteError> {
+    if expires_at_ms <= now_ms {
+        return Err(InviteError::Expired);
+    }
     let sig = owner_kp.sign(format!("join|{group_id}|{expires_at_ms}").as_bytes());
-    format!(
+    Ok(format!(
         "bolloon://join/{}?t={}&exp={}&by={}",
         group_id,
         crate::b58_encode(&sig),
         expires_at_ms,
         owner_kp.did.as_str()
-    )
+    ))
 }
 
 /// 验证邀请链接 (签名 + 过期; 通过才允许加入)
@@ -225,7 +237,8 @@ pub fn propose_group(
     now_ms: u64,
 ) -> Result<(OpEntry, String), OpLogError> {
     let expires = now_ms + 7 * 24 * 3600 * 1000; // 7 天有效
-    let link = make_invite_link(group_id, kp, expires, now_ms);
+    let link = make_invite_link(group_id, kp, expires, now_ms)
+        .map_err(|e| OpLogError::BadInvite(e.to_string()))?;
     let payload = serde_json::json!({
         "kind": "group-invite",
         "group_id": group_id,
@@ -253,7 +266,7 @@ mod invite_tests {
     #[test]
     fn invite_link_roundtrip() {
         let owner = kp(1);
-        let link = make_invite_link("gw-123", &owner, 5000, 1000);
+        let link = make_invite_link("gw-123", &owner, 5000, 1000).unwrap();
         assert!(link.starts_with("bolloon://join/gw-123?t="));
         assert!(link.contains("exp=5000"));
         // 群主公钥验 → 通过, 返回 group_id
@@ -264,7 +277,7 @@ mod invite_tests {
     #[test]
     fn invite_expired_rejected() {
         let owner = kp(1);
-        let link = make_invite_link("g", &owner, 1000, 1000);
+        let link = make_invite_link("g", &owner, 1000, 500).unwrap();
         assert_eq!(
             verify_invite_link(&link, 2000, &owner.public_bytes()).unwrap_err(),
             InviteError::Expired
@@ -272,17 +285,26 @@ mod invite_tests {
     }
 
     #[test]
+    fn invite_born_expired_rejected_at_generation() {
+        // 过期时刻不晚于当下 ⇒ 链接一出生就过期 ⇒ 生成时即拒 (不造"注定失效"的邀请)
+        let owner = kp(1);
+        assert_eq!(make_invite_link("g", &owner, 1000, 1000).unwrap_err(), InviteError::Expired);
+        assert_eq!(make_invite_link("g", &owner, 999, 1000).unwrap_err(), InviteError::Expired);
+        assert!(make_invite_link("g", &owner, 1001, 1000).is_ok());
+    }
+
+    #[test]
     fn invite_forged_rejected() {
         let owner = kp(1);
         let attacker = kp(9);
         // 攻击者伪造签名
-        let link = make_invite_link("gw-123", &attacker, 5000, 1000);
+        let link = make_invite_link("gw-123", &attacker, 5000, 1000).unwrap();
         assert_eq!(
             verify_invite_link(&link, 2000, &owner.public_bytes()).unwrap_err(),
             InviteError::BadSignature
         );
         // 篡改 group_id
-        let link2 = make_invite_link("gw-123", &owner, 5000, 1000);
+        let link2 = make_invite_link("gw-123", &owner, 5000, 1000).unwrap();
         let tampered = link2.replace("gw-123", "gw-evil");
         assert_eq!(
             verify_invite_link(&tampered, 2000, &owner.public_bytes()).unwrap_err(),
@@ -335,7 +357,7 @@ mod invite_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::replication::{replicate, BlockExchange, MemoryExchange};
+    use crate::replication::{replicate, MemoryExchange};
 
     fn kp(seed: u8) -> KeyPair {
         let mut s = [0u8; 32];

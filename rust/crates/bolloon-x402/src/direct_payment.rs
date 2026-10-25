@@ -148,16 +148,6 @@ pub fn verify_direct_payment(
         };
     };
 
-    let obs = observations.first();
-    let Some(obs) = obs else {
-        return PaymentReport {
-            verdict: PaymentVerdict::Rejected,
-            passed,
-            failed: vec!["no_observation: 没有任何 RPC 观察".into()],
-            order_identity: None,
-        };
-    };
-
     // 判据 1: chainId ( observations 由调用方按 chainId 拉, 这里核 status)
     if obs.status == 1 {
         passed.push("receipt_status".into());

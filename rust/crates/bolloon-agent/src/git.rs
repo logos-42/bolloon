@@ -169,6 +169,23 @@ fn extract_num_after_word(line: &str, word: &str) -> Option<usize> {
     num.parse().ok()
 }
 
+/// 分支行 [ahead N, behind M] 解析 (数字在词**后**, 与 diff --stat 相反)
+///
+/// 形状: `## main...origin/main [ahead 2, behind 1]`
+/// 推之前先知道自己领先/落后几条 —— 没对账就不许强推 (见 guard_git_command)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AheadBehind {
+    pub ahead: usize,
+    pub behind: usize,
+}
+
+pub fn parse_ahead_behind(branch_line: &str) -> AheadBehind {
+    AheadBehind {
+        ahead: extract_num_after_word(branch_line, "ahead").unwrap_or(0),
+        behind: extract_num_after_word(branch_line, "behind").unwrap_or(0),
+    }
+}
+
 /// Git 执行端口 (真 spawn 由调用方注入; 测试用内存实现)
 pub trait GitExecutor {
     fn run(&self, args: &[String]) -> Result<String, String>;
@@ -186,6 +203,24 @@ mod tests {
         assert_eq!(entries[0], StatusEntry { x: ' ', y: 'M', path: "src/main.rs".into() });
         assert_eq!(entries[1], StatusEntry { x: '?', y: '?', path: "new-file.rs".into() });
         assert_eq!(entries[3], StatusEntry { x: 'D', y: ' ', path: "gone.rs".into() });
+    }
+
+    #[test]
+    fn ahead_behind_parsed_from_branch_line() {
+        assert_eq!(
+            parse_ahead_behind("## main...origin/main [ahead 2, behind 1]"),
+            AheadBehind { ahead: 2, behind: 1 }
+        );
+        assert_eq!(
+            parse_ahead_behind("## feat/x...origin/feat/x [ahead 5]"),
+            AheadBehind { ahead: 5, behind: 0 },
+            "只领先不落后"
+        );
+        assert_eq!(
+            parse_ahead_behind("## main...origin/main"),
+            AheadBehind { ahead: 0, behind: 0 },
+            "无 ahead/behind 段 = 与上游同步"
+        );
     }
 
     #[test]

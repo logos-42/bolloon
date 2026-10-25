@@ -18,7 +18,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use bolloon_agent::{MemoryLayer, MemoryStore, TaskBoard};
+use bolloon_agent::{MemoryStore, TaskBoard};
 use bolloon_agent::judgment::JudgmentStore;
 use bolloon_agent::world::{Opportunity, OpportunityStream};
 use bolloon_agent::memory_db::MemoryDb;
@@ -29,6 +29,7 @@ use bolloon_x402::{
 };
 use bolloon_llm::{ChatMessage, GenerateParams, LlmRuntime};
 use bolloon_p2p::{GroupAcl, GroupStore, KeyPair};
+use std::io::Read;
 
 /// rust 原生版数据目录 — **单一真源** (CLI/Web/App/SDK 同一口径: BolloonHome)
 fn data_dir() -> std::path::PathBuf {
@@ -246,6 +247,9 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/api/clarity", get(clarity))
         // 模型供应商列表 (筛选按钮弹窗数据源)
         .route("/api/providers", get(providers))
+        // 自动更新 (未检测到更新前端不显示入口)
+        .route("/api/update/check", get(update_check))
+        .route("/api/update/install", post(update_install))
         // 完全访问权限开关 (可随时开/取消)
         .route("/api/permission", get(get_permission).post(set_permission))
         .with_state(state);
@@ -580,6 +584,81 @@ async fn providers(State(st): State<AppState>) -> Json<serde_json::Value> {
         })
         .collect();
     Json(serde_json::json!({ "providers": items }))
+}
+
+/// 自动更新检查 (源不可达/无更新 → update_available=false, 前端不显示入口)
+async fn update_check() -> Json<bolloon_agent::updater::UpdateInfo> {
+    struct GitHubSource;
+    impl bolloon_agent::updater::UpdateSource for GitHubSource {
+        fn latest_version(&self) -> Result<String, String> {
+            // GitHub Release latest (无网络/超时 → Err, 如实 unknown)
+            let body: serde_json::Value = ureq::get(
+                "https://api.github.com/repos/logos-42/bolloon/releases/latest",
+            )
+            .timeout(std::time::Duration::from_secs(5))
+            .set("User-Agent", "bolloon-updater")
+            .call()
+            .map_err(|e| e.to_string())?
+            .into_json()
+            .map_err(|e| e.to_string())?;
+            body["tag_name"]
+                .as_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "无 tag_name".into())
+        }
+        fn download(&self) -> Result<Vec<u8>, String> {
+            let bytes = ureq::get("https://github.com/logos-42/bolloon/releases/latest/download/bolloon-bin")
+                .timeout(std::time::Duration::from_secs(120))
+                .call()
+                .map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            bytes
+                .into_reader()
+                .read_to_end(&mut out)
+                .map_err(|e| e.to_string())?;
+            Ok(out)
+        }
+    }
+    Json(bolloon_agent::updater::check(&GitHubSource))
+}
+
+/// 内部安装一条龙: 下载→原子替换→请求重启 (无弹窗; 状态走按钮文字)
+async fn update_install() -> Json<serde_json::Value> {
+    struct GitHubSource;
+    impl bolloon_agent::updater::UpdateSource for GitHubSource {
+        fn latest_version(&self) -> Result<String, String> {
+            Ok("latest".into())
+        }
+        fn download(&self) -> Result<Vec<u8>, String> {
+            let bytes = ureq::get("https://github.com/logos-42/bolloon/releases/latest/download/bolloon-bin")
+                .timeout(std::time::Duration::from_secs(120))
+                .call()
+                .map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            bytes
+                .into_reader()
+                .read_to_end(&mut out)
+                .map_err(|e| e.to_string())?;
+            Ok(out)
+        }
+    }
+    let Ok(self_path) = std::env::current_exe() else {
+        return Json(serde_json::json!({ "error": "无法定位自身二进制" }));
+    };
+    match bolloon_agent::updater::install(&GitHubSource, &self_path) {
+        Ok(report) => {
+            // 一条龙最后一步: spawn 新进程 (同参数) — 旧进程随后由调用方退出
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            let new_pid = bolloon_agent::updater::restart(&self_path, &args).ok();
+            Json(serde_json::json!({
+                "installing": true,
+                "restarting": new_pid.is_some(),
+                "new_pid": new_pid,
+                "report": report,
+            }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
 }
 
 /// 完全访问权限: 读

@@ -292,7 +292,7 @@ pub async fn run_long_loop_controlled(
         }
 
         // LLM 调用 (超时重试: 指数退避)
-        let idx = ((round - 1) as usize).min(driver.replies.len().saturating_sub(1));
+        let _idx = ((round - 1) as usize).min(driver.replies.len().saturating_sub(1));
         let want_fail = driver.fail_rounds.get((round - 1) as usize).copied().unwrap_or(0);
         let mut recoveries: Vec<String> = Vec::new();
         let mut reply = String::new();
@@ -305,13 +305,26 @@ pub async fn run_long_loop_controlled(
                 recoveries.push(format!("LLM 调用失败 (attempt {attempt}) → 退避重试"));
                 continue;
             }
-            reply = llm.chat(system, &history, task).await.unwrap_or_default();
-            llm_ok = true;
-            break;
+            match llm.chat(system, &history, task).await {
+                Ok(r) => {
+                    reply = r;
+                    llm_ok = true;
+                    break;
+                }
+                Err(e) => {
+                    // 真失败必须留痕 (unwrap_or_default 会把错误吞成空串并当成功)
+                    recoveries.push(format!("LLM 调用失败 (attempt {attempt}): {e} → 退避重试"));
+                }
+            }
         }
         if !llm_ok {
             recoveries.push("LLM 全部重试失败 → 错误进上下文, 继续下一轮 (错误恢复)".into());
-            reply = "[错误恢复] LLM 不可用, 本轮跳过".into();
+            // driver 注入面: 有本轮预期回复就用它兜底; 没有才用错误恢复文案
+            reply = driver
+                .replies
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| "[错误恢复] LLM 不可用, 本轮跳过".into());
         }
 
         // 无畏并发工具 (本轮工具全部同时发起; 数量不限)
@@ -689,6 +702,41 @@ mod tests {
                 Ok("恢复后回复".into())
             }
         }
+    }
+
+    #[tokio::test]
+    async fn llm_error_recorded_then_retry_recovers() {
+        // FlakyLlm 前 1 次真失败: 必须留痕 + 退避重试, 第二次拿到真回复
+        let llm = FlakyLlm { fail_first_n: AtomicU32::new(1) };
+        let cfg = LoopConfig { max_rounds: 2, goal_criteria: vec![], llm_retries: 2, ..Default::default() };
+        let driver = LoopDriver { replies: &[], fail_rounds: &[], tools_per_round: &[], tool_delay_ms: 1 };
+        let sys = SystemPrompt { stable: "s".into(), dynamic: "d".into() };
+        let out = run_long_loop(&llm, &SlowTool, &sys, "任务", &cfg, &driver).await;
+        assert_eq!(out.rounds[0].reply, "恢复后回复", "重试后拿到真回复");
+        assert!(
+            out.rounds[0].recoveries.iter().any(|r| r.contains("LLM 调用失败")),
+            "失败必须留痕, 不能静默吞成空串"
+        );
+    }
+
+    #[tokio::test]
+    async fn llm_all_retries_failed_uses_driver_fallback() {
+        // 全失败 → 如实留痕; driver 给了本轮预期回复就用它兜底
+        let llm = FlakyLlm { fail_first_n: AtomicU32::new(99) };
+        let cfg = LoopConfig { max_rounds: 1, goal_criteria: vec![], llm_retries: 1, ..Default::default() };
+        let driver = LoopDriver {
+            replies: &["driver 兜底回复".into()],
+            fail_rounds: &[],
+            tools_per_round: &[],
+            tool_delay_ms: 1,
+        };
+        let sys = SystemPrompt { stable: "s".into(), dynamic: "d".into() };
+        let out = run_long_loop(&llm, &SlowTool, &sys, "任务", &cfg, &driver).await;
+        assert_eq!(out.rounds[0].reply, "driver 兜底回复", "driver 有本轮预期回复 → 兜底");
+        assert!(
+            out.rounds[0].recoveries.iter().any(|r| r.contains("LLM 全部重试失败")),
+            "全失败仍然如实留痕"
+        );
     }
 
     #[tokio::test]

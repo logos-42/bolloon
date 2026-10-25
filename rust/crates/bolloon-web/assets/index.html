@@ -173,6 +173,11 @@
       <div id="groups"></div>
       <div class="sec">会话</div>
       <div id="sessions"></div>
+      <div class="sec">系统</div>
+      <button id="updateBtn" style="display:none" title="一键内部更新并重启（无弹窗）">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px"><path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 5v6h-6"/></svg>
+        <span id="updateLabel">更新</span>
+      </button>
     </div>
     <div class="account" id="account">
       <div class="ava" id="accountAva" style="color:var(--text)">🜁</div>
@@ -596,6 +601,51 @@ $("newGroupBtn").addEventListener("click", createGroup);
 $("roomInput").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendRoom(); }
 });
+
+// ---------- 自动更新 (未检测到更新之前不显示; 一条龙无弹窗) ----------
+async function checkUpdate() {
+  try {
+    const j = await api("/api/update/check");
+    const btn = $("updateBtn");
+    if (j.update_available) {
+      btn.style.display = "";
+      $("updateLabel").textContent = `更新 ${j.latest}`;
+      btn.title = `有新版本 ${j.latest} (当前 ${j.current}) — 点击内部安装并重启`;
+    } else {
+      // 未检测到更新之前不显示
+      btn.style.display = "none";
+    }
+  } catch { /* 检测失败 = 不显示 */ }
+}
+
+$("updateBtn").addEventListener("click", async () => {
+  const btn = $("updateBtn");
+  btn.disabled = true;
+  $("updateLabel").textContent = "安装中…";
+  try {
+    const j = await api("/api/update/install", { method: "POST" });
+    if (!j.installing) throw new Error(j.error || "安装失败");
+    $("updateLabel").textContent = "重启中…";
+    // 服务重启: 轮询健康, 回来后刷新页面 (无弹窗)
+    const deadline = Date.now() + 30_000;
+    const poll = setInterval(async () => {
+      if (Date.now() > deadline) { clearInterval(poll); $("updateLabel").textContent = "重启超时, 请手动刷新"; btn.disabled = false; return; }
+      try {
+        await fetch("/api/health");
+        clearInterval(poll);
+        location.reload(); // 新版本服务就绪 → 整页刷新完成更新一条龙
+      } catch { /* 服务还没回来, 继续等 */ }
+    }, 800);
+  } catch (e) {
+    $("updateLabel").textContent = "更新失败";
+    btn.disabled = false;
+    setTimeout(() => ($("updateLabel").textContent = "更新"), 2500);
+  }
+});
+
+// 启动时检查一次 + 每 30 分钟复查
+checkUpdate();
+setInterval(checkUpdate, 30 * 60 * 1000);
 
 // ---------- Clarity 一键说清楚 ----------
 async function showClarity() {

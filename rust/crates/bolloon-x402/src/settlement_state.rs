@@ -36,7 +36,8 @@ impl SettlementFact {
         }
     }
 
-    fn from_str(s: &str) -> Option<Self> {
+    /// as_str 的逆: 从持久化/跨进程串还原事实 (未知串 → None, 不猜最接近的)
+    pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "unpaid" => Self::Unpaid,
             "payment_submitted" => Self::PaymentSubmitted,
@@ -179,6 +180,24 @@ pub const RESPONSIBILITY_TYPES: &[ResponsibilityType] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fact_str_roundtrip() {
+        // 8 态全量: as_str → parse 必须还原 (持久化/跨进程靠这条)
+        for f in [
+            SettlementFact::Unpaid,
+            SettlementFact::PaymentSubmitted,
+            SettlementFact::PaymentVerified,
+            SettlementFact::PartiallySettled,
+            SettlementFact::FullySettled,
+            SettlementFact::RefundPending,
+            SettlementFact::Refunded,
+            SettlementFact::Unknown,
+        ] {
+            assert_eq!(SettlementFact::parse(f.as_str()), Some(f), "{f:?} 串化后可还原");
+        }
+        assert_eq!(SettlementFact::parse("paid"), None, "未知串 → None, 不猜最接近的");
+    }
 
     #[test]
     fn legal_transitions_pass() {

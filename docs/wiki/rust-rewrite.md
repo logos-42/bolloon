@@ -159,6 +159,17 @@ Web 接线: `/api/judgment` (top-N 注入门 + 入库即演化, action 如实回
 | **`bolloon-x402/wallet_tools`** (+4) | **钱包全套工具, 私钥永不泄露**: address / balance / sign_message / **transfer_with_authorization (EIP-3009 USDC 形状**, BOL1 nonce, 授权即台账扣减) / **publish_task_onchain (在已有合约上发表任务**: escrow 地址由调用方给, 公告 entry+资金授权全签名) / **purchase (x402 购买)**; **泄露扫描测试**: 全部输出的 serialize+Debug 断言不含 seed 的 hex/b58/半段, 无 private_key/seed 字段 |
 | **群聊邀请 (group_log 扩展)** (+5) | **分享链接要有**: `bolloon://join/<gid>?t=<b58 群主签名>&exp=<7 天>&by=<did>`; 验证 = 签名+过期 (伪造/篡改 gid/过期/形状不对全拒); **主动拉群**: `propose_group` 邀请事件上 oplog (带友好 greeting 🤝 + 邀请链接), 成员复制可见可加入; **群聊合作语气层** (channel.group-tone: 友好和善/主动拉群/分享有链接/接力不抢话, 仅群聊 channel 注入) |
 
+## 2026-10-25 第十三批 (自动更新: 检查/提示/内部安装一条龙无弹窗, e2e 真网验证)
+
+| Rust 模块 | 冻结语义 |
+| --- | --- |
+| **`bolloon-agent/updater`** (+7) | **未检测到更新之前不显示**: check 源不可达/无网络 → `status=unknown, update_available=false` (**绝不误报有更新**); semver 三段比较 (容忍 `v` 前缀); **安装一条龙**: 下载→校验 (≥1KB, 过小拒)→备份旧二进制→**原子替换** (tmp+rename, 运行中可换)→可执行位→失败自动回滚 (不把自己装残); **重启**: spawn 新进程 (同参数) + 旧进程退出; `UpdateSource` 端口注入 (真实现 GitHub Release latest/download, 测试 fake) |
+| Web | 侧栏「系统」区更新按钮 — **默认 `display:none`**; 启动 + 每 30 分钟轮询 `/api/update/check`, **有更新才显示** (带新版本号); 点击 → 按钮文字"安装中… → 重启中…" (**全程无弹窗**) → 轮询 `/api/health` 等新服务起来 → `location.reload()` 完成一条龙 |
+| CLI | `status` **tip 栏**: 有更新才输出一行 `tip: ⬆ 有新版本 X 可用 — 运行 bolloon update install`; `update check` (当前/状态/有无更新+说明) + `update install` (同 web 一条龙, 完成自动重启) |
+| e2e | GitHub Release 真网检查: latest tag = **v0.6.10** = 当前 → `update_available:false` ⇒ 按钮不显示 (真实生效); 页面含隐藏按钮与 install 调用 |
+
+**协同修订 (第十三批期间)**: efficode 压缩扩展 (compression 字段 + pick_algo/compress_block, 数据块首字节恒写算法 id "解码端按 id 解不猜"); 群邀请**生成时守卫** (过期时刻≤当下直接拒, 不生成注定失效的邀请 — 双闸: 生成+验证); prompt identity 文案改稿 ("你是 hibs 组织的智能体")。三方修订全部纳入 436 测试。
+
 | Rust 模块 | 冻结语义 |
 | --- | --- |
 | **`bolloon-agent/home`** (8 测试) | **CLI/Web/App/SDK 同一路径加载**: `BOLLOON_HOME`(缺省 ~/.bolloon) 下 `rust/` 子目录, env 一处解析四端共享 (真跑: CLI 写记忆 → Web 读同一份); **智能体专属目录** `agents/<id>/` (memory.json / soul.md / agent.md / sessions, agent_id 校验拒路径穿越); **文档快照冻结** `DocSnapshot::freeze` (内容+hash+盘状态): 运行期间盘上改动不影响快照 (快照即真源), `disk_drifted` 只标记"下一会话要 re-freeze", 缺失文档给内置缺省 |

@@ -103,6 +103,8 @@ pub enum OpLogError {
     HashMismatch { claimed: String, actual: String },
     #[error("entry 引用了不存在的 prev: {0} (拉块不完整)")]
     MissingPrev(String),
+    #[error("群邀请链接非法: {0}")]
+    BadInvite(String),
 }
 
 /// write 策略 (对齐 TS accessController)
@@ -238,8 +240,10 @@ impl OpLog {
     }
 
     /// join 远端 entries (复制核心): 验签 + ACL + prev 完整性, 逐条收
+    ///
+    /// 返回本次**真正新增**的条数 (已有的去重, 不算新增)
     pub fn join(&mut self, entries: &[OpEntry]) -> Result<usize, OpLogError> {
-        let mut joined = 0;
+        let len_before = self.entries.len();
         // 先全部放进暂存 (支持乱序到达)
         let mut pending: Vec<OpEntry> = Vec::new();
         for e in entries {
@@ -280,8 +284,7 @@ impl OpLog {
                 break;
             }
         }
-        joined = self.entries.len();
-        Ok(joined)
+        Ok(self.entries.len() - len_before)
     }
 
     /// 遍历整条 DAG → 确定性线性序 (clock 升序, 同 clock 按 hash 排)
@@ -474,7 +477,7 @@ mod tests {
         let e = log.append(&a, serde_json::json!({"x": 1}), 1).unwrap();
         let n = log.join(std::slice::from_ref(&e)).unwrap();
         assert_eq!(log.len(), 1, "重放同 entry 去重");
-        let _ = n;
+        assert_eq!(n, 0, "已有的 entry 不算新增 (join 返回真新增条数)");
     }
 
     #[test]

@@ -38,6 +38,7 @@ pub mod todo;
 pub mod skills_runtime;
 pub mod bootstrap;
 pub mod prompt;
+pub mod updater;
 pub use kernel_loop::*;
 pub use group_chat::*;
 pub use task_board::*;

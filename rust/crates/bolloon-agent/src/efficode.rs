@@ -50,6 +50,8 @@ pub enum EfficodeError {
     UnknownOp(u8),
     #[error("EFFICODE_BAD_INSTRUCTION: {0}")]
     BadInstruction(String),
+    #[error("EFFICODE_UNKNOWN_COMPRESSION: {0}")]
+    UnknownCompression(String),
 }
 
 /// 六条符号指令 (code 对齐 TS OP_TABLE)
@@ -131,6 +133,8 @@ pub struct EfficodeMessage {
     pub instructions: Vec<Instruction>,
     /// 数据块 (None = 省略)
     pub data: Option<Vec<u8>>,
+    /// 压缩算法 (None = 自动选: 压不小就退回 none, 省下的不该是负数)
+    pub compression: Option<CompressionAlgo>,
     pub mode: EfficodeMode,
 }
 
@@ -208,6 +212,237 @@ fn read_varint(buf: &[u8], pos: &mut usize) -> Result<u32, EfficodeError> {
     Ok(value)
 }
 
+// ────────────────────────────── 压缩层 (对齐 TS compress.ts / lz77.ts) ──────────────────────────────
+
+/// 压缩算法 (数据块第一字节 = 算法 id)
+///
+/// 对齐 TS `COMPRESSION_IDS`: 0=none · 1=lz77 · 2=deflate。
+/// 本参考实现只做 0/1: 收到 id=2 (deflate) **如实报未知算法**, 绝不"跳过解压直接给原文"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompressionAlgo {
+    /// 原样 (小消息用 —— 头上开箱代价为 0)
+    #[default]
+    None,
+    /// 本仓 LZ77 实现 (纯 Rust, 任何运行面可跑)
+    Lz77,
+}
+
+impl CompressionAlgo {
+    pub fn id(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Lz77 => 1,
+        }
+    }
+    pub fn from_id(id: u8) -> Option<Self> {
+        match id {
+            0 => Some(Self::None),
+            1 => Some(Self::Lz77),
+            _ => None,
+        }
+    }
+}
+
+const LZ_WINDOW: usize = 4095; // 12 位 offset (0 保留为非法)
+const LZ_MIN_MATCH: usize = 3; // length-3 存 4 位 ⇒ 3..18
+const LZ_MAX_MATCH: usize = 18;
+const LZ_MAX_CHAIN: usize = 16; // 哈希链回溯上限 (控制最坏耗时)
+const LZ_HASH_SIZE: usize = 1 << 16; // 3 字节前缀哈希表大小
+
+fn lz_hash3(b: &[u8], i: usize) -> usize {
+    (((b[i] as usize) << 10) ^ ((b[i + 1] as usize) << 5) ^ (b[i + 2] as usize)) & (LZ_HASH_SIZE - 1)
+}
+
+fn lz_insert_at(input: &[u8], pos: usize, head: &mut [i32], prev: &mut [i32]) {
+    if pos + LZ_MIN_MATCH > input.len() {
+        return;
+    }
+    let h = lz_hash3(input, pos);
+    prev[pos] = head[h];
+    head[h] = pos as i32;
+}
+
+/// 哈希链查最长匹配 (窗口内; 够不上 MIN_MATCH 就当没匹配)
+fn lz_find_match(input: &[u8], pos: usize, head: &[i32], prev: &[i32]) -> Option<(usize, usize)> {
+    if pos + LZ_MIN_MATCH > input.len() {
+        return None;
+    }
+    let h = lz_hash3(input, pos);
+    let max_len = LZ_MAX_MATCH.min(input.len() - pos);
+    let mut cand = head[h];
+    let mut chain = 0;
+    let mut best_len = 0usize;
+    let mut best_off = 0usize;
+    while cand >= 0 && chain < LZ_MAX_CHAIN {
+        let distance = pos - cand as usize;
+        if distance > LZ_WINDOW {
+            break;
+        }
+        let mut len = 0usize;
+        while len < max_len && input[cand as usize + len] == input[pos + len] {
+            len += 1;
+        }
+        if len > best_len {
+            best_len = len;
+            best_off = distance;
+            if len == max_len {
+                break;
+            }
+        }
+        cand = prev[cand as usize];
+        chain += 1;
+    }
+    if best_len >= LZ_MIN_MATCH {
+        Some((best_off, best_len))
+    } else {
+        None
+    }
+}
+
+/// LZ77 压缩 → `[varint origLen][varint compLen][token stream]`
+///
+/// token stream = 控制字节 + 载荷, 每控制字节管 8 个 token (MSB 在前):
+/// 控制位 0 → 后接 1 字节字面量; 控制位 1 → 后接 2 字节匹配 (12 位 offset, 4 位 length-3)。
+///
+/// 诚实边界: 窗口 4095B / 最短匹配 3B / 最长匹配 18B, **没有**哈夫曼那一层;
+/// 对重复度高的结构化文本有效, 对**随机字节**会膨胀 (控制位占 1/8)。
+pub fn lz77_compress(input: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    // 头: origLen + compLen 占位 (varint(0) = 1B, 最后整体重拼, 不依赖占位宽度)
+    write_varint(&mut out, input.len() as u32);
+    write_varint(&mut out, 0);
+    let body_start = out.len();
+
+    let mut head = vec![-1i32; LZ_HASH_SIZE];
+    let mut prev = vec![-1i32; input.len()];
+
+    let mut i = 0usize;
+    while i < input.len() {
+        let control_idx = out.len();
+        out.push(0);
+        let mut control = 0u8;
+        let mut bit: i32 = 7;
+        while bit >= 0 && i < input.len() {
+            if let Some((offset, len)) = lz_find_match(input, i, &head, &prev) {
+                control |= 1 << bit;
+                let v = ((offset & 0xfff) << 4) | ((len - LZ_MIN_MATCH) & 0xf);
+                out.push((v >> 8) as u8);
+                out.push((v & 0xff) as u8);
+                for k in 0..len {
+                    lz_insert_at(input, i + k, &mut head, &mut prev);
+                }
+                i += len;
+            } else {
+                out.push(input[i]);
+                lz_insert_at(input, i, &mut head, &mut prev);
+                i += 1;
+            }
+            bit -= 1;
+        }
+        out[control_idx] = control;
+    }
+
+    // compLen = 占位之后的码流字节数 (把占位字节算进去 ⇒ 声明比实际多 ⇒ 解码必报截断)
+    let body = out[body_start..].to_vec();
+    let mut filled: Vec<u8> = Vec::with_capacity(body.len() + 8);
+    write_varint(&mut filled, input.len() as u32);
+    write_varint(&mut filled, body.len() as u32);
+    filled.extend_from_slice(&body);
+    filled
+}
+
+/// LZ77 解压 (严格): 码流不足 / 长度对不上 / offset 越界一律报错, 不做任何"尽量解"
+pub fn lz77_decompress(block: &[u8]) -> Result<Vec<u8>, EfficodeError> {
+    let mut pos = 0usize;
+    let orig_len = read_varint(block, &mut pos)? as usize;
+    let comp_len = read_varint(block, &mut pos)? as usize;
+    let body_end = pos + comp_len;
+    if body_end > block.len() {
+        return Err(EfficodeError::Truncated(
+            format!("LZ77 码流声明 {comp_len}B 但只剩 {}B", block.len() - pos),
+            pos,
+        ));
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(orig_len);
+    while out.len() < orig_len {
+        if pos >= body_end {
+            return Err(EfficodeError::Truncated(
+                format!("LZ77 码流提前结束 (期望 {orig_len}B, 实得 {}B)", out.len()),
+                pos,
+            ));
+        }
+        let control = block[pos];
+        pos += 1;
+        let mut bit: i32 = 7;
+        while bit >= 0 && out.len() < orig_len {
+            if control & (1 << bit) != 0 {
+                if pos + 2 > body_end {
+                    return Err(EfficodeError::Truncated("LZ77 匹配 token 缺字节".into(), pos));
+                }
+                let v = ((block[pos] as usize) << 8) | block[pos + 1] as usize;
+                pos += 2;
+                let offset = (v >> 4) & 0xfff;
+                let length = (v & 0xf) + LZ_MIN_MATCH;
+                if offset == 0 || offset > out.len() {
+                    return Err(EfficodeError::Truncated(
+                        format!("LZ77 匹配 offset={offset} 越界 (已解 {}B)", out.len()),
+                        pos,
+                    ));
+                }
+                for _ in 0..length {
+                    let b = out[out.len() - offset];
+                    out.push(b);
+                }
+            } else {
+                if pos >= body_end {
+                    return Err(EfficodeError::Truncated("LZ77 字面量 token 缺字节".into(), pos));
+                }
+                out.push(block[pos]);
+                pos += 1;
+            }
+            bit -= 1;
+        }
+    }
+    Ok(out)
+}
+
+/// 压缩成完整数据块: `[1B 算法 id][载荷]`
+pub fn compress_block(raw: &[u8], algo: CompressionAlgo) -> Vec<u8> {
+    let mut out = vec![algo.id()];
+    match algo {
+        CompressionAlgo::None => out.extend_from_slice(raw),
+        CompressionAlgo::Lz77 => out.extend_from_slice(&lz77_compress(raw)),
+    }
+    out
+}
+
+/// 解压 `[1B 算法 id][载荷]`: 未知算法 id → 报错, 绝不"跳过解压直接给原文"
+pub fn decompress_block(block: &[u8]) -> Result<(CompressionAlgo, Vec<u8>), EfficodeError> {
+    let Some(&id) = block.first() else {
+        return Err(EfficodeError::Truncated("数据块空 (缺算法 id)".into(), 0));
+    };
+    let algo = CompressionAlgo::from_id(id).ok_or_else(|| {
+        EfficodeError::UnknownCompression(format!("数据块声明未知压缩算法 id={id}"))
+    })?;
+    let payload = &block[1..];
+    Ok(match algo {
+        CompressionAlgo::None => (algo, payload.to_vec()),
+        CompressionAlgo::Lz77 => (algo, lz77_decompress(payload)?),
+    })
+}
+
+/// 默认算法选择: <32B 不压 (开箱代价 > 收益); 压完**连算法 id 一起**不小于原样就退回 none
+pub fn pick_algo(raw: &[u8]) -> CompressionAlgo {
+    if raw.len() < 32 {
+        return CompressionAlgo::None;
+    }
+    if lz77_compress(raw).len() + 1 < raw.len() {
+        CompressionAlgo::Lz77
+    } else {
+        CompressionAlgo::None
+    }
+}
+
 // ────────────────────────────── 编码 ──────────────────────────
 
 /// 编码消息为包 (帧 + CRC)
@@ -240,11 +475,19 @@ pub fn encode(msg: &EfficodeMessage) -> Result<Vec<u8>, EfficodeError> {
         body.extend_from_slice(&op_seg);
     }
 
-    // 数据块
-    let has_data = msg.data.is_some();
-    if let Some(data) = &msg.data {
-        write_varint(&mut body, data.len() as u32);
-        body.extend_from_slice(data);
+    // 数据块: [1B 算法 id][载荷] —— 算法 id 永远写, 解码端按 id 解, 不猜
+    let mut compressed = false;
+    let data_block = msg.data.as_deref().map(|data| {
+        let algo = msg.compression.unwrap_or_else(|| pick_algo(data));
+        if algo != CompressionAlgo::None {
+            compressed = true;
+        }
+        compress_block(data, algo)
+    });
+    let has_data = data_block.is_some();
+    if let Some(block) = &data_block {
+        write_varint(&mut body, block.len() as u32);
+        body.extend_from_slice(block);
     }
 
     // header
@@ -258,7 +501,10 @@ pub fn encode(msg: &EfficodeMessage) -> Result<Vec<u8>, EfficodeError> {
     if has_data {
         flags |= F_HAS_DATA;
     }
-    // F_COMPRESSED 仅由压缩路径置位 (本参考实现不做压缩, 如实标 0)
+    // F_COMPRESSED: 只有真走了压缩路径才置位 (没压就如实标 0)
+    if compressed {
+        flags |= F_COMPRESSED;
+    }
     let mode_num = match msg.mode {
         EfficodeMode::Compact => 0u8,
         EfficodeMode::Text => 1u8,
@@ -333,13 +579,15 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedPacket, EfficodeError> {
         vec![]
     };
 
-    // 数据块
+    // 数据块 (按算法 id 解压; 未知 id / 码流不足一律报错, 不给原文)
     let data = if flags & F_HAS_DATA != 0 {
         let data_len = read_varint(rest, &mut pos)? as usize;
         if pos + data_len > rest.len() {
             return Err(EfficodeError::Truncated("数据块长度超出".into(), pos));
         }
-        Some(rest[pos..pos + data_len].to_vec())
+        let (_, raw) = decompress_block(&rest[pos..pos + data_len])?;
+        pos += data_len;
+        Some(raw)
     } else {
         None
     };
@@ -438,6 +686,7 @@ mod tests {
                 Instruction { op: Op::End, arg: None },
             ],
             data: Some(b"payload-123".to_vec()),
+            compression: None,
             mode: EfficodeMode::Compact,
         }
     }
@@ -487,7 +736,6 @@ mod tests {
         bytes[1] |= 0xf0; // 置保留位
         // 修 CRC 绕过 CRC 门, reserved 门必须独立拦
         let crc = crc32(&bytes[..bytes.len() - 4]);
-        bytes[..bytes.len() - 4].len();
         let body_len = bytes.len() - 4;
         bytes[body_len..].copy_from_slice(&crc.to_be_bytes());
         assert!(matches!(decode(&bytes).unwrap_err(), EfficodeError::BadHeader(_)));
@@ -532,6 +780,49 @@ mod tests {
     }
 
     #[test]
+    fn lz77_roundtrip_and_truncation_rejected() {
+        let raw: Vec<u8> = b"abababababababababab".to_vec().repeat(10);
+        let comp = lz77_compress(&raw);
+        assert!(comp.len() < raw.len(), "重复文本真压得动: {} < {}", comp.len(), raw.len());
+        assert_eq!(lz77_decompress(&comp).unwrap(), raw, "解压逐字节还原");
+        assert!(
+            lz77_decompress(&comp[..comp.len() - 1]).is_err(),
+            "码流短一字节 → 报错, 不做'尽量解'"
+        );
+    }
+
+    #[test]
+    fn compressed_data_block_roundtrip() {
+        let mut msg = sample_msg();
+        msg.data = Some("同一句话重复很多次, 同一句话重复很多次。".as_bytes().to_vec().repeat(12));
+        let bytes = encode(&msg).unwrap();
+        assert_ne!(bytes[1] & F_COMPRESSED, 0, "压得动 → 压缩位置起");
+        let pkt = decode(&bytes).unwrap();
+        assert_eq!(pkt.data.as_deref(), msg.data.as_deref(), "解压后与原文逐字节一致");
+
+        // 同消息强制不压 → 包更大 (压缩省下的字节是真数字, 不是声明)
+        let mut plain = msg.clone();
+        plain.compression = Some(CompressionAlgo::None);
+        let plain_bytes = encode(&plain).unwrap();
+        assert_eq!(plain_bytes[1] & F_COMPRESSED, 0, "没压就如实标 0");
+        assert!(bytes.len() < plain_bytes.len(), "压缩后真的小于原样: {} vs {}", bytes.len(), plain_bytes.len());
+    }
+
+    #[test]
+    fn unknown_compression_id_rejected() {
+        // 未知算法 id (deflate=2 本参考实现不做) → 报 UnknownCompression, 绝不跳过解压给原文
+        assert!(matches!(
+            decompress_block(&[2, 1, 2, 3]).unwrap_err(),
+            EfficodeError::UnknownCompression(_)
+        ));
+        // 空数据块 = 缺算法 id → 截断
+        assert!(matches!(decompress_block(&[]).unwrap_err(), EfficodeError::Truncated(..)));
+        // 小消息不压 (开箱代价 > 收益)
+        assert_eq!(pick_algo(b"short"), CompressionAlgo::None);
+        assert_eq!(pick_algo(&b"x".to_vec().repeat(200)), CompressionAlgo::Lz77);
+    }
+
+    #[test]
     fn crc32_known_vector() {
         // 标准校验: crc32("123456789") = 0xCBF43926
         assert_eq!(crc32(b"123456789"), 0xcbf43926);
@@ -547,6 +838,7 @@ mod tests {
                 Instruction { op: Op::Data, arg: Some("x".into()) },
             ],
             data: Some(vec![0u8; 20]),
+            compression: None,
             mode: EfficodeMode::Compact,
         };
         let bytes = encode(&msg).unwrap();

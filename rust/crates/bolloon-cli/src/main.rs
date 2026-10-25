@@ -36,6 +36,19 @@ enum Commands {
         #[command(subcommand)]
         action: TaskAction,
     },
+    /// 自动更新 (有新版本才会提示)
+    Update {
+        #[command(subcommand)]
+        action: UpdateAction,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum UpdateAction {
+    /// 检查更新
+    Check,
+    /// 一键内部安装并重启 (无弹窗)
+    Install,
 }
 
 #[derive(Subcommand)]
@@ -114,10 +127,116 @@ async fn main() -> anyhow::Result<()> {
             println!("provider: {}", env_provider_or("未配置 (BOLLOON_BASE_URL)"));
             println!("web: http://127.0.0.1:54188");
             println!("data: {}", data_dir().display());
+            // tip 栏: 有更新才显示 (未检测到/检测不到都不出现)
+            if let Some(tip) = update_tip() {
+                println!("{tip}");
+            }
             Ok(())
         }
         Some(Commands::Memory { action }) => run_memory(action),
         Some(Commands::Task { action }) => run_task(action),
+        Some(Commands::Update { action }) => run_update(action),
+    }
+}
+
+/// 更新 tip (有更新才 Some; 检测不到/同版本 → None, tip 栏不出现)
+fn update_tip() -> Option<String> {
+    struct Rel;
+    impl bolloon_agent::updater::UpdateSource for Rel {
+        fn latest_version(&self) -> Result<String, String> {
+            let body: serde_json::Value = ureq::get(
+                "https://api.github.com/repos/logos-42/bolloon/releases/latest",
+            )
+            .timeout(std::time::Duration::from_secs(5))
+            .set("User-Agent", "bolloon-updater")
+            .call()
+            .map_err(|e| e.to_string())?
+            .into_json()
+            .map_err(|e| e.to_string())?;
+            body["tag_name"].as_str().map(|s| s.to_string()).ok_or_else(|| "无 tag".into())
+        }
+        fn download(&self) -> Result<Vec<u8>, String> {
+            Err("CLI 用 `bolloon update install` (同 web 一条龙)".into())
+        }
+    }
+    let info = bolloon_agent::updater::check(&Rel);
+    if info.update_available {
+        Some(format!(
+            "tip: ⬆ 有新版本 {} 可用 (当前 {}) — 运行 `bolloon update install` 一键更新",
+            info.latest, info.current
+        ))
+    } else {
+        None
+    }
+}
+
+fn run_update(action: UpdateAction) -> anyhow::Result<()> {
+    match action {
+        UpdateAction::Check => {
+            struct Rel;
+            impl bolloon_agent::updater::UpdateSource for Rel {
+                fn latest_version(&self) -> Result<String, String> {
+                    let body: serde_json::Value = ureq::get(
+                        "https://api.github.com/repos/logos-42/bolloon/releases/latest",
+                    )
+                    .timeout(std::time::Duration::from_secs(5))
+                    .set("User-Agent", "bolloon-updater")
+                    .call()
+                    .map_err(|e| e.to_string())?
+                    .into_json()
+                    .map_err(|e| e.to_string())?;
+                    body["tag_name"].as_str().map(|s| s.to_string()).ok_or_else(|| "无 tag".into())
+                }
+                fn download(&self) -> Result<Vec<u8>, String> {
+                    Ok(vec![])
+                }
+            }
+            let info = bolloon_agent::updater::check(&Rel);
+            println!("当前版本: {}", info.current);
+            println!("检查状态: {}", info.status);
+            if info.update_available {
+                println!("⬆ 有新版本 {} 可用 — 运行 `bolloon update install`", info.latest);
+                if let Some(n) = info.notes {
+                    println!("说明: {n}");
+                }
+            } else {
+                println!("已是最新版本 (无更新提示)");
+            }
+            Ok(())
+        }
+        UpdateAction::Install => {
+            struct Rel;
+            impl bolloon_agent::updater::UpdateSource for Rel {
+                fn latest_version(&self) -> Result<String, String> {
+                    Ok("latest".into())
+                }
+                fn download(&self) -> Result<Vec<u8>, String> {
+                    let bytes = ureq::get(
+                        "https://github.com/logos-42/bolloon/releases/latest/download/bolloon-bin",
+                    )
+                    .timeout(std::time::Duration::from_secs(120))
+                    .call()
+                    .map_err(|e| e.to_string())?;
+                    let mut out = Vec::new();
+                    use std::io::Read;
+                    bytes.into_reader().read_to_end(&mut out).map_err(|e| e.to_string())?;
+                    Ok(out)
+                }
+            }
+            let self_path = std::env::current_exe()?;
+            println!("下载并替换中… (无弹窗, 完成后自动重启)");
+            let report = bolloon_agent::updater::install(&Rel, &self_path)?;
+            println!("已替换 ({} 字节), 重启中…", report.downloaded_bytes);
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            match bolloon_agent::updater::restart(&self_path, &args) {
+                Ok(pid) => {
+                    println!("✅ 新进程已启动 (pid {pid}) — 本进程退出");
+                    std::process::exit(0);
+                }
+                Err(e) => println!("⚠ 重启失败 ({e}) — 新二进制已就位, 请手动重跑"),
+            }
+            Ok(())
+        }
     }
 }
 
