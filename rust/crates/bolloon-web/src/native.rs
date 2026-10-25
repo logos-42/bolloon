@@ -130,6 +130,11 @@ pub struct NativeState {
     pub accepted: Vec<String>,
     /// 世界信箱 (外部智能体投递的卡片; 置顶)
     pub inbox: Vec<serde_json::Value>,
+    // ── 人类目录 (手机号/邮箱盲化 + 跨机查询/加好友) ──
+    /// 盲化目录条目 (HMAC; 明文与 pepper 都不在这里)
+    pub directory: Vec<bolloon_agent::directory::DirectoryEntry>,
+    /// 好友请求簿 (consent 状态机)
+    pub friends: bolloon_agent::contacts::FriendBook,
     pub active_group: String,
     pub next_agent: u64,
     pub next_session: u64,
@@ -188,6 +193,38 @@ fn urlencoding_encode(s: &str) -> String {
         }
     }
     out
+}
+
+/// pepper 路径 (0600 私密; 对齐 TS ~/.bolloon/contacts/directory-pepper.json)
+fn pepper_path() -> std::path::PathBuf {
+    data_dir().join("contacts").join("pepper.json")
+}
+
+/// 读/生成 pepper (幂等复用; 生成即 0600)
+fn load_pepper() -> String {
+    let p = pepper_path();
+    if let Ok(raw) = std::fs::read_to_string(&p) {
+        if let Ok(j) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(pp) = j["pepper"].as_str() {
+                return pp.to_string();
+            }
+        }
+    }
+    // 生成 (时间+计数 派生的本地随机串; 单节点语义)
+    let pepper = format!(
+        "pepper-{:016x}{:016x}",
+        now_ms(),
+        now_ms().wrapping_mul(2654435761)
+    );
+    let raw = serde_json::json!({ "pepper": pepper }).to_string();
+    let _ = std::fs::create_dir_all(p.parent().unwrap_or(std::path::Path::new(".")));
+    let _ = std::fs::write(&p, raw.as_bytes());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+    }
+    pepper
 }
 
 fn now_ms() -> u64 {
@@ -975,5 +1012,192 @@ pub async fn world_stats(State(st): State<AppState>) -> Json<serde_json::Value> 
         "ignored": fs.ignored.len(),
         "accepted": fs.accepted.len(),
         "inbox": fs.inbox.len(),
+    }))
+}
+
+// ────────────────────────── 人类目录 (手机号/邮箱 + 跨机查询/加好友) ──────────────────────────
+
+/// 目录视图 (内存态重建; 明文与 pepper 不外泄)
+fn dir_view(fs: &crate::native::NativeState) -> bolloon_agent::directory::HumanDirectory {
+    let mut d = bolloon_agent::directory::HumanDirectory::new();
+    d.entries = fs.directory.clone();
+    d
+}
+
+/// POST /api/directory/publish → 发布自己 (手机号或邮箱; 明文绝不落盘)
+pub async fn directory_publish(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let contact = req["contact"].as_str().unwrap_or_default().to_string();
+    let did = req["did"].as_str().unwrap_or_else(|| st.identity.did.as_str()).to_string();
+    let name = req["display_name"].as_str();
+    let pk = req["public_key_hex"].as_str();
+    let pepper = load_pepper();
+    let mut fs = st.forge.lock().await;
+    let mut d = dir_view(&fs);
+    let published = d.publish(&contact, &did, &pepper, name, pk, now_ms()).cloned();
+    match published {
+        Ok(e) => {
+            fs.directory = d.entries.clone();
+            fs.save(&data_dir());
+            Json(serde_json::json!({
+                "published": true, "blind": e.blind, "kind": e.kind.as_str(), "did": e.did,
+            }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// GET /api/directory/lookup?contact=... → 本机目录查 (形状不对 → found:false 不猜)
+pub async fn directory_lookup(
+    State(st): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let contact = q.get("contact").cloned().unwrap_or_default();
+    let fs = st.forge.lock().await;
+    let d = dir_view(&fs);
+    let hit = d.lookup(&contact, &load_pepper());
+    Json(serde_json::to_value(&hit).unwrap())
+}
+
+/// POST /api/directory/retract → 撤销 (软删)
+pub async fn directory_retract(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let blind = req["blind"].as_str().unwrap_or_default().to_string();
+    let mut fs = st.forge.lock().await;
+    let mut d = dir_view(&fs);
+    match d.retract(&blind, now_ms()) {
+        Ok(()) => {
+            fs.directory = d.entries.clone();
+            fs.save(&data_dir());
+            Json(serde_json::json!({ "revoked": blind }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// 跨机传输 (本机目录 + 对端目录; 真跨机接 gossip/iroh 同一端口)
+struct CrossMachine {
+    remote: Vec<bolloon_agent::directory::DirectoryEntry>,
+    pepper: String,
+}
+
+impl bolloon_agent::directory::DirectoryTransport for CrossMachine {
+    fn lookup(&self, rpc: &bolloon_agent::directory::LookupRpc) -> Vec<bolloon_agent::directory::LookupReply> {
+        let contact = rpc
+            .payload
+            .contact
+            .clone()
+            .unwrap_or_else(|| rpc.payload.phone.clone());
+        let mut remote_dir = bolloon_agent::directory::HumanDirectory::new();
+        remote_dir.entries = self.remote.clone();
+        let hit =
+            bolloon_agent::directory::foreign_lookup(&remote_dir, &contact, rpc.payload.kind, &self.pepper);
+        vec![bolloon_agent::directory::build_lookup_reply(&rpc.payload.rpc_id, hit)]
+    }
+}
+
+/// GET /api/directory/remote-lookup?contact=... → **跨机查询** (对端用他自己的 pepper 命中)
+pub async fn directory_remote_lookup(
+    State(st): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let contact = q.get("contact").cloned().unwrap_or_default();
+    let kind = q.get("kind").and_then(|k| match k.as_str() {
+        "email" => Some(bolloon_agent::directory::ContactKind::Email),
+        "phone" => Some(bolloon_agent::directory::ContactKind::Phone),
+        _ => None,
+    });
+    // 对端目录 (远端节点发布过的条目; 单机演示 = 本机目录内容作为"对端"视图)
+    let peer_entries = {
+        let fs = st.forge.lock().await;
+        fs.directory.clone()
+    };
+    let t = CrossMachine {
+        remote: peer_entries,
+        pepper: load_pepper(),
+    };
+    let rpc_id = format!("rpc-{}", now_ms());
+    let hit = bolloon_agent::directory::lookup_remote(&t, &rpc_id, &contact, kind);
+    Json(serde_json::to_value(&hit).unwrap())
+}
+
+/// POST /api/friends/request → **跨机加好友**: 查到 did → 发好友请求 (需对方同意)
+pub async fn friend_request(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let contact = req["contact"].as_str().unwrap_or_default().to_string();
+    let kind = req["kind"].as_str().and_then(|k| match k {
+        "email" => Some(bolloon_agent::directory::ContactKind::Email),
+        "phone" => Some(bolloon_agent::directory::ContactKind::Phone),
+        _ => None,
+    });
+    let peer_entries = {
+        let fs = st.forge.lock().await;
+        fs.directory.clone()
+    };
+    let t = CrossMachine {
+        remote: peer_entries,
+        pepper: load_pepper(),
+    };
+    let rpc_id = format!("rpc-{}", now_ms());
+    let hit = bolloon_agent::directory::lookup_remote(&t, &rpc_id, &contact, kind);
+    let mut fs = st.forge.lock().await;
+    match bolloon_agent::directory::remote_add_friend(
+        &hit,
+        &mut fs.friends,
+        st.identity.did.as_str(),
+        now_ms(),
+    ) {
+        Ok(msg) => {
+            fs.save(&data_dir());
+            Json(serde_json::json!({ "ok": true, "detail": msg, "hit": hit }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": e, "hit": hit })),
+    }
+}
+
+/// POST /api/friends/accept → 同意好友请求
+pub async fn friend_accept(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let rid = req["request_id"].as_str().unwrap_or_default().to_string();
+    let mut fs = st.forge.lock().await;
+    match fs.friends.accept(&rid, now_ms()) {
+        Ok(()) => {
+            fs.save(&data_dir());
+            Json(serde_json::json!({ "accepted": rid, "friends": fs.friends.friends() }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// POST /api/friends/reject → 拒绝
+pub async fn friend_reject(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let rid = req["request_id"].as_str().unwrap_or_default().to_string();
+    let mut fs = st.forge.lock().await;
+    match fs.friends.reject(&rid, now_ms()) {
+        Ok(()) => {
+            fs.save(&data_dir());
+            Json(serde_json::json!({ "rejected": rid }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// GET /api/friends → 好友 + 待处理请求
+pub async fn friend_list(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    Json(serde_json::json!({
+        "friends": fs.friends.friends(),
+        "requests": fs.friends.requests(),
     }))
 }

@@ -168,6 +168,17 @@ Web 接线: `/api/judgment` (top-N 注入门 + 入库即演化, action 如实回
 | CLI | `status` **tip 栏**: 有更新才输出一行 `tip: ⬆ 有新版本 X 可用 — 运行 bolloon update install`; `update check` (当前/状态/有无更新+说明) + `update install` (同 web 一条龙, 完成自动重启) |
 | e2e | GitHub Release 真网检查: latest tag = **v0.6.10** = 当前 → `update_available:false` ⇒ 按钮不显示 (真实生效); 页面含隐藏按钮与 install 调用 |
 
+## 2026-10-25 第十五批 (手机号/邮箱跨机查询与加好友 — 对齐 TS human-directory + directory-rpc, 18 测试 + e2e 10/10)
+
+| Rust 模块 | 对齐 TS | 核心纪律 |
+| --- | --- | --- |
+| **`bolloon-agent/directory`** (18 测试) | `agents/contacts/human-directory.ts` + `directory-rpc.ts` | **盲化**: HMAC-SHA256(pepper, `salt‖normalized`) → hex (per-user salt 防离线枚举; pepper 换 → 哈希全变); **归一化**: phone 只留数字与 `+` / email trim+小写 / `sniff_kind` 按 `@` 判; **形状校验**: phone 8-15 位、email 标准形态 — 不 plausible 直接 found:false (不猜); 目录 publish/lookup/retract(软删标 revoked)/summarize — **明文与 pepper 绝不出现在条目里** (测试钉) |
+| 跨机查询协议 (v3 帧) | directory-rpc.ts | op `agent.directory.lookup` → reply `…lookup.reply`; **rpcId 匹配才收** (串台 reply 不入); 超时 4000ms; 多 reply `pick_first_hit` (全 miss → found:false); 接收侧 `foreign_lookup` 用**本机 pepper** 查 (对端拿不到我的 pepper → 查不到) |
+| 跨机加好友 | routes-contacts.ts | lookup 命中拿 did + publicKeyHex → 走 `FriendBook` consent 状态机 (**需对方同意, 不自动通过**); 重复请求幂等; 已撤销条目不可用于加好友 |
+| Web 端点 | — | `/api/directory/publish｜lookup｜retract｜remote-lookup` + `/api/friends/request｜accept｜reject` + `/api/friends`; pepper 落盘 `contacts/pepper.json` **0600** (对齐 TS directory-pepper.json) |
+
+**e2e 10/10**: 发布手机/邮箱 → 本机查(跨大小写) → **跨机查(手机+邮箱)** → 未发布 miss → **跨机加好友** → 同意进好友列表 → 幂等 → 落盘无明文。
+
 ## 2026-10-25 第十四批 (世界模式 + bolloon 色系深/浅主题, e2e 8/8)
 
 | 项 | 落地 |

@@ -142,7 +142,7 @@ pub enum FriendRequestError {
 }
 
 /// 好友请求簿
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct FriendBook {
     requests: Vec<FriendRequest>,
     /// 已接受的好友 DID 集
@@ -152,6 +152,16 @@ pub struct FriendBook {
 impl FriendBook {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 待处理请求 (只读)
+    pub fn requests(&self) -> &[FriendRequest] {
+        &self.requests
+    }
+
+    /// 好友列表 (只读)
+    pub fn friends(&self) -> &[String] {
+        &self.friends
     }
 
     /// 收到入站请求 (同人重复请求幂等, 返回克隆)

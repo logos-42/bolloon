@@ -14,6 +14,7 @@ pub mod judgment;
 pub mod world;
 pub mod goal;
 pub mod contacts;
+pub mod directory;
 pub mod heartbeat;
 pub mod setup;
 pub mod subagents;
