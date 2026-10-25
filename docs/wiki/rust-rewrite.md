@@ -117,7 +117,17 @@ Web 接线: `/api/judgment` (top-N 注入门 + 入库即演化, action 如实回
 
 **调试实录**: missing_for 的 seen 污染 bug (push 时提前 insert 导致 pop 被 continue 跳过, 链断在 head) —— 分离 queued/visited 两集合修复; Python hashlib.sha3_256 ≠ keccak256 的 padding 坑再次出现 (E2E 里用 Rust 侧算的 nonce 真值)。
 
-## 2026-10-25 第八批 (运行语义冻结: 单一真源/快照冻结/长执行 runtime, 342 测试全绿)
+## 2026-10-25 第九批 (记忆 SQL 化 / 群聊上 oplog / process / workspace / 派送检查 / Clarity, 378 测试全绿)
+
+| Rust 模块 | 语义 |
+| --- | --- |
+| **`bolloon-agent/memory_db`** (+8) | **轻量化 Postgres 记忆 = 嵌入式 SQL** (SQLite bundled, 单文件 `memory.db` 零服务零配置, 标准 SQL 方言); agent 行级隔离 (查询恒带过滤, 越权 forget 返回 false); 分层+TTL 过期+sweep; importance×衰减 top-k; 子串 LIKE; **文件持久化重开数据还在**; 老 memory.json 幂等导入; WAL 模式 |
+| **`bolloon-p2p/group_log`** (+5) | **去中心化群聊信息上 oplog**: 群 = OpLog (events 语义), 消息 = entry payload (kind/from/text/reply_to); ACL 由 OpLog 强制 (陌生人拒); **两节点各说各话 → 双向复制 → 群历史逐条一致** (收敛判据); 活跃度统计; 分片阈值 500 与 TS 对齐 |
+| **`bolloon-agent/process`** (+7) | **process 执行**: 进程登记 (pid/command/workspace/状态机 starting→running→exited/killed/failed); stdout/stderr **有界尾部缓冲** (不膨胀, 保最新); 终止 (SIGTERM 语义) → **超时回收 (128+9=SIGKILL)**; 双重退出拒; 真 spawn 由 executor 注入 |
+| **`bolloon-agent/workspace`** (+7) | **工作区隔离**: resolve 词法 canonical (a/./b/../c → a/c) + **顶层以上穿越拒** + 绝对路径外逃拒 + Windows 反斜杠输入拒; `a/../b` 在 root 内放行 (canonical 后判, 不是见 .. 就拒) |
+| **`bolloon-agent/dispatch_check`** (+7) | **子智能体派送检查闭环**: 在途合同检查四结论 (on_track/needs_nudge/timed_out/blocked, **阻塞优先于一切**); 心跳停半程催; nudge 一次防重复催; 超时回收 (escalated); settle 终报; 派遣≠放手 |
+| **`bolloon-agent/clarity`** (+6) | **Clarity 一键说清楚**: 从会话事件提取结构化现状 (goal/done/pending/next_step/blockers + **health 健康度 0-100**); goal 判据命中缩放健康度; 纯函数可测 |
+| Web 接线 | `/api/memory` 切 SQLite (响应带 store:sqlite 标记); **Clarity 按钮** (composer-footer ◎ Clarity) → `/api/clarity` → 结构化摘要框 (目标/已完成/未决/下一步/阻塞/健康度); **e2e 真跑 4/4** (sqlite 写/召回/fresh clarity/goal 提取) |
 
 | Rust 模块 | 冻结语义 |
 | --- | --- |

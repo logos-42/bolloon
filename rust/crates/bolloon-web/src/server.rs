@@ -21,6 +21,8 @@ use tokio::sync::Mutex;
 use bolloon_agent::{MemoryLayer, MemoryStore, TaskBoard};
 use bolloon_agent::judgment::JudgmentStore;
 use bolloon_agent::world::{Opportunity, OpportunityStream};
+use bolloon_agent::memory_db::MemoryDb;
+use bolloon_agent::clarity::{clarity_of, ClaritySummary};
 use bolloon_x402::{
     direct_payment::{verify_direct_payment, DirectPaymentConfig, PaymentClaim, RpcObservation},
     paid_info::{compute_content_hash, PaidInfoItem},
@@ -49,6 +51,8 @@ pub struct AppState {
     pub paid_info: Arc<Mutex<std::collections::HashMap<String, (PaidInfoItem, String)>>>,
     /// 直付台账 (txHash 去重)
     pub x402_used_txs: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// 轻量 SQL 记忆库 (SQLite 单文件; 与 CLI 同一路径)
+    pub memory_db: Arc<Mutex<MemoryDb>>,
     pub session_store: Arc<bolloon_agent::SessionStore>,
     pub version: &'static str,
 }
@@ -88,6 +92,10 @@ impl AppState {
             world: Arc::new(Mutex::new(OpportunityStream::new())),
             paid_info: Arc::new(Mutex::new(std::collections::HashMap::new())),
             x402_used_txs: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            memory_db: Arc::new(Mutex::new(
+                MemoryDb::open(dir.join("memory.db").to_str().unwrap_or("memory.db"))
+                    .unwrap_or_else(|_| MemoryDb::open(":memory:").expect("内存库")),
+            )),
             session_store,
             version: "0.6.10",
         }
@@ -231,6 +239,8 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/api/x402/info/{id}", get(x402_info_quote))
         .route("/api/x402/info/{id}/payment", post(x402_info_payment))
         .route("/api/x402/info", post(x402_publish))
+        // Clarity 一键说清楚
+        .route("/api/clarity", get(clarity))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
@@ -480,26 +490,27 @@ async fn remember_memory(
     State(st): State<AppState>,
     Json(req): Json<RememberRequest>,
 ) -> Json<serde_json::Value> {
+    // 轻量 SQL 记忆库 (SQLite; 单一真源, CLI 同路径)
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
     let layer = match req.layer.as_deref() {
-        Some("lesson") => MemoryLayer::Lesson,
-        Some("decision") => MemoryLayer::Decision,
-        Some("temporary") => MemoryLayer::Temporary,
-        _ => MemoryLayer::RunFact,
+        Some("lesson") => "lesson",
+        Some("decision") => "decision",
+        Some("temporary") => "temporary",
+        _ => "run_fact",
     };
-    let mut mem = st.memory.lock().await;
-    let entry = mem.remember(
-        req.content,
-        layer,
-        req.importance.unwrap_or(0.5),
-        None,
-    );
-    let view = serde_json::json!({
-        "id": entry.id,
-        "layer": entry.layer,
-        "importance": entry.importance,
-    });
-    save_memory(&data_dir(), &mem);
-    Json(view)
+    let db = st.memory_db.lock().await;
+    let row = db
+        .remember("local", layer, &req.content, req.importance.unwrap_or(0.5), now_ms, None)
+        .map_err(|e| e.to_string());
+    match row {
+        Ok(r) => Json(serde_json::json!({
+            "id": format!("mem-{:06}", r.id),
+            "layer": r.layer,
+            "importance": r.importance,
+            "store": "sqlite",
+        })),
+        Err(e) => Json(serde_json::json!({ "error": e })),
+    }
 }
 
 #[derive(Deserialize)]
@@ -509,21 +520,41 @@ struct RecallQuery {
 }
 
 async fn recall_memory(State(st): State<AppState>, Query(q): Query<RecallQuery>) -> Json<serde_json::Value> {
-    let mem = st.memory.lock().await;
-    let items = mem.recall(q.q.as_deref(), q.k.unwrap_or(5), chrono::Utc::now());
-    let items: Vec<serde_json::Value> = items
+    let db = st.memory_db.lock().await;
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    match db.recall("local", q.q.as_deref(), q.k.unwrap_or(5), now_ms) {
+        Ok(rows) => {
+            let items: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "id": format!("mem-{:06}", r.id),
+                        "content": r.content,
+                        "layer": r.layer,
+                        "importance": r.importance,
+                        "created_at": r.created_at_ms,
+                        "store": "sqlite",
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({ "memories": items, "store": "sqlite" }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// Clarity 一键说清楚 (纯函数: 从当前会话事件提取结构化现状)
+async fn clarity(
+    State(st): State<AppState>,
+    Query(q): Query<RecallQuery>,
+) -> Json<ClaritySummary> {
+    let msgs = st.messages.lock().await;
+    let events: Vec<(&str, &str)> = msgs
         .iter()
-        .map(|e| {
-            serde_json::json!({
-                "id": e.id,
-                "content": e.content,
-                "layer": e.layer,
-                "importance": e.importance,
-                "created_at": e.created_at.to_rfc3339(),
-            })
-        })
+        .map(|m| (m.role.as_str(), m.content.as_str()))
         .collect();
-    Json(serde_json::json!({ "memories": items }))
+    let sid = q.q.clone().unwrap_or_else(|| "default".into());
+    Json(clarity_of(&sid, &events, &[], &[]))
 }
 
 // ---------- 判断力 ----------

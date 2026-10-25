@@ -153,6 +153,7 @@
     </div>
     <div class="composer-footer">
       <button id="modelBtn" class="mini" title="选择模型">⚙ 模型：<span id="modelLabel">…</span></button>
+      <button id="clarityBtn" class="mini" title="一键说清楚当前状态">◎ Clarity</button>
     </div>
   </main>
   <aside id="roomPanel" class="room-panel">
@@ -334,6 +335,29 @@ $("newGroupBtn").addEventListener("click", createGroup);
 $("roomInput").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendRoom(); }
 });
+
+// ---------- Clarity 一键说清楚 ----------
+async function showClarity() {
+  try {
+    const c = await api("/api/clarity?q=default");
+    const chat = $("chat");
+    const box = document.createElement("div");
+    box.className = "msg-row bot";
+    const lines = [];
+    lines.push(`<b>◎ Clarity</b> <span style="color:var(--muted)">${c.reason} · 健康 ${c.health}/100</span>`);
+    if (c.goal) lines.push(`<p><b>当前目标:</b> ${escapeHTML(c.goal)}</p>`);
+    if (c.done.length) lines.push(`<p><b>已完成:</b><br>${c.done.map(escapeHTML).join("<br>")}</p>`);
+    if (c.pending.length) lines.push(`<p><b>未决项:</b><br>${c.pending.map(escapeHTML).join("<br>")}</p>`);
+    if (c.next_step) lines.push(`<p><b>下一步:</b> ${escapeHTML(c.next_step)}</p>`);
+    if (c.blockers.length) lines.push(`<p style="color:var(--glow)"><b>阻塞:</b><br>${c.blockers.map(escapeHTML).join("<br>")}</p>`);
+    box.innerHTML = `<div class="msg bot">${lines.join("")}</div>`;
+    chat.appendChild(box);
+    chat.scrollTop = chat.scrollHeight;
+  } catch (e) {
+    alert("Clarity 失败: " + e.message);
+  }
+}
+$("clarityBtn").addEventListener("click", showClarity);
 
 boot().then(loadGroups);
 </script>

@@ -9,6 +9,7 @@ pub mod envelope;
 pub mod gossip;
 pub mod oplog;
 pub mod replication;
+pub mod group_log;
 pub use identity::*;
 pub use group_store::*;
 pub use envelope::*;

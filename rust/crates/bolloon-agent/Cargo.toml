@@ -24,3 +24,4 @@ bs58.workspace = true
 hex.workspace = true
 sha2.workspace = true
 hmac = "0.12"
+rusqlite = { version = "0.32", features = ["bundled"] }
