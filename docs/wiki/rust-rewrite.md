@@ -95,6 +95,16 @@ Web 接线: `/api/judgment` (top-N 注入门 + 入库即演化, action 如实回
 | `bolloon-agent/task_group` | task-group.ts + task-public-text.ts | `[bolloon-task]` 单行事实协议 (announce/claim/deliver/screen/final); **隐私守卫发送侧拒发+读回侧遮蔽记账** (地址/DID/peerId/IPv4/私钥形状/PEM/私钥字样); 交付哈希闸 (0x+40 钱包地址形状拒 / Qm 与 peerId 同形拒 / 只收 sha256/CIDv1); **诚实计数: 无交付痕迹却终审 accept = 显式标矛盾** |
 | `bolloon-agent/wallet` | cli/commands/wallet.ts | 地址形态校验 (0x+40, 存小写); 流水只记事实; **台账结构无私钥字段 (编译期无出口)**; 本地余额不冒充链上事实; 失败流水不改余额 |
 
+## 2026-10-25 第五/六批 (生态件收尾, 286 测试全绿)
+
+| Rust 模块 | 对齐 TS | 核心纪律 |
+| --- | --- | --- |
+| `bolloon-x402/milestone` | milestone-settlement.ts | 金额正整数原子单位不变式; **总额必须等于交易金额 (账平)**; partially_settled 不算完成不进 Goal 成功证据; 交付失败 → **进争议不许静默关闭**; 证据累积不覆盖 |
+| `bolloon-agent/workflow` | workflow-pivot-loop.ts | **空回复 0 分打回** (TS 空串 0.7 分=阈值 ⇒ CLI 空框的教训写进测试); 迭代上限不被 adaptive 压死; 无进展熔断 (同工具签名连续 N 轮); 续跑注入无 `<final gen>` 标记; 工具参数 canonical 化 (键序抖动不骗死循环检测); 慢工具超时非致命 |
+| `bolloon-agent/mcp` | pi-ecosystem-mcp | JSON-RPC 2.0 帧构造/解析; **协议序门 (未 initialize 拒 tools/*)**; 响应带 method 拒; 未知工具拒; 粘包/半包如实报错 |
+| `bolloon-agent/migration` | migration/ | 迁移链按版本序幂等可重放; 已到目标 = no-op 不假装修了; 未知版本如实报错不跳步; 步骤失败停链 |
+| `bolloon-agent/lsp` | lsp/ | Content-Length 分帧 (粘包全解/半包如实报); 协议序门; didOpen/didChange 文档簿 (没 open 就 change 拒) |
+
 ## DIAP Rust SDK (本机 /Users/apple/Downloads/DIAP_Rust_SDK)
 
 同日更新: 0.2.7→**0.3.0** (edition 2021→2024, rust-version 1.99, ed25519-dalek 2→3) + iroh 1.4 API 对齐 (`NodeAddr`→`EndpointAddr`, `builder(presets::N0)`, `addr()/id()`, `remote_id()`)。3 个 examples 修复对齐新 API, `cargo build --examples` 0 警告过; **lib 测试 46 passed / 0 failed / 4 ignored** (修 nonce_manager/did_cache 测试缺 `async` — edition 2024 必需; key_generator 测试对齐废弃函数空占位语义; noir_embedded/noir_universal 测试输入自洽 + 默认 backend 未启用时切 Simplified)。crates.io 下载走 rsproxy 镜像 (直连超时/代理 SSL reset, 2026-10-25 实测)。提交 `fdbef37` + `aa9ec66`。

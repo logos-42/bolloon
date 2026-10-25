@@ -12,6 +12,7 @@ pub mod direct_payment;
 pub mod settlement_state;
 pub mod payment_recovery;
 pub mod seller_signing;
+pub mod milestone;
 pub use order_identity::*;
 pub use paid_info::*;
 pub use direct_payment::*;
