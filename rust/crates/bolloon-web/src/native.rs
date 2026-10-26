@@ -1851,7 +1851,8 @@ async fn post_lookup_replies(
         };
         let url = format!("{base}/api/directory/rpc");
         let url_c = url.clone();
-        let Ok(handle) = tokio::task::spawn_blocking(move || {
+        // spawn_blocking 返回 JoinHandle（不是 Result）—— 失败在 await 处体现（任务异常）
+        let handle = tokio::task::spawn_blocking(move || {
             let resp = ureq::post(&url_c)
                 .timeout(std::time::Duration::from_millis(
                     bolloon_agent::directory::DIRECTORY_LOOKUP_TIMEOUT_MS,
@@ -1860,10 +1861,7 @@ async fn post_lookup_replies(
                 .map_err(|e| format!("不可达/超时: {e}"))?;
             resp.into_json::<bolloon_agent::directory::LookupReply>()
                 .map_err(|e| format!("reply 解析不了: {e}"))
-        }) else {
-            notes.push(format!("{base}: 无法发起 (不在 runtime 内)"));
-            continue;
-        };
+        });
         match handle.await {
             Ok(Ok(reply)) => replies.push(reply),
             Ok(Err(e)) => notes.push(format!("{base}: {e}")),

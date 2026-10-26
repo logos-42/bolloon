@@ -270,21 +270,24 @@ impl ToolExecutor for ShellExecutor {
         //    超时 / 取消 / 预算 / 审计不在预检里 —— 它们是运行控制，不随权限撤。
         for c in &cmds {
             if let Err(d) = precheck(c, self.bypass) {
+                // detail 要同时进三处 (审计 / 输出 / 证据) ⇒ 先取一份 owned, 别让 json! 把它 move 走
+                let detail = d.msg.clone();
                 audit(serde_json::json!({
                     "ts": chrono::Utc::now().to_rfc3339(), "tool": "shell",
-                    "cmd": redact_cmd(c), "ok": false, "reason": d.kind, "detail": d.msg,
+                    "cmd": redact_cmd(c), "ok": false, "reason": d.kind, "detail": detail.clone(),
                     "mode": if self.bypass { "bypass" } else { "default" },
                 }));
+                let ev = with_error(
+                    serde_json::json!({ "denied": d.kind, "cmd": redact_cmd(c) }),
+                    ErrorCode::Denied,
+                    &detail,
+                );
                 return ToolResult {
                     ok: false,
-                    output: d.msg,
+                    output: detail,
                     elapsed_ms,
                     verified: Some(false),
-                    evidence: Some(with_error(
-                        serde_json::json!({ "denied": d.kind, "cmd": redact_cmd(c) }),
-                        ErrorCode::Denied,
-                        &d.msg,
-                    )),
+                    evidence: Some(ev),
                 };
             }
         }
