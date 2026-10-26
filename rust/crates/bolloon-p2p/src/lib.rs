@@ -4,16 +4,17 @@
 //! DIAP 后端通过 feature 注入（见 Cargo.toml 注释）。
 
 pub mod identity;
-pub mod group_store;
 pub mod envelope;
 pub mod gossip;
 pub mod oplog;
 pub mod replication;
-pub mod group_log;
+pub mod orbit_store;
+pub mod group_orbit;
 pub use identity::*;
-pub use group_store::*;
 pub use envelope::*;
 pub use gossip::*;
+pub use orbit_store::*;
+pub use group_orbit::*;
 
 /// b58 编码 (外部 crate 复用, 不重复引依赖)
 pub fn b58_encode(bytes: &[u8]) -> String {

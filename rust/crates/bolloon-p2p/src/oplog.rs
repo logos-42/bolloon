@@ -108,24 +108,34 @@ pub enum OpLogError {
 }
 
 /// write 策略 (对齐 TS accessController)
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct WriteAcl {
     /// None = 创建者独占; Some(list) = 白名单 (创建者恒可写)
     pub write_list: Option<Vec<String>>,
     /// owner (创建者 DID)
     pub owner: String,
+    /// 任何人可写 (对齐 TS `write: '*'`)
+    pub open: bool,
 }
 
 impl WriteAcl {
     pub fn owner_only(owner: &str) -> Self {
-        Self { write_list: None, owner: owner.into() }
+        Self { write_list: None, owner: owner.into(), open: false }
     }
 
     pub fn whitelist(owner: &str, list: Vec<String>) -> Self {
-        Self { write_list: Some(list), owner: owner.into() }
+        Self { write_list: Some(list), owner: owner.into(), open: false }
+    }
+
+    /// 开放写 (任何 DID 都能写; owner 仍记录在 manifest 里)
+    pub fn open(owner: &str) -> Self {
+        Self { write_list: None, owner: owner.into(), open: true }
     }
 
     pub fn allows(&self, did: &str) -> bool {
+        if self.open {
+            return true;
+        }
         if did == self.owner {
             return true;
         }
@@ -333,8 +343,14 @@ impl OpLog {
         missing
     }
 
+    /// 当前条数
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// 是否已存在某条 entry (复制落盘时判断"这条是新收下的")
+    pub fn contains(&self, hash: &str) -> bool {
+        self.entries.contains_key(hash)
     }
 
     pub fn is_empty(&self) -> bool {

@@ -2,7 +2,7 @@
 //!
 //! 本轮新增（Rust 原生版补齐）:
 //! - DID 身份持久化 (`~/.bolloon/rust/identity.json`, 0600)
-//! - 群聊端点 (GroupStore + 签名消息, ACL 创建者独占)
+//! - 群聊端点 (OrbitDB events store: 内容寻址 + 落盘 + 可复制)
 //! - 任务公告板端点 (`bolloon-task/1`, 签名 publish/claim)
 //! - 记忆端点 (importance/decay, 快照落盘)
 //! - 会话仅追加 JSONL 落盘 (`~/.bolloon/rust/sessions/`)
@@ -28,7 +28,7 @@ use bolloon_x402::{
     paid_info::{compute_content_hash, PaidInfoItem},
 };
 use bolloon_llm::{LlmRuntime, ProviderConfig};
-use bolloon_p2p::{GroupAcl, GroupStore, KeyPair};
+use bolloon_p2p::{GroupAcl, GroupOrbitHub, KeyPair};
 use std::io::Read;
 
 /// rust 原生版数据目录 — **单一真源** (CLI/Web/App/SDK 同一口径: BolloonHome)
@@ -44,7 +44,7 @@ pub struct AppState {
     pub sessions: Arc<Mutex<Vec<SessionMeta>>>,
     pub messages: Arc<Mutex<Vec<ChatMessageView>>>,
     pub identity: Arc<KeyPair>,
-    pub groups: Arc<GroupStore>,
+    pub groups: Arc<GroupOrbitHub>,
     pub tasks: Arc<Mutex<TaskBoard>>,
     pub memory: Arc<Mutex<MemoryStore>>,
     pub judgments: Arc<Mutex<JudgmentStore>>,
@@ -95,7 +95,7 @@ impl AppState {
             sessions: Arc::new(Mutex::new(vec![])),
             messages: Arc::new(Mutex::new(restored)),
             identity,
-            groups: Arc::new(GroupStore::new()),
+            groups: Arc::new(GroupOrbitHub::new(dir.join("orbitdb"))),
             tasks,
             memory,
             judgments: Arc::new(Mutex::new(JudgmentStore::new())),
@@ -435,21 +435,45 @@ async fn create_group(
         Some(wl) if !wl.is_empty() => GroupAcl::Whitelist(wl),
         _ => GroupAcl::OwnerOnly,
     };
-    let info = st
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    let meta = st
         .groups
-        .create_group(id.clone(), req.name, st.identity.did.clone(), acl)
-        .await;
-    Json(serde_json::to_value(info).unwrap())
+        .create_group(&id, &req.name, st.identity.did.as_str(), acl, now_ms);
+    // 兼容旧 GroupInfo 形状 (前端旧字段) + 新增 orbit address
+    Json(serde_json::json!({
+        "id": meta.id,
+        "name": meta.name,
+        "owner": meta.owner,
+        "acl": meta.acl,
+        "address": meta.address,
+        "created_at_ms": meta.created_at_ms,
+        "member_count": 1,
+    }))
 }
 
 async fn list_groups(State(st): State<AppState>) -> Json<serde_json::Value> {
-    let groups = st.groups.list_groups().await;
+    let groups: Vec<serde_json::Value> = st
+        .groups
+        .list_groups()
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "name": m.name,
+                "owner": m.owner,
+                "acl": m.acl,
+                "address": m.address,
+                "created_at_ms": m.created_at_ms,
+            })
+        })
+        .collect();
     Json(serde_json::json!({ "groups": groups }))
 }
 
 #[derive(Deserialize)]
 struct GroupQuery {
     after: Option<u64>,
+    limit: Option<u64>,
 }
 
 async fn group_messages(
@@ -457,8 +481,35 @@ async fn group_messages(
     Path(id): Path<String>,
     Query(q): Query<GroupQuery>,
 ) -> Json<serde_json::Value> {
-    let entries = st.groups.read(&id, q.after.unwrap_or(0), 200).await;
-    Json(serde_json::json!({ "messages": entries }))
+    let limit = q.limit.unwrap_or(200) as usize;
+    // after = offset (从全量历史按位置截断), limit = 取最近 N 条
+    let mut msgs = st.groups.history(&id, 0).unwrap_or_default();
+    if let Some(a) = q.after {
+        let a = a as usize;
+        if a < msgs.len() {
+            msgs.drain(0..a);
+        }
+    }
+    if limit > 0 && msgs.len() > limit {
+        let cut = msgs.len() - limit;
+        msgs.drain(0..cut);
+    }
+    let out: Vec<serde_json::Value> = msgs
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            serde_json::json!({
+                "seq": i as u64 + 1,
+                "sender": m.signer,
+                "kind": m.kind,
+                "content": m.text,
+                "signature": m.signature,
+                "timestamp_ms": m.ts,
+                "reply_to": m.reply_to,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "messages": out }))
 }
 
 #[derive(Deserialize)]
@@ -472,22 +523,16 @@ async fn group_say(
     Json(req): Json<GroupSayRequest>,
 ) -> Json<serde_json::Value> {
     let kp = &st.identity;
-    // 签名 = 对正文 + 发送者 DID 的 Ed25519 (b58)
-    let mut sig_src = req.text.clone().into_bytes();
-    sig_src.extend_from_slice(kp.did.as_str().as_bytes());
-    let sig = bs58_encode(&kp.sign(&sig_src));
-    let result = st
-        .groups
-        .append(
-            &id,
-            &kp.did,
-            bolloon_p2p::EntryKind::Message,
-            req.text,
-            sig,
-        )
-        .await;
-    match result {
-        Ok(entry) => Json(serde_json::to_value(entry).unwrap()),
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    // 签名 + 写门 + 落块 全部在 OrbitStore 内完成 (Ed25519 + hash 链)
+    match st.groups.say(&id, kp, kp.did.as_str(), &req.text, now_ms) {
+        Ok(entry) => Json(serde_json::json!({
+            "hash": entry.hash,
+            "clock": entry.clock,
+            "signer": entry.signer,
+            "signature": entry.signature,
+            "timestamp_ms": entry.timestamp_ms,
+        })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
 }
@@ -990,13 +1035,6 @@ fn uuid_v4_short() -> String {
         .unwrap_or(0);
     format!("{nanos:012x}")
 }
-
-fn bs58_encode(bytes: &[u8]) -> String {
-    // 复用 p2p crate 的 bs58 (web 自己不引依赖) — 直接重新导出使用
-    bolloon_p2p::b58_encode(bytes)
-}
-
-
 
 /// 内嵌单页 HTML（hushforge 布局: 284px 侧栏 + 主聊天 + room 面板）
 const INDEX_HTML: &str = include_str!("../assets/index.html");

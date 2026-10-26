@@ -70,6 +70,11 @@ impl KeyPair {
         self.signing.sign(msg).to_bytes()
     }
 
+    /// 由公钥推 DID (`did:pi:<b58 pubkey>`) —— 校验"manifest 的 owner 就是签名者本人"用
+    pub fn did_from_public(pubkey: &[u8; 32]) -> Did {
+        Did(format!("did:pi:{}", bs58::encode(pubkey).into_string()))
+    }
+
     /// 验签（静态方法，任何人可用）
     pub fn verify(pubkey: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> bool {
         let Ok(verifying) = VerifyingKey::from_bytes(pubkey) else {

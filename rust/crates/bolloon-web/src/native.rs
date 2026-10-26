@@ -1125,7 +1125,7 @@ pub async fn chat_stop() -> Json<serde_json::Value> {
 
 /// GET /api/room → {messages, members, groups, state, active_group_id}
 pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
-    let groups = st.groups.list_groups().await;
+    let groups = st.groups.list_groups();
     let active = {
         let fs = st.forge.lock().await;
         if fs.active_group.is_empty() {
@@ -1134,7 +1134,7 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
             fs.active_group.clone()
         }
     };
-    let entries = st.groups.read(&active, 0, 200).await;
+    let entries = st.groups.history(&active, 200).unwrap_or_default();
     let running = st
         .forge
         .lock()
@@ -1147,11 +1147,14 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
         .iter()
         .map(|m| {
             serde_json::json!({
-                "agent_id": m.sender.as_str(),
-                "agent_name": m.sender.as_str(),
-                "kind": "discuss",
-                "text": m.content,
-                "created_at": m.timestamp.to_rfc3339(),
+                "agent_id": m.signer,
+                "agent_name": m.from,
+                "kind": m.kind,
+                "text": m.text,
+                "created_at": chrono::DateTime::from_timestamp_millis(m.ts as i64)
+                    .map(|d| d.to_rfc3339())
+                    .unwrap_or_default(),
+                "reply_to": m.reply_to,
             })
         })
         .collect();
@@ -1178,20 +1181,26 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
         "groups": group_views,
         "state": { "running": running, "turn": 0, "max_turns": 0, "topic": "", "participants": [] },
         "active_group_id": active,
-        "orbit_status": "local-oplog",
+        "orbit_status": "oplog-persisted",
+        "orbit_address": st.groups.address_of(&active).unwrap_or_default(),
+        "orbit_entries": st.groups.entry_count(&active),
         "channel": "orbitdb",
     }))
 }
 
-/// POST /api/room/new (新建群组)
+/// POST /api/room/new (新建群组 — 真正的 OrbitDB events store)
 pub async fn room_new(State(st): State<AppState>) -> Json<serde_json::Value> {
     let id = format!("gw-{:x}", now_ms() % 0xffff_ffff);
-    let info = st
-        .groups
-        .create_group(id.clone(), format!("群组 {}", now_ms() % 10_000), st.identity.did.clone(), bolloon_p2p::GroupAcl::Open)
-        .await;
+    let now_ms_local = now_ms();
+    let info = st.groups.create_group(
+        &id,
+        &format!("群组 {}", now_ms_local % 10_000),
+        st.identity.did.as_str(),
+        bolloon_p2p::GroupAcl::Open,
+        now_ms_local,
+    );
     st.forge.lock().await.active_group = info.id.clone();
-    Json(serde_json::json!({ "id": info.id }))
+    Json(serde_json::json!({ "id": info.id, "address": info.address }))
 }
 
 /// POST /api/room/start
@@ -1240,19 +1249,18 @@ pub async fn room_guide(
         bolloon_p2p::EntryKind::Message
     };
     let prefix = if kind == "guide" { "/guide " } else { "" };
-    let sig = st.identity.sign(format!("{prefix}{text}").as_bytes());
-    match st
-        .groups
-        .append(
-            &gid,
-            &st.identity.did.clone(),
-            entry_kind,
-            format!("{prefix}{text}"),
-            bolloon_p2p::b58_encode(&sig),
-        )
-        .await
-    {
-        Ok(m) => Json(serde_json::json!({ "seq": m.seq, "kind": kind })),
+    let now_ms_local = now_ms();
+    // 写门 + 签名 + hash 链 + 落块 都在 OrbitStore 内完成
+    match st.groups.append(
+        &gid,
+        &st.identity,
+        entry_kind.as_str(),
+        st.identity.did.as_str(),
+        &format!("{prefix}{text}"),
+        None,
+        now_ms_local,
+    ) {
+        Ok(entry) => Json(serde_json::json!({ "hash": entry.hash, "kind": kind })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
 }

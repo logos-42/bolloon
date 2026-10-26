@@ -36,6 +36,65 @@ impl<'a> BlockExchange for MemoryExchange<'a> {
     }
 }
 
+/// 磁盘块交换 —— 块真在磁盘上 (`root/{address}/blocks/<hash>.json`)
+///
+/// 这是**真块交换**而非内存替身: 拉块走文件读, 写块走文件写。
+/// 与跨机传输是**同一个端口形态** (只认 hash, 不认人) —— 跨机时把这一层换成网络传输即可,
+/// 上层复制协议 (heads → 缺块链 → join) 一行不改。
+pub struct FileExchange {
+    pub root: std::path::PathBuf,
+    pub address: String,
+}
+
+impl FileExchange {
+    pub fn new(root: &std::path::Path, address: &str) -> Self {
+        Self { root: root.to_path_buf(), address: address.to_string() }
+    }
+
+    fn blocks_dir(&self) -> std::path::PathBuf {
+        crate::orbit_store::blocks_dir_of(&self.root, &self.address)
+    }
+
+    fn read_block(&self, hash: &str) -> Option<OpEntry> {
+        let path = self.blocks_dir().join(format!("{hash}.json"));
+        let raw = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&raw).ok()
+    }
+}
+
+impl BlockExchange for FileExchange {
+    fn fetch(&self, hashes: &[String]) -> Vec<OpEntry> {
+        let mut out = Vec::new();
+        for h in hashes {
+            if let Some(e) = self.read_block(h) {
+                out.push(e);
+            }
+        }
+        out
+    }
+
+    fn provide_all(&self) -> Vec<OpEntry> {
+        let dir = self.blocks_dir();
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut files: Vec<std::path::PathBuf> = rd
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+            .collect();
+        files.sort();
+        let mut out = Vec::new();
+        for f in files {
+            if let Ok(raw) = std::fs::read_to_string(&f) {
+                if let Ok(e) = serde_json::from_str::<OpEntry>(&raw) {
+                    out.push(e);
+                }
+            }
+        }
+        out
+    }
+}
+
 /// 复制结果
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReplicationReport {

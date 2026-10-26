@@ -383,6 +383,33 @@ Hermes/Nous 账号计费面 (`/login` `/topup` `/subscription` …) · 只有一
 
 **诚实边界**: ① **流式仍是「先整段生成再切块」** — `chat/stream` 的 delta 是事后按 24 字切, 不是上游 token 流 (真 SSE 待接 reqwest stream); ② 工具循环/agent loop 在 CLI 侧有, **web 侧仍是单轮** (web 是薄层); ③ 图片只走 OpenAI 视觉数组, anthropic/gemini 分支**暂不发图**; ④ `special` 家 (AWS/Azure/Vertex/watsonx 等, 约 20 家) **如实不支持**, 用自定义 provider 也需自备签名; ⑤ 上游模型发现 (`/v1/models` 拉取 + 30 分钟缓存) 未移植, 模型清单来自目录快照 (可手填); ⑥ 目录来自 TS 烘焙文件, **刷新要跑 TS 的 `scripts/gen-provider-catalog.ts`** (Rust 侧不自己拉 models.dev)。
 
+## 2026-10-26 第十九批 (Tauri App 桌面三栏式侧边导航, 网页端不变)
+
+| 项 | 落地 |
+| --- | --- |
+| **三栏布局 (Three-column Sidebar Layout)** | 第一栏 `.primary-rail` 56px 全局导航 (💬智能体/会话 · 🌍世界 · 🗨内部商议 + 底部主题/设置/头像) · 第二栏复用现有 `<aside>` 按模块显隐 (`dmod-chat`=智能体/会话 · `dmod-world`=意图面板) · 第三栏 `main` 主内容区 (room 面板仍是可开合附加列) |
+| **开关走壳, 不搞嗅探** | `app-tauri/main.rs` 加载 URL 加 `?app=desktop` (一行) — UI 侧 `isDesktopShell` 判定加 `body.desktop3col`; 浏览器访问同一端口不带参数 ⇒ 全部新 CSS/JS 不生效, 网页端零改动。壳仍只改导航 URL, 不写业务 |
+| **第二栏不重复造** | 世界意图面板 `.world-side` **整体 DOM 搬进第二栏** `#worldSideSlot` — id 全不变, `loadWorld/addWorldIntent/worldStats` 等 JS 原样工作; 主区世界流变全宽 (不与第二栏重复同一份意图 UI)。第一栏底部全局入口 relay 到现有按钮 (themeBtn/roomBtn/settingsBtn/brandLogo click()), 不重复绑定; 头部 `#worldTabBtn/#roomBtn` 桌面下隐藏 (消除重复导航) |
+| **联动** | `setPanel` 内同步模块 (header 世界 tab / 输入框 `/world` `/chat` 命令切面板时第一/二栏跟着切); `setRoomOpen` 同步 rail 🗨 按钮态; `setPanel`/rail 点击互为入口 |
+| **响应式/折叠** | 第二栏折叠沿用 `#app.collapsed` (66px 图标列); ≤860px 窄窗第二栏自动收成图标列 (第一栏/主区保留); collapsed/room-open 两态的 grid 模板都适配三栏 |
+
+**验证**: `cargo test -p bolloon-web` 5/5 · `cargo check` (app-tauri) 0 error · 真跑起服务 `/api/health` ok, 页面含 `desktop3col`×27 / `primary-rail`×4 / `worldSideSlot`×5 标记。**诚实边界**: 未真开 Tauri 窗口目验 (需 `cargo tauri dev`); 第二栏折叠未做宽度 0 (沿用 66px)。
+
+## 2026-10-26 第二十批 (群聊真正接入 OrbitDB: 内容寻址 + 落盘 + 可复制)
+
+| Rust 模块 | 冻结语义 |
+| --- | --- |
+| **`bolloon-p2p/orbit_store`** (新增) | **内容寻址的持久化 events store**: `StoreManifest` (name/type/owner/write ACL) 的 canon 哈希 = **address** (内容寻址, 可按地址打开); 每个 entry = `blocks/<hash>.json` (内容寻址); **blocks 是唯一真源**, manifest 里的 heads 只作复制协商缓存, 重开由 blocks 重放重建; 原子写 (tmp+rename); 打开时逐块验签 + ACL + prev 完整性, **坏块不进 oplog 且如实计数**; address 与 manifest 不自洽 ⇒ 拒 (`AddressMismatch`) |
+| **`bolloon-p2p/group_orbit`** (新增) | **群 = 一个 OrbitDB store**: 群 id→address 索引落盘 `groups.json`; 消息 = oplog entry (hash 链 + Ed25519 签名 + ACL 门); `create_group`/`import_group`(按 manifest 开**同一个** store)/`say`/`reply`/`history`/`replicate_from`; **邀请链接带 manifest** (`bolloon://join/<id>?...&m=<b58 manifest>`), 群主签名覆盖 group_id+过期+manifest, 验证时还校验 manifest.owner==签名者 DID |
+| **`bolloon-p2p/replication`** (扩展) | 新增 **`FileExchange`** —— 真块从磁盘读 (与跨机传输**同一端口形态**, 只认 hash 不认人); 复制协议 (`replicate`) 跨内存/磁盘两实现**一致** |
+| **`bolloon-p2p/oplog` (改)** | `WriteAcl` 加 `open` 变体 (对齐 TS `write:'*'`) + `OpLog::contains` |
+| **web 接线** | `AppState.groups` 从内存 `GroupStore` 换成 `GroupOrbitHub`, 落盘到 `~/.bolloon/rust/orbitdb/`; `/api/room*` 与 `/api/groups*` 全走 oplog (真签名/落块); `orbit_status` 由谎报的 `"local-oplog"` 改为如实 `"oplog-persisted"` 并附 `orbit_address`/`orbit_entries` |
+| **删除** | 删除内存 `group_store.rs`(GroupStore) 与内存 `group_log.rs`(GroupLog) —— Rust 侧群聊**只有一条执行路径** (OrbitDB), 不再有两套真相 |
+
+**门禁 (真跑)**: `cargo test -p bolloon-p2p` **50/50** (含 `two_nodes_converge_via_exchange` 真两目录两节点复制收敛、`create_append_reopen_recovers_entries` 重启恢复、`tampered_block_is_rejected_on_reopen` 篡改拒收、`acl_owner_only_blocks_stranger_on_disk_store` ACL 拒、`manifest_address_mismatch_rejected`、邀请伪造/过期/篡改拒); `cargo test --workspace` 全绿; `cargo build --workspace` 0 error。
+
+**诚实边界**: ① 跨机传输本身**未接** — `FileExchange` 是「同机不同目录 = 两节点」的磁盘真块交换, 跨机只需把这一层换成网络传输, 上层复制协议一行不改; ② **分片轮转未做** (与 TS 产品路径一致: 单库 events store); ③ 邀请链接带 manifest 是「被邀请方按同一 address 开同一个 store」的载体, 但 web 层还没暴露 import 入口 (前端 UI 暂无加入群表单); ④ `orbit_status` 如实标注 `oplog-persisted` (本地 oplog 已落盘), 不再谎报 `channel:"orbitdb"` 却走内存。
+
 ## DIAP Rust SDK (本机 /Users/apple/Downloads/DIAP_Rust_SDK)
 
 同日更新: 0.2.7→**0.3.0** (edition 2021→2024, rust-version 1.99, ed25519-dalek 2→3) + iroh 1.4 API 对齐 (`NodeAddr`→`EndpointAddr`, `builder(presets::N0)`, `addr()/id()`, `remote_id()`)。3 个 examples 修复对齐新 API, `cargo build --examples` 0 警告过; **lib 测试 46 passed / 0 failed / 4 ignored** (修 nonce_manager/did_cache 测试缺 `async` — edition 2024 必需; key_generator 测试对齐废弃函数空占位语义; noir_embedded/noir_universal 测试输入自洽 + 默认 backend 未启用时切 Simplified)。crates.io 下载走 rsproxy 镜像 (直连超时/代理 SSL reset, 2026-10-25 实测)。提交 `fdbef37` + `aa9ec66`。
