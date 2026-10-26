@@ -61,10 +61,10 @@ fn replace_pair(s: &str, delim: &str, open: &str, close: &str) -> String {
 }
 
 /**
- * 斜体: 等价 JS `/(^|[^*\w])\*([^*\s][^*]*)\*/g`。
+ * 斜体: 等价 JS 的 global 正则 `(^|[^*\w])\*([^*\s][^*]*)\*`。
  *
- * 前缀必须是**行首**或"非 `*` 且非 `\w`"的字符 —— 这样 `` a*b*c `` 里的 `b` 不会被误当斜体,
- * 而 `  *要强调*` 前面那个空格会被当作前缀**原样保留** (`${p}${GREEN}${c}${R}`)。
+ * 前缀必须是**行首**或"非星号且非词字符"的字符 —— 这样 `a*b*c` 里的 `b` 不会被误当斜体;
+ * 而 `  *要强调*` 前面那个空格会被当作前缀**原样保留** (输出 = 前缀 + GREEN + 内容 + RESET)。
  */
 fn replace_italic(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();

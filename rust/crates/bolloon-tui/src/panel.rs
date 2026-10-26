@@ -10,13 +10,13 @@
 //!      (2026-10-19 leo: 「还有一些空回复的问题」); 这里是**唯一收口点**。
 //!   ② **几何不抖** —— 宽度一律 `min(term_width()-2, …)`, 宁可不显示艺术字也不让它被折行。
 
-use crate::tui::boxart::{box_bottom, box_row, box_top, Align, Corners, RD, SQ};
-use crate::tui::markdown::md_inline;
-use crate::tui::theme::{
+use crate::boxart::{box_bottom, box_row, box_top, Align, RD, SQ};
+use crate::markdown::md_inline;
+use crate::theme::{
     BOLD, C_ACCENT, C_BORDER_BRIGHT, C_DIM, C_ERROR, C_MUTED, C_OK, C_WARN, C_WHITE, RESET,
 };
-use crate::tui::trace::tool_args_summary;
-use crate::tui::width::{disp_width, term_width, truncate, truncate_safe};
+use crate::trace::tool_args_summary;
+use crate::width::{disp_width, term_width, truncate, truncate_safe};
 
 // ── 状态图标 ───────────────────────────────────────────────
 pub fn status_symbol(status: &str) -> String {
@@ -103,7 +103,7 @@ fn split_keep_ws(s: &str) -> Vec<String> {
 }
 
 fn disp_width_char(ch: char) -> usize {
-    if crate::tui::width::is_wide(ch) {
+    if crate::width::is_wide(ch) {
         2
     } else {
         1
@@ -127,7 +127,7 @@ pub struct DashboardOpts {
 }
 
 pub fn render_dashboard(opts: &DashboardOpts) -> String {
-    use crate::tui::brand::{bolloon_banner, pick_banner, robot_head};
+    use crate::brand::{pick_banner, robot_head};
 
     let show_brand = opts.brand.unwrap_or(true);
     let title = opts.title.clone().unwrap_or_else(|| "Bolloon Agent · 仪表盘".to_string());
@@ -180,8 +180,6 @@ pub fn render_dashboard(opts: &DashboardOpts) -> String {
     } else {
         vec![]
     };
-    let _ = bolloon_banner;
-
     let mut lines: Vec<String> = Vec::new();
     lines.push(box_top(&title, width, SQ));
     for l in &art {
@@ -208,7 +206,7 @@ pub struct DialogOpts {
 }
 
 pub fn render_dialog(opts: &DialogOpts) -> String {
-    use crate::tui::brand::{pick_banner, robot_head};
+    use crate::brand::{pick_banner, robot_head};
 
     let show_brand = opts.brand.unwrap_or(true);
     let title = opts.title.clone().unwrap_or_else(|| "Bolloon Agent".to_string());
@@ -235,7 +233,7 @@ pub fn render_dialog(opts: &DialogOpts) -> String {
                 let il = icon.get(i).cloned().unwrap_or_default();
                 let bl = banner.get(i).cloned().unwrap_or_default();
                 let pad = icon_w.saturating_sub(disp_width(&il));
-                format!("{il}{}{bl}", " ".repeat(pad + gap2()))
+                format!("{il}{}{bl}", " ".repeat(pad + 2))
             })
             .collect()
     } else {
@@ -250,10 +248,6 @@ pub fn render_dialog(opts: &DialogOpts) -> String {
     lines.push(box_row(&opts.prompt, width, Align::Left, SQ));
     lines.push(box_bottom(width, SQ));
     lines.join("\n")
-}
-
-fn gap2() -> usize {
-    2
 }
 
 // ── 消息对话框 (聊天流: 已发送 / 智能体回复) ───────────────
@@ -364,7 +358,7 @@ pub fn render_user_message(body: &str) -> String {
  *   不当成正常回复渲染。这里是**唯一收口点**。
  */
 pub fn render_agent_message(body: &str) -> String {
-    let plain = crate::tui::width::strip_ansi(body).trim().to_string();
+    let plain = crate::width::strip_ansi(body).trim().to_string();
     if plain.is_empty() {
         return format!(
             "{C_DIM}◉ 本轮无文本回复 (模型返回了空内容, 已记入 logs/startup.log){RESET}"
@@ -434,26 +428,39 @@ pub fn flow_connector(width: usize) -> String {
     s.chars().take(width).collect()
 }
 
-/** 判断输出是否包含 git diff / 补丁内容 */
+/** 判断输出是否包含 git diff / 补丁内容 (TS: `/^diff --git|^--- |^\+\+\+ |^@@ /m` + `/^[\+\-]\s+\S/m`) */
 pub fn is_diff_output(text: &str) -> bool {
-    let re1 = regex_lite_diff(text);
-    re1 || text
-        .lines()
-        .any(|l| (l.starts_with('+') || l.starts_with('-')) && l.len() > 1 && l.chars().nth(1).map(|c| !c.is_whitespace()).unwrap_or(false))
-}
-
-fn regex_lite_diff(text: &str) -> bool {
     text.lines().any(|l| {
         l.starts_with("diff --git")
             || l.starts_with("--- ")
             || l.starts_with("+++ ")
             || l.starts_with("@@ ")
+            || is_added_or_removed_line(l)
     })
+}
+
+/** TS `/^[\+\-]\s+\S/`: 行首 `+`/`-`, 接着**至少一格空白**, 再接着一个非空白 */
+fn is_added_or_removed_line(l: &str) -> bool {
+    let mut it = l.chars();
+    match it.next() {
+        Some('+') | Some('-') => {}
+        _ => return false,
+    }
+    let rest: Vec<char> = it.collect();
+    match rest.first() {
+        Some(c) if c.is_whitespace() => {}
+        _ => return false,
+    }
+    rest.iter()
+        .skip_while(|c| c.is_whitespace())
+        .next()
+        .map(|c| !c.is_whitespace())
+        .unwrap_or(false)
 }
 
 /** 把 diff 内容着色: + 行绿色, - 行红色, @@ 行蓝色, 其余不变 */
 pub fn colorize_diff(text: &str) -> String {
-    use crate::tui::theme::C_BLUE;
+    use crate::theme::C_BLUE;
     text.lines()
         .map(|line| {
             if line.starts_with("diff --git") || line.starts_with("---") || line.starts_with("+++") {
@@ -486,7 +493,7 @@ pub struct ToolCallView {
 }
 
 pub fn render_tool_call(v: &ToolCallView) -> String {
-    let color = if v.status == "ok" { C_OK.as_str() } else { C_ERROR.as_str() };
+    let color = if v.status == "ok" { C_OK } else { C_ERROR };
     let sym = if v.status == "ok" { "✅" } else { "❌" };
     let w = (term_width() - 2).min(v.width.unwrap_or(72));
     let mut rows: Vec<String> = Vec::new();
@@ -564,6 +571,8 @@ mod tests {
     /// 仪表盘: 每行宽度一致, 上/下边框闭合
     #[test]
     fn dashboard_rows_have_uniform_width() {
+        // 依赖 `term_width()` ⇒ 必须与"钉尺寸"的用例串行 (否则读到别人钉的 40 列)
+        let _g = crate::width::test_lock().lock().unwrap();
         let s = render_dashboard(&DashboardOpts {
             title: Some("Bolloon Agent · 仪表盘".into()),
             rows: vec![
@@ -579,12 +588,13 @@ mod tests {
         }
         assert!(lines[0].starts_with('┌'));
         assert!(lines.last().unwrap().starts_with('└'));
-        assert_eq!(lines.len(), 2 + 2 + 1); // 顶 + 2 行 + 底
+        assert_eq!(lines.len(), 4); // 顶 + 2 行 + 底 (brand=false ⇒ 无艺术字行)
     }
 
     /// 对话框: 提示行在框里
     #[test]
     fn dialog_contains_prompt() {
+        let _g = crate::width::test_lock().lock().unwrap();
         let s = render_dialog(&DialogOpts {
             title: Some("Bolloon Agent".into()),
             prompt: "确认要切换模型吗?".into(),
@@ -616,6 +626,7 @@ mod tests {
     /// 用户输入超过 14 行 → 折成「引用」框 (仅影响显示)
     #[test]
     fn long_user_message_collapses_to_reference() {
+        let _g = crate::width::test_lock().lock().unwrap();
         let body = (0..30).map(|i| format!("第 {i} 行")).collect::<Vec<_>>().join("\n");
         let s = render_user_message(&body);
         assert!(s.contains("已压缩 30 行"));

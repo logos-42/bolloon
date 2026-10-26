@@ -7,8 +7,8 @@
 //! 窄终端档 (`BOLLOON_BANNER_SMALL`) 是 2026-09-30 leo「我看不到我的 logo」的修法:
 //! 宽 < ~97 列时整块 87 列艺术字会被挤掉, 所以按"装得下就上"挑档: 大(87) → 小(37) → 文字(兜底)。
 
-use crate::tui::theme::{BOLD, C_ACCENT, C_ACCENT_BG, C_DIM, C_TEXT, C_WHITE, RESET};
-use crate::tui::width::disp_width;
+use crate::theme::{BOLD, C_ACCENT, C_ACCENT_BG, C_DIM, C_TEXT, C_WHITE, RESET};
+use crate::width::disp_width;
 
 /// 版本 — 与 crate 版本同一来源 (TS 从 package.json 读; Rust 用 CARGO_PKG_VERSION)
 pub const BOLLOON_VERSION: &str = env!("CARGO_PKG_VERSION");

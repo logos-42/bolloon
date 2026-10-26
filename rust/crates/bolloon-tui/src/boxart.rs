@@ -5,7 +5,7 @@
 //!   · 圆角 `RD` (工具调用显示 / 智能体回复内容)
 //!   · `boxTop` / `boxRow` / `boxBottom` / `centerAnsi` / `fitLeft`
 
-use crate::tui::width::{disp_width, is_wide, truncate};
+use crate::width::{disp_width, is_wide, truncate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Corners {
@@ -146,7 +146,8 @@ mod tests {
     fn box_row_center_is_symmetric() {
         let s = box_row("ab", 10, Align::Center, RD);
         assert_eq!(disp_width(&s), 10);
-        assert_eq!(s, "╭   ab   ╮");
+        // 中间行的左右两边都是**竖线** (圆角只体现在上/下边框的四个角)
+        assert_eq!(s, "│   ab   │");
     }
 
     #[test]

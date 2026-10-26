@@ -1,0 +1,12 @@
+[package]
+name = "bolloon-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bolloon 终端 UI — 复用原 TS 的 CLI TUI (纯 ANSI 视觉层 + raw 模式交互)"
+
+[dependencies]
+libc.workspace = true
+serde_json.workspace = true
+bolloon-agent = { path = "../bolloon-agent" }

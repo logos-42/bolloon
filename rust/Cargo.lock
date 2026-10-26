@@ -234,6 +234,7 @@ dependencies = [
  "bolloon-agent",
  "bolloon-llm",
  "bolloon-p2p",
+ "bolloon-tui",
  "bolloon-web",
  "chrono",
  "clap",
@@ -315,6 +316,15 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "bolloon-tui"
+version = "0.6.10"
+dependencies = [
+ "bolloon-agent",
+ "libc",
+ "serde_json",
 ]
 
 [[package]]

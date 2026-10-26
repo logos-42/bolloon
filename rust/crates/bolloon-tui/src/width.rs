@@ -149,6 +149,12 @@ fn disp_width_safe_char(ch: char) -> usize {
 // ── 终端尺寸 ───────────────────────────────────────────────
 static OVERRIDE: OnceLock<Mutex<Option<(usize, usize)>>> = OnceLock::new();
 
+/// 测试串行锁: 钉尺寸的用例必须拿它 —— 否则并行跑时一条用例改的尺寸会被另一条读到
+static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+pub fn test_lock() -> &'static Mutex<()> {
+    TEST_LOCK.get_or_init(|| Mutex::new(()))
+}
+
 /**
  * 钉死终端尺寸 (测试 / 窄屏验收用)。
  *
@@ -275,6 +281,7 @@ mod tests {
     /// 钉死尺寸 / 取消钉死 —— 同一条用例里串行跑 (这两个函数共用一份全局尺寸, 不能并行测)
     #[test]
     fn term_size_pin_and_fallback() {
+        let _g = test_lock().lock().unwrap();
         clear_term_size();
         if winsize().is_none() {
             // 未钉尺寸且非 TTY → 兜底 80 / 24 (与 TS 同)

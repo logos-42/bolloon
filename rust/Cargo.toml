@@ -9,6 +9,7 @@ members = [
     "crates/bolloon-x402",
     "crates/bolloon-web",
     "crates/bolloon-cli",
+    "crates/bolloon-tui",
 ]
 
 [workspace.package]

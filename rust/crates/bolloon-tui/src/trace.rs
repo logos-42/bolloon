@@ -107,7 +107,7 @@ pub fn tool_args_summary(name: &str, args: Option<&serde_json::Value>) -> String
         return String::new();
     }
 
-    /// TS `pick(keys)`: 第一个非空且非 `"undefined"` 的值
+    // TS `pick(keys)`: 第一个非空且非 "undefined" 的值
     let pick = |keys: &[&str]| -> String {
         let Some(map) = obj else { return String::new() };
         for k in keys {

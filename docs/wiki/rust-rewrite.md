@@ -26,9 +26,8 @@ tags: [rust-rewrite, kernel, harness, p2p, task-board, memory, session-store, v0
 | `bolloon-agent` | KernelLoop (prepare→model→harness→checkpoint→reducer→continuation) · 群聊 Autopilot (仅被@/提问开口·冷却·每小时上限·seen 幂等) · **任务公告板** · **记忆库** · **会话 JSONL** | 28 |
 | `bolloon-p2p` | DID 身份 (did:pi + ed25519) · 群 store (ACL 独占/白名单/开放) · **签名信封 `bolloon-envelope/1`** · **gossip 广播总线 (实现 kernel Transport 端口)** | 21 |
 | `bolloon-web` | axum + hushforge 布局单页 (284px 侧栏 + 主聊天 + room 面板) | 0 |
-| `bolloon-cli` | `bolloon` / `web --port` / `status` / `memory remember\|recall` / `task publish\|id` | 0 |
-
-合计 **81 测试全绿** (`cargo test`, 2026-10-25)。
+| `bolloon-cli` | `bolloon` / `web --port` / `status` / `memory remember\|recall` / `task publish\|id` / `chat` / `model` / `dream` | 0 |
+| **`bolloon-tui`** (2026-10-26 新增) | **复用原 TS 的 CLI TUI** (`src/cli/` 那套纯 ANSI 视觉层 + raw 模式交互), 13 个模块 | **87** |
 
 ## 2026-10-25 本轮新增 (commit 待填)
 
@@ -222,6 +221,127 @@ Web 接线: `/api/judgment` (top-N 注入门 + 入库即演化, action 如实回
 | 门禁 | — | 抽 `pub fn app(state)` / `serve_on(state, listener)` (路由与端口绑定分离); 新 e2e 真起服务 (端口 0) 走真 HTTP: bootstrap 形状 → 分享链接打开 → 坏 token 如实说不存在 → 梦想文档作者=profile/登记可查; `cargo test -p bolloon-agent -p bolloon-web` **301 + 5 全绿**, **bolloon-web 0 告警** (原 8 条全清) |
 
 **诚实边界**: 分享快照**只读、永不过期** (token 不可猜, 删 `shares/*.json` 即失效; 没做撤销/回收) · 分享页只有文本消息, 不含头像与工具调用细节 · 更新安装仍在请求内同步跑 (互斥只防并发, 不改变长耗时) · `bolloon-cli` 当时正被另一条 TUI 移植线改动 (未接线且不编译), 全量 workspace 测试留给那条线收尾。
+
+## 2026-10-26 第十四批 (CLI 端 UI **复用原 TS 的 CLI TUI** — 新 crate `bolloon-tui`, 87 测试全绿)
+
+leo 口径: 「cli 端 UI 复用原 ts 的 cli tui」⇒ 不另设计一套终端 UI, 把 `src/cli/` 那套**纯 ANSI + 纯函数**的
+视觉层**逐字搬**过来, 用测试钉住字节一致。新 crate `rust/crates/bolloon-tui` (**库**, 不是塞进 bin 模块 ——
+bin 里 `pub` 项会被判 dead_code, 库 crate 才是它的正确落位)。
+
+| Rust 模块 | TS 原文 | 搬的是什么 / 钉住的判据 |
+| --- | --- | --- |
+| `theme` | `src/cli/theme.ts` | THEME token 表逐字 (10 个 hex) + `fg`/`bg` 与 `\x1b[38;2;196;214;64m` 逐字节; `C_*` 常量写成字面量后用 `derived_colors_match_palette` 逐条断言 `C_* === fg(THEME_*)` (**改调色板忘改常量 ⇒ 立刻红**) |
+| `width` | `loading-tui.ts` / `status-segments.ts` | `dispWidth` 的 East-Asian-Width 判据 (CJK/全角=2, ANSI 不计宽) · `dispWidthSafe` 的 Ambiguous 保守子集 (18 个字符按 2 列) · `truncate`/`truncateSafe` · 终端尺寸走 `ioctl(TIOCGWINSZ)`, 非 TTY 兜底 80/24, 另有 `set_term_size` 供门里钉尺寸 + `wait_for_term_size` |
+| `boxart` | `loading-tui.ts` | 方角 `SQ` / 圆角 `RD` + `boxTop/boxRow/boxBottom`; 每行宽度恒等于框宽 |
+| `brand` | `loading-tui.ts` | 机器人头 6 行 + BOLLOON 艺术字; **实测大号 61 列 / 小号 37 列** (TS 注释里写的"87 列"是旧稿估值, 以实测为准); `pick_banner` 按内宽降档 大→小→文字 |
+| `markdown` | `src/cli/markdown.ts` | `mdInline` 四次 replace 的**顺序**与"内容里不许出现定界符"判据; `a*b*c` 不误判斜体 |
+| `trace` | `src/cli/trace-line.ts` | 28 条工具→中文动作短语表 + `toolArgsSummary` (认不出就留空, **绝不显示空白**) |
+| `panel` | `loading-tui.ts` | 仪表盘/对话框/消息框/引用框/工具行/diff 着色; **空回复不出空框** (2026-10-19 那条) 有测试钉 |
+| `loading` | `loading-tui.ts` | `LOADING_FRAMES` 6 帧逐字 + `LoadingTui` 原地刷新 (帧行数 = 上框+艺术字+steps+spinner+下框, 靠 `\x1b[nA` 回退), 后台线程 100ms/帧 |
+| `select` | `src/cli/tui-select.ts` | 固定高度视窗 `max(3, min(40, rows-3))` · 视窗外**根本不画** · 上下"还有 N 家"指示 · 光标行 `ESC[7m` + accent 底 + `→ ` 前缀 (**符号通道不依赖颜色**) · 六种一等选择方式 (↑↓/Enter/数字跳行/筛选/折叠/滚动) · `parse_keys` |
+| `scroll` | `src/cli/keymap.ts` | 滚动键位表 + `apply_scroll` 位移; `stick` = 贴底跟随, 上滚即暂停, End 恢复 |
+| `screen` | `ink-app.tsx` 的**几何纪律** | 帧高恒 = rows · 输入行号恒 = rows-2 · 四个固定行 (rule/status/input/hint) · 超宽先截断不折行 · 跟随可暂停 |
+| `history` | `src/cli/input-history.ts` | 一渠道一文件 `input-<ch>.jsonl` (**0600**) · **秘密不写盘** (64 位 hex / 助记词形态 / 私钥字样) · 连续重复去重 · 内存 200 / 文件 500 原子裁剪 · 坏行跳过 |
+| `input` | `tui-select.ts` 的 `tuiAskLine`/`tuiAskMasked` | termios raw 模式逐键编辑 + ↑↓ 历史 + 掩码 (`•` 按**字符数**不是字节数); 非 raw 退化为读一行 (不卡住) |
+| `compose` | (**新增**, 无 TS 对应) | 输入缓冲状态机 (纯函数): 多行 / 历史游标 / 草稿 / 贴图的**语义**; `resolve_action` 是键→意图唯一映射; `render_input` 负责多行几何 (每行 ≤ cols-1, 超行留尾部 + `… (+N 行)`) |
+| `help` | (**新增**, 无 TS 对应) | `bolloon chat` 键位文案**唯一事实源**; `HELP_ITEMS` 与 `compose::resolve_action` 在测试里逐条互钉 (**写了没做 / 做了没写 都会红**) |
+| `clipboard` | (**新增**, 无 TS 对应) | Alt+V 贴图: 剪贴板图片 → `~/.bolloon/rust/paste/paste-<ms>.png`; 平台差异只在这一处 (macOS pngpaste/AppleScript · Linux wl-paste/xclip · Windows PowerShell), `BOLLOON_PASTE_CMD` 可整条接管 |
+
+**接线** (`bolloon-cli/src/main.rs`): `bolloon` / `web` → 启动仪表盘 (4 步, 真终端才画; 非 TTY 一行说清) ·
+`status` → 品牌仪表盘 (更新 tip **有更新才出现**) · 新增 `bolloon chat [--channel X]` → 全屏面板壳 + 用户/智能体
+消息框 + 工具调用行 (一行说清"它在做什么") + 输入历史 · 新增 `bolloon model` → 全屏光标选择器 + **掩码输入**
+(密钥只报长度, **不回显不落盘**; Rust 侧暂无 config store, 只给 env 用法) 。
+
+**真跑证据**: `cargo check --workspace --all-targets` **0 error / 0 warning** · `cargo test --workspace`
+**557 通过 / 0 失败** (原 439 + tui 87 + 做梦线 31) · `bolloon status` 出带品牌艺术字的仪表盘 ·
+管道输入 `printf '你好\n/exit\n' \| bolloon chat --channel smoke` → 品牌 banner + `✓ 已发送` 框 + 真 401 错误
+如实报出 (不冒充成功回复) + 历史真落盘 `~/.bolloon/rust/history/input-smoke.jsonl` (**权限 0600**) ·
+`bolloon model` 非 TTY 时退回编号清单 + 用法 (不进全屏菜单)。
+
+**两处刻意偏离 TS** (都写进代码注释): ① `loading` —— TS 的 `LoadingTUI.draw` **没有** `renderDashboard` 那道
+"装不下就不画艺术字"的闸 (80 列下 77 列艺术字塞进 74 列内宽 ⇒ 行被折成两截), 这里按 2026-09-30 的规矩补上**降档**;
+② `select` —— 鼠标滚轮上报 (`?1006h`) 与 `SIGWINCH` 重绘**未移植**, 键盘六种方式都在。
+
+**诚实边界 / 未做**: `setup-wizard.ts` 七步向导未移植 (属业务流, 且 Rust 侧还没有 config store) ·
+OSC52 剪贴板 (`/copy`, 把**文本**送出去) 未做 · `ink-app.tsx` 的 React 壳本身没搬 (搬的是它定下的**几何纪律**, 见 `screen`) ·
+`renderDashboard`/面板类的颜色**不按 TTY 门控** (与 TS 同: 写出来就带 ANSI, 管道里也会有转义码) ——
+这一条若嫌脏, 后续可在 `main.rs` 出口统一过一道 `NO_COLOR` 剥离, 记在这里当欠账。
+
+## 2026-10-26 第十五批 (chat 输入框: 帮助文案 + 四条快捷键**全实现**, 112 tui 测试 / 全 workspace 582)
+
+**问题 (leo 三问)**: 「这段帮助文案要落到哪个终端? 不只是帮助页, 要完成实现, 只在 Rust 实现」
+「这次做到哪一步?」→ 「文案 + 快捷键全实现 (多行输入 Ctrl+J/Alt+Enter、Ctrl+G 草稿、Alt+V 贴图都真做)」。
+
+**落到哪个终端 (答)**: 只落 **`bolloon chat` 这个 Rust 终端界面** —— 完整帮助页走 `Screen` 正文 (`/help` 触发),
+一行摘要走 `Screen` 最底那条固定提示行 (`rows-1`)。Web 终端、`bolloon model` 的 TUI 选择器、TS 版 CLI **都不吃这份文案**
+(TS 侧一行未动, 全在 `rust/`)。
+
+**新增/改动**:
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `bolloon-tui/src/compose.rs` (新) | 输入缓冲状态机 (纯函数): `resolve_action` 键→意图 · `Compose` (缓冲/历史游标/暂存) · `render_input` 多行几何 |
+| `bolloon-tui/src/help.rs` (新) | 键位文案唯一事实源: `HELP_ITEMS` / `HINT` / `help_page()` |
+| `bolloon-tui/src/clipboard.rs` (新) | 剪贴板图片 → PNG 落盘 (macOS/Linux/Windows + `BOLLOON_PASTE_CMD` 接管) |
+| `bolloon-tui/src/input.rs` | 重写: 多行重画 (上移 N 行 + 清到屏末) · Ctrl+G 起 `$VISUAL/$EDITOR` (真交还/重进 raw) · Alt+V 贴图 + 状态行 · 掩码不再允许换行/草稿/贴图 |
+| `bolloon-tui/src/select.rs` | `Key` 增 `Newline/AltEnter/CtrlG/AltV`; `parse_keys` 把 `\r`(Enter) 与 `\n`(Ctrl+J) **分开**; 新 `read_key_raw` 用 `poll` + **裸 `libc::read`** (见下"踩坑"①) |
+| `bolloon-cli/src/main.rs` | hint 改用 `tui::help::HINT` · `/help` `/ ?` 出帮助页 (不写历史) · 帧高 = `term_height()-1`, 最后一行留给输入块 |
+
+**键位→行为 (全部真跑, 不是只写文案)**:
+`Enter` 发送 (多行整段一起发) · `Ctrl+J` / `Alt+Enter` 换行 (raw 模式下 Enter=`\r`, Ctrl+J=`\n`, **不同字节** ⇒ 可分辨) ·
+`Ctrl+G` 用 `$VISUAL`/`$EDITOR` 写草稿, 存盘返回即成输入 (草稿空 ⇒ 保留原输入, 不弄丢已打的字) ·
+`Alt+V` 贴剪贴板图片 → `~/.bolloon/rust/paste/paste-<ms>.png` → 插入 `@路径` · `↑↓` 历史 · `Esc`/`Ctrl+C` 取消 · `Ctrl+D` 退出 · `/help` 帮助页。
+
+**验证 (真跑)**:
+- `cargo check --workspace --all-targets` **0 error / 0 warning** · `cargo test --workspace` **582 通过 / 0 失败**
+  (原 557 → 582, +25: compose **10** · clipboard **6** · help **4** · select **3** · input **2**)。
+- **真机 pty 端到端** (python `pty` 驱动 `target/debug/bolloon chat`, 非模拟):
+  ① `第一行` + `Ctrl+J` + `第二行` + `Enter` → `✓ 已发送` 框里**两行都在** (干净 401 如实报出);
+  ② `/help` → 帮助页 8 条键位 + 两段说明, 提示行含 `/help`;
+  ③ `Ctrl+G`: 缓冲写成 `printf … > "$0"` 脚本, `VISUAL=/bin/sh` 真跑一次编辑器往返 → 读回两行 + 状态行 `✓ 草稿已读入 · 2 行`;
+  ④ `Alt+V` (`BOLLOON_PASTE_CMD`) → 真落 `paste-<ms>.png` (7 字节 PNG 签名) + 插入 `@/…/paste-….png` + 状态行 `✓ 已贴图`.
+
+**踩到的坑 (都写进代码注释了)**:
+① **`std::io::stdin()` 的 8KB 用户态缓冲**把多字节输入吃掉 —— `read(1)` 先把 9 字节吸进 `Stdin` 缓冲, 内核缓冲变空 ⇒
+  随后 `poll` 判"没数据" ⇒ 超时 ⇒ 中文续字节被当"孤独的 Esc"丢弃。真机现象: 打 `第一行` 只剩 `行`。改用**裸 `libc::read`** 后 poll 与读同一缓冲。
+② **孤独的 Esc 会挂住**: 原来读到 `0x1b` 就阻塞再读 2 字节 ⇒ 按 Esc 要等下一个键。现在 `poll` 给 **40ms** 宽限。
+   Alt+Enter / Alt+V 正是靠这个宽限窗口识别的 (`ESC` + `\r` / `v`)。
+③ **帧高算多一行**: 原来帧 = `rows` 行, 再 `println!()` 给输入行 ⇒ **单行输入也会把整帧顶上去一格** (帧顶永远看不到)。
+   现在 `frame_rows = term_height()-1`, 最后一行就是输入块; 多行输入再额外占行, 靠往上滚消化 (有意为之, 与 `screen` 的帧内几何无关)。
+
+**边界 (如实)**: `ChatMessage.content` 是单模态 `String` ⇒ **Alt+V 只把 `@路径` 插进输入, 像素没进模型**
+(视觉编码要先改 `bolloon-llm` 的请求体, 记欠账); 掩码输入禁用换行/草稿/贴图 (秘密不落盘);
+输入缓冲**没有光标移动** (`← →` 明确不响应, 不当假动作); 非 TTY (管道) 仍是一行一读, 多行靠调用方自己拼。
+
+## 2026-10-26 第十六批 (`bolloon chat` 命令面: 118 条全量注册, 27 条真实现)
+
+leo 贴出 Hermes 风格 118 条 `/命令` 并要求「都要有」。口径三条: **全量注册** / **能做的真做** / **做不到的写清原因**
+(不拿"没实现"冒充"已实现")。
+
+| 文件 | 角色 |
+| --- | --- |
+| `bolloon-cli/src/slash.rs` (新) | 命令**唯一事实源**: 118 条 (93 命令 + 25 别名) · 分类/用法/说明 · `Status::{Ready, Planned(原因), Na(原因)}` · `parse` / `find` / `help_lines` / `detail_lines`; 别名用 `alias_of` 继承本体状态 (逻辑只有一份) |
+| `bolloon-cli/src/chat_command.rs` (新) | 命令**实现**: `ChatSession` (消息/标题/模型/附件 + 会话落盘 `~/.bolloon/rust/chat/sessions/<id>.json` **0600**) · `Cmd` 结果枚举 (Say/Send/Prefill/Clear/Redraw/Update/Quit) ⇒ 命令逻辑不碰终端 |
+| `bolloon-tui/src/{input,select}.rs` | 整段会话持 raw (`hold_raw_mode`, 可重入深度) · `Esc`/`Ctrl+C` 改为"只丢当前输入" |
+| `bolloon-tui/src/clipboard.rs` | 新增 `copy_text` (`/copy` 用): pbcopy / wl-copy / xclip / clip, `BOLLOON_COPY_CMD` 可接管 |
+
+**真实现 27 条** (每条都有单测, 且 `every_ready_command_has_an_impl` 把 27 条各跑一遍防"标了没做"):
+`/new /reset /clear /redraw /history /save /retry /undo /title /prompt /compose /resume /sessions /plan /worktree`
+`/compress /compact /status /context /ctx /config /model /profile /diff /help /copy /paste /image /update /version /v /quit /exit`。
+
+**85 条不可用的原因分类** (帮助页带 `[待接]`/`[不适用]`, `/help <命令>` 展开):
+没有 agent 循环 (`/bg` `/queue` `/steer` `/loop` …) · 没有消息网关 (`/handoff` `/branch` `/platforms` …) ·
+Hermes/Nous 账号计费面 (`/login` `/topup` `/subscription` …) · 只有一套品牌主题 (`/skin` `/pet` …) ·
+审批门在 Harness (`/yolo` `/approvals`) · 底座在但没接线 (`/goal` `/heartbeat` `/review` `/snapshot` `/skills` …)。
+
+**行为变更 (需要记住)**: `Esc` / `Ctrl+C` 不再退出会话 —— 只丢当前输入, 退出用 `/exit` 或 `Ctrl+D`
+(以前 `/undo` 回填后按 Esc 会把整个会话关掉)。会话库 `chat/sessions/*.json` 是 `/resume` `/sessions` `/quit --delete` 的事实来源。
+
+**验证**: `cargo check --workspace --all-targets` 0/0 · `cargo test --workspace` **607/607** (+25) ·
+真机 pty 18 项 PASS · 管道 `/help` 出 118 条 / 7 分类。
+
+**边界**: 视觉编码未接 (`/image` `/paste` 只把 `@路径` 拼进消息) · `/compress` 是**截断**不是摘要 ·
+非 TTY 仍一行一读。
 
 ## DIAP Rust SDK (本机 /Users/apple/Downloads/DIAP_Rust_SDK)
 
