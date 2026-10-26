@@ -310,6 +310,22 @@ fn cwd_candidates(q: &str) -> Vec<tui::ComplItem> {
 async fn run_chat(channel: &str) -> anyhow::Result<()> {
     let (llm, model) = build_chat_llm();
 
+    // 权限模式（对齐 TS `BOLLOON_PERM_MODE`）: bypass = 完全访问 = **所有权限开放**
+    let mode = bolloon_agent::permission_mode::mode_from_env();
+    let bypass = mode.is_bypass();
+
+    // 会话级取消标志: Ctrl+C 置位 ⇒ shell 的当前/下一条命令被 kill（决策 3: 取消是统一机制）。
+    // 只 spawn **一个**常驻监听（不每轮泄漏），send_one 每轮开头重置。
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let c = cancel.clone();
+        tokio::spawn(async move {
+            while tokio::signal::ctrl_c().await.is_ok() {
+                c.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+    }
+
     let mut history = tui::load_input_history(Some(channel));
     // 会话本体 (消息/标题/模型/附件 + 落盘): 命令逻辑全在 `chat_command`, 这里只做接线
     let mut sess = chat_command::ChatSession::new(&model, channel);
@@ -337,6 +353,10 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
             for l in &lines {
                 println!("{l}");
             }
+            // flow 布局: chrome 跟在 dashboard 下一行, 不再钉底 —— 消除
+            // "dashboard 在顶、chrome 在底、中间整块空白"的老问题。
+            // +1 = dashboard 后留一个空行; reset_screen 已把 flow_top 置 1。
+            chrome.set_flow_top(lines.len() + 2);
             chrome.draw();
         } else {
             for l in &lines {
@@ -355,6 +375,18 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
 
     // Esc / Ctrl+C 双击退出窗口 (TS `timing.ts` ESC_DOUBLE_MS)
     let mut last_cancel: Option<std::time::Instant> = None;
+    // 完全访问 = 所有权限开放 ⇒ **必须让用户看见**（不能开着却没人知道）
+    if bypass {
+        emit(
+            &mut chrome,
+            full,
+            &[format!(
+                "⚠ {} — shell 的命令白名单 / 路径保护 / 高危 denylist 均不拦截（超时·取消·预算·审计仍在）",
+                mode.label()
+            )],
+        );
+    }
+
     // 命令改出来的回填内容 (`/undo` `/retry`)
     let mut prefill = String::new();
 
@@ -496,7 +528,7 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
             history.push(prompt.clone());
         }
 
-        match send_one(&mut chrome, full, &mut sess, &llm, &prompt).await {
+        match send_one(&mut chrome, full, &mut sess, &llm, &prompt, &cancel, bypass).await {
             Ok(()) => {}
             Err(e) => emit(&mut chrome, full, &[format!("✗ {e}")]),
         }
@@ -518,7 +550,7 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
             let Some(sched) = sess.next_scheduled(now_ms()) else { break };
             let auto_text = format!("{} {}", sched.marker(), sched.text());
             let is_loop = matches!(sched, chat_command::Scheduled::Loop(_));
-            match send_one(&mut chrome, full, &mut sess, &llm, &auto_text).await {
+            match send_one(&mut chrome, full, &mut sess, &llm, &auto_text, &cancel, bypass).await {
                 Ok(()) => {
                     if is_loop {
                         for l in sess.after_loop_turn(&ctx).await {
@@ -550,6 +582,8 @@ async fn send_one(
     sess: &mut chat_command::ChatSession,
     llm: &LlmRuntime,
     text: &str,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    bypass: bool,
 ) -> Result<(), String> {
     let user_msg = match sess.build_user_message(text) {
         Ok(m) => m,
@@ -574,100 +608,272 @@ async fn send_one(
     });
     let _ = sess.save();
 
-    let params = bolloon_llm::GenerateParams::new(&sess.model, sess.messages.clone());
-    let started = std::time::Instant::now();
-    if full {
-        chrome.activity = tui::Activity::Thinking { started };
-        chrome.draw();
-    }
-    let mut fut = std::pin::pin!(llm.generate("env", params));
-    let res = if full {
-        let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
-        loop {
-            tokio::select! {
-                r = &mut fut => break r,
-                _ = tick.tick() => {
-                    chrome.tick();
-                    chrome.refresh_size();
-                    chrome.draw();
-                }
-            }
-        }
+    // 装配 bolloon 身份 system prompt: 单一真源 = `bolloon_agent::prompt::build_system_prompt`
+    // (与 web/App 完全一致); 按 channel 选全局(home)/项目内(project) 身份文件 (soul/agent/persona).
+    // 一轮对话最多允许的「模型 ⇄ 工具」往返轮数 (防死循环; 达上限如实上报, 不伪造完成)
+    const MAX_TOOL_TURNS: u32 = 8;
+    // Harness 预算: 单轮工具调用次数上限 / 单次调用耗时上限 (ms)
+    const MAX_TOOL_CALLS_PER_TURN: u32 = 20;
+
+    // ── 工具运行时 (最小闭环): 注册表 + 真实执行器 + Harness ──
+    // Rust 侧**第一次**真正把工具交给模型并执行 (2026-10-26 迁移第一步)。
+    // 此前 `params.tools` 恒空 + 零生产执行器 ⇒ function calling 从未启用,
+    // 模型返回的 tool_calls 只被渲染、从未执行、也从未回传续轮。
+    // 每轮开头清掉上一轮的取消标志（Ctrl+C 只中断当前轮）
+    cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+
+    let registry = std::sync::Arc::new(bolloon_harness::ToolRegistry::new());
+    bolloon_agent::builtin_tools::register_builtin_tools(&registry).await;
+    // 授予范围: 完全访问 = 所有已注册工具都不再逐次授权; 默认 = 只授予高风险 shell
+    let granted: Vec<String> = if bypass {
+        registry.list().await.iter().map(|d| d.name.clone()).collect()
     } else {
-        fut.await
+        vec!["shell".to_string()]
     };
-    let elapsed_ms = started.elapsed().as_millis();
+    let granted_refs: Vec<&str> = granted.iter().map(|s| s.as_str()).collect();
+    let harness = std::sync::Arc::new(
+        bolloon_harness::Harness::new(
+            registry.clone(),
+            std::sync::Arc::new(bolloon_agent::builtin_tools::BuiltinExecutor::new(
+                cancel.clone(),
+                bypass,
+            )),
+            bolloon_harness::Budget::new(MAX_TOOL_CALLS_PER_TURN, 120_000),
+        )
+        // 高风险工具**显式授予**而非默认放行; 完全访问下授予全部（安全门由 bypass 跳过）
+        .with_granted(&granted_refs),
+    );
+    // `ToolDef → ToolSchema` 桥接 (此前完全缺失的一环): 注册表里的定义终于能发给模型
+    let tool_schemas = bolloon_agent::builtin_tools::tool_defs_to_schemas(&registry.list().await);
 
-    if full {
-        chrome.activity = tui::Activity::Idle;
-    }
-    match res {
-        Ok(res) => {
-            let mut above: Vec<String> = vec![];
-            if !res.tool_calls.is_empty() {
-                above.push(tui::panel::render_tool_calls_header(res.tool_calls.len()));
-                for c in &res.tool_calls {
-                    let args: Option<serde_json::Value> =
-                        serde_json::from_str(&c.function.arguments).ok();
-                    // 中文动作短语 (`trace-line.ts`): `🔧 读文件 · read_file src/main.rs`
-                    let item = tui::panel::ToolCallListItem {
-                        tool: tui::trace::trace_label(&c.function.name),
-                        status: "ok".into(),
-                        duration_ms: None, // 真执行时长要等工具回路接上, 不编
-                        args,
-                        output: None,
-                        error: None,
-                    };
-                    above.push(tui::panel::render_tool_call_list_item(
-                        &item,
-                        0,
-                        res.tool_calls.len(),
-                    ));
+    let mut convo: Vec<bolloon_llm::ChatMessage> = vec![bolloon_llm::ChatMessage {
+        role: "system".into(),
+        content: build_bolloon_system(&sess.channel),
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+        images: vec![],
+    }];
+    convo.extend(sess.messages.clone());
+
+    let started = std::time::Instant::now();
+    let mut panel = tui::StreamPanel::new();
+    let mut final_content = String::new();
+    let mut tools_used: u32 = 0;
+    let mut turn = 0u32;
+    let mut usage = None;
+
+    loop {
+        turn += 1;
+        let params = {
+            let mut p = bolloon_llm::GenerateParams::new(&sess.model, convo.clone());
+            p.tools = tool_schemas.clone(); // ← 工具 schema 真正注入模型
+            p
+        };
+        if full {
+            chrome.activity = tui::Activity::Thinking { started };
+            chrome.draw();
+        }
+        // 首轮走流式 (面板生长); 续轮 (工具结果整理) 非流式, 活动行照常显示 Thinking
+        let res = if full && turn == 1 {
+            // 统一事件循环: 模型流 + 增量通道 + 100ms tick 三路 select。
+            // 面板重绘(开底面板就地生长)的**唯一写入者** —— deltas 与 tick 都进这里,
+            // 不存在第二条并发打印路径, 因此不会和完整回复框抢光标。
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
+            let mut fut = std::pin::pin!(llm.generate_streaming("env", params, move |d| {
+                // 非阻塞投递: 缓冲满就丢增量 (最终完整文本来自 `res`, 不靠逐帧)
+                let _ = tx.try_send(d.to_string());
+            }));
+            let mut acc = String::new();
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+            let mut last_paint = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now);
+            let r = loop {
+                tokio::select! {
+                    rr = &mut fut => break rr,
+                    maybe = rx.recv() => {
+                        if let Some(d) = maybe {
+                            acc.push_str(&d);
+                        }
+                    }
+                    _ = tick.tick() => {
+                        chrome.tick();
+                        chrome.refresh_size();
+                        chrome.draw();
+                    }
                 }
-            }
-            // 空回复**不出空框** —— `render_agent_message` 是唯一收口点
-            let boxed = tui::render_agent_message(&res.content);
-            above.extend(boxed.split('\n').map(|s| s.to_string()));
-            if full {
-                chrome.print_above(&above);
-            } else {
-                for l in &above {
-                    println!("{l}");
+                // 节流 ~11 FPS 重绘: 增量到达或 tick 都走这里
+                if last_paint.elapsed() >= std::time::Duration::from_millis(90) {
+                    if acc.is_empty() {
+                        // 纯思考阶段: 只用底部活动行显示 Thinking, **不画回复框** (干净)
+                        chrome.activity = tui::Activity::Thinking { started };
+                        chrome.draw();
+                    } else {
+                        chrome.activity = tui::Activity::Idle;
+                        panel.show(
+                            &acc,
+                            "Bolloon Agent",
+                            "◉ Generating · 流式输出中",
+                            chrome.cols,
+                            chrome.panel_anchor(),
+                        );
+                    }
+                    last_paint = std::time::Instant::now();
                 }
+            };
+            panel.finish(chrome.panel_anchor());
+            r
+        } else {
+            llm.generate("env", params).await
+        };
+        let res = match res {
+            Ok(r) => r,
+            Err(e) => {
+                refresh_status(chrome, sess);
+                return Err(format!("LLM 调用失败: {e}（已记日志, 不冒充成功回复）"));
             }
+        };
+        usage = Some(res.usage);
 
-            // 状态栏活数据段: 上游 usage 是真的就拿真的 (没给就不显示, 不编)
-            let u = res.usage;
-            let ctx = u.prompt_tokens + u.completion_tokens;
-            let tps = if elapsed_ms > 0 {
-                (u.completion_tokens as u128 * 1000 / elapsed_ms) as u32
+        // 模型没要工具 ⇒ 本轮就是最终答复, 收口
+        if res.tool_calls.is_empty() {
+            final_content = res.content;
+            break;
+        }
+
+        // ── 执行工具 (全部走 Harness 门: discover/permission/policy/budget/idempotency/execute/verify/evidence) ──
+        let mut tool_lines: Vec<String> =
+            vec![tui::panel::render_tool_calls_header(res.tool_calls.len())];
+        let mut tool_msgs: Vec<bolloon_llm::ChatMessage> = vec![];
+        for tc in &res.tool_calls {
+            let call = bolloon_harness::ToolCall {
+                id: tc.id.clone(),
+                name: tc.function.name.clone(),
+                arguments: serde_json::from_str(&tc.function.arguments)
+                    .unwrap_or_else(|_| serde_json::json!({})),
+            };
+            let outcome = harness.gate(call).await;
+            let (out_txt, ok) = if let Some(d) = &outcome.denied {
+                (format!("DENIED: {}", d.reason), false)
             } else {
-                0
+                let r = outcome.result.clone().expect("非 denied 必有 result");
+                (r.output.clone(), r.ok)
             };
-            chrome.status.stats = tui::TurnStats {
-                ctx_tokens: ctx,
-                elapsed_ms,
-                tps,
-                tools: res.tool_calls.len() as u32,
+            tools_used += 1;
+            let args = serde_json::from_str(&tc.function.arguments).ok();
+            let item = tui::panel::ToolCallListItem {
+                tool: tui::trace::trace_label(&tc.function.name),
+                status: if ok { "ok" } else { "error" }.into(),
+                duration_ms: Some(outcome.elapsed_ms), // 真时长 (不再是 None 假行)
+                args,
+                output: None,
+                // 失败显示**结构化**错误码（调用方据此决定重试/改参/重规划），没有人话兜底
+                error: if ok {
+                    None
+                } else {
+                    Some(
+                        outcome
+                            .result
+                            .as_ref()
+                            .and_then(|r| r.evidence.as_ref())
+                            .and_then(|e| bolloon_agent::tool_contract::format_error(Some(e)))
+                            .unwrap_or_else(|| out_txt.clone()),
+                    )
+                },
             };
-
-            sess.messages.push(bolloon_llm::ChatMessage {
-                role: "assistant".into(),
-                content: res.content,
+            tool_lines.push(tui::panel::render_tool_call_list_item(
+                &item,
+                0,
+                res.tool_calls.len(),
+            ));
+            tool_msgs.push(bolloon_llm::ChatMessage {
+                role: "tool".into(),
+                content: out_txt,
                 name: None,
-                tool_call_id: None,
+                tool_call_id: Some(tc.id.clone()),
                 images: vec![],
                 tool_calls: None,
             });
-            let _ = sess.save();
-            refresh_status(chrome, sess);
-            Ok(())
         }
-        Err(e) => {
-            refresh_status(chrome, sess);
-            Err(format!("LLM 调用失败: {e}（已记日志, 不冒充成功回复）"))
+        if full {
+            chrome.print_above(&tool_lines);
+        } else {
+            for l in &tool_lines {
+                println!("{l}");
+            }
+        }
+
+        // 回传: assistant(带 tool_calls) + tool 结果 ⇒ 模型据此续轮
+        // (此前生产侧写死 `tool_calls: None`, 工具调用在历史上直接丢失, 无法续轮)
+        convo.push(bolloon_llm::ChatMessage {
+            role: "assistant".into(),
+            content: res.content.clone(),
+            name: None,
+            tool_call_id: None,
+            images: vec![],
+            tool_calls: Some(
+                res.tool_calls
+                    .iter()
+                    .map(|tc| bolloon_llm::ToolCallMsg {
+                        id: tc.id.clone(),
+                        call_type: "function".into(),
+                        function: tc.function.clone(),
+                    })
+                    .collect(),
+            ),
+        });
+        convo.extend(tool_msgs);
+
+        if turn >= MAX_TOOL_TURNS {
+            // 达上限: 用最后产出的正文收口; 没有正文就如实说没完成, 不伪造"已完成"
+            final_content = if res.content.trim().is_empty() {
+                format!("（已连续调用工具 {MAX_TOOL_TURNS} 轮仍未产出最终答复 —— 如实上报, 不冒充完成）")
+            } else {
+                res.content.clone()
+            };
+            break;
         }
     }
+
+    let elapsed_ms = started.elapsed().as_millis();
+    if full {
+        chrome.activity = tui::Activity::Idle;
+    }
+
+    // 空回复**不出空框** —— `render_agent_message` 是唯一收口点
+    let boxed = tui::render_agent_message(&final_content);
+    let above: Vec<String> = boxed.split('\n').map(|s| s.to_string()).collect();
+    if full {
+        chrome.print_above(&above);
+    } else {
+        for l in &above {
+            println!("{l}");
+        }
+    }
+
+    // 状态栏活数据段: 上游 usage 是真的就拿真的 (没给就不显示, 不编)
+    let (ctx_tokens, completion_tokens) = match usage {
+        Some(u) => (u.prompt_tokens + u.completion_tokens, u.completion_tokens),
+        None => (0, 0),
+    };
+    let tps = if elapsed_ms > 0 {
+        (completion_tokens as u128 * 1000 / elapsed_ms) as u32
+    } else {
+        0
+    };
+    chrome.status.stats = tui::TurnStats {
+        ctx_tokens,
+        elapsed_ms,
+        tps,
+        tools: tools_used,
+    };
+
+    // 会话历史 = 完整轨迹 (含 assistant 的 tool_calls 与 tool 结果); system 提示每轮重建, 不落盘
+    sess.messages = convo.into_iter().skip(1).collect();
+    let _ = sess.save();
+    refresh_status(chrome, sess);
+    Ok(())
 }
 
 /// 状态栏: 模型名去掉 provider 前缀 (TS `index.ts` L1126-1129), 标题跟着会话走
@@ -698,6 +904,22 @@ fn emit(chrome: &mut tui::Chrome, full: bool, lines: &[String]) {
     }
 }
 
+/// 装配 bolloon 身份 system prompt: 单一真源 = `bolloon_agent::prompt::build_system_prompt`
+/// (与 web/App 完全一致). 按 `channel` 选全局(home)/项目内(project) 身份文件 (soul/agent/persona).
+/// 装配失败降级为最小 bolloon 文本, 绝不因此打断聊天.
+fn build_bolloon_system(channel: &str) -> String {
+    let home = bolloon_agent::home::BolloonHome::resolve();
+    let project = std::env::current_dir().unwrap_or_default();
+    let docs = bolloon_agent::home::AgentDocs::freeze_with(&home, "bolloon", channel, &project)
+        .unwrap_or_else(|_| bolloon_agent::home::AgentDocs::freeze(&home, "bolloon").unwrap());
+    let ctx = bolloon_agent::prompt::AssembleContext {
+        channel,
+        role: None,
+        tool: None,
+    };
+    bolloon_agent::prompt::build_system_prompt(&docs, None, None, None, 0, "", &ctx).text
+}
+
 /// 组装启动 Dashboard 的数据快照 (全部从运行时读, 不硬编码示例)
 fn build_dashboard(sess: &chat_command::ChatSession) -> tui::DashboardData {
     let model = sess.model.rsplit('/').next().unwrap_or(&sess.model).to_string();
@@ -711,15 +933,34 @@ fn build_dashboard(sess: &chat_command::ChatSession) -> tui::DashboardData {
         .to_string_lossy()
         .replacen(&home, "~", 1)
         .to_string();
-    // 技能: 真实读取 SkillsRegistry (对话中自动蒸馏出来的)
-    let skills_path = sess
+    // 技能: 全局 (~/.bolloon/skills.json) + 项目 (sess.dir/../skills.json) 合并, 跨文件夹复用
+    let home_path = std::path::PathBuf::from(&home);
+    let mut skills: Vec<String> = Vec::new();
+    let global_skills = home_path.join("skills.json");
+    if global_skills.exists() {
+        skills.extend(
+            bolloon_agent::skills_runtime::SkillEvolver::load_json(&global_skills)
+                .registry
+                .names(),
+        );
+    }
+    let proj_skills = sess
         .dir
         .parent()
         .map(|p| p.join("skills.json"))
         .unwrap_or_else(|| std::path::PathBuf::from("skills.json"));
-    let skills = bolloon_agent::skills_runtime::SkillEvolver::load_json(&skills_path)
-        .registry
-        .names();
+    if proj_skills.exists() {
+        for n in bolloon_agent::skills_runtime::SkillEvolver::load_json(&proj_skills)
+            .registry
+            .names()
+        {
+            if !skills.contains(&n) {
+                skills.push(n);
+            }
+        }
+    }
+    // MCP: 全局 (~/.bolloon/mcp.json) + 项目 (mcp.json, 含父目录) 合并 server 名
+    let mcp = load_mcp_server_names(&home_path, &sess.dir);
     tui::DashboardData {
         product: "BOLLOON".into(),
         version: env!("CARGO_PKG_VERSION").into(),
@@ -728,12 +969,50 @@ fn build_dashboard(sess: &chat_command::ChatSession) -> tui::DashboardData {
         model,
         dir,
         session_id: sess.id.chars().take(8).collect(),
-        // 内置 harness 工具 (真实): kernel_loop / harness 里注册的 read_file + shell
-        tools: vec!["read_file".into(), "shell".into()],
-        mcp: vec![], // 按 ~/.bolloon/mcp.json 配置加载, 未配置则为空
+        // 真实注册且**能执行**的工具 (单一真源 = builtin_tool_defs; 迁移中随工具族增长)
+        tools: bolloon_agent::builtin_tools::builtin_tool_defs()
+            .iter()
+            .map(|d| d.name.clone())
+            .collect(),
+        mcp,
         skills,
         update_status: "⚙ 本地构建".into(),
     }
+}
+
+/// 全局 (~/.bolloon/mcp.json) + 项目 (mcp.json, 含父目录) 合并 MCP server 名 (跨文件夹复用)
+fn load_mcp_server_names(home: &std::path::Path, project: &std::path::Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut add = |p: &std::path::Path| {
+        if !p.exists() {
+            return;
+        }
+        let v: serde_json::Value = match std::fs::read_to_string(p)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+        {
+            Some(v) => v,
+            None => return,
+        };
+        // 兼容 {"mcpServers": {...}} 与 {"<name>": {...}} 两种形态
+        let obj = v
+            .get("mcpServers")
+            .and_then(|x| x.as_object())
+            .or_else(|| v.as_object());
+        if let Some(o) = obj {
+            for k in o.keys() {
+                if !out.contains(k) {
+                    out.push(k.clone());
+                }
+            }
+        }
+    };
+    add(&home.join("mcp.json"));
+    add(&project.join("mcp.json"));
+    if let Some(parent) = project.parent() {
+        add(&parent.join("mcp.json"));
+    }
+    out
 }
 
 /// 选模型供应商 —— 全量 200+ 家 (内置 13 + 目录 223 + 自定义)

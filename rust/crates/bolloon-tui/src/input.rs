@@ -434,14 +434,15 @@ pub fn ask_composer(
     let max_in = max_input_lines();
     let prompt = COMPOSER_PROMPT;
     let mut cx = Compose::new(history.to_vec(), initial);
-    let mut compl: Option<(ComplKind, usize, String)> = None;
-    let mut items: Vec<ComplItem> = Vec::new();
+    // 补全状态 (由 `recompute_compl` 统一推导, 分支里只改 `dismissed`)
+    let mut compl: Option<(ComplKind, usize, String)>;
+    let mut items: Vec<ComplItem>;
     let mut sel: usize = 0;
     let mut dismissed = false; // 用户 Esc/Tab 关掉过 → 不再自动重开, 直到下一次编辑
     let mut notes: Vec<String> = Vec::new();
     let mut drawn: usize = 0;
 
-    // 先清掉下方 chrome 占的 6 行, 免得旧边框和 composer 叠在一起
+    // 先清掉下方 chrome 占的几行, 免得旧边框和 composer 叠在一起
     print!("\x1b[{COMPOSER_CLEAR_ROWS}A\x1b[J");
     let _ = std::io::stdout().flush();
 
@@ -463,11 +464,9 @@ pub fn ask_composer(
             match resolve_action(&key) {
                 EditAction::Submit => {
                     if compl.is_some() {
-                        // 补全打开时 Enter = 接受候选, **不提交**
+                        // 补全打开时 Enter = 接受候选, **不提交** (再按一次 Enter 才发)
                         accept_compl(&mut cx, &compl, &items, &mut sel);
                         dismissed = true;
-                        compl = None;
-                        items.clear();
                     } else {
                         clear_block(drawn);
                         return LineResult { value: cx.buf().to_string(), eof: false, cancelled: false };
@@ -478,15 +477,12 @@ pub fn ask_composer(
                     if compl.is_some() {
                         accept_compl(&mut cx, &compl, &items, &mut sel);
                         dismissed = true;
-                        compl = None;
-                        items.clear();
                     }
                 }
                 EditAction::Cancel => {
                     if compl.is_some() {
+                        // Esc 先只收菜单, 不丢草稿
                         dismissed = true;
-                        compl = None;
-                        items.clear();
                     } else {
                         clear_block(drawn);
                         return LineResult { value: String::new(), eof: false, cancelled: true };
@@ -495,8 +491,6 @@ pub fn ask_composer(
                 EditAction::Newline => {
                     // 换行前先收掉补全, 免得草稿里混入菜单状态
                     dismissed = true;
-                    compl = None;
-                    items.clear();
                     cx.newline();
                     notes.clear();
                 }
@@ -529,8 +523,6 @@ pub fn ask_composer(
                 EditAction::OpenDraft => {
                     notes = open_draft(&mut guard, &mut cx, false);
                     dismissed = true;
-                    compl = None;
-                    items.clear();
                     // 编辑器占过屏 ⇒ 输入块位置未知, 从当前行重新起一帧
                     print!("\r\x1b[J");
                     drawn = 0;
@@ -538,8 +530,6 @@ pub fn ask_composer(
                 EditAction::PasteImage => {
                     notes = paste_image(&mut cx, false);
                     dismissed = true;
-                    compl = None;
-                    items.clear();
                 }
                 EditAction::Ignore => {}
             }

@@ -10,11 +10,13 @@ pub mod oplog;
 pub mod replication;
 pub mod orbit_store;
 pub mod group_orbit;
+pub mod attestation;
 pub use identity::*;
 pub use envelope::*;
 pub use gossip::*;
 pub use orbit_store::*;
 pub use group_orbit::*;
+pub use attestation::*;
 
 /// b58 编码 (外部 crate 复用, 不重复引依赖)
 pub fn b58_encode(bytes: &[u8]) -> String {

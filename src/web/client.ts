@@ -3558,6 +3558,9 @@ async function init() {
     if (gt && gl) { gt.textContent = '▶'; gl.style.display = 'none'; }
     if (typeof toggleWorldIntentCol === 'function') toggleWorldIntentCol(false);
   } catch { /* 静默: 元素缺失不影响主流程 */ }
+
+  // 2026-10-26 (用户): App 桌面三栏式侧边导航 — 仅 Electron 生效, 网页端布局不变
+  if (isDesktopEnv()) setupDesktopThreeColumn();
 }
 
 // P2P Network Modal - React Version
@@ -6432,6 +6435,115 @@ function detectChain(addr) {
   if (/^0x[0-9a-fA-F]{64}$/.test(addr)) return 'SUI';
   if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) return 'SOL';
   return '?';
+}
+
+// ── 2026-10-26 (用户): App 桌面三栏式侧边导航布局 (Three-column Sidebar Layout) ──
+// 仅 Electron 桌面端启用 (body.desktop-three-col); 网页端 isDesktopEnv()=false, 布局完全不变。
+// 第一栏 .primary-rail = 全局导航 (模块切换 + 全局入口, 复用 header 现有按钮不重复逻辑)
+// 第二栏 #sidebar      = 上下文侧边栏 (按 data-module 显隐, 可折叠)
+// 第三栏 .main         = 主内容区 (现状不变, 自适应)
+
+function isDesktopEnv(): boolean {
+  try {
+    if (typeof window !== 'undefined' && (window as any).electronAPI) return true;
+    return /Electron/i.test(navigator.userAgent || '');
+  } catch { return false; }
+}
+
+let desktopModule: string | null = null;
+
+// 切换第一栏模块 → 第二栏内容随之变化 (+ 联动主区面板)
+function setDesktopModule(mod: string): void {
+  desktopModule = mod;
+  const body = document.body;
+  ['agents', 'world', 'p2p', 'gateway'].forEach(m => body.classList.remove('desktop-module-' + m));
+  body.classList.add('desktop-module-' + mod);
+  // 第一栏选中态
+  document.querySelectorAll('#primary-rail .rail-btn[data-module]').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-module') === mod);
+  });
+  if (mod === 'world') {
+    // 世界模块: 主区切到世界视图
+    switchPanel('world');
+    return;
+  }
+  // agents / p2p / gateway 模块: 主区应为聊天视图; 列表点击由原有渲染器接手 (selectChannel)
+  if (worldView && worldView.style.display !== 'none') switchPanel('chat');
+  if (mod === 'p2p') {
+    document.getElementById('remote-agents-section')?.classList.remove('collapsed');
+  }
+  if (mod === 'gateway') {
+    const gt = document.getElementById('gateway-toggle');
+    const gl = document.getElementById('gateway-list');
+    if (gt) gt.textContent = '▼';
+    if (gl) gl.style.display = '';
+  }
+}
+
+function setupDesktopThreeColumn(): void {
+  if (document.body.classList.contains('desktop-three-col')) return; // 幂等
+  document.body.classList.add('desktop-three-col');
+
+  // 第二栏折叠: 拦截 #sidebar-toggle (capture 先于原 toggleSidebar, 防止桌面端走滑出式折叠)
+  document.addEventListener('click', (e) => {
+    const t = e.target as Element | null;
+    if (t && t.closest && t.closest('#sidebar-toggle')) {
+      e.stopPropagation();
+      e.preventDefault();
+      document.body.classList.toggle('desktop-sec-collapsed');
+    }
+  }, true);
+
+  // 第一栏 → 第二栏: 模块切换
+  document.querySelectorAll('#primary-rail .rail-btn[data-module]').forEach(b => {
+    b.addEventListener('click', () => setDesktopModule(b.getAttribute('data-module') || 'agents'));
+  });
+
+  // 第二栏 → 第三栏: 世界视图覆盖时点 channel 列表要切回聊天视图 (原有 handler 只调 selectChannel)
+  if (sidebar) {
+    sidebar.addEventListener('click', (e) => {
+      const t = e.target as Element | null;
+      if (!t || !t.closest) return;
+      const isChannelPick = t.closest('.agent-row, .session-item, .gateway-item, .remote-channel-row');
+      if (isChannelPick && worldView && worldView.style.display !== 'none') {
+        switchPanel('chat');
+      }
+    });
+  }
+
+  // 第一栏底部全局入口 → 复用 header 现有按钮, 不重复绑定逻辑
+  const relay = (railId: string, targetId: string) => {
+    const railBtn = document.getElementById(railId);
+    const target = document.getElementById(targetId);
+    if (railBtn && target) railBtn.addEventListener('click', () => target.click());
+  };
+  relay('rail-wallet-btn', 'wallet-btn');
+  relay('rail-judgments-btn', 'judgments-btn');
+  relay('rail-settings-btn', 'api-config-btn');
+  relay('rail-theme-btn', 'theme-toggle');
+  // 头像: 点击走原 #user-avatar; 字母用 observer 同步 (原头像在折叠恢复条里, 桌面端已隐藏)
+  const railAvatar = document.getElementById('rail-user-avatar');
+  const origAvatar = document.getElementById('user-avatar');
+  if (railAvatar && origAvatar) railAvatar.addEventListener('click', () => origAvatar.click());
+  const origLetter = document.getElementById('avatar-letter');
+  const railLetter = document.getElementById('rail-avatar-letter');
+  if (origLetter && railLetter) {
+    railLetter.textContent = origLetter.textContent || '?';
+    new MutationObserver(() => { railLetter.textContent = origLetter.textContent || '?'; })
+      .observe(origLetter, { childList: true, characterData: true, subtree: true });
+  }
+
+  // 世界模块的第二栏面板: 复用主区现有控件
+  document.getElementById('desktop-world-intents-btn')?.addEventListener('click', () => {
+    worldColToggle?.click();
+  });
+  document.getElementById('desktop-world-focus-btn')?.addEventListener('click', () => {
+    const wi = document.getElementById('world-input') as HTMLInputElement | null;
+    if (wi) { wi.focus(); wi.select?.(); }
+  });
+
+  // 默认模块: 智能体 (聊天为主入口)
+  setDesktopModule('agents');
 }
 
 // 启动应用

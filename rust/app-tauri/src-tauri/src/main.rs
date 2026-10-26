@@ -31,10 +31,14 @@ fn main() {
             });
 
             // ② 主窗口加载内嵌服务
+            //    2026-10-26: URL 带 ?app=desktop — UI 侧据此启用三栏式侧边导航
+            //    (浏览器直接访问同一端口不带该参数, 仍是原单侧栏布局, 网页端不变)
             let window = tauri::WebviewWindowBuilder::new(
                 &handle,
                 "main",
-                tauri::WebviewUrl::External(format!("http://127.0.0.1:{port}").parse().unwrap()),
+                tauri::WebviewUrl::External(
+                    format!("http://127.0.0.1:{port}/?app=desktop").parse().unwrap(),
+                ),
             )
             .title("Bolloon — 去中心化智能体资源交流网络")
             .inner_size(1200.0, 800.0)

@@ -95,15 +95,36 @@ impl InMemoryDocs {
     }
 }
 
-/// 路径辅助: 项目级上下文文档集 (对齐 TS hierarchy 4 层的键)
-pub fn context_doc_paths(project_root: &Path, home: &Path) -> Vec<std::path::PathBuf> {
-    vec![
+/// 身份/上下文文档集: 按 channel 区分**全局(跨项目共享)** 与 **项目内(当前仓库)** 文件的优先级。
+///
+/// - `local`: 项目内优先 (贴当前工程), 全局兜底
+/// - `web`/`app`/`p2p`/`group`/其它: 全局优先 (跨端一致的 bolloon 身份), 项目内补充
+///
+/// 文档改了下一轮生效 (见 `ContextFingerprint`); 这里只决定"按 channel 该优先读哪份"。
+pub fn identity_doc_paths(channel: &str, project_root: &Path, home: &Path) -> Vec<std::path::PathBuf> {
+    let global = vec![
+        home.join(".bolloon").join("persona").join("persona.json"),
+        home.join(".bolloon").join("Bolloon.md"),
+        home.join(".bolloon").join("rust").join("Bolloon.md"),
+    ];
+    let project = vec![
         project_root.join("Bolloon.md"),
         project_root.join("AGENTS.md"),
         project_root.join("CLAUDE.md"),
-        home.join(".bolloon").join("persona").join("persona.json"),
-        home.join(".bolloon").join("Bolloon.md"),
-    ]
+    ];
+    let (first, second) = if channel == "local" {
+        (project, global) // 项目内优先, 全局兜底
+    } else {
+        (global, project) // web/app/p2p/group: 全局优先, 项目内补充
+    };
+    let mut out = first;
+    out.extend(second);
+    out
+}
+
+/// 旧签名兼容 (默认按 `local`: 项目内优先)
+pub fn context_doc_paths(project_root: &Path, home: &Path) -> Vec<std::path::PathBuf> {
+    identity_doc_paths("local", project_root, home)
 }
 
 #[cfg(test)]
@@ -162,6 +183,34 @@ mod tests {
             d2.fingerprint().hash(),
             "插入顺序不影响指纹 (BTreeMap)"
         );
+    }
+
+    #[test]
+    fn local_prefers_project_docs() {
+        let h = crate::home::BolloonHome::at(
+            &std::env::temp_dir().join(format!("bolloon-id-local-{}", std::process::id())),
+        );
+        let p = std::path::Path::new("/proj");
+        let v = identity_doc_paths("local", p, &h.root());
+        assert!(v[0].starts_with("/proj"), "local 项目内优先: {:?}", v[0]);
+        assert_eq!(v[0].file_name().unwrap(), "Bolloon.md");
+    }
+
+    #[test]
+    fn web_prefers_global_persona() {
+        let h = crate::home::BolloonHome::at(
+            &std::env::temp_dir().join(format!("bolloon-id-web-{}", std::process::id())),
+        );
+        let p = std::path::Path::new("/proj");
+        let v = identity_doc_paths("web", p, &h.root());
+        assert!(v[0].starts_with(h.root()), "web 全局优先: {:?}", v[0]);
+        assert!(
+            v.iter().any(|x| x.ends_with("persona.json")),
+            "全局 persona 应在集合内: {:?}",
+            v
+        );
+        // 项目内文档仍作为补充出现在后面
+        assert!(v.iter().any(|x| x.starts_with("/proj")), "项目内补充在内");
     }
 
     #[test]

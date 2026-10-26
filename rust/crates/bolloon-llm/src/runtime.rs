@@ -290,6 +290,87 @@ impl LlmRuntime {
         result
     }
 
+    /// 流式生成 (SSE): 文本增量经 `on_delta` 逐段回调, 最终返回与 `generate`
+    /// 同构的完整结果 (增量已全部累积, 调用方二选一用, 不会重复)。
+    ///
+    /// 只有 OpenAI 兼容协议真正走流式; 其余协议**如实退回**一次性 `generate`
+    /// (on_delta 不触发 —— 不虚构逐 token, 调用方照常展示"思考中"动画)。
+    pub async fn generate_streaming(
+        &self,
+        provider_id: &str,
+        params: GenerateParams,
+        mut on_delta: impl FnMut(&str),
+    ) -> Result<GenerateResult, LlmError> {
+        let slot = self
+            .providers
+            .get(provider_id)
+            .ok_or_else(|| LlmError::Config(format!("provider {provider_id} 未配置")))?;
+        if slot.protocol != Protocol::OpenAiCompatible {
+            return self.generate(provider_id, params).await;
+        }
+        let key = format!("{}|{}", slot.cfg.id, slot.cfg.base_url);
+        if !self.gate.acquire(&key).await {
+            return Err(LlmError::ConcurrencyQueueFull);
+        }
+        let result = self
+            .do_generate_stream(slot, &params, &mut on_delta)
+            .await
+            .inspect_err(|e| {
+                tracing::debug!(provider = %slot.cfg.id, error = %e, "llm stream failed");
+            });
+        self.gate.release(&key).await;
+        result
+    }
+
+    async fn do_generate_stream(
+        &self,
+        slot: &ProviderSlot,
+        params: &GenerateParams,
+        on_delta: &mut impl FnMut(&str),
+    ) -> Result<GenerateResult, LlmError> {
+        let (url, headers, body) = openai_stream_request(&slot.cfg, params);
+        let mut req = self.client.post(url).json(&body);
+        for (k, v) in &headers {
+            req = req.header(k, v);
+        }
+        let resp = req.send().await.map_err(|e| {
+            if e.is_timeout() {
+                LlmError::Timeout
+            } else {
+                LlmError::Network(e.to_string())
+            }
+        })?;
+        let status = resp.status();
+        if !status.is_success() {
+            let raw = resp.text().await.unwrap_or_default();
+            return Err(LlmError::Http {
+                status: status.as_u16(),
+                body: truncate(&raw, 300),
+            });
+        }
+
+        use futures::StreamExt;
+        let mut acc = StreamAccumulator::default();
+        let mut sse = SseBuffer::default();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| LlmError::Network(e.to_string()))?;
+            for event in sse.push(&String::from_utf8_lossy(&chunk)) {
+                let data = event.trim();
+                if data == "[DONE]" {
+                    return Ok(acc.finish(&params.model));
+                }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                    let delta = acc.feed(&v);
+                    if !delta.is_empty() {
+                        on_delta(&delta);
+                    }
+                }
+            }
+        }
+        Ok(acc.finish(&params.model))
+    }
+
     async fn do_generate(
         &self,
         slot: &ProviderSlot,
@@ -420,6 +501,120 @@ fn openai_request(
         body["tools"] = serde_json::to_value(&params.tools).unwrap_or_default();
     }
     (url, headers, body)
+}
+
+/// OpenAI 兼容流式请求体: 与 `openai_request` 同构, 但 `stream: true` (SSE)
+fn openai_stream_request(
+    cfg: &ProviderConfig,
+    params: &GenerateParams,
+) -> (String, Vec<(String, String)>, serde_json::Value) {
+    let (url, headers, mut body) = openai_request(cfg, params);
+    body["stream"] = serde_json::json!(true);
+    (url, headers, body)
+}
+
+/// SSE 增量缓冲 (**纯函数**, 可单测): 网络字节流 → 完整的 `data:` 事件。
+///
+/// SSE 事件按行分隔; 半行留在缓冲里等下一个 chunk —— 断在转义/多字节 UTF-8
+/// 中间也不会丢字 (调用方用 from_utf8_lossy, 事件行拼齐后再解析 JSON)。
+#[derive(Default)]
+pub(crate) struct SseBuffer {
+    buf: String,
+}
+
+impl SseBuffer {
+    pub fn push(&mut self, s: &str) -> Vec<String> {
+        self.buf.push_str(s);
+        let mut out = Vec::new();
+        while let Some(pos) = self.buf.find('\n') {
+            let line: String = self.buf.drain(..=pos).collect();
+            let line = line.trim_end_matches(['\n', '\r']);
+            if let Some(data) = line.strip_prefix("data:") {
+                out.push(data.trim().to_string());
+            }
+            // 其余行 (event:/id:/注释/空行) 对 OpenAI chunk 无意义, 丢弃
+        }
+        out
+    }
+}
+
+/// 流式事件累积器 (**纯函数**, 可单测): OpenAI chunk → 文本增量 + 工具调用合并。
+///
+/// `tool_calls` 片段按 `index` 归位: id/name 取首个非空, arguments 逐段拼接
+/// (上游把 JSON 参数拆成几个字符一片发过来)。
+#[derive(Default)]
+pub(crate) struct StreamAccumulator {
+    content: String,
+    tool_calls: Vec<ToolCallMsg>,
+    finish_reason: String,
+    usage: Usage,
+}
+
+impl StreamAccumulator {
+    /// 喂一条 chunk; 返回本次的**文本增量** (没有则空串)
+    pub fn feed(&mut self, v: &serde_json::Value) -> String {
+        if let Some(u) = v.get("usage") {
+            if u.is_object() {
+                self.usage = serde_json::from_value(u.clone()).unwrap_or_default();
+            }
+        }
+        let Some(choices) = v.get("choices").and_then(|c| c.as_array()) else {
+            return String::new();
+        };
+        let Some(first) = choices.first() else {
+            return String::new();
+        };
+        if let Some(f) = first.get("finish_reason").and_then(|f| f.as_str()) {
+            self.finish_reason = f.to_string();
+        }
+        let mut delta_text = String::new();
+        let Some(delta) = first.get("delta") else {
+            return delta_text;
+        };
+        if let Some(c) = delta.get("content").and_then(|c| c.as_str()) {
+            self.content.push_str(c);
+            delta_text.push_str(c);
+        }
+        if let Some(tcs) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+            for tc in tcs {
+                let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                while self.tool_calls.len() <= idx {
+                    self.tool_calls.push(ToolCallMsg {
+                        id: String::new(),
+                        call_type: "function".into(),
+                        function: FunctionCall { name: String::new(), arguments: String::new() },
+                    });
+                }
+                let slot = &mut self.tool_calls[idx];
+                if let Some(id) = tc.get("id").and_then(|x| x.as_str()) {
+                    if !id.is_empty() {
+                        slot.id = id.to_string();
+                    }
+                }
+                if let Some(f) = tc.get("function") {
+                    if let Some(n) = f.get("name").and_then(|x| x.as_str()) {
+                        if !n.is_empty() {
+                            slot.function.name = n.to_string();
+                        }
+                    }
+                    if let Some(a) = f.get("arguments").and_then(|x| x.as_str()) {
+                        slot.function.arguments.push_str(a);
+                    }
+                }
+            }
+        }
+        delta_text
+    }
+
+    pub fn finish(self, model: &str) -> GenerateResult {
+        GenerateResult {
+            content: self.content,
+            tool_calls: self.tool_calls,
+            finish_reason: self.finish_reason,
+            usage: self.usage,
+            model: model.to_string(),
+        }
+    }
 }
 
 /// Anthropic: `POST {base}/messages` + `x-api-key` + `anthropic-version`
@@ -896,6 +1091,61 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SSE 缓冲: chunk 随意切, 事件行必须一行不少 (跨 chunk 的半行要等拼齐)
+    #[test]
+    fn sse_buffer_splits_events_across_chunks() {
+        let mut sse = SseBuffer::default();
+        assert_eq!(sse.push("data: {\"a\":1}\n\ndata: {\"b"), vec!["{\"a\":1}"], "完整行立即出, 半行等拼齐");
+        let events = sse.push("\":2}\n\ndata: [DONE]\n\n");
+        assert_eq!(events, vec!["{\"b\":2}", "[DONE]"]);
+    }
+
+    /// 累积器: 文本增量逐段回调内容一致; 工具调用片段按 index 拼合
+    #[test]
+    fn stream_accumulator_merges_text_and_tool_fragments() {
+        let mut acc = StreamAccumulator::default();
+        let d1 = acc.feed(&serde_json::json!({
+            "choices": [{"delta": {"content": "你"}}]
+        }));
+        let d2 = acc.feed(&serde_json::json!({
+            "choices": [{"delta": {"content": "好"}, "finish_reason": null}]
+        }));
+        acc.feed(&serde_json::json!({
+            "choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "function": {"name": "read_file", "arguments": "{\"path\":"}}
+            ]}}]
+        }));
+        acc.feed(&serde_json::json!({
+            "choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": "\"a.txt\"}"}}
+            ]}}]
+        }));
+        acc.feed(&serde_json::json!({
+            "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        }));
+        assert_eq!(d1, "你");
+        assert_eq!(d2, "好");
+        let r = acc.finish("m1");
+        assert_eq!(r.content, "你好");
+        assert_eq!(r.finish_reason, "tool_calls");
+        assert_eq!(r.usage.prompt_tokens, 10);
+        assert_eq!(r.tool_calls.len(), 1);
+        let tc = &r.tool_calls[0];
+        assert_eq!(tc.id, "call_1");
+        assert_eq!(tc.function.name, "read_file");
+        assert_eq!(tc.function.arguments, "{\"path\":\"a.txt\"}", "参数片段必须拼合");
+    }
+
+    /// 流式请求体: stream 必须是 true, 其余与一次性请求同构
+    #[test]
+    fn openai_stream_request_sets_stream_true() {
+        let p = GenerateParams::new("m", vec![msg("user", "hi")]);
+        let (_, _, body) = openai_stream_request(&cfg("p", "https://api.x/v1", Some("sk")), &p);
+        assert_eq!(body["stream"], serde_json::json!(true));
+        assert_eq!(body["model"], serde_json::json!("m"));
+    }
 
     fn msg(role: &str, text: &str) -> ChatMessage {
         ChatMessage {

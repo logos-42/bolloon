@@ -14,6 +14,13 @@ use crate::identity::KeyPair;
 /// 当前协议名 (冻结)
 pub const ENVELOPE_PROTOCOL: &str = "bolloon-envelope/1";
 
+/// P2P 主题注册表 —— `world.card` = 世界卡片跨机投递。
+///
+/// 对齐 TS `pi-sdk-tools.ts` 的 `world.card` 帧:
+/// 出口 `send_world_card` 广播/定向 → 入口剥前缀验签落盘。
+/// 信封层只认主题名; 卡片的打包/拆包语义在 `bolloon-agent::world`。
+pub const TOPIC_WORLD_CARD: &str = "world.card";
+
 /// 签名信封
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SignedEnvelope {

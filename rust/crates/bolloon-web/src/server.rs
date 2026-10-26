@@ -308,11 +308,24 @@ pub fn app(state: AppState) -> Router {
         .route("/api/world/watch", get(crate::native::world_watch))
         .route("/api/world/inbox", get(crate::native::world_inbox).post(crate::native::world_inbox_post))
         .route("/api/world/stats", get(crate::native::world_stats))
+        // 世界卡片跨机投递 (对齐 TS routes-world: cards / push / protocol)
+        .route("/api/world/cards", get(crate::native::world_cards))
+        .route("/api/world/cards/push", post(crate::native::world_cards_push))
+        .route("/api/world/cards/share", post(crate::native::world_cards_share))
+        .route("/api/world/cards/protocol", get(crate::native::world_cards_protocol))
         // 人类目录 (手机号/邮箱盲化 + 跨机查询 + 跨机加好友)
         .route("/api/directory/publish", post(crate::native::directory_publish))
         .route("/api/directory/lookup", get(crate::native::directory_lookup))
         .route("/api/directory/retract", post(crate::native::directory_retract))
         .route("/api/directory/remote-lookup", get(crate::native::directory_remote_lookup))
+        // 真跨机的接收侧 (对端探针) + 对端节点登记
+        .route("/api/directory/rpc", post(crate::native::directory_rpc))
+        .route(
+            "/api/directory/peers",
+            get(crate::native::directory_peers_list)
+                .post(crate::native::directory_peers_add)
+                .delete(crate::native::directory_peers_remove),
+        )
         .route("/api/friends/request", post(crate::native::friend_request))
         .route("/api/friends/accept", post(crate::native::friend_accept))
         .route("/api/friends/reject", post(crate::native::friend_reject))
@@ -1128,6 +1141,84 @@ mod route_tests {
             let last = get_json("/api/dream/last");
             assert_eq!(last["dreams"], serde_json::json!([written]));
             assert!(last["last"].is_null(), "还没做过梦 → 如 null 不编报告");
+
+            // 5) 世界卡片跨机投递: 自己签的 world.card 帧收下入库, 伪卡一律拒收
+            let kp = bolloon_p2p::identity::KeyPair::generate();
+            let card = bolloon_agent::world::WorldCard {
+                title: "跨机卡片".into(),
+                summary: "从另一台机器投递".into(),
+                media: vec![bolloon_agent::world::CardMedia {
+                    kind: bolloon_agent::world::CardMediaKind::Video,
+                    url: "ipfs://v".into(),
+                    mime: None,
+                    name: None,
+                }],
+                cover: Some(bolloon_agent::world::CardCover {
+                    url: "ipfs://cover".into(),
+                    kind: bolloon_agent::world::CoverKind::Video,
+                }),
+                provider_did: kp.did.as_str().into(),
+                provider_name: None,
+                scope: bolloon_agent::world::CardScope::Public,
+                issued_at_ms: 1,
+                verification: bolloon_agent::world::CardVerification::Unverified,
+            };
+            let env = bolloon_agent::world::pack_world_card(&kp, &card, 1);
+            let pushed = post_json("/api/world/cards/push", serde_json::to_value(&env).unwrap());
+            assert_eq!(pushed["ok"], serde_json::json!(true), "{pushed}");
+            assert_eq!(pushed["card"]["title"], serde_json::json!("跨机卡片"));
+            assert_eq!(pushed["card"]["card"]["verification"], serde_json::json!("verified"));
+            // 封面档位随卡片一起过网 (video → 前端渲染成高卡)
+            assert_eq!(pushed["card"]["card"]["cover"]["kind"], serde_json::json!("video"));
+
+            // 伪卡: 换掉正文 (签名不覆盖新内容) → 拒收, 不静默降级
+            let mut forged = env.clone();
+            forged.payload = serde_json::to_value(bolloon_agent::world::WorldCard {
+                title: "伪卡".into(),
+                ..card.clone()
+            })
+            .unwrap();
+            let rejected = post_json("/api/world/cards/push", serde_json::to_value(&forged).unwrap());
+            assert!(rejected["error"].as_str().unwrap().contains("拒收"), "{rejected}");
+
+            // 列表端点读到的是刚收的那张 (伪卡没入库)
+            let cards = get_json("/api/world/cards");
+            assert_eq!(cards["count"], serde_json::json!(1), "{cards}");
+
+            // 6) 两种分享路径: 好友模式 = 自动定向给好友 (不进公域); 公开模式 = 广播给世界
+            let mut priv_card = card.clone();
+            priv_card.scope = bolloon_agent::world::CardScope::Private;
+            let shared_priv = post_json("/api/world/cards/share", serde_json::to_value(&priv_card).unwrap());
+            assert_eq!(shared_priv["ok"], serde_json::json!(true), "{shared_priv}");
+            assert_eq!(shared_priv["mode"], serde_json::json!("friends"));
+            assert_eq!(
+                shared_priv["targets"], serde_json::json!([]),
+                "本用例没有好友 → 如实'没人收到', 不退化成广播"
+            );
+            // 好友卡发出的信封 scope 仍是 private (把它改成 public 验签必败, 不能偷扩受众)
+            let priv_env: bolloon_p2p::envelope::SignedEnvelope =
+                serde_json::from_value(shared_priv["envelope"].clone()).unwrap();
+            assert_eq!(
+                bolloon_agent::world::unpack_world_card(&priv_env).unwrap().scope,
+                bolloon_agent::world::CardScope::Private
+            );
+
+            let mut pub_card = card.clone();
+            pub_card.scope = bolloon_agent::world::CardScope::Public;
+            let shared_pub = post_json("/api/world/cards/share", serde_json::to_value(&pub_card).unwrap());
+            assert_eq!(shared_pub["mode"], serde_json::json!("broadcast"), "{shared_pub}");
+            assert!(shared_pub["delivery"].as_str().unwrap().contains("世界"), "{shared_pub}");
+
+            // 好友模式的卡: 非好友投递 → 拒收 (接收侧也不放水)
+            let env2 = bolloon_agent::world::pack_world_card(&kp, &priv_card, 2);
+            let rejected_friend =
+                post_json("/api/world/cards/push", serde_json::to_value(&env2).unwrap());
+            assert!(
+                rejected_friend["error"].as_str().unwrap().contains("好友"),
+                "{rejected_friend}"
+            );
+            // 被拒的没入库
+            assert_eq!(get_json("/api/world/cards")["count"], serde_json::json!(1));
 
             let _ = std::fs::remove_dir_all(&home);
         })

@@ -390,8 +390,11 @@ Hermes/Nous 账号计费面 (`/login` `/topup` `/subscription` …) · 只有一
 | **三栏布局 (Three-column Sidebar Layout)** | 第一栏 `.primary-rail` 56px 全局导航 (💬智能体/会话 · 🌍世界 · 🗨内部商议 + 底部主题/设置/头像) · 第二栏复用现有 `<aside>` 按模块显隐 (`dmod-chat`=智能体/会话 · `dmod-world`=意图面板) · 第三栏 `main` 主内容区 (room 面板仍是可开合附加列) |
 | **开关走壳, 不搞嗅探** | `app-tauri/main.rs` 加载 URL 加 `?app=desktop` (一行) — UI 侧 `isDesktopShell` 判定加 `body.desktop3col`; 浏览器访问同一端口不带参数 ⇒ 全部新 CSS/JS 不生效, 网页端零改动。壳仍只改导航 URL, 不写业务 |
 | **第二栏不重复造** | 世界意图面板 `.world-side` **整体 DOM 搬进第二栏** `#worldSideSlot` — id 全不变, `loadWorld/addWorldIntent/worldStats` 等 JS 原样工作; 主区世界流变全宽 (不与第二栏重复同一份意图 UI)。第一栏底部全局入口 relay 到现有按钮 (themeBtn/roomBtn/settingsBtn/brandLogo click()), 不重复绑定; 头部 `#worldTabBtn/#roomBtn` 桌面下隐藏 (消除重复导航) |
+| **更新按钮也进第一栏** | `#railUpdateBtn` ⟳ 放 rail 底部簇, **默认 `display:none`**, `renderUpdate()` 里 `syncRailUpdate()` 同步: 仅 `update.available` 才显形 + glow 脉冲 (复用 `pulse` 动画), 点击 relay 到 `#updateBtn` 同一套安装流 (下载→校验→原子替换→重启→reload), 不另写一份; 三栏下第二栏 `.side-update` 隐藏 (不重复)。**无更新/源不可达 (unknown) 一律不显形** — 沿用第十三批「绝不误报」纪律 (真跑 `/api/update` = available:false ⇒ 按钮不出现) |
+| **更新一条龙 (点击即装, 装完自动重启, 不弹窗)** | 把 `#updateBtn` 的处理抽成 `runUpdateFlow()` (侧栏与第一栏 rail 同一个入口): 点击 → `/api/update/apply` (后端 下载→校验→备份→原子替换→spawn 新进程) → `waitForRestart` 轮询 `/api/version` → `location.reload()`, **全程无 alert/confirm/prompt**, 进度只写在按钮上。**修真 bug**: `waitForRestart` 原用 `j.version===latest` — `/api/version` 回 `0.6.10` 而 GitHub tag 是 `v0.6.10` ⇒ **恒不相等** ⇒ 20s 后判「重启超时」⇒ **自动重启这条链一直是断的**; 改 `normVer()` 归一 (去 `v`/`V` 前缀, 空目标版本时服务重新应答即算已重启), 窗口 20s→30s。**进度可见**: 桌面三栏下第二栏 `.side-update` 已隐藏 ⇒ 新增 `setUpdateStage()` 把 安装中⏳/重启中⏳/✓/⟳ 同步到 rail 按钮 (图标+title), 不再「点了看不见任何反馈」 |
 | **联动** | `setPanel` 内同步模块 (header 世界 tab / 输入框 `/world` `/chat` 命令切面板时第一/二栏跟着切); `setRoomOpen` 同步 rail 🗨 按钮态; `setPanel`/rail 点击互为入口 |
 | **响应式/折叠** | 第二栏折叠沿用 `#app.collapsed` (66px 图标列); ≤860px 窄窗第二栏自动收成图标列 (第一栏/主区保留); collapsed/room-open 两态的 grid 模板都适配三栏 |
+| **折叠态: 图标保位 / 按钮隐去 / 点图标展开** | 折叠后 **Bolloon 图标留在原位** (覆盖全局 `#app.collapsed .brand{justify-content:center}` — 那条把图标挪到栏中央, 与"保留位置"相反), wordmark 文字与 `#collapseBtn` 一并隐去 (66px 栏里原会挤字), 再点 Bolloon 图标即展开; 抽出 `collapseSidebar/expandSidebar/syncCollapseHint`, 两处 Bolloon 图标 (第二栏 brandLogo / 第一栏 railLogo) 行为一致, title 随态提示「展开侧边栏」 |
 
 **验证**: `cargo test -p bolloon-web` 5/5 · `cargo check` (app-tauri) 0 error · 真跑起服务 `/api/health` ok, 页面含 `desktop3col`×27 / `primary-rail`×4 / `worldSideSlot`×5 标记。**诚实边界**: 未真开 Tauri 窗口目验 (需 `cargo tauri dev`); 第二栏折叠未做宽度 0 (沿用 66px)。
 
@@ -409,6 +412,25 @@ Hermes/Nous 账号计费面 (`/login` `/topup` `/subscription` …) · 只有一
 **门禁 (真跑)**: `cargo test -p bolloon-p2p` **50/50** (含 `two_nodes_converge_via_exchange` 真两目录两节点复制收敛、`create_append_reopen_recovers_entries` 重启恢复、`tampered_block_is_rejected_on_reopen` 篡改拒收、`acl_owner_only_blocks_stranger_on_disk_store` ACL 拒、`manifest_address_mismatch_rejected`、邀请伪造/过期/篡改拒); `cargo test --workspace` 全绿; `cargo build --workspace` 0 error。
 
 **诚实边界**: ① 跨机传输本身**未接** — `FileExchange` 是「同机不同目录 = 两节点」的磁盘真块交换, 跨机只需把这一层换成网络传输, 上层复制协议一行不改; ② **分片轮转未做** (与 TS 产品路径一致: 单库 events store); ③ 邀请链接带 manifest 是「被邀请方按同一 address 开同一个 store」的载体, 但 web 层还没暴露 import 入口 (前端 UI 暂无加入群表单); ④ `orbit_status` 如实标注 `oplog-persisted` (本地 oplog 已落盘), 不再谎报 `channel:"orbitdb"` 却走内存。
+
+## 2026-10-26 第二十一批 (Rust 归属签名 `bolloon-ownership/1`: agent 归属担责 / 钱包归属 / 手机号邮箱绑定)
+
+**动机**: leo 要求「用户后续身份确认都要 DID 签名 (含手机号/邮箱绑定), 对智能体也要归属签名并对 agent 负责」。Rust 侧此前 `owner_sig`/`ownerSig` 全是**空占位、从不验签**, 目录条目可被任意 `did` 字符串伪造 (只有 HMAC 盲化防枚举, 不防冒充身份)。**本命结论: Rust 的 DID 体系保持 DIAP 的 `did:pi:`, 不做替换。**
+
+| Rust 模块 | 冻结语义 |
+| --- | --- |
+| **`bolloon-p2p/identity`** (扩展) | DID **可反解公钥** (`pubkey_of_did`) —— `did:pi:` 的内容就是公钥本身 ⇒ 天然可反解, 也能读 W3C `did:key:z…` 便于跨实现互验; 新增 `did_pi_to_key` / `did_key_to_pi` **互认转换 (只是互认, 本命仍是 `did:pi:`)**; 测试钉住「只有 DID 字符串就能验签」 |
+| **`bolloon-p2p/attestation`** (新增) | **统一归属签名** `bolloon-ownership/1` (**一套代码管三类归属**, 不各写一套): `agent` = owner 声明「该智能体归我, 我对它负责」(**这就是担责**) / `wallet` = 钱包地址归该 agent / `phone`+`email` = 联系方式归我; canonical (serde_json Value = BTreeMap ⇒ **键字母序**, 两侧重算一致) + Ed25519 签名; **`owner_did` 必须就是签名者自己的 DID (不许替别人签)**; **自验不过即拒返回/拒落盘** (对齐 TS `address-binding` 范式); 判据: `protocol`/`statement_canonical`/`id_matches_statement`/`owner_did_resolvable`/`owner_sig_shape`/`owner_sig`/`nonce_shape`/`not_expired`/`nonce_unused` |
+| **`bolloon-agent/directory`** (改) | 新增 **`publish_signed`** (用本机 keypair 对「这个联系方式归我」签名, 复用 attestation) + **`verify_entry`** (用落盘字段**重建** statement 后验签 ⇒ 为此新增 `owner_nonce` 字段); `LookupHit` 加 **`verified`**; 跨机 reply 帧 **`LookupReplyPayload.verified` 跟着过线** (否则接收方分不清「命中」和「可信」); **`remote_add_friend` fail-closed: 没有有效 DID 归属签名的条目 ⇒ 拒绝加好友** (这才是真正堵住伪造) |
+
+**门禁 (真跑)**: `cargo test -p bolloon-p2p` **63 passed / 0 failed** (新增 attestation 9 + identity 7); `cargo test -p bolloon-agent directory` **20/20** (新增 `unsigned_entry_cannot_be_friended` 未签名条目不可加好友 · `publish_signed_roundtrip_and_forged_did_rejected` 篡改拒 + 替别人签拒 · `cross_machine_add_friend_flow` 改走真签名且断言 `verified`); `cargo build --workspace` **0 error** (cli 2 条 warning 为既有, 与本批无关)。
+
+**诚实边界 (重要)**:
+- **钱包归属目前只是「DID 单侧声明」, 不是所有权证明**。钱包要自证必须该地址私钥的 EIP-191 签名, 而 Rust workspace **没有 secp256k1/keccak 依赖** ⇒ 现在**验不了**。做法: `wallet_sig` 字段留口 + 判据 `wallet_self_proving` 恒 `Some(false)` 并附人话说明; 调用方可开 `require_wallet_proof` 让它直接判红 (**现在恒定红, 不糊过去**)。要真正做实钱包侧, 需给 workspace 加 **`k256`(secp256k1) + `sha3`(keccak256)** —— 依赖决策, 待拍板。
+- Rust web 里 **agent DID 是「轻量派生显示层」** (`native.rs`: `did:pi:<b58(派生)>`), **没有对应私钥**, 所以现在只能由 **owner 对 agent DID 签名声明归属** (= owner 担责, 正是要的责任面), 还不能让 agent 自己反签; 要 agent 自签需给 agent 分配真 KeyPair。
+- **web 层尚未接线**: `/api/directory/publish` 等仍走无签名的 `publish`; attestation 目前是**库能力 + 目录模块能力**, 运行时还没自动给 agent/钱包签发归属。下一步按 Rust 优先级接线。
+
+---
 
 ## DIAP Rust SDK (本机 /Users/apple/Downloads/DIAP_Rust_SDK)
 

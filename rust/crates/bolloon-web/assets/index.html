@@ -255,17 +255,97 @@
   .opp-card .row{display:flex;gap:6px;align-items:center}
   .opp-card .row button{font-size:11px;padding:4px 9px;border-radius:8px}
   .opp-card .why{font-size:11px;color:var(--muted);margin-left:auto}
+  /* 卡片封面 + 高度档位: 视频封面=高卡(16:9) / 图片封面=中卡(4:3) / 无封面=矮卡 */
+  .opp-card .cover{position:relative;width:100%;overflow:hidden;border-radius:10px;margin:8px 0 0;background:linear-gradient(135deg,#2a2a26,#1b1b19)}
+  .opp-card .cover img,.opp-card .cover video{width:100%;height:100%;object-fit:cover;display:block}
+  .opp-card .cover .cover-badge{position:absolute;left:8px;bottom:8px;font-size:10px;padding:2px 7px;border-radius:999px;background:rgba(0,0,0,.55);color:#fff;border:1px solid rgba(255,255,255,.18)}
+  .opp-card.tier-video .cover{aspect-ratio:16/9}
+  .opp-card.tier-image .cover{aspect-ratio:4/3}
+  /* 摘要按档位收行数: 高卡 3 行, 中/矮卡 2 行 */
+  .opp-card .sum{display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden}
+  .opp-card.tier-video .sum{-webkit-line-clamp:3}
+  .opp-card.tier-image .sum{-webkit-line-clamp:2}
+  .opp-card.tier-plain .sum{-webkit-line-clamp:2}
+  .opp-card .card-line{font-size:11px;color:var(--muted);margin:7px 0 2px}
+  /* 卡片内联媒体 (对齐 TS renderCardMediaInline: 图片 160 / 视频 180) */
+  .opp-card .card-media{margin-top:6px}
+  .opp-card .card-media img{max-width:100%;max-height:160px;border-radius:8px;display:block}
+  .opp-card .card-media video{max-width:100%;max-height:180px;border-radius:8px;display:block}
+  .opp-card .card-media audio{width:100%;margin-top:4px}
   .world-side{width:240px;flex:none;border-left:1px solid var(--line);overflow-y:auto;padding:12px}
   .intent-chip{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border:1px solid var(--line);border-radius:999px;font-size:11px;margin:0 4px 4px 0}
   .intent-chip .x{cursor:pointer;opacity:.6}
   .intent-chip .x:hover{opacity:1}
   .world-stat{font-size:11px;color:var(--muted);margin-top:8px}
   .theme-btn{display:grid;place-items:center;width:32px;height:28px;padding:0;border-radius:8px}
+  /* ============================================================
+     2026-10-26 (用户): App 桌面三栏式侧边导航布局 (Three-column Sidebar Layout)
+     仅 Tauri 桌面壳启用 (壳加载 URL 带 ?app=desktop → body.desktop3col)。
+     浏览器网页端不加该 class, 以下规则全部不生效 → 布局与改动前完全一致。
+     第一栏 .primary-rail  — 全局导航栏: 模块切换 + 全局入口 (56px, 图标为主)
+     第二栏 aside          — 上下文侧边栏: 按第一栏选中模块显隐 (可折叠, 沿用 #app.collapsed)
+     第三栏 main           — 主内容区: 自适应剩余空间 (room 面板仍是可开合的附加区)
+     ============================================================ */
+  .primary-rail{display:none}
+  body.desktop3col .primary-rail{
+    display:flex;flex-direction:column;align-items:center;gap:6px;
+    background:var(--panel);border-right:1px solid var(--line);padding:12px 0;min-width:0;overflow:hidden;
+  }
+  body.desktop3col #app{grid-template-columns:56px 284px minmax(0,1fr)}
+  body.desktop3col #app.collapsed{grid-template-columns:56px 66px minmax(0,1fr)}
+  body.desktop3col #app.room-open{grid-template-columns:56px 284px minmax(0,1fr) var(--roomw,360px)}
+  body.desktop3col #app.collapsed.room-open{grid-template-columns:56px 66px minmax(0,1fr) var(--roomw,360px)}
+  body.desktop3col .rail-logo{width:30px;height:30px;border-radius:9px;object-fit:cover;flex:none;cursor:pointer;box-shadow:0 0 0 1px var(--line)}
+  body.desktop3col .rail-btn{width:38px;height:34px;padding:0;border-radius:9px;font-size:15px;display:grid;place-items:center}
+  body.desktop3col .rail-btn.on{border-color:var(--accent);color:var(--accent);font-weight:600}
+  /* 更新按钮在桌面三栏里上移到第一栏 rail (有更新才显形, 脉冲态与侧栏同款) — 第二栏不再重复 */
+  body.desktop3col .side-update{display:none}
+  /* 第二栏折叠态: **Bolloon 图标留在原位** (不居中漂移), 文字与收缩按钮隐去, 点图标恢复展开。
+     覆盖全局 #app.collapsed .brand{justify-content:center} — 那条会把图标挪到栏中央, 与"保留位置"相反。 */
+  body.desktop3col #app.collapsed .brand{justify-content:flex-start;padding:14px 12px 10px}
+  body.desktop3col #app.collapsed .brand > span{display:none}
+  body.desktop3col #app.collapsed #collapseBtn{display:none}
+  body.desktop3col #app.collapsed .brand-icon{cursor:pointer}
+  body.desktop3col #railUpdateBtn.available{color:#1a1300;background:var(--glow);border-color:var(--glow);animation:pulse 1.6s infinite}
+  body.desktop3col .rail-gap{flex:1}
+  body.desktop3col .rail-ava{width:32px;height:32px;border-radius:50%;overflow:hidden;cursor:pointer;background:var(--panel2);display:grid;place-items:center;flex:none}
+  body.desktop3col .rail-ava img{width:100%;height:100%;object-fit:cover}
+  /* ── 第二栏内容随第一栏模块切换 (dmod-chat / dmod-world) ── */
+  #worldSideSlot{display:none}
+  body.desktop3col.dmod-world .side-actions,
+  body.desktop3col.dmod-world #secAgents,
+  body.desktop3col.dmod-world #agents,
+  body.desktop3col.dmod-world #secSessions,
+  body.desktop3col.dmod-world #sessions{display:none}
+  body.desktop3col.dmod-world #worldSideSlot{display:block}
+  /* 世界意图面板搬进第二栏: 占满栏宽, 去掉主区内嵌时的右边框 */
+  body.desktop3col #worldSideSlot .world-side{width:100%;border-left:none;padding:12px 10px}
+  /* 头部导航按钮与第一栏 rail 职责重复 (世界/内部商议入口), 桌面三栏下隐藏 */
+  body.desktop3col #worldTabBtn,body.desktop3col #roomBtn{display:none}
+  /* ── 响应式: 桌面窗口过窄时第二栏收成图标列 (第一栏/主区保留) ── */
+  @media(max-width:860px){
+    body.desktop3col #app{grid-template-columns:56px 66px minmax(0,1fr)}
+    body.desktop3col #app.room-open{grid-template-columns:56px 66px minmax(0,1fr) var(--roomw,360px)}
+  }
 </style>
 </head>
 <body>
 <div id="sessionMenu" class="menu hidden"></div>
 <div id="app">
+  <!-- 2026-10-26 (用户): 桌面三栏 — 第一栏: 全局导航栏。
+       仅 Tauri 壳显示 (?app=desktop → body.desktop3col); 网页端 display:none。
+       职责: 只做模块切换 + 全局入口 (relay 到现有按钮), 不放列表 — 列表在第二栏。 -->
+  <nav class="primary-rail" id="primaryRail">
+    <img class="rail-logo" id="railLogo" src="/icons/icon.png" alt="Bolloon" />
+    <button class="rail-btn on" data-module="chat" title="智能体 / 会话">💬</button>
+    <button class="rail-btn" data-module="world" title="世界（机会流）">🌍</button>
+    <button class="rail-btn" id="railRoomBtn" title="内部商议">🗨</button>
+    <div class="rail-gap"></div>
+    <!-- 更新入口: 与侧栏 #updateBtn 同源 — 默认 display:none, 有更新才由 renderUpdate() 显形 (点击 relay 到同一套安装流) -->
+    <button class="rail-btn" id="railUpdateBtn" title="安装更新" style="display:none">⟳</button>
+    <button class="rail-btn" id="railThemeBtn" title="主题">◐</button>
+    <div class="rail-ava" id="railAva" title="设置"></div>
+  </nav>
   <aside>
     <div class="brand">
       <img class="brand-icon" id="brandLogo" src="/icons/icon.png" alt="Bolloon" />
@@ -283,10 +363,12 @@
       </button>
     </div>
     <div class="side-scroll">
-      <div class="sec">智能体</div>
+      <!-- 2026-10-26: 桌面三栏第二栏 — 按第一栏模块显隐 (chat=智能体/会话, world=意图面板) -->
+      <div class="sec" id="secAgents">智能体</div>
       <div id="agents"></div>
-      <div class="sec">会话</div>
+      <div class="sec" id="secSessions">会话</div>
       <div id="sessions"></div>
+      <div id="worldSideSlot"></div>
     </div>
     <div class="side-update"><button id="updateBtn" title="安装更新" style="display:none">⟳ 更新</button></div>
     <div class="account" id="account">
@@ -679,6 +761,7 @@ async function closeRoomGroup(id){
 function setRoomOpen(open){
   const app=$('app');
   app.classList.toggle('room-open',open);
+  const rb=$('railRoomBtn'); if(rb)rb.classList.toggle('on',open); // 桌面三栏: rail 内部商议按钮态同步
   if(open){loadRoom();if(!roomTimer)roomTimer=setInterval(loadRoom,4000);}
   else if(roomTimer){clearInterval(roomTimer);roomTimer=null;}
 }
@@ -737,6 +820,17 @@ function renderSettingsUpdate(){
   if(update.available)el.textContent='发现新版本 '+update.latest+'，点击底部更新按钮安装。';
   else el.textContent='当前已是最新 '+(update.current||'');
 }
+// 2026-10-26: 桌面三栏第一栏的更新按钮 — 与侧栏 #updateBtn 同源同一份 update 数据,
+//   纪律同侧栏: **有更新才显示**, 没检测到更新 (或源不可达 unknown) 一律不显形, 绝不误报。
+function syncRailUpdate(){
+  const rb=$('railUpdateBtn'); if(!rb)return;
+  if(update&&update.available){
+    rb.style.display='';rb.classList.add('available');
+    rb.title='有新版本 '+update.latest+'，点击自动更新';
+  }else{
+    rb.style.display='none';rb.classList.remove('available');
+  }
+}
 function renderUpdate(){
   const b=$('updateBtn');
   if(b.dataset.busy==='1')return;
@@ -746,6 +840,7 @@ function renderUpdate(){
   }else{
     b.style.display='none';b.classList.remove('available');
   }
+  syncRailUpdate();
   renderSettingsUpdate();
 }
 async function refreshUpdate(){
@@ -1049,8 +1144,26 @@ $('newSessionBtn').onclick=async()=>{
   }catch(e){alert(e.message);}
 };
 
-$('collapseBtn').onclick=()=>$('app').classList.add('collapsed');
-$('brandLogo').onclick=()=>{if($('app').classList.contains('collapsed'))$('app').classList.remove('collapsed');};
+// 第二栏折叠/展开: 折叠后 **Bolloon 图标留在原位** 且收缩按钮隐去 (CSS), 再点图标即展开。
+//   两处 Bolloon 图标 (第二栏 brandLogo / 第一栏 railLogo) 行为一致, title 随态提示。
+function syncCollapseHint(){
+  const collapsed=$('app').classList.contains('collapsed');
+  const t=collapsed?'展开侧边栏':'Bolloon';
+  const logo=$('brandLogo'),rlogo=$('railLogo');
+  if(logo)logo.title=t;
+  if(rlogo)rlogo.title=t;
+}
+function collapseSidebar(){
+  $('app').classList.add('collapsed');
+  syncCollapseHint();
+}
+function expandSidebar(){
+  if(!$('app').classList.contains('collapsed'))return;
+  $('app').classList.remove('collapsed');
+  syncCollapseHint();
+}
+$('collapseBtn').onclick=collapseSidebar;
+$('brandLogo').onclick=expandSidebar;
 
 function editAgent(id){
   const a=state.agents.find(x=>x.id===id);
@@ -1196,41 +1309,62 @@ $('toolsSave').onclick=async()=>{
   }catch(e){alert(e.message);}
 };
 
+// 版本号归一: GitHub tag 是 "v0.6.10", /api/version 回 "0.6.10" — 直接 === 永远不等
+//  (旧实现因此恒判"重启超时", 自动重启这条链是断的)。
+const normVer=(v)=>String(v||'').trim().replace(/^[vV]+/,'');
 async function waitForRestart(latest){
-  for(let i=0;i<50;i++){
+  const want=normVer(latest);
+  for(let i=0;i<75;i++){ // 30s: 下载+校验+原子替换+新进程起来
     await new Promise(r=>setTimeout(r,400));
     try{
       const r=await fetch('/api/version',{cache:'no-store'});
       if(!r.ok)continue;
       const j=await r.json();
-      if(j.version===latest)return true;
+      const got=normVer(j.version);
+      if(!want||got===want)return true; // 没目标版本时: 服务重新应答即算已重启
     }catch(_){}
   }
   return false;
 }
-$('updateBtn').onclick=async()=>{
+// 2026-10-26: 更新一条龙 — 点击 → 安装 → 自动重启 → reload, **全程无弹窗**
+//   进度只写在按钮上 (侧栏 #updateBtn 文字 + 第一栏 #railUpdateBtn 图标/title),
+//   失败也只落在按钮上 + console, 不 alert / confirm / prompt (需要人决策时不默默替他做, 也不需要点掉弹窗)。
+function setUpdateStage(text,stage){
   const b=$('updateBtn');
-  if(b.dataset.busy==='1')return;
-  b.dataset.busy='1';b.disabled=true;b.textContent='更新中…';
+  if(b){b.textContent=text;}
+  const rb=$('railUpdateBtn');
+  if(rb){
+    rb.style.display='';rb.classList.add('available'); // 安装中持续可见 (此时确实"有更新正在装")
+    rb.textContent=(stage==='install'||stage==='restart')?'⏳':(stage==='done'?'✓':'⟳');
+    rb.title=text;
+  }
+}
+async function runUpdateFlow(){
+  const b=$('updateBtn');
+  if(b.dataset.busy==='1')return; // 互斥: 一次只跑一条安装流
+  b.dataset.busy='1';b.disabled=true;
+  setUpdateStage('正在安装更新…','install');
   try{
     if(!(update&&update.available))update=await api('/api/update');
     if(!update.available){
-      b.textContent='已是最新';
-      setTimeout(()=>{b.dataset.busy='';b.disabled=false;renderUpdate();},1200);
+      setUpdateStage('已是最新','done');
+      setTimeout(()=>{b.dataset.busy='';b.disabled=false;renderUpdate();},1500);
       return;
     }
     const latest=update.latest;
+    // apply 若把旧进程换掉, 这个 fetch 会以网络错误结束 (属预期) — 直接进重启等待
     try{await api('/api/update/apply',{method:'POST'});}catch(e){/* 旧进程可能已退出，继续轮询 */}
-    b.textContent='正在重启…';
-    if(await waitForRestart(latest)){location.reload();return;}
-    b.textContent='重启超时';
+    setUpdateStage('正在重启…','restart');
+    if(await waitForRestart(latest)){location.reload();return;} // 新进程起来了 → 直接刷新, 不再回到按钮态
+    setUpdateStage('重启超时 (请手动重开)','fail');
   }catch(e){
     console.error(e);
-    b.textContent='更新失败';
+    setUpdateStage('更新失败','fail');
   }
   b.dataset.busy='';b.disabled=false;
-  setTimeout(()=>renderUpdate(),2500);
-};
+  setTimeout(()=>renderUpdate(),2500); // 回到"有更新才显形"
+}
+$('updateBtn').onclick=runUpdateFlow;
 
 async function streamChat(payload,onDelta,signal){
   const r=await fetch('/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal});
@@ -1386,6 +1520,47 @@ $("themeBtn").addEventListener("click", () => {
 applyTheme(localStorage.getItem(THEME_KEY) || "");
 
 // ---------- 世界模式 (对齐 TS routes-world: 意图/机会流/校准环/信箱) ----------
+
+// 卡片封面区 —— cover.kind 决定高度档位 (video=高卡 16:9 / image=中卡 4:3 / 无封面=矮卡)
+function cardCover(o) {
+  const c = (o && o.card && o.card.cover) ? o.card.cover : null;
+  if (!c || !c.url) return { tier: "tier-plain", html: "" };
+  const u = escapeHTML(c.url);
+  const isVideo = c.kind === "video";
+  // 媒体加载失败只隐藏本体: 容器靠 tier 的 aspect-ratio 仍占住高度, 档位照旧可见
+  const inner = isVideo
+    ? `<video src="${u}" muted loop playsinline preload="metadata"></video>`
+    : `<img src="${u}" loading="lazy" alt="" onerror="this.style.visibility='hidden'">`;
+  const badge = isVideo ? "▶ 视频封面" : "🖼 图片封面";
+  return { tier: isVideo ? "tier-video" : "tier-image", html: `<div class="cover">${inner}<span class="cover-badge">${badge}</span></div>` };
+}
+
+// 卡片来源行 (对齐 TS: "🌐 世界卡片 · 来自 X ✓ 验签通过")
+function cardLine(o) {
+  const c = o && o.card;
+  if (!c) return "";
+  const p = c.provider || {};
+  const name = p.name || p.did || "未知来源";
+  const v = c.verification === "verified" ? "✓ 验签通过"
+    : (c.verification === "signature-invalid" ? "✗ 签名无效" : "· 未验签");
+  const icon = c.scope === "public" ? "🌐" : "🎴";
+  return `<div class="card-line">${icon} 世界卡片 · 来自 ${escapeHTML(name)} ${v}</div>`;
+}
+
+// 卡片媒体内联渲染 (对齐 TS renderCardMediaInline: 图片 160 / 视频 180 / 音频 / 其它=链接行)
+function cardMedia(media) {
+  if (!Array.isArray(media) || !media.length) return "";
+  const parts = media.map(m => {
+    const u = escapeHTML(m.url || "");
+    const n = escapeHTML(m.name || "媒体");
+    if (m.kind === "image") return `<img src="${u}" alt="${n}" loading="lazy">`;
+    if (m.kind === "video") return `<video controls preload="none" src="${u}"></video>`;
+    if (m.kind === "audio") return `<audio controls preload="none" src="${u}"></audio>`;
+    return `<div style="margin-top:4px">📄 <a href="${u}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">${n}</a></div>`;
+  });
+  return `<div class="card-media">${parts.join("")}</div>`;
+}
+
 let worldLoaded = false;
 async function loadWorld() {
   try {
@@ -1395,9 +1570,13 @@ async function loadWorld() {
       const tags = (o.tags || []).map(t => `<span class="tag-chip">${escapeHTML(t)}</span>`).join("");
       const scopeIcon = o.kind === "card" ? "🎴" : (o.scope === "public" ? "🌐" : "🌍");
       const url = o.url ? ` <a href="${escapeHTML(o.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">链接</a>` : "";
-      return `<div class="opp-card">
+      const cv = cardCover(o);
+      return `<div class="opp-card ${cv.tier}">
         <div class="oh"><b>${escapeHTML(o.title)}</b><span class="scope">${scopeIcon} ${escapeHTML(o.kind || "world")}</span><span class="score">${(o.score ?? 0).toFixed(2)}</span></div>
         <div class="sum">${escapeHTML(o.summary || "")}${url}</div>
+        ${cv.html}
+        ${cardLine(o)}
+        ${cardMedia(o.card && o.card.media)}
         <div class="tags">${tags}</div>
         <div class="row">
           ${o.accepted ? '<span class="tag-chip" style="color:var(--accent);border-color:var(--accent)">已接受</span>' : `<button data-act="accept" data-id="${o.id}">接受</button>`}
@@ -1444,11 +1623,50 @@ async function addWorldIntent() {
 $("worldIntentAdd").addEventListener("click", addWorldIntent);
 $("worldIntentInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); addWorldIntent(); } });
 
+// ── 2026-10-26 (用户): App 桌面三栏式侧边导航 (仅 Tauri 壳, ?app=desktop → body.desktop3col) ──
+// 第一栏 #primaryRail = 全局导航 (模块切换 + 全局入口, relay 到现有按钮, 不重复逻辑)
+// 第二栏 aside        = 上下文侧边栏 (dmod-chat: 智能体/会话 · dmod-world: 意图面板)
+// 第三栏 main         = 主内容区 (现状不变; room 面板仍为可开合附加区)
+const isDesktopShell = /[?&]app=desktop\b/.test(location.search);
+function setDesktopModule(mod) {
+  document.body.classList.remove('dmod-chat', 'dmod-world');
+  document.body.classList.add('dmod-' + mod);
+  document.querySelectorAll('#primaryRail .rail-btn[data-module]').forEach(b => {
+    b.classList.toggle('on', b.dataset.module === mod);
+  });
+}
+function initDesktopThreeCol() {
+  if (document.body.classList.contains('desktop3col')) return; // 幂等
+  document.body.classList.add('desktop3col');
+  // 世界意图面板 (.world-side) 整体搬进第二栏插槽 — DOM 移动不改 id, 原有 loadWorld/addWorldIntent 等 JS 照常工作
+  const slot = $('worldSideSlot'), ws = document.querySelector('.world-side');
+  if (slot && ws) slot.appendChild(ws);
+  // 第一栏 → 第二栏: 模块切换 (并联动主区面板)
+  document.querySelectorAll('#primaryRail .rail-btn[data-module]').forEach(b => {
+    b.addEventListener('click', () => { setDesktopModule(b.dataset.module); setPanel(b.dataset.module); });
+  });
+  // 第一栏底部全局入口 → relay 到现有按钮, 不重复绑定逻辑
+  // 更新: 走与 #updateBtn 同一个 runUpdateFlow (下载→校验→原子替换→重启→reload), 不另写一份
+  $('railUpdateBtn').onclick = () => runUpdateFlow();
+  $('railThemeBtn').onclick = () => $('themeBtn').click();
+  $('railRoomBtn').onclick = () => $('roomBtn').click();
+  $('railAva').onclick = () => openSettings();
+  const syncRailAva = () => { $('railAva').innerHTML = $('accountAva').innerHTML; };
+  new MutationObserver(syncRailAva).observe($('accountAva'), { childList: true, subtree: true });
+  syncRailAva();
+  // rail logo 与原 brand icon 同行为: 折叠态点击恢复第二栏 (点 Bolloon 图标 = 展开)
+  $('railLogo').onclick = () => $('brandLogo').click();
+  syncCollapseHint();
+  setDesktopModule('chat');
+}
+if (isDesktopShell) initDesktopThreeCol();
+
 // 面板切换: 世界 ⇄ 聊天
 function setPanel(panel) {
   const m = document.querySelector("main");
   m.classList.toggle("world-mode", panel === "world");
   $("worldTabBtn").style.color = panel === "world" ? "var(--accent)" : "";
+  if (isDesktopShell) setDesktopModule(panel === "world" ? "world" : "chat"); // 桌面三栏: 第一/二栏随主区面板联动 (header tab / /world 命令同样生效)
   if (panel === "world") { if (!worldLoaded) loadWorld(); if (!worldTimer) worldTimer = setInterval(loadWorld, 15000); }
   else if (worldTimer) { clearInterval(worldTimer); worldTimer = null; }
 }

@@ -396,14 +396,17 @@ pub fn build_system_prompt(
     ctx: &AssembleContext,
 ) -> SystemPromptText {
     let mut layers = builtin_layers();
-    // 快照层 (home 冻结文档; 随动态加入)
+    // 快照层 (home 冻结文档; 随动态加入) — 身份细分: agent 名 + ID 分类(channel) + persona + soul + agent
     layers.push(PromptLayer {
         id: "dynamic.snapshot".into(),
         version: "1.0.0".into(),
         priority: 200,
         applies_to: vec![AppliesTo::All],
-        max_chars: 1200,
-        content: format!("{}\n\n{}", docs.soul.content, docs.agent.content),
+        max_chars: 1800,
+        content: format!(
+            "# Identity\nagent: {}\nid_class: {}\n\n## Persona\n{}\n\n## Soul\n{}\n\n## Agent\n{}",
+            docs.agent_id, docs.id_class, docs.persona.content, docs.soul.content, docs.agent.content
+        ),
     });
     if let Some(idx) = skills_index {
         layers.push(PromptLayer {

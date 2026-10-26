@@ -135,6 +135,10 @@ pub struct NativeState {
     // ── 人类目录 (手机号/邮箱盲化 + 跨机查询/加好友) ──
     /// 盲化目录条目 (HMAC; 明文与 pepper 都不在这里)
     pub directory: Vec<bolloon_agent::directory::DirectoryEntry>,
+    /// **已登记的对端节点基址** (真跨机查询/加好友的目标, 例 `http://192.168.1.9:54188`);
+    /// 空 = 没有对手域 ⇒ 跨机查询如实返回 miss (**不再把自己当成对端**)
+    #[serde(default)]
+    pub directory_peers: Vec<String>,
     /// 好友请求簿 (consent 状态机)
     pub friends: bolloon_agent::contacts::FriendBook,
     // ── 做梦机制 (整理记忆与经验 → 升级 skills) ──
@@ -1386,12 +1390,82 @@ pub async fn update_apply(State(st): State<AppState>) -> Json<serde_json::Value>
 // ────────────────────────── 世界模式 (对齐 TS routes-world.ts) ──────────────────────────
 
 /// 世界种子机会 (演示流; 真实机会由 world-watcher / P2P 投递注入)
-fn seed_world() -> Vec<(String, String, Vec<String>, Option<String>, &'static str)> {
+struct SeedOpp {
+    title: String,
+    summary: String,
+    tags: Vec<String>,
+    url: Option<String>,
+    kind: &'static str,
+    /// 卡片负载 (有 → UI 渲染封面区; 封面 `kind` 决定卡片高度档位)
+    card: Option<serde_json::Value>,
+}
+
+fn seed_world() -> Vec<SeedOpp> {
     vec![
-        ("世界流示例".into(), "世界持续流入 — 没有意图也保持流动".into(), vec!["world".into()], None, "world"),
-        ("合作招募 · 可控核聚变".into(), "交叉验证口径, 需要两拨人".into(), vec!["聚变".into(), "合作".into()], Some("https://example.com/1".into()), "public"),
-        ("论文共读 · 等离子体约束".into(), "每周一次线上共读".into(), vec!["等离子体".into(), "论文".into()], Some("https://example.com/2".into()), "public"),
-        ("工具共享 · efficode 规范包".into(), "付费信息, 0.01 USDC".into(), vec!["工具".into(), "规范".into()], None, "card"),
+        // ① 无封面 → 矮卡
+        SeedOpp {
+            title: "世界流示例".into(),
+            summary: "世界持续流入 — 没有意图也保持流动".into(),
+            tags: vec!["world".into()],
+            url: None,
+            kind: "world",
+            card: None,
+        },
+        // ② 视频封面 → 高卡 (16:9)
+        SeedOpp {
+            title: "合作招募 · 可控核聚变".into(),
+            summary: "交叉验证口径, 需要两拨人; 附点火实录与装置图".into(),
+            tags: vec!["聚变".into(), "合作".into()],
+            url: Some("https://example.com/1".into()),
+            kind: "public",
+            card: Some(serde_json::json!({
+                "title": "可控核聚变 · 点火实录",
+                "summary": "装置点火 30 秒, 附装置剖面图",
+                "cover": { "url": "https://example.com/cover/fusion.mp4", "kind": "video" },
+                "media": [
+                    { "kind": "video", "url": "https://example.com/media/fusion.mp4", "mime": "video/mp4", "name": "点火实录.mp4" },
+                    { "kind": "image", "url": "https://example.com/media/device.png", "mime": "image/png", "name": "装置剖面图.png" }
+                ],
+                "provider": { "did": "did:pi:seed-fusion", "name": "聚变小组" },
+                "verification": "verified"
+            })),
+        },
+        // ③ 图片封面 → 中卡 (4:3)
+        SeedOpp {
+            title: "论文共读 · 等离子体约束".into(),
+            summary: "每周一次线上共读, 本次读约束位形综述".into(),
+            tags: vec!["等离子体".into(), "论文".into()],
+            url: Some("https://example.com/2".into()),
+            kind: "public",
+            card: Some(serde_json::json!({
+                "title": "等离子体约束 · 综述封面",
+                "summary": "综述首页扫描件",
+                "cover": { "url": "https://example.com/cover/plasma.png", "kind": "image" },
+                "media": [
+                    { "kind": "image", "url": "https://example.com/cover/plasma.png", "mime": "image/png", "name": "综述封面.png" },
+                    { "kind": "audio", "url": "https://example.com/media/reading.mp3", "mime": "audio/mpeg", "name": "上期录音.mp3" }
+                ],
+                "provider": { "did": "did:pi:seed-plasma", "name": "共读小组" },
+                "verification": "verified"
+            })),
+        },
+        // ④ 无封面但有媒体 → 矮卡 + 内联媒体
+        SeedOpp {
+            title: "工具共享 · efficode 规范包".into(),
+            summary: "付费信息, 0.01 USDC".into(),
+            tags: vec!["工具".into(), "规范".into()],
+            url: None,
+            kind: "card",
+            card: Some(serde_json::json!({
+                "title": "efficode 规范包",
+                "summary": "纯文本交付, 无封面",
+                "media": [
+                    { "kind": "text", "url": "https://example.com/media/spec.md", "mime": "text/markdown", "name": "规范.md" }
+                ],
+                "provider": { "did": "did:pi:seed-efficode", "name": "efficode" },
+                "verification": "unverified"
+            })),
+        },
     ]
 }
 
@@ -1444,17 +1518,23 @@ pub async fn list_opportunities(
     let fs = st.forge.lock().await;
     let use_tags = if tags.is_empty() { fs.intents.clone() } else { tags };
     let mut items: Vec<serde_json::Value> = fs.inbox.clone(); // 信箱置顶
-    for (i, (title, summary, t, url, kind)) in seed_world().into_iter().enumerate() {
+    for (i, o) in seed_world().into_iter().enumerate() {
         let id = format!("opp-{i:03}");
         if fs.ignored.contains(&id) {
             continue; // 校准环: 被忽略的同源不再流入
         }
-        let (score, reason) = bolloon_agent::world::score_opportunity(&use_tags, &t);
-        items.push(serde_json::json!({
-            "id": id, "title": title, "summary": summary, "tags": t,
-            "score": score, "reason": reason, "url": url, "kind": kind,
+        // 打分参数: (机会标签, 意图标签) —— 原来两参写反, 导致无意图时也落 no-match 0.3
+        // (与 world.rs 文档口径 "无意图 = 0.5 world, 永远不空流" 不符), 这里改正。
+        let (score, reason) = bolloon_agent::world::score_opportunity(&o.tags, &use_tags);
+        let mut item = serde_json::json!({
+            "id": id, "title": o.title, "summary": o.summary, "tags": o.tags,
+            "score": score, "reason": reason, "url": o.url, "kind": o.kind,
             "accepted": fs.accepted.contains(&id),
-        }));
+        });
+        if let Some(card) = o.card {
+            item["card"] = card; // UI 据此渲染封面区 + 高度档位
+        }
+        items.push(item);
     }
     items.sort_by(|a, b| {
         let sa = a["score"].as_f64().unwrap_or(0.0);
@@ -1511,25 +1591,150 @@ pub async fn world_inbox(State(st): State<AppState>) -> Json<serde_json::Value> 
 }
 
 /// POST /api/world/inbox → 投递世界卡片 (外部 agent 传入; 内容格式不限)
+///
+/// - 带信封 (`protocol` + `signature`) → 走**跨机验签**, 不过即拒 (对齐 TS `deliverWorldCard`)
+/// - 裸卡片 (本机/自投递) → 如实标 `unverified` 入库, 不假装可信
 pub async fn world_inbox_post(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
+    let mut card_json = if req.get("protocol").is_some() && req.get("signature").is_some() {
+        let env: bolloon_p2p::envelope::SignedEnvelope = match serde_json::from_value(req.clone()) {
+            Ok(e) => e,
+            Err(_) => return Json(serde_json::json!({ "error": "信封格式错误 (拒收)" })),
+        };
+        match bolloon_agent::world::unpack_world_card(&env) {
+            Ok(c) => serde_json::to_value(&c).unwrap_or(serde_json::Value::Null),
+            Err(e) => {
+                return Json(serde_json::json!({ "error": format!("卡片验签失败 (拒收): {e}") }))
+            }
+        }
+    } else {
+        serde_json::json!({
+            "title": req["title"], "summary": req["summary"],
+            "cover": req["cover"], "media": req["media"],
+            "provider": req["provider"], "scope": req["scope"],
+        })
+    };
+    // 验签结论: 信封路径由 unpack 写入 verified, 裸卡一律 unverified
+    let verification = card_json["verification"].as_str().unwrap_or("unverified").to_string();
+    card_json["verification"] = serde_json::json!(verification);
+
     let mut fs = st.forge.lock().await;
-    let card = serde_json::json!({
+    let item = serde_json::json!({
         "id": format!("card-{:04}", fs.inbox.len() + 1),
         "kind": "card",
         "score": 2.0, // 置顶
-        "title": req["title"].as_str().unwrap_or("世界卡片"),
-        "summary": req["summary"].as_str().unwrap_or(""),
-        "scope": req["scope"].as_str().unwrap_or("public"),
-        "provider": req["provider"],
-        "media": req["media"],
+        "title": card_json["title"].as_str().unwrap_or("世界卡片"),
+        "summary": card_json["summary"].as_str().unwrap_or(""),
         "content": req["content"],
+        "card": card_json,
     });
-    fs.inbox.push(card.clone());
+    fs.inbox.push(item.clone());
     fs.save(&data_dir());
-    Json(serde_json::json!({ "card": card }))
+    Json(serde_json::json!({ "card": item }))
+}
+
+/// GET /api/world/cards → 世界卡片列表 (对齐 TS `GET /api/world/cards`)
+pub async fn world_cards(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    let cards: Vec<&serde_json::Value> = fs.inbox.iter().filter(|c| c["kind"] == "card").collect();
+    Json(serde_json::json!({ "ok": true, "count": cards.len(), "cards": cards }))
+}
+
+/// POST /api/world/cards/push → **跨机投递入口** (信封 `world.card` 帧; 验签不过即拒)
+///
+/// 对齐 TS `POST /api/world/cards/push` (X-Signature) 与 `deliverWorldCard`:
+/// 信封验签 (协议 + DID/公钥一致 + Ed25519) + `provider_did == sender`, 任一不过**拒收**。
+pub async fn world_cards_push(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let env: bolloon_p2p::envelope::SignedEnvelope = match serde_json::from_value(req) {
+        Ok(e) => e,
+        Err(_) => return Json(serde_json::json!({ "error": "信封格式错误 (拒收)" })),
+    };
+    let card = match bolloon_agent::world::unpack_world_card(&env) {
+        Ok(c) => c,
+        Err(e) => return Json(serde_json::json!({ "error": format!("拒收: {e}") })),
+    };
+    let mut fs = st.forge.lock().await;
+    // 好友模式的卡只收好友的 (与发送侧 delivery_for 成对, 两端都不放水)
+    if let Err(e) = bolloon_agent::world::accept_card(&card, fs.friends.friends()) {
+        return Json(serde_json::json!({ "error": format!("拒收: {e}") }));
+    }
+    let card_json = serde_json::to_value(&card).unwrap_or(serde_json::Value::Null);
+    let item = serde_json::json!({
+        "id": format!("card-{:04}", fs.inbox.len() + 1),
+        "kind": "card",
+        "score": 2.0, // 置顶
+        "title": card.title,
+        "summary": card.summary,
+        "card": card_json,
+    });
+    fs.inbox.push(item.clone());
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true, "card": item }))
+}
+
+/// POST /api/world/cards/share → 分享一张卡片 (**两条路径语义严格不同**)
+///
+/// - `scope=private` (**默认**, 好友模式): 分享是**自动**的 —— 逐个定向投递给好友
+///   列表里的每个人, **只给好友看, 绝不进公域**; 没有好友就是没人收到, 不退化成广播。
+/// - `scope=public` (公开模式): 广播给世界上所有节点。
+///
+/// 信封**只签一次** (多路复用); 返回投递计划 `mode` + `targets`, 实际发包由传输层执行。
+pub async fn world_cards_share(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let card: bolloon_agent::world::WorldCard = match serde_json::from_value(req) {
+        Ok(c) => c,
+        Err(e) => return Json(serde_json::json!({ "error": format!("卡片格式错误: {e}") })),
+    };
+    let friends = {
+        let fs = st.forge.lock().await;
+        fs.friends.friends().to_vec() // 好友模式的目标集 (公开模式用不到)
+    };
+    let (env, delivery) =
+        bolloon_agent::world::share_card(&*st.identity, card, &friends, now_ms());
+    let is_broadcast = delivery.mode() == "broadcast";
+    Json(serde_json::json!({
+        "ok": true,
+        "mode": delivery.mode(),
+        "targets": delivery.targets(),
+        "target_count": delivery.targets().len(),
+        "delivery": if is_broadcast {
+            "世界 (公开广播)".to_string()
+        } else {
+            format!("{} 位好友 (定向, 不进公域)", delivery.targets().len())
+        },
+        "envelope": env,
+    }))
+}
+
+/// GET /api/world/cards/protocol → 跨机对接说明 (对齐 TS 同名端点)
+pub async fn world_cards_protocol(State(st): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "protocol": "bolloon-envelope/1",
+        "topic": bolloon_p2p::envelope::TOPIC_WORLD_CARD,
+        "push": "POST /api/world/cards/push — 信封 {protocol,sender,pubkey,topic,payload,ts,signature}",
+        "payload": {
+            "title": "string", "summary": "string",
+            "media": [{ "kind": "text|audio|image|video", "url": "string", "mime": "?", "name": "?" }],
+            "cover": { "url": "string", "kind": "image|video" },
+            "provider_did": "did:pi:<b58>", "provider_name": "?",
+            "scope": "private|public", "issued_at_ms": 0
+        },
+        "cover": "cover.kind 决定卡片高度档位: video=高卡(16:9), image=中卡(4:3), 无封面=矮卡",
+        "delivery": {
+            "private": "好友模式 (默认): 自动逐个定向给好友列表里每个人, 只给好友看, 绝不进公域; 没有好友 = 没人收到, 不退化成广播",
+            "public": "公开模式: 广播给世界上所有节点",
+            "note": "scope 进签名载荷 → 把好友卡改成 public 验签必败 (不能偷扩受众)"
+        },
+        "verify": "信封验签 + provider_did 必须等于信封 sender; 好友模式还必须是好友; 任一不过即拒收, 不静默降级",
+        "did": st.identity.did.as_str()
+    }))
 }
 
 /// GET /api/world/stats → 世界统计 (徽章数据源)
@@ -1564,13 +1769,16 @@ pub async fn directory_publish(
     let pepper = load_pepper();
     let mut fs = st.forge.lock().await;
     let mut d = dir_view(&fs);
-    let published = d.publish(&contact, &did, &pepper, name, pk, now_ms()).cloned();
+    // 「这个联系方式归我」这件事必须由**本机 DID 私钥**签字 —— 声明别人的 DID 会被拒
+    let published = d.publish_signed(&contact, &did, &pepper, name, pk, &*st.identity, now_ms());
     match published {
         Ok(e) => {
+            let verified = bolloon_agent::directory::verify_entry(&e);
             fs.directory = d.entries.clone();
             fs.save(&data_dir());
             Json(serde_json::json!({
                 "published": true, "blind": e.blind, "kind": e.kind.as_str(), "did": e.did,
+                "verified": verified,
             }))
         }
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
@@ -1607,25 +1815,82 @@ pub async fn directory_retract(
     }
 }
 
-/// 跨机传输 (本机目录 + 对端目录; 真跨机接 gossip/iroh 同一端口)
-struct CrossMachine {
-    remote: Vec<bolloon_agent::directory::DirectoryEntry>,
-    pepper: String,
+/// 网路结果**不该被再解释**: 只是把 HTTP 真拿回来的 reply 交给统一的
+/// 「rpcId 过滤 + 取首个命中」逻辑 (那一套本来就在 `lookup_remote` 里, 不重复实现)
+struct PrefetchedTransport {
+    replies: Vec<bolloon_agent::directory::LookupReply>,
 }
 
-impl bolloon_agent::directory::DirectoryTransport for CrossMachine {
-    fn lookup(&self, rpc: &bolloon_agent::directory::LookupRpc) -> Vec<bolloon_agent::directory::LookupReply> {
-        let contact = rpc
-            .payload
-            .contact
-            .clone()
-            .unwrap_or_else(|| rpc.payload.phone.clone());
-        let mut remote_dir = bolloon_agent::directory::HumanDirectory::new();
-        remote_dir.entries = self.remote.clone();
-        let hit =
-            bolloon_agent::directory::foreign_lookup(&remote_dir, &contact, rpc.payload.kind, &self.pepper);
-        vec![bolloon_agent::directory::build_lookup_reply(&rpc.payload.rpc_id, hit)]
+impl bolloon_agent::directory::DirectoryTransport for PrefetchedTransport {
+    fn lookup(
+        &self,
+        _rpc: &bolloon_agent::directory::LookupRpc,
+    ) -> Vec<bolloon_agent::directory::LookupReply> {
+        self.replies.clone()
     }
+}
+
+/// 向**已登记的每个对端**真发一次 HTTP 目录查询。
+///
+/// - 走真网络 (`ureq`), 超时用协议常量 4s;
+/// - 对端不可达 / 返回解析不了 ⇒ **跳过并如实记录**, 绝不当成"命中"或"没这个人";
+/// - `ureq` 是同步客户端 ⇒ 丢进 `spawn_blocking`, 不堵 async runtime。
+async fn post_lookup_replies(
+    peers: &[String],
+    rpc: &bolloon_agent::directory::LookupRpc,
+) -> (Vec<bolloon_agent::directory::LookupReply>, Vec<String>) {
+    let mut replies: Vec<bolloon_agent::directory::LookupReply> = vec![];
+    let mut notes: Vec<String> = vec![];
+    for peer in peers {
+        let base = peer.trim().trim_end_matches('/');
+        if base.is_empty() {
+            continue;
+        }
+        let Ok(body) = serde_json::to_value(rpc.clone()) else {
+            continue;
+        };
+        let url = format!("{base}/api/directory/rpc");
+        let url_c = url.clone();
+        let Ok(handle) = tokio::task::spawn_blocking(move || {
+            let resp = ureq::post(&url_c)
+                .timeout(std::time::Duration::from_millis(
+                    bolloon_agent::directory::DIRECTORY_LOOKUP_TIMEOUT_MS,
+                ))
+                .send_json(body)
+                .map_err(|e| format!("不可达/超时: {e}"))?;
+            resp.into_json::<bolloon_agent::directory::LookupReply>()
+                .map_err(|e| format!("reply 解析不了: {e}"))
+        }) else {
+            notes.push(format!("{base}: 无法发起 (不在 runtime 内)"));
+            continue;
+        };
+        match handle.await {
+            Ok(Ok(reply)) => replies.push(reply),
+            Ok(Err(e)) => notes.push(format!("{base}: {e}")),
+            Err(e) => notes.push(format!("{base}: 任务异常 {e}")),
+        }
+    }
+    (replies, notes)
+}
+
+/// 真跨机查询主入口: 取已登记对端 → 真发帧 → 统一过滤取命中
+async fn peers_lookup(
+    st: &AppState,
+    contact: &str,
+    kind: Option<bolloon_agent::directory::ContactKind>,
+) -> (bolloon_agent::directory::LookupHit, Vec<String>) {
+    let peers = {
+        let fs = st.forge.lock().await;
+        fs.directory_peers.clone()
+    };
+    let rpc_id = format!("rpc-{}", now_ms());
+    let rpc = bolloon_agent::directory::build_lookup_rpc(&rpc_id, contact, kind, None);
+    let (replies, notes) = post_lookup_replies(&peers, &rpc).await;
+    let t = PrefetchedTransport { replies };
+    (
+        bolloon_agent::directory::lookup_remote(&t, &rpc_id, contact, kind),
+        notes,
+    )
 }
 
 /// GET /api/directory/remote-lookup?contact=... → **跨机查询** (对端用他自己的 pepper 命中)
@@ -1639,18 +1904,94 @@ pub async fn directory_remote_lookup(
         "phone" => Some(bolloon_agent::directory::ContactKind::Phone),
         _ => None,
     });
-    // 对端目录 (远端节点发布过的条目; 单机演示 = 本机目录内容作为"对端"视图)
-    let peer_entries = {
+    // 真跨机: 向**已登记的对端**发包 (没有对端 ⇒ 如实 miss, 不拿本机目录冒充)
+    let peers = {
         let fs = st.forge.lock().await;
-        fs.directory.clone()
+        fs.directory_peers.clone()
     };
-    let t = CrossMachine {
-        remote: peer_entries,
-        pepper: load_pepper(),
-    };
-    let rpc_id = format!("rpc-{}", now_ms());
-    let hit = bolloon_agent::directory::lookup_remote(&t, &rpc_id, &contact, kind);
-    Json(serde_json::to_value(&hit).unwrap())
+    let (hit, notes) = peers_lookup(&st, &contact, kind).await;
+    Json(serde_json::json!({
+        "found": hit.found,
+        "did": hit.did,
+        "display_name": hit.display_name,
+        "public_key_hex": hit.public_key_hex,
+        "verified": hit.verified,
+        "peers": peers.len(),
+        "notes": notes,
+    }))
+}
+
+/// POST /api/directory/rpc → **对端探针入口** (真跨机的接收侧)
+///
+/// 语义: 别人发一个查询帧过来, 本机用**自己的 pepper** 查**自己的目录** ——
+/// pepper 永不出本机; 命中与否 + 该条目的验签结果 (`verified`) 由本机算好回一条 reply。
+pub async fn directory_rpc(
+    State(st): State<AppState>,
+    Json(rpc): Json<bolloon_agent::directory::LookupRpc>,
+) -> Json<bolloon_agent::directory::LookupReply> {
+    let contact = rpc
+        .payload
+        .contact
+        .clone()
+        .unwrap_or_else(|| rpc.payload.phone.clone());
+    let fs = st.forge.lock().await;
+    let d = dir_view(&fs);
+    let hit = bolloon_agent::directory::foreign_lookup(&d, &contact, rpc.payload.kind, &load_pepper());
+    Json(bolloon_agent::directory::build_lookup_reply(
+        &rpc.payload.rpc_id,
+        hit,
+    ))
+}
+
+/// GET /api/directory/peers → 已登记的对端节点 (跨机要有明确的对手域)
+pub async fn directory_peers_list(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    Json(serde_json::json!({ "peers": fs.directory_peers }))
+}
+
+/// POST /api/directory/peers → 登记对端基址 (例 http://192.168.1.9:54188; 幂等)
+pub async fn directory_peers_add(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let url = req["url"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    if url.is_empty() {
+        return Json(serde_json::json!({
+            "error": "缺 url (对端节点基址, 例 http://192.168.1.9:54188)"
+        }));
+    }
+    let mut fs = st.forge.lock().await;
+    if !fs.directory_peers.iter().any(|p| p == &url) {
+        fs.directory_peers.push(url.clone());
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "added": url, "peers": fs.directory_peers }))
+}
+
+/// DELETE /api/directory/peers → 移除对端
+pub async fn directory_peers_remove(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let url = req["url"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let mut fs = st.forge.lock().await;
+    let before = fs.directory_peers.len();
+    fs.directory_peers.retain(|p| p.trim_end_matches('/') != url);
+    fs.save(&data_dir());
+    Json(serde_json::json!({
+        "removed": before != fs.directory_peers.len(),
+        "peers": fs.directory_peers,
+    }))
 }
 
 /// POST /api/friends/request → **跨机加好友**: 查到 did → 发好友请求 (需对方同意)
@@ -1664,16 +2005,8 @@ pub async fn friend_request(
         "phone" => Some(bolloon_agent::directory::ContactKind::Phone),
         _ => None,
     });
-    let peer_entries = {
-        let fs = st.forge.lock().await;
-        fs.directory.clone()
-    };
-    let t = CrossMachine {
-        remote: peer_entries,
-        pepper: load_pepper(),
-    };
-    let rpc_id = format!("rpc-{}", now_ms());
-    let hit = bolloon_agent::directory::lookup_remote(&t, &rpc_id, &contact, kind);
+    // 真跨机: 向已登记对端查询 (拿回的 did 必须是**对端**目录里验过签的条目)
+    let (hit, notes) = peers_lookup(&st, &contact, kind).await;
     let mut fs = st.forge.lock().await;
     match bolloon_agent::directory::remote_add_friend(
         &hit,
@@ -1683,9 +2016,9 @@ pub async fn friend_request(
     ) {
         Ok(msg) => {
             fs.save(&data_dir());
-            Json(serde_json::json!({ "ok": true, "detail": msg, "hit": hit }))
+            Json(serde_json::json!({ "ok": true, "detail": msg, "hit": hit, "notes": notes }))
         }
-        Err(e) => Json(serde_json::json!({ "error": e, "hit": hit })),
+        Err(e) => Json(serde_json::json!({ "error": e, "hit": hit, "notes": notes })),
     }
 }
 

@@ -16,6 +16,8 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { createHmac, randomBytes } from 'node:crypto';
+import { ed25519Sign, ed25519Verify } from '../x402/paid-info-protocol.js';
+import { resolveDidPublicKey } from '../opportunity-inbox.js';
 
 export interface DirectoryEntry {
   phoneHash: string;        // HMAC-SHA256(salt || phone, pepper) → hex
@@ -35,6 +37,8 @@ export interface DirectoryLookupResult {
   publicKeyHex?: string;
   displayName?: string;
   revoked?: boolean;
+  /** 2026-10-26: owner_sig 验签结果 (true = 条目 DID 确实由该 DID 私钥签名声明, 可信任用于加好友) */
+  verified?: boolean;
 }
 
 const home = () => process.env.HOME || os.homedir() || '/tmp';
@@ -160,6 +164,60 @@ export async function loadOwnPublicKeyHex(homeDir?: string): Promise<string | un
  * 发布一条目录条目 (opt-in; 同 hash 已存在 → 更新为最新, 撤销后重发 = 恢复)
  * 支持 phone / email 双 kind (2026-10-23: 邮箱与手机号同目录同盲化, 各自归一化)
  */
+/**
+ * 目录条目 owner_sig —— 防伪造的核心 (2026-10-26)
+ *
+ * 发布时用**本机 DID 私钥**对条目声明内容签名; 查询时用条目 DID 解析公钥验签。
+ * 只有"用自己身份声明自己 DID"才签得上 (signer.did === did); 伪造别人的 DID 或
+ * 无本机身份 → owner_sig 留空 → 查询结果 verified=false → 不可用于加好友。
+ */
+
+/** 声明内容 (签名/验签统一口径; 排除 ownerSig/revokedAt 这些后加字段) */
+export function canonicalDirectoryEntry(e: {
+  phoneHash: string; salt: string; kind: 'phone' | 'email'; did: string;
+  publicKeyHex?: string; displayName?: string; publishedAt: string;
+}): string {
+  return JSON.stringify({
+    phoneHash: e.phoneHash,
+    salt: e.salt,
+    kind: e.kind,
+    did: e.did,
+    publicKeyHex: e.publicKeyHex ?? null,
+    displayName: e.displayName ?? null,
+    publishedAt: e.publishedAt,
+  });
+}
+
+/** 加载本机 DID 身份 (私钥只在进程内用于签名, 不落盘/不打印) */
+async function loadOwnerSigner(homeDir?: string): Promise<{ did: string; privateKey: Uint8Array } | null> {
+  try {
+    const { KeyManager } = (await import('@diap/sdk')) as any;
+    const file = path.join(homeDir || home(), '.bolloon', 'identity.json');
+    const kp: any = await (KeyManager as any).fromFile(file);
+    if (!kp?.privateKey || !kp?.did) return null;
+    return { did: String(kp.did), privateKey: kp.privateKey as Uint8Array };
+  } catch { return null; }
+}
+
+/** 用本机 DID 私钥为条目声明内容签名 (base64) */
+export async function signDirectoryEntry(
+  e: { phoneHash: string; salt: string; kind: 'phone' | 'email'; did: string; publicKeyHex?: string; displayName?: string; publishedAt: string; },
+  privateKey: Uint8Array,
+): Promise<string> {
+  return ed25519Sign(privateKey, canonicalDirectoryEntry(e));
+}
+
+/** 验签: 从条目 DID 解析公钥, 验证 owner_sig 对该声明内容有效 */
+export async function verifyDirectoryEntry(e: {
+  did: string; ownerSig: string; phoneHash: string; salt: string;
+  kind: 'phone' | 'email'; publicKeyHex?: string; displayName?: string; publishedAt: string;
+}): Promise<boolean> {
+  if (!e.ownerSig) return false;
+  const pub = await resolveDidPublicKey(e.did);
+  if (!pub) return false;
+  return ed25519Verify(pub, canonicalDirectoryEntry(e), e.ownerSig);
+}
+
 export async function publishEntry(
   value: string,
   did: string,
@@ -186,8 +244,17 @@ export async function publishEntry(
     displayName: opts.displayName,
     publishedAt: new Date().toISOString(),
     revokedAt: null,
-    ownerSig: '', // P2 落点 B 才要求签名
+    ownerSig: '', // 占位, 下面用本机身份签名
   };
+  // 2026-10-26: 用本机 DID 私钥为条目签名 — 只有"用自己身份声明自己 DID"才签得上
+  const signer = await loadOwnerSigner(opts.homeDir);
+  if (signer && signer.did === did) {
+    entry.ownerSig = await ed25519Sign(signer.privateKey, canonicalDirectoryEntry(entry));
+    // 自验不过 → 如实失败 (绝不落盘一份验不过的条目)
+    if (!(await verifyDirectoryEntry(entry))) {
+      throw new Error('目录条目自验失败 (owner_sig 验不过, 拒落盘)');
+    }
+  }
   const entries = await readDirectory(opts.homeDir);
   const idx = entries.findIndex((e) => e.did === did && e.kind === kind); // 同一 DID 同 kind 只留一条 (更新)
   if (idx >= 0) entries[idx] = entry;
@@ -229,7 +296,8 @@ export async function lookupPhone(
       : blindHash(normalized, e.salt, pepper);
     if (hash === e.phoneHash) {
       if (e.revokedAt) return { found: false, revoked: true }; // 撤销 = 与不存在同义
-      return { found: true, did: e.did, publicKeyHex: e.publicKeyHex, displayName: e.displayName };
+      const verified = await verifyDirectoryEntry(e);
+      return { found: true, did: e.did, publicKeyHex: e.publicKeyHex, displayName: e.displayName, verified };
     }
   }
   return { found: false };

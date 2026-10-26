@@ -1887,6 +1887,122 @@ body {
   }
 }
 
+/* ============================================================
+   2026-10-26 (用户): App 桌面三栏式侧边导航布局 (Three-column Sidebar Layout)
+   仅 Electron 桌面端启用 (client.ts isDesktopEnv() → body.desktop-three-col)。
+   网页端 (浏览器) 不加该 class, 以下规则全部不生效 → 布局与改动前完全一致。
+   第一栏 .primary-rail   — 全局导航栏: 模块切换 + 全局入口 (窄, 图标为主)
+   第二栏 #sidebar        — 上下文侧边栏: 按第一栏选中模块 (data-module) 显隐, 可折叠
+   第三栏 .main           — 主内容区: 自适应剩余空间
+   ============================================================ */
+
+/* 网页端: 第一栏整体隐藏 */
+.primary-rail {
+  display: none;
+}
+
+body.desktop-three-col .primary-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 60px;
+  flex-shrink: 0;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  padding: 12px 0;
+  gap: 6px;
+  z-index: 101;
+}
+
+/* ── 第一栏: 图标按钮 (选中态 / 悬停态与其他栏统一) ── */
+.rail-brand {
+  font-size: 20px;
+  color: var(--accent);
+  margin-bottom: 8px;
+  user-select: none;
+}
+.rail-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.rail-spacer {
+  flex: 1;
+}
+.rail-btn {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition);
+}
+.rail-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.rail-btn.active {
+  background: var(--accent);
+  color: var(--bg);
+}
+body.desktop-three-col .user-avatar {
+  width: 34px;
+  height: 34px;
+  cursor: pointer;
+}
+
+/* ── 第二栏: 上下文侧边栏 — 折叠恢复条 / 拖拽分隔线由三栏结构取代 ── */
+body.desktop-three-col #sidebar-collapsed-bar {
+  display: none !important;
+}
+body.desktop-three-col #sidebar-split-handle {
+  display: none;
+}
+/* 桌面端第二栏折叠改由 body.desktop-sec-collapsed 接管, 原滑出式折叠在桌面端中和 */
+body.desktop-three-col .sidebar.collapsed {
+  transform: none;
+  position: relative;
+}
+
+/* 分区按模块显隐: 桌面端同一时刻只显示第一栏选中模块的分区 */
+body.desktop-three-col .sidebar-section[data-module] {
+  display: none;
+}
+body.desktop-three-col.desktop-module-agents  .sidebar-section[data-module="agents"],
+body.desktop-three-col.desktop-module-world   .sidebar-section[data-module="world"],
+body.desktop-three-col.desktop-module-p2p     .sidebar-section[data-module="p2p"],
+body.desktop-three-col.desktop-module-gateway .sidebar-section[data-module="gateway"] {
+  display: flex;
+}
+
+/* 第二栏折叠态 (sidebar-toggle 触发) — 收起后主区自适应占满 */
+body.desktop-three-col.desktop-sec-collapsed #sidebar {
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  border-right: none;
+  padding: 0;
+}
+
+/* ── 响应式: 桌面窗口过窄时自动收起第二栏 (第一栏/主区保留) ── */
+@media (max-width: 960px) {
+  body.desktop-three-col #sidebar {
+    width: 0;
+    min-width: 0;
+    overflow: hidden;
+    border-right: none;
+    padding: 0;
+  }
+}
+
 /* Modal */
 .modal {
   display: none;

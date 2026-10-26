@@ -136,6 +136,56 @@ fn disp_width_char(ch: char) -> usize {
     }
 }
 
+/**
+ * 把一行**带 ANSI 样式**的文本按显示宽度硬断成多行。
+ *
+ * 与 `wrap_text` 逐字符硬断的本质区别: **ANSI 转义序列是零宽原子** ——
+ * 按可见字符数计宽、整个序列一起搬移, 绝不拦腰截断 (`\x1b[38;5;208m` 被切成
+ * `\x1b[3` + `8;5;…` 会把半截序列灌进终端, 表现为边框缺失/内容乱码)。
+ *
+ * 用于中文长句这类"无空格必然触发硬断"的场景 (md_inline 之后的正文)。
+ */
+pub fn hard_break_ansi(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0usize;
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            // 原子搬移完整转义序列: CSI (`ESC [` … 终止字母), 否则吞掉后随 1 字节
+            let mut seq = String::new();
+            seq.push(ch);
+            if chars.peek() == Some(&'[') {
+                seq.push(chars.next().unwrap());
+                while let Some(&c) = chars.peek() {
+                    seq.push(c);
+                    chars.next();
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else if let Some(&c) = chars.peek() {
+                seq.push(c);
+                chars.next();
+            }
+            cur.push_str(&seq);
+            continue;
+        }
+        let cv = if is_wide(ch) { 2 } else { 1 };
+        if cur_w + cv > width && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+            cur_w = 0;
+        }
+        cur.push(ch);
+        cur_w += cv;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 // ── 保守宽度 (Ambiguous 区按 2 列) ─────────────────────────
 /**
  * **保守子集** (TS `AMBIGUOUS_AS_WIDE`): 我们在状态栏/底栏**确实用到**的 Ambiguous 字符。
@@ -293,6 +343,38 @@ pub fn wait_for_term_size(timeout_ms: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 硬断: ANSI 序列是零宽原子 —— 不计宽、绝不拦腰截断
+    #[test]
+    fn hard_break_ansi_keeps_sequences_atomic() {
+        let styled = format!("{}中文很长的句子没有空格{}\x1b[38;5;208m再来一段{}\x1b[0m", "\x1b[1m", "\x1b[0m", "");
+        let parts = hard_break_ansi(&styled, 6);
+        assert!(parts.len() > 1, "必须真的断开: {parts:?}");
+        for p in &parts {
+            assert!(disp_width(p) <= 6, "行超宽: {p:?}");
+        }
+        // 拼回去(剥样式) = 原文(剥样式): 字符一个不丢
+        let orig = strip_ansi(&styled);
+        let rejoined = strip_ansi(&parts.concat());
+        assert_eq!(rejoined, orig);
+        // 每行的转义序列都是完整的: 行内 ESC 数 == 完整 SGR 数 (以 m 或字母收尾)
+        for p in &parts {
+            let esc = p.matches('\x1b').count();
+            let closed = p.matches("\x1b[0m").count() + p.matches('m').count();
+            assert_eq!(esc, closed.min(esc), "半截转义序列: {p:?}");
+            assert!(!p.ends_with('\x1b') && !p.ends_with("\x1b["), "序列被截断在行尾: {p:?}");
+        }
+    }
+
+    /// 纯文本硬断与旧口径一致 (宽字符不超宽)
+    #[test]
+    fn hard_break_plain_matches_width() {
+        let parts = hard_break_ansi("中文很长的句子没有空格", 6);
+        for p in &parts {
+            assert!(disp_width(p) <= 6, "行超宽: {p:?}");
+        }
+        assert_eq!(strip_ansi(&parts.concat()), "中文很长的句子没有空格");
+    }
 
     /// TS 判据: CJK/全角 = 2, 其余 = 1, ANSI 不计宽
     #[test]

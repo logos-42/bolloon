@@ -19,7 +19,21 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
+use bolloon_p2p::attestation::{
+    OwnershipAttestation, SubjectKind, VerifyOpts, canonical_statement, contact_statement,
+    new_nonce, ownership_id, sign_ownership, verify_ownership,
+};
+use bolloon_p2p::identity::KeyPair;
+
 use crate::contacts::{FriendBook, FriendRequestStatus};
+
+/// 目录 kind → attestation subject (手机号/邮箱 = 「这个联系方式归我」的声明)
+fn kind_to_subject(k: ContactKind) -> SubjectKind {
+    match k {
+        ContactKind::Phone => SubjectKind::Phone,
+        ContactKind::Email => SubjectKind::Email,
+    }
+}
 
 // ────────────────────────── kind / 归一化 / 校验 ──────────────────────────
 
@@ -120,9 +134,12 @@ pub struct DirectoryEntry {
     /// 撤销指针 (软删)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at_ms: Option<u64>,
-    /// 所有者签名 (防目录伪造条目)
+    /// 所有者签名 hex (防目录伪造条目); **空 = 没签 ⇒ 查询结果 verified=false**
     #[serde(default)]
     pub owner_sig: String,
+    /// 签发时的一次性 nonce (验签要重建 statement, 所以必须留着)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_nonce: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -144,6 +161,10 @@ pub struct LookupHit {
     pub display_name: Option<String>,
     #[serde(default)]
     pub revoked: bool,
+    /// 2026-10-26: owner_sig 验签结果 — **加好友只认 true**
+    /// (没签名的条目 = 谁都可以往里写 did ⇒ 不可信, 同 TS human-directory 口径)
+    #[serde(default)]
+    pub verified: bool,
 }
 
 /// 人类目录 (本机)
@@ -161,6 +182,9 @@ pub enum DirectoryError {
     AlreadyPublished,
     #[error("条目不存在")]
     NotFound,
+    /// 归属签名失败 (多半是「声明的 did 不是这把钥匙」— 不许替别人签)
+    #[error("归属签名失败 (不许替别人签): {0}")]
+    Sign(String),
 }
 
 impl HumanDirectory {
@@ -204,9 +228,47 @@ impl HumanDirectory {
             published_at_ms: now_ms,
             revoked_at_ms: None,
             owner_sig: String::new(),
+            owner_nonce: None,
         };
         self.entries.push(entry);
         Ok(self.entries.last().unwrap())
+    }
+
+    /// **带 DID 签名**的发布 (推荐入口) —— 「这个联系方式归我」这件事由
+    /// 本 keypair 的 Ed25519 签名背书; 别人拿不到这把私钥就造不出这条绑定。
+    ///
+    /// - `did` 必须就是 `kp.did` (不许替别人签, attestation 层会拦)
+    /// - 自验不过 ⇒ **拒入库** (与 TS address-binding 同范式)
+    pub fn publish_signed(
+        &mut self,
+        value: &str,
+        did: &str,
+        pepper: &str,
+        display_name: Option<&str>,
+        public_key_hex: Option<&str>,
+        kp: &KeyPair,
+        now_ms: u64,
+    ) -> Result<DirectoryEntry, DirectoryError> {
+        self.publish(value, did, pepper, display_name, public_key_hex, now_ms)?;
+        let e = self.entries.last_mut().ok_or(DirectoryError::NotFound)?;
+        let nonce = new_nonce();
+        let stmt = contact_statement(
+            &e.blind,
+            kind_to_subject(e.kind),
+            &e.did,
+            e.published_at_ms,
+            None,
+            nonce.clone(),
+        );
+        let att = sign_ownership(&stmt, kp).map_err(|err| DirectoryError::Sign(err.to_string()))?;
+        e.owner_sig = att.owner_sig;
+        e.owner_nonce = Some(nonce);
+        Ok(e.clone())
+    }
+
+    /// 验某条目的 owner_sig (重建 statement → attestation 验签)
+    pub fn verify_entry(e: &DirectoryEntry) -> bool {
+        verify_entry(e)
     }
 
     /// 查询 (按条目 kind + salt 重算比对; 撤销条目返回 found+revoked)
@@ -227,6 +289,7 @@ impl HumanDirectory {
                     public_key_hex: e.public_key_hex.clone(),
                     display_name: e.display_name.clone(),
                     revoked: e.revoked_at_ms.is_some(),
+                    verified: verify_entry(e),
                 };
             }
         }
@@ -258,6 +321,43 @@ impl HumanDirectory {
     }
 }
 
+/// 验某条目的 owner_sig: 用落盘字段**重建** statement, 再走 attestation 验签。
+///
+/// 为什么必须能重建: 签名对象是 statement 的 canonical 字节串, nonce/did/blind/published_at
+/// 缺一个都复现不出来 —— 这正是 [`DirectoryEntry::owner_nonce`] 存在的理由。
+pub fn verify_entry(e: &DirectoryEntry) -> bool {
+    if e.owner_sig.is_empty() {
+        return false; // 没签 = 不可信 (不猜, 不降级)
+    }
+    let Some(nonce) = e.owner_nonce.clone() else {
+        return false;
+    };
+    let stmt = contact_statement(
+        &e.blind,
+        kind_to_subject(e.kind),
+        &e.did,
+        e.published_at_ms,
+        None,
+        nonce,
+    );
+    let canonical = canonical_statement(&stmt);
+    let att = OwnershipAttestation {
+        id: ownership_id(&canonical),
+        statement: stmt,
+        statement_json: canonical,
+        owner_sig: e.owner_sig.clone(),
+        wallet_sig: None,
+    };
+    verify_ownership(
+        &att,
+        &VerifyOpts {
+            now_ms: e.published_at_ms,
+            ..VerifyOpts::default()
+        },
+    )
+    .ok
+}
+
 impl LookupHit {
     pub fn miss() -> Self {
         Self {
@@ -266,6 +366,7 @@ impl LookupHit {
             public_key_hex: None,
             display_name: None,
             revoked: false,
+            verified: false,
         }
     }
 }
@@ -315,6 +416,9 @@ pub struct LookupReplyPayload {
     pub public_key_hex: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// 对端目录条目的验签结果 (**跟着 reply 一起过线**, 否则接收方分不清"命中"和"可信")
+    #[serde(default)]
+    pub verified: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -348,6 +452,7 @@ pub fn build_lookup_reply(rpc_id: &str, hit: LookupHit) -> LookupReply {
             did: hit.did,
             public_key_hex: hit.public_key_hex,
             display_name: hit.display_name,
+            verified: hit.verified,
             error: None,
         },
     }
@@ -399,6 +504,7 @@ pub fn lookup_remote(
             public_key_hex: r.payload.public_key_hex,
             display_name: r.payload.display_name,
             revoked: false,
+            verified: r.payload.verified,
         })
         .collect();
     pick_first_hit(&replies)
@@ -418,6 +524,12 @@ pub fn remote_add_friend(
     if hit.revoked {
         return Err("该条目已撤销".into());
     }
+    // fail-closed: 没有有效 DID 归属签名的条目 = 谁都能往里写 did ⇒ 拒绝用它加好友
+    if !hit.verified {
+        return Err(
+            "该条目没有有效的 DID 归属签名 (verified=false) — 不可信, 拒绝加好友".into(),
+        );
+    }
     let r = contacts.inbound(&did, &hit.display_name.clone().unwrap_or_else(|| did.clone()), now_ms);
     if r.status != FriendRequestStatus::Pending {
         return Ok(format!("已有请求 ({:?}) — 幂等, 不重复", r.status));
@@ -435,6 +547,22 @@ mod tests {
         let mut d = HumanDirectory::new();
         d.publish("+86 131-1571-8038", "did:key:alice", PEPPER, Some("Alice"), Some("aabb"), 1000)
             .unwrap();
+        d
+    }
+
+    /// **带 DID 签名**的目录 (常识路径; 加好友只认这种条目的 verified)
+    fn signed_dir_with_phone(kp: &KeyPair) -> HumanDirectory {
+        let mut d = HumanDirectory::new();
+        d.publish_signed(
+            "+86 131-1571-8038",
+            kp.did.as_str(),
+            PEPPER,
+            Some("Alice"),
+            Some("aabb"),
+            kp,
+            1000,
+        )
+        .unwrap();
         d
     }
 
@@ -632,12 +760,15 @@ mod tests {
 
     #[test]
     fn cross_machine_add_friend_flow() {
-        let d_alice = dir_with_phone();
+        let alice = KeyPair::from_seed(&[42u8; 32]);
+        let d_alice = signed_dir_with_phone(&alice);
+        let alice_did = alice.did.as_str().to_string();
         let d_bob = HumanDirectory::new();
         let t = TwoNode { a: &d_alice, b: &d_bob, pepper_a: PEPPER, pepper_b: PEPPER };
         // Bob 用手机号跨机查 Alice
         let hit = lookup_remote(&t, "rpc-9", "+8613115718038", Some(ContactKind::Phone));
         assert!(hit.found);
+        assert!(hit.verified, "跨机 reply 必须把对端的验签结果带过来");
         // 拿命中结果加好友 (走 consent 状态机, 不是自动通过)
         let mut contacts = FriendBook::new();
         let msg = remote_add_friend(&hit, &mut contacts, "did:key:bob", 10).unwrap();
@@ -646,10 +777,47 @@ mod tests {
         let req = contacts.requests()[0].clone();
         assert_eq!(req.status, FriendRequestStatus::Pending);
         contacts.accept(&req.request_id, 11).unwrap();
-        assert!(contacts.is_friend("did:key:alice"));
+        assert!(contacts.is_friend(&alice_did));
         // 幂等: 重复加
         let again = remote_add_friend(&hit, &mut contacts, "did:key:bob", 12).unwrap();
         assert!(again.contains("幂等"), "{again}");
+    }
+
+    #[test]
+    fn unsigned_entry_cannot_be_friended() {
+        // 这正是要堵的口子: 没签名的条目谁都能往里写 did ⇒ 不许用它加好友
+        let d = dir_with_phone();
+        let hit = d.lookup("+8613115718038", PEPPER);
+        assert!(hit.found && !hit.verified, "没签名 ⇒ verified=false");
+        let mut contacts = FriendBook::new();
+        let err = remote_add_friend(&hit, &mut contacts, "did:key:me", 1).unwrap_err();
+        assert!(err.contains("verified"), "{err}");
+    }
+
+    #[test]
+    fn publish_signed_roundtrip_and_forged_did_rejected() {
+        let kp = KeyPair::from_seed(&[77u8; 32]);
+        let mut d = HumanDirectory::new();
+        let e = d
+            .publish_signed("+86 131-1571-8038", kp.did.as_str(), PEPPER, Some("Alice"), None, &kp, 1000)
+            .unwrap();
+        assert!(!e.owner_sig.is_empty());
+        assert!(verify_entry(&e), "自验必须过");
+        assert!(d.lookup("+8613115718038", PEPPER).verified);
+
+        // 篡改签名 ⇒ 验不过
+        let mut bad = e.clone();
+        let mut sig = Vec::from(hex::decode(&bad.owner_sig).unwrap());
+        sig[0] ^= 0xff;
+        bad.owner_sig = hex::encode(sig);
+        assert!(!verify_entry(&bad), "签名被改 ⇒ 验不过");
+
+        // 声明别人的 DID ⇒ 拒入库 (拿不到别人的私钥, 签不出来)
+        let other = KeyPair::from_seed(&[78u8; 32]);
+        let err = d
+            .publish_signed("+86 139-0000-0000", other.did.as_str(), PEPPER, None, None, &kp, 2)
+            .unwrap_err();
+        assert!(matches!(err, DirectoryError::Sign(_)), "{err:?}");
     }
 
     #[test]

@@ -17,6 +17,51 @@ impl Did {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// 反解 Ed25519 公钥 (验签用; 本命 did:pi: 直接就是公钥编码, 天然可反解)
+    pub fn pubkey(&self) -> Option<[u8; 32]> {
+        pubkey_of_did(self.as_str())
+    }
+
+    /// 由 Ed25519 公钥推**本命** DID `did:pi:<b58 pubkey>`
+    /// (与 `pubkey_of_did` 互逆; 口径同 `KeyPair::from_signing` / `KeyPair::did_from_public`)
+    pub fn from_public(pk: &[u8; 32]) -> Self {
+        Self(format!("did:pi:{}", bs58::encode(pk).into_string()))
+    }
+}
+
+/// 从 DID 反解 Ed25519 公钥 —— 支持 **DIAP 本命** `did:pi:<b58 pubkey>` 与互认用的 `did:key:z…`。
+///
+/// 注意方向: `did:pi:` 是 Bolloon/DIAP 的本命 DID 体系 (本项目不做替换);
+/// `did:key:` 只是外部/W3C 表示, 这里**能读**是为了跨实现互验, 不是为了改成它。
+pub fn pubkey_of_did(did: &str) -> Option<[u8; 32]> {
+    let raw = if let Some(b58) = did.strip_prefix("did:pi:") {
+        bs58::decode(b58).into_vec().ok()?
+    } else if let Some(b58) = did.strip_prefix("did:key:z") {
+        // did:key = multibase base58btc( multicodec 0xed01 ‖ 32B 公钥 )
+        let v = bs58::decode(b58).into_vec().ok()?;
+        if v.len() != 34 || v[0] != 0xed || v[1] != 0x01 {
+            return None;
+        }
+        v[2..].to_vec()
+    } else {
+        return None;
+    };
+    raw.try_into().ok()
+}
+
+/// 本命 `did:pi:` → W3C `did:key:z…` (**只给需要与外部互认时用**, 本仓库存的仍是 did:pi:)
+pub fn did_pi_to_key(pi_did: &str) -> Option<String> {
+    let pk = pubkey_of_did(pi_did)?;
+    let mut bytes = vec![0xed, 0x01];
+    bytes.extend_from_slice(&pk);
+    Some(format!("did:key:z{}", bs58::encode(bytes).into_string()))
+}
+
+/// W3C `did:key:z…` → 本命 `did:pi:` (把外部 DID 读进我们的体系)
+pub fn did_key_to_pi(key_did: &str) -> Option<String> {
+    let pk = pubkey_of_did(key_did)?;
+    Some(Did::from_public(&pk).as_str().to_string())
 }
 
 impl std::fmt::Display for Did {
@@ -122,5 +167,51 @@ mod tests {
         let kp1 = KeyPair::from_seed(&seed);
         let kp2 = KeyPair::from_seed(&seed);
         assert_eq!(kp1.did, kp2.did, "同种子必须同一 DID");
+    }
+
+    #[test]
+    fn did_pi_roundtrips_pubkey() {
+        // did:pi 的内容**就是**公钥本身的 b58 ⇒ 天然可反解 (验签的基础)
+        let kp = KeyPair::from_seed(&[9u8; 32]);
+        let pk = kp.public_bytes();
+        assert_eq!(pubkey_of_did(kp.did.as_str()), Some(pk));
+        assert_eq!(kp.did, KeyPair::did_from_public(&pk), "同一公钥 ⇒ 同一 DID");
+    }
+
+    #[test]
+    fn did_pi_and_did_key_interop_without_changing_native_form() {
+        let kp = KeyPair::from_seed(&[11u8; 32]);
+        let key_did = did_pi_to_key(kp.did.as_str()).unwrap();
+        assert!(key_did.starts_with("did:key:z"), "{key_did}");
+        assert_eq!(
+            pubkey_of_did(&key_did),
+            Some(kp.public_bytes()),
+            "did:key 也能反解同一把公钥 (跨实现互验)"
+        );
+        assert_eq!(
+            did_key_to_pi(&key_did).unwrap(),
+            kp.did.as_str(),
+            "did:key → 本命 did:pi 往返一致 (本命格式不变)"
+        );
+    }
+
+    #[test]
+    fn unresolvable_did_returns_none() {
+        assert_eq!(pubkey_of_did("not-a-did"), None);
+        assert_eq!(pubkey_of_did("did:key:z6Mkabc"), None, "长度不对 ⇒ None");
+        assert_eq!(pubkey_of_did("did:pi:!@#"), None, "非法 b58 ⇒ None (不 panic)");
+    }
+
+    #[test]
+    fn verify_works_from_did_alone() {
+        // 验签只需要 DID 字符串 (公钥内嵌在 did:pi 里) — 这是目录/归属验签的落点
+        let kp = KeyPair::from_seed(&[13u8; 32]);
+        let msg = b"someone claims something";
+        let sig = kp.sign(msg);
+        let pk = pubkey_of_did(kp.did.as_str()).unwrap();
+        assert!(KeyPair::verify(&pk, msg, &sig));
+        let other = KeyPair::from_seed(&[14u8; 32]);
+        let other_pk = pubkey_of_did(other.did.as_str()).unwrap();
+        assert!(!KeyPair::verify(&other_pk, msg, &sig), "换一把公钥 ⇒ 验不过");
     }
 }

@@ -57,16 +57,18 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
                 if !cur.is_empty() {
                     out.push(std::mem::take(&mut cur));
                 }
-                // 超长无空格片段 (如中文长句) → 按字符硬断
-                let mut chunk = String::new();
-                for ch in w.chars() {
-                    let cv = disp_width_char(ch);
-                    if disp_width(&chunk) + cv > width && !chunk.is_empty() {
-                        out.push(std::mem::take(&mut chunk));
+                // 超长无空格片段 (如中文长句) → 按显示宽度硬断。
+                // 必须用 ANSI 感知的断法: 样式序列是零宽原子, 逐字符断会把
+                // `\x1b[…m` 拦腰截断 (边框缺失/乱码的头号根因)。
+                let parts = crate::width::hard_break_ansi(&w, width);
+                let last = parts.len().saturating_sub(1);
+                for (i, p) in parts.into_iter().enumerate() {
+                    if i < last {
+                        out.push(p);
+                    } else {
+                        cur = p;
                     }
-                    chunk.push(ch);
                 }
-                cur = chunk;
                 continue;
             }
             if disp_width(&cur) + wv > width && !cur.is_empty() {
@@ -100,14 +102,6 @@ fn split_keep_ws(s: &str) -> Vec<String> {
         out.push(buf);
     }
     out
-}
-
-fn disp_width_char(ch: char) -> usize {
-    if crate::width::is_wide(ch) {
-        2
-    } else {
-        1
-    }
 }
 
 // ── 仪表盘 / 对话框 ────────────────────────────────────────
@@ -541,6 +535,7 @@ pub fn bold(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::width::strip_ansi;
 
     /// TS `STATUS_SYMBOL` 六种状态逐字对齐
     #[test]
@@ -566,6 +561,49 @@ mod tests {
     #[test]
     fn wrap_text_zero_width_returns_lines() {
         assert_eq!(wrap_text("a\nb", 0), vec!["a", "b"]);
+    }
+
+    /// 样式化中文长句 (无空格 ⇒ 必走硬断): ANSI 序列零宽原子, 不截断不丢字
+    #[test]
+    fn wrap_text_styled_cjk_keeps_ansi_atomic() {
+        let styled = format!(
+            "{}这是一段非常长的中文句子中间没有任何空格所以必然触发硬断{}结尾也要完整",
+            "\x1b[38;5;208m",
+            "\x1b[0m"
+        );
+        let parts = wrap_text(&styled, 10);
+        assert!(parts.len() > 1, "{parts:?}");
+        for p in &parts {
+            assert!(disp_width(p) <= 10, "行超宽: {p:?}");
+            assert!(!p.ends_with('\x1b') && !p.ends_with("\x1b["), "半截转义: {p:?}");
+        }
+        assert_eq!(strip_ansi(&parts.concat()), strip_ansi(&styled), "字符一个都不能丢");
+    }
+
+    /// 回复框: 样式化中文长内容下边框完整闭合、行宽一致、正文不出框
+    #[test]
+    fn agent_message_box_closes_with_styled_cjk() {
+        let _g = crate::width::test_lock().lock().unwrap();
+        crate::width::set_term_size(40, 24);
+        let body = format!(
+            "**加粗**开头{}然后是很长的中文内容没有空格必须自动换行`code`混排中文English mixed{}\n```\ncode block line\n```",
+            "\x1b[38;5;208m",
+            "\x1b[0m"
+        );
+        let s = render_agent_message(&body);
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(lines.len() >= 3, "顶+正文+底: {lines:?}");
+        assert!(strip_ansi(lines[0]).starts_with('╭'), "顶边框: {:?}", lines[0]);
+        assert!(
+            strip_ansi(lines.last().unwrap()).starts_with('╰'),
+            "底边框: {:?}",
+            lines.last().unwrap()
+        );
+        let w = crate::width::disp_width(lines[0]);
+        for l in &lines {
+            assert_eq!(crate::width::disp_width(l), w, "行宽不一致: {l:?}");
+        }
+        crate::width::clear_term_size();
     }
 
     /// 仪表盘: 每行宽度一致, 上/下边框闭合

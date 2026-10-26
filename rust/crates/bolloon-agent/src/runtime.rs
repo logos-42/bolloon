@@ -13,6 +13,7 @@
 //! - **目标需要 review**: goal 收尾必须过 review (判据逐条核对; 无证据/未达标 → 打回继续)
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -456,8 +457,13 @@ impl AgentRuntime {
     }
 
     /// 注册 agent (冻结文档快照 + 独立 memory; 幂等: 已注册且盘未 drift 则复用)
-    pub async fn register_agent(&self, agent_id: &str) -> Result<Arc<AgentState>, RuntimeError> {
-        let docs = AgentDocs::freeze(&self.home, agent_id)
+    pub async fn register_agent(
+        &self,
+        agent_id: &str,
+        channel: &str,
+        project_root: &Path,
+    ) -> Result<Arc<AgentState>, RuntimeError> {
+        let docs = AgentDocs::freeze_with(&self.home, agent_id, channel, project_root)
             .map_err(|e| RuntimeError::AgentNotFound(format!("{agent_id}: {e}")))?;
         let memory = crate::memory::MemoryStore::new();
         let st = Arc::new(AgentState { agent_id: agent_id.into(), docs, memory });
@@ -475,7 +481,7 @@ impl AgentRuntime {
             .cloned()
             .ok_or_else(|| RuntimeError::AgentNotFound(agent_id.into()))?;
         if st.docs.any_disk_drift(&self.home).map_err(|e| RuntimeError::AgentNotFound(e.to_string()))? {
-            self.register_agent(agent_id).await?;
+            self.register_agent(agent_id, "default", &self.home.root()).await?;
             return Ok(true);
         }
         Ok(false)
@@ -585,8 +591,8 @@ mod tests {
     #[tokio::test]
     async fn multi_agents_and_sessions_concurrent() {
         let rt = AgentRuntime::new(tmp_home("multi"));
-        rt.register_agent("alpha").await.unwrap();
-        rt.register_agent("beta").await.unwrap();
+        rt.register_agent("alpha", "local", &rt.home().root()).await.unwrap();
+        rt.register_agent("beta", "local", &rt.home().root()).await.unwrap();
         rt.open_session("s1", "alpha").await.unwrap();
         rt.open_session("s2", "alpha").await.unwrap();
         rt.open_session("s3", "beta").await.unwrap();
@@ -603,8 +609,8 @@ mod tests {
     #[tokio::test]
     async fn per_agent_dirs_isolated() {
         let rt = AgentRuntime::new(tmp_home("iso"));
-        rt.register_agent("a1").await.unwrap();
-        rt.register_agent("a2").await.unwrap();
+        rt.register_agent("a1", "local", &rt.home().root()).await.unwrap();
+        rt.register_agent("a2", "local", &rt.home().root()).await.unwrap();
         let m1 = rt.home().agent_memory_path("a1").unwrap();
         let m2 = rt.home().agent_memory_path("a2").unwrap();
         assert_ne!(m1, m2, "每 agent 独立 memory 路径");
@@ -615,7 +621,7 @@ mod tests {
         let rt = AgentRuntime::new(tmp_home("prompt"));
         rt.home().ensure_agent("a1").unwrap();
         std::fs::write(rt.home().agent_soul_path("a1").unwrap(), "灵魂: 极简").unwrap();
-        rt.register_agent("a1").await.unwrap();
+        rt.register_agent("a1", "local", &rt.home().root()).await.unwrap();
         let sp1 = rt.system_for_round("a1", "第 1 轮动态").await.unwrap();
         let sp2 = rt.system_for_round("a1", "第 2 轮动态").await.unwrap();
         assert!(sp1.stable.contains("灵魂: 极简"), "每轮都注入快照稳定层");

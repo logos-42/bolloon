@@ -38,6 +38,32 @@
 </head>
 <body>
   <div class="app-container">
+    <!-- 2026-10-26 (用户): 桌面端 (Electron) 三栏式侧边导航 — 第一栏: 全局导航栏 (Primary Sidebar)。
+         网页端此栏整体隐藏 (.primary-rail 默认 display:none, body.desktop-three-col 才显示)。
+         职责: 只做模块切换 + 全局入口 (复用 header 现有按钮), 不放任何列表 — 列表在第二栏。 -->
+    <nav class="primary-rail" id="primary-rail">
+      <div class="rail-brand" title="Bolloon">◈</div>
+      <div class="rail-group">
+        <button class="rail-btn" data-module="world" title="世界 (Intent Network)">🌍</button>
+        <button class="rail-btn" data-module="agents" title="智能体 / 会话">💬</button>
+        <button class="rail-btn" data-module="p2p" title="P2P 好友">👥</button>
+        <button class="rail-btn" data-module="gateway" title="Agent 网络">🌐</button>
+      </div>
+      <div class="rail-spacer"></div>
+      <div class="rail-group">
+        <button class="rail-btn" id="rail-wallet-btn" title="钱包管理">👛</button>
+        <button class="rail-btn" id="rail-judgments-btn" title="我的判断">🛡</button>
+        <a class="rail-btn" id="rail-explorer-link" href="/explorer" title="链上浏览器 (只读)">◧</a>
+        <button class="rail-btn" id="rail-settings-btn" title="API 配置">⚙</button>
+        <button class="rail-btn" id="rail-theme-btn" title="切换主题">◐</button>
+        <div class="user-avatar" id="rail-user-avatar" title="点击设置头像 / 个人资料">
+          <span class="avatar-letter" id="rail-avatar-letter">?</span>
+        </div>
+      </div>
+    </nav>
+
+    <!-- 2026-10-26: 第二栏: 上下文侧边栏 — 各分区打 data-module 标签,
+         桌面端按第一栏选中模块显隐 (body.desktop-module-*), 网页端不受影响 -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <button id="sidebar-toggle" class="sidebar-toggle" title="收起侧边栏">
@@ -52,7 +78,23 @@
         <!-- 2026-06-11: 加载 Session 文件夹按钮删除 (2026-06-16: 残留注释 + input 占位同步清除) -->
       </div>
 
-      <div class="sidebar-section">
+      <!-- 2026-10-26: 世界模块的第二栏上下文面板 (桌面端切到 🌍 时显示) -->
+      <div class="sidebar-section" data-module="world">
+        <div class="section-header">
+          <span class="section-title">世界</span>
+        </div>
+        <button id="desktop-world-intents-btn" class="section-action" title="展开/折叠我的意图栏">
+          <span>▸</span>
+          <span>我的意图</span>
+        </button>
+        <button id="desktop-world-focus-btn" class="section-action" style="background:var(--bg-hover);color:var(--text);" title="聚焦「告诉世界」输入框">
+          <span>✎</span>
+          <span>发布新意图</span>
+        </button>
+        <div class="sidebar-empty-hint" style="padding:8px 4px;">机会自动流入主区 · 左侧切换意图面板</div>
+      </div>
+
+      <div class="sidebar-section" data-module="agents">
         <div class="section-header">
           <span class="section-title">智能体</span>
           <!-- 2026-06-11: catalog-add-btn (添加智能体) 删除 -->
@@ -73,7 +115,7 @@
       </div>
 
       <!-- v3 远端 P2P 好友 — 显式分享 + 持久化连接 -->
-      <div class="sidebar-section" id="remote-agents-section">
+      <div class="sidebar-section" id="remote-agents-section" data-module="p2p">
         <div class="section-header is-compact is-clickable" id="remote-agents-header">
           <span class="section-header-row">
             <span id="remote-agents-toggle">▼</span>
@@ -91,7 +133,7 @@
       </div>
 
       <!-- 2026-08-14: Agent 网络 (Gateway) — 群组群聊 + 服务网络 -->
-      <div class="sidebar-section" id="gateway-section">
+      <div class="sidebar-section" id="gateway-section" data-module="gateway">
         <div class="section-header is-compact is-clickable" id="gateway-header">
           <span class="section-header-row">
             <span id="gateway-toggle">▼</span>

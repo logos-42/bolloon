@@ -8,7 +8,7 @@
 //! 2. 工具执行前被拒 → 零执行 → 记录 → 可见结果（fail-closed）
 //! 3. 判据只加不减，禁为过测试而放宽门
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
@@ -161,6 +161,9 @@ pub struct Harness {
     budget: Arc<Mutex<Budget>>,
     /// 幂等键 → 结果（同键重放不重复执行）
     idempotency: Arc<Mutex<HashMap<String, ToolResult>>>,
+    /// 显式授权集（高风险工具须被授予才可调用；**授权 ≠ 无障碍** —— 授权后
+    /// denylist / 白名单 / 路径 / 超时 / 预算各门照跑）
+    granted: Arc<Mutex<HashSet<String>>>,
     /// 证据链（append-only）
     evidence_log: Arc<Mutex<Vec<serde_json::Value>>>,
     /// 事件（追加订阅者由上层收）
@@ -207,6 +210,7 @@ impl Harness {
             executor,
             policy: Arc::new(DefaultPolicy),
             budget: Arc::new(Mutex::new(budget)),
+            granted: Arc::new(Mutex::new(HashSet::new())),
             idempotency: Arc::new(Mutex::new(HashMap::new())),
             evidence_log: Arc::new(Mutex::new(vec![])),
             events: Arc::new(Mutex::new(vec![])),
@@ -216,6 +220,18 @@ impl Harness {
     pub fn with_policy(mut self, policy: Arc<dyn PolicyEngine>) -> Self {
         self.policy = policy;
         self
+    }
+
+    /// 构造期授予（同步）。高风险工具（shell / payment…）走这条路 ——
+    /// **不许**把 `default_allowed` 改成 true 来"开权限"，那是把风险门整体拆掉。
+    pub fn with_granted(mut self, names: &[&str]) -> Self {
+        self.granted = Arc::new(Mutex::new(names.iter().map(|s| s.to_string()).collect()));
+        self
+    }
+
+    /// 运行期授予（例如用户当面确认后放行某工具）
+    pub async fn grant(&self, name: &str) {
+        self.granted.lock().await.insert(name.to_string());
     }
 
     /// 唯一执行入口。管道:
@@ -242,8 +258,8 @@ impl Harness {
             }
         };
 
-        // 2. permission：默认只放行 default_allowed（只读工具）
-        if !def.default_allowed {
+        // 2. permission：默认只放行 default_allowed；高风险工具须**显式授权**才能过
+        if !def.default_allowed && !self.granted.lock().await.contains(&call.name) {
             let denial = Denial {
                 reason: format!("工具 {} 非默认允许（effect={:?}），需显式授权", call.name, def.effect),
                 tool: call.name.clone(),

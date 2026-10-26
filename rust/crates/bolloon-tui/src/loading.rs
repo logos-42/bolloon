@@ -35,6 +35,42 @@ pub const LOADING_FRAMES: [&str; 6] = [
 const HIDE: &str = "\x1b[?25l";
 const SHOW: &str = "\x1b[?25h";
 
+/// 流光扫过的窗口半径 (位置两侧各几格提亮)
+const SHIMMER_RADIUS: usize = 3;
+
+/**
+ * 流光 (**纯函数**, ANSI 版): 高亮窗口扫过 `label`, 距 `pos` ≤ 半径的字符用
+ * `bright` 色, 其余用 `dim` 色。环形容器: 扫过尾部直接绕回头部, 不回头重来。
+ *
+ * 只对**可见字符**分层, 不碰终端布局 —— 单行重画 (10 FPS 量级), 不闪屏。
+ */
+pub fn shimmer_ansi(label: &str, pos: usize, dim: &str, bright: &str) -> String {
+    let chars: Vec<char> = label.chars().collect();
+    let n = chars.len();
+    if n == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (i, ch) in chars.iter().enumerate() {
+        let dist = i.abs_diff(pos % n);
+        let d = dist.min(n - dist); // 环形距离: 尾部绕回头部
+        if d <= SHIMMER_RADIUS {
+            out.push_str(&format!("{bright}{ch}{RESET}"));
+        } else {
+            out.push_str(&format!("{dim}{ch}{RESET}"));
+        }
+    }
+    out
+}
+
+/// 流光 (对外入口): 关颜色时**原样返回** (自动降级, 无 ANSI 重绘负担)
+pub fn shimmer(label: &str, pos: usize) -> String {
+    if !crate::theme::color_enabled() {
+        return label.to_string();
+    }
+    shimmer_ansi(label, pos, crate::theme::C_DIM, crate::theme::C_WHITE)
+}
+
 /// 原地重绘后把光标停回面板**左上角 (列 0)**。
 ///
 /// 关键: 必须带 `\r`。只上移 `\x1b[{up}A` 会让光标停在本帧底框所在列,

@@ -22,6 +22,7 @@ tracing-subscriber.workspace = true
 bolloon-llm = { path = "../bolloon-llm" }
 bolloon-web = { path = "../bolloon-web" }
 bolloon-agent = { path = "../bolloon-agent" }
+bolloon-harness = { path = "../bolloon-harness" }
 bolloon-p2p = { path = "../bolloon-p2p" }
 chrono.workspace = true
 ureq = { version = "2", features = ["json"] }

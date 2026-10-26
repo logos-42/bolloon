@@ -213,6 +213,10 @@ pub struct Chrome {
     hist: Vec<String>,
     hist_idx: Option<usize>,
     hist_saved: String,
+    /// **flow 布局**: `Some(下一空闲行)` = 内容还没满屏, chrome 跟在内容下方
+    /// (消除"启动 dashboard 钉在顶部、chrome 钉在底部、中间整块空白");
+    /// `None` = 内容已满屏, 永久钉底 (终端滚动接管)。
+    flow_top: Option<usize>,
 }
 
 impl Chrome {
@@ -231,6 +235,7 @@ impl Chrome {
             hist: vec![],
             hist_idx: None,
             hist_saved: String::new(),
+            flow_top: None,
         }
     }
 
@@ -290,7 +295,9 @@ impl Chrome {
                 let frames = crate::loading::LOADING_FRAMES;
                 let kaomoji = frames[self.anim % frames.len()];
                 let secs = started.elapsed().as_millis() as f64 / 1000.0;
-                format!("{C_WARN}{kaomoji} 思考中... {secs:.1}s{RESET}{C_DIM} · 输出整段上屏{RESET}")
+                // 流光扫过状态词 (10 FPS, 随 tick 前进); 关颜色自动降级为纯文本
+                let label = crate::loading::shimmer("Thinking · 正在生成", self.anim);
+                format!("{C_WARN}{kaomoji}{RESET} {label} {C_DIM}· {secs:.1}s · 流式输出中{RESET}")
             }
             Activity::Note(n) => format!("{C_DIM}{n}{RESET}"),
         };
@@ -306,8 +313,9 @@ impl Chrome {
         let avail = self.cols.saturating_sub(4).max(6); // `❯ `(2) + 左截断「…」(1) + 末列余量
         let chars: Vec<char> = self.input.chars().collect();
         if chars.is_empty() {
+            // 空输入也保留 1 列截断指示位 (空格), 与有输入起点对齐, 不跳变
             return format!(
-                "{C_ACCENT}❯ {RESET}{C_MUTED}{}{RESET}",
+                "{C_ACCENT}❯ {RESET} {C_MUTED}{}{RESET}",
                 truncate_safe(&self.hint, avail)
             );
         }
@@ -347,15 +355,48 @@ impl Chrome {
         if self.cursor >= chars.len() {
             body.push_str("\x1b[7m \x1b[0m"); // 末尾光标
         }
-        if start > 0 {
-            body.insert_str(0, "…");
-        }
-        format!("{C_ACCENT}❯ {RESET}{body}")
+        // 截断指示位**始终占 1 列** (未截断留空格): 文本起点恒定, 不随宽度/是否截断跳变
+        let trunc_marker = if start > 0 { "…" } else { " " };
+        format!("{C_ACCENT}❯ {RESET}{trunc_marker}{body}")
     }
 
-    /// chrome 顶部行 (1-based) —— 永远钉在终端最底 `RESERVED_LINES` 行
-    fn chrome_top(&self) -> usize {
+    /// 钉底时的 chrome 顶行 (1-based)
+    fn pinned_top(&self) -> usize {
         self.rows.saturating_sub(RESERVED_LINES) + 1
+    }
+
+    /// chrome 顶部行 (1-based)。
+    ///
+    /// flow 模式 (`flow_top = Some(下一空闲行)`): chrome 跟在内容**下一行**之下,
+    /// 中间不隔整块空白; 内容一旦装不下就永久钉底。`None` = 钉在终端最底
+    /// `RESERVED_LINES` 行 (老行为)。
+    fn chrome_top(&self) -> usize {
+        match self.flow_top {
+            Some(r) => (r + 1).min(self.pinned_top()),
+            None => self.pinned_top(),
+        }
+    }
+
+    /// 进入 flow 布局: `row` = 第一条空闲行 (启动 dashboard 打印完之后调)。
+    pub fn set_flow_top(&mut self, row: usize) {
+        self.flow_top = Some(row.max(1));
+    }
+
+    /// 流式面板的底边锚点 (chrome 顶行的上一行) —— 面板从这里向上生长
+    pub fn panel_anchor(&self) -> usize {
+        self.chrome_top().saturating_sub(1).max(2)
+    }
+
+    /// flow 判定 (纯函数, 便于单测): 从 `flow_top` 打印 `n` 行、chrome 跟在后面,
+    /// 是否**装不下** (装不下 ⇒ 放弃 flow, 永久钉底走滚动路径)。
+    fn flow_overflows(&self, n: usize) -> bool {
+        match self.flow_top {
+            None => true,
+            Some(r) => {
+                let last = r + n.saturating_sub(1);
+                last + RESERVED_LINES > self.rows
+            }
+        }
     }
 
     /// 画 (用**绝对行号**重绘 6 行 —— 永不漂移, 不管上方历史怎么换行/滚动)
@@ -389,8 +430,29 @@ impl Chrome {
         }
     }
 
-    /// 往历史区追加 (先擦 chrome → 在 chrome 顶行**上方**打印 → 重画 chrome)
+    /// 往历史区追加 (先擦 chrome → 打印 → 重画 chrome)。
+    ///
+    /// flow 模式下内容还**装得下** ⇒ 就地打印在 `flow_top`, chrome 跟着下移
+    /// (第一条回复紧跟 dashboard, 中间没有整块空白);
+    /// 装不下 ⇒ 永久切换到钉底滚动模式 (老路径, 终端自然上滚, chrome 行号恒定)。
     pub fn print_above(&mut self, lines: &[String]) {
+        if lines.is_empty() {
+            return;
+        }
+        if !self.flow_overflows(lines.len()) {
+            let r = self.flow_top.unwrap_or(1);
+            let last = r + lines.len() - 1;
+            self.clear();
+            print!("\x1b[{r}H");
+            let _ = std::io::stdout().flush();
+            for l in lines {
+                println!("{l}");
+            }
+            self.flow_top = Some(last + 1);
+            self.draw();
+            return;
+        }
+        self.flow_top = None; // 装不下 ⇒ 钉底 (本会话剩余时间都用滚动路径)
         self.clear();
         // 光标移到 chrome 顶行上一行; 内容超出则终端自然上滚, chrome 行号恒定不受影响
         let above = self.chrome_top().saturating_sub(1).max(1);
@@ -402,11 +464,13 @@ impl Chrome {
         self.draw();
     }
 
-    /// 硬清屏 (对齐 `/clear` `/redraw`)
+    /// 硬清屏 (对齐 `/clear` `/redraw`); 清完回到 flow 布局 (内容从顶部重新生长,
+    /// 不然空屏 + 钉底 chrome 又是一整块空白)
     pub fn reset_screen(&mut self) {
         print!("\x1b[2J\x1b[H");
         let _ = std::io::stdout().flush();
         self.drawn = false;
+        self.flow_top = Some(1);
     }
 
     // ────────────────────────── 输入循环 ──────────────────────────
@@ -575,6 +639,34 @@ mod tests {
         assert_eq!(RESERVED_LINES, 6, "TS: 活动行 1 + rule/status/rule/input/rule");
     }
 
+    /// flow 布局: chrome 跟在内容下一行, 不再钉底留整块空白
+    #[test]
+    fn flow_mode_keeps_chrome_right_below_content() {
+        let mut c = Chrome::new(24, 80);
+        assert_eq!(c.chrome_top(), 19, "默认钉底: 24-6+1");
+        c.set_flow_top(5); // 内容占 1..4
+        assert_eq!(c.chrome_top(), 6, "chrome 紧跟内容下一行");
+        assert!(!c.flow_overflows(3), "5..7 打印 3 行 + 6 行 chrome = 13 行, 装得下");
+        assert!(c.flow_overflows(18), "5..22 打印 18 行 + chrome 装不下");
+    }
+
+    /// flow 越过钉底线 ⇒ 自动封顶 (绝不把 chrome 推出屏幕)
+    #[test]
+    fn flow_mode_caps_at_pinned_top() {
+        let mut c = Chrome::new(24, 80);
+        c.set_flow_top(100);
+        assert_eq!(c.chrome_top(), 19, "越过钉底线 ⇒ 回到钉底位置");
+    }
+
+    /// /clear 后回到 flow: 空屏 + 钉底 chrome = 又一块大空白 (老坑)
+    #[test]
+    fn reset_screen_returns_to_flow_layout() {
+        let mut c = Chrome::new(24, 80);
+        c.set_flow_top(10);
+        c.reset_screen();
+        assert_eq!(c.flow_top, Some(1), "清屏后内容从顶部重新生长");
+    }
+
     #[test]
     fn every_line_stays_inside_terminal_width() {
         // 写满整宽会触发终端自动折行 ⇒ 底栏重复打印 (TS 坑 2)
@@ -607,8 +699,9 @@ mod tests {
         let mut c = Chrome::new(30, 80);
         c.activity = Activity::Thinking { started: Instant::now() };
         let line = c.activity_line();
-        assert!(line.contains("思考中"), "{line}");
+        assert!(line.contains("Thinking"), "{line}");
         assert!(line.contains('s'), "要有秒表: {line}");
+        assert!(line.contains("流式输出"), "流式语义要如实: {line}");
     }
 
     #[test]

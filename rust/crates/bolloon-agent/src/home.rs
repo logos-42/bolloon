@@ -182,36 +182,83 @@ impl DocSnapshot {
     }
 }
 
-/// agent 文档三件套快照 (soul / agent / memory)
+/// agent 文档三件套快照 (soul / agent / persona / memory)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDocs {
     pub agent_id: String,
     pub soul: DocSnapshot,
     pub agent: DocSnapshot,
+    /// 全局 persona (自定义身份文件; `~/.bolloon/persona/persona.json`), 缺失 = 空快照
+    pub persona: DocSnapshot,
+    /// ID 分类 (channel: local / web / app / p2p / group …) — 身份细分维度之一
+    pub id_class: String,
     /// memory 快照 (冻结时点; 运行中新记忆写入 store 本体, 快照只供 system prompt 稳定层)
     pub memory: DocSnapshot,
 }
 
 impl AgentDocs {
     /// 冻结装载 (home 注入; 缺失文档 = 空快照 + 内置缺省)
+    ///
+    /// 旧签名: channel 默认 `default`(全局优先), project_root 默认 home 根 (退化为全局优先)。
+    /// 真实 channel / 工程根走 `freeze_with`。
     pub fn freeze(home: &BolloonHome, agent_id: &str) -> Result<Self, HomeError> {
+        Self::freeze_with(home, agent_id, "default", &home.root())
+    }
+
+    /// 按 channel 区分**全局(home) / 项目内(project_root)** 身份文件来源:
+    /// `local` → 项目内优先(贴当前工程), 回退全局; 其它 → 全局优先, 项目内补充。
+    /// persona 始终取全局 (`~/.bolloon/persona/persona.json`); id_class = channel。
+    pub fn freeze_with(
+        home: &BolloonHome,
+        agent_id: &str,
+        channel: &str,
+        project_root: &Path,
+    ) -> Result<Self, HomeError> {
         home.ensure_agent(agent_id)?;
-        let mut soul = DocSnapshot::freeze("soul", &home.agent_soul_path(agent_id)?);
+        let g_soul = home.agent_soul_path(agent_id)?;
+        let p_soul = project_root.join("agents").join(agent_id).join("soul.md");
+        let g_agent = home.agent_doc_path(agent_id)?;
+        let p_agent = project_root.join("agents").join(agent_id).join("agent.md");
+        let soul_path = if channel == "local" && p_soul.exists() {
+            p_soul
+        } else {
+            g_soul
+        };
+        let agent_path = if channel == "local" && p_agent.exists() {
+            p_agent
+        } else {
+            g_agent
+        };
+        let mut soul = DocSnapshot::freeze("soul", &soul_path);
         if soul.content.is_empty() {
             soul.content = default_soul(agent_id);
         }
-        let mut agent = DocSnapshot::freeze("agent", &home.agent_doc_path(agent_id)?);
+        let mut agent = DocSnapshot::freeze("agent", &agent_path);
         if agent.content.is_empty() {
             agent.content = default_agent_doc(agent_id);
         }
+        let persona = DocSnapshot::freeze(
+            "persona",
+            &home.root().join(".bolloon").join("persona").join("persona.json"),
+        );
         let memory = DocSnapshot::freeze("memory", &home.agent_memory_path(agent_id)?);
-        Ok(Self { agent_id: agent_id.into(), soul, agent, memory })
+        Ok(Self {
+            agent_id: agent_id.into(),
+            soul,
+            agent,
+            persona,
+            id_class: channel.to_string(),
+            memory,
+        })
     }
 
-    /// 三件套指纹是否与盘一致 (任何一份 drift = 本 agent 需要 re-freeze)
+    /// 四件套指纹是否与盘一致 (任何一份 drift = 本 agent 需要 re-freeze)
     pub fn any_disk_drift(&self, home: &BolloonHome) -> Result<bool, HomeError> {
         Ok(self.soul.disk_drifted(&home.agent_soul_path(&self.agent_id)?)
             || self.agent.disk_drifted(&home.agent_doc_path(&self.agent_id)?)
+            || self
+                .persona
+                .disk_drifted(&home.root().join(".bolloon").join("persona").join("persona.json"))
             || self.memory.disk_drifted(&home.agent_memory_path(&self.agent_id)?))
     }
 }
