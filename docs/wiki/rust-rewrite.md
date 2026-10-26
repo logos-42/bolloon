@@ -210,6 +210,19 @@ Web 接线: `/api/judgment` (top-N 注入门 + 入库即演化, action 如实回
 
 **诚实边界**: 提炼是**纯函数 (不调 LLM)**, 真语义抽象待接 LLM 端口; 无 cron 自动触发 (靠 CLI/`/api/dream` 手动或 kernel/cron 排程); `bolloon-web` 仍有 4 条 `unused variable st` + 2 个未接线 bootstrap/models 死代码告警 (预先存在, 本轮未动)。
 
+## 2026-10-26 第十七批 (死代码补实现: 分享真链接 / 更新互斥 / 运行时版本 / 梦想作者 / bootstrap 真消息)
+
+| 死代码 | 原状 | 补成什么 |
+| --- | --- | --- |
+| `native::share_session` | 返回 `/share/{id}` **假链接** (无该路由, 点开 404) | 真生成快照 `~/.bolloon/rust/shares/<token>.json`; token = 身份私钥签名 `(会话\|时间)` 取前 **24 hex** (不可猜, 不依赖随机源); 新增 `GET /share/{token}` 只读分享页 (内容一律 HTML 转义) + `GET /api/share/{token}` JSON; 会话不存在 → 明确报错不返回假链接; 只认 hex token, 拒路径穿越 |
+| `native::update_apply` | `st` 未用 ⇒ 两个请求可**并发替换同一二进制** | `AppState.updating` 互斥 (`compare_exchange`); 已在装 → `{busy:true, installing:true}`; 拿不到 self_path / 装失败 / 装好但没能重启 → **释放**, 可重试 (不卡死在"安装中") |
+| `native_update_info` | 用编译期 `CURRENT_VERSION` 比版本, 与运行时脱钩 | 新增 `updater::check_with(source, current)` 端口 (`check` 委托它, +1 测试), web 侧传 `st.version` |
+| `native::dream_topic` | `st` 未用, 作者硬编码 `"user"` | 作者取本机 `profile.name` (显式传入优先); 写成的文档登记 `NativeState.dreams` (`#[serde(default)]` 兼容旧状态文件), `GET /api/dream/last` 一并返回 |
+| `server::bootstrap` / `server::models` + `BootstrapResponse` / `BootstrapState` | 与 `native::bootstrap_native` / `native::models` **重复的旧实现** (未接线) | **删重复**; 把其独有的「真实运行期消息流」搬进 bootstrap: `state.messages` 不再是恒空数组 (取 `AppState.messages`, 先取再锁 forge 防锁序交错), 补 `state.edge`; `/api/models` 仍走 native 超集版 (has_key/write_tools) |
+| 门禁 | — | 抽 `pub fn app(state)` / `serve_on(state, listener)` (路由与端口绑定分离); 新 e2e 真起服务 (端口 0) 走真 HTTP: bootstrap 形状 → 分享链接打开 → 坏 token 如实说不存在 → 梦想文档作者=profile/登记可查; `cargo test -p bolloon-agent -p bolloon-web` **301 + 5 全绿**, **bolloon-web 0 告警** (原 8 条全清) |
+
+**诚实边界**: 分享快照**只读、永不过期** (token 不可猜, 删 `shares/*.json` 即失效; 没做撤销/回收) · 分享页只有文本消息, 不含头像与工具调用细节 · 更新安装仍在请求内同步跑 (互斥只防并发, 不改变长耗时) · `bolloon-cli` 当时正被另一条 TUI 移植线改动 (未接线且不编译), 全量 workspace 测试留给那条线收尾。
+
 ## DIAP Rust SDK (本机 /Users/apple/Downloads/DIAP_Rust_SDK)
 
 同日更新: 0.2.7→**0.3.0** (edition 2021→2024, rust-version 1.99, ed25519-dalek 2→3) + iroh 1.4 API 对齐 (`NodeAddr`→`EndpointAddr`, `builder(presets::N0)`, `addr()/id()`, `remote_id()`)。3 个 examples 修复对齐新 API, `cargo build --examples` 0 警告过; **lib 测试 46 passed / 0 failed / 4 ignored** (修 nonce_manager/did_cache 测试缺 `async` — edition 2024 必需; key_generator 测试对齐废弃函数空占位语义; noir_embedded/noir_universal 测试输入自洽 + 默认 backend 未启用时切 Simplified)。crates.io 下载走 rsproxy 镜像 (直连超时/代理 SSL reset, 2026-10-25 实测)。提交 `fdbef37` + `aa9ec66`。

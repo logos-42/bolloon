@@ -138,6 +138,9 @@ pub struct NativeState {
     // ── 做梦机制 (整理记忆与经验 → 升级 skills) ──
     /// 上一次做梦报告 (None = 从没做过)
     pub last_dream: Option<serde_json::Value>,
+    /// 写过的梦想文档路径 (历史可查; #[serde(default)] 兼容旧状态文件)
+    #[serde(default)]
+    pub dreams: Vec<String>,
     pub active_group: String,
     pub next_agent: u64,
     pub next_session: u64,
@@ -238,6 +241,14 @@ fn now_ms() -> u64 {
 
 /// GET /api/bootstrap (前端期望形状)
 pub async fn bootstrap_native(State(st): State<AppState>) -> Json<serde_json::Value> {
+    // 运行期消息流 (send 写入的那条; 启动时从 sessions/*.jsonl 恢复) — 先取, 不与 forge 锁交错
+    let messages: Vec<serde_json::Value> = st
+        .messages
+        .lock()
+        .await
+        .iter()
+        .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+        .collect();
     let mut fs = st.forge.lock().await;
     if fs.profile.did.is_empty() {
         fs.profile.did = st.identity.did.as_str().to_string();
@@ -277,7 +288,8 @@ pub async fn bootstrap_native(State(st): State<AppState>) -> Json<serde_json::Va
             "active_agent_id": fs.agents.first().map(|a| a.id.clone()).unwrap_or_default(),
             "active_session_id": fs.sessions.first().map(|s| s.id.clone()).unwrap_or_default(),
             "did": st.identity.did.as_str(),
-            "messages": [],
+            "edge": false,
+            "messages": messages,
         },
         "update": update,
         "version": st.version,
@@ -306,7 +318,8 @@ fn native_update_info(st: &AppState) -> serde_json::Value {
             Err("install 走 install()".into())
         }
     }
-    let info = bolloon_agent::updater::check(&Src);
+    // 当前版本取运行时值 (服务端 st.version), 不与编译期常量脱钩 ⇒ 不会比错版本
+    let info = bolloon_agent::updater::check_with(&Src, st.version);
     serde_json::json!({
         "available": info.update_available,
         "latest": info.latest,
@@ -511,13 +524,122 @@ pub async fn truncate_session(
     Json(serde_json::json!({ "ok": true }))
 }
 
-/// POST /api/sessions/share (分享链接)
+/// POST /api/sessions/share → 真生成分享快照 (返回的链接能打开, 不是死链)
 pub async fn share_session(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let id = req["id"].as_str().unwrap_or_default().to_string();
-    Json(serde_json::json!({ "url": format!("/share/{id}") }))
+    if id.is_empty() {
+        return Json(serde_json::json!({ "error": "缺少会话 id" }));
+    }
+    let session = {
+        let fs = st.forge.lock().await;
+        fs.sessions.iter().find(|s| s.id == id).cloned()
+    };
+    let Some(session) = session else {
+        return Json(serde_json::json!({ "error": format!("会话不存在: {id}") }));
+    };
+    let now = now_ms();
+    let token = share_token(&st, &id, now);
+    let snapshot = serde_json::json!({
+        "token": token,
+        "session_id": session.id,
+        "title": session.title,
+        "agent_id": session.agent_id,
+        "by_did": st.identity.did.as_str(),
+        "shared_at_ms": now,
+        "messages": session.messages,
+    });
+    let dir = data_dir().join("shares");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    let body = serde_json::to_string_pretty(&snapshot).unwrap_or_default();
+    if let Err(e) = std::fs::write(dir.join(format!("{token}.json")), body) {
+        return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    Json(serde_json::json!({
+        "url": format!("/share/{token}"),
+        "token": token,
+        "messages": session.messages.len(),
+    }))
+}
+
+/// 分享 token = 身份私钥对 (会话|时间) 签名取前 24 hex ⇒ 不可猜 (不依赖随机源)
+fn share_token(st: &AppState, session_id: &str, now: u64) -> String {
+    let sig = st.identity.sign(format!("share|{session_id}|{now}").as_bytes());
+    sig.iter().take(12).map(|b| format!("{b:02x}")).collect()
+}
+
+/// 读分享快照 (只认 hex token, 拒路径穿越; 不存在/坏文件 → None, 不冒充)
+fn load_share_in(dir: &std::path::Path, token: &str) -> Option<serde_json::Value> {
+    if token.is_empty() || !token.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let raw = std::fs::read_to_string(dir.join("shares").join(format!("{token}.json"))).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn load_share(token: &str) -> Option<serde_json::Value> {
+    load_share_in(&data_dir(), token)
+}
+
+/// GET /api/share/{token} → 分享快照 (JSON)
+pub async fn share_json(AxumPath(token): AxumPath<String>) -> Json<serde_json::Value> {
+    match load_share(&token) {
+        Some(v) => Json(v),
+        None => Json(serde_json::json!({ "error": "分享不存在或已失效" })),
+    }
+}
+
+/// GET /share/{token} → 只读分享页 (全部内容 HTML 转义, 不执行任何脚本)
+pub async fn share_page(AxumPath(token): AxumPath<String>) -> axum::response::Html<String> {
+    let Some(v) = load_share(&token) else {
+        return axum::response::Html(
+            "<!doctype html><meta charset=\"utf-8\"><title>分享不存在</title>\
+             <p style=\"font-family:system-ui;padding:24px\">分享不存在或已失效。</p>"
+                .to_string(),
+        );
+    };
+    let title = html_escape(v["title"].as_str().unwrap_or("会话分享"));
+    let did = html_escape(v["by_did"].as_str().unwrap_or(""));
+    let rows: String = v["messages"]
+        .as_array()
+        .map(|ms| {
+            ms.iter()
+                .map(|m| {
+                    let role = if m["role"].as_str() == Some("user") { "我" } else { "智能体" };
+                    let text = html_escape(m["text"].as_str().unwrap_or(""));
+                    let time = html_escape(m["time"].as_str().unwrap_or(""));
+                    format!(
+                        "<div class=\"m\"><div class=\"h\">{role} · {time}</div><div class=\"t\">{text}</div></div>"
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let count = v["messages"].as_array().map(|a| a.len()).unwrap_or(0);
+    let page = format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>{title} · 分享</title>\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <style>body{{font-family:system-ui;max-width:760px;margin:0 auto;padding:24px;\
+         background:#1a1a18;color:#eee}}.m{{border-left:2px solid #c4d640;padding:4px 12px;margin:12px 0}}\
+         .h{{font-size:12px;opacity:.6}}.t{{white-space:pre-wrap;line-height:1.6}}\
+         footer{{opacity:.5;font-size:12px;margin-top:32px}}</style>\
+         <h1>{title}</h1><div style=\"opacity:.6;font-size:12px\">{count} 条消息 · {did}</div>\
+         {rows}<footer>Bolloon 会话分享 (只读快照)</footer>"
+    );
+    axum::response::Html(page)
+}
+
+/// HTML 转义 (分享页唯一出口; 内容一律转义, 不拼未过滤文本)
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 // ────────────────────────── profile / settings ──────────────────────────
@@ -825,6 +947,18 @@ pub async fn update(State(st): State<AppState>) -> Json<serde_json::Value> {
 
 /// POST /api/update/apply → 内部安装一条龙 + spawn 新进程 (旧进程随后退出)
 pub async fn update_apply(State(st): State<AppState>) -> Json<serde_json::Value> {
+    // 安装互斥: 同一二进制只允许一条安装流程 (两个请求同时替换会把自己装残)
+    if st
+        .updating
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Json(serde_json::json!({
+            "busy": true,
+            "installing": true,
+            "message": "安装中 — 不重复下载替换",
+        }));
+    }
     struct Src;
     impl bolloon_agent::updater::UpdateSource for Src {
         fn latest_version(&self) -> Result<String, String> {
@@ -844,17 +978,25 @@ pub async fn update_apply(State(st): State<AppState>) -> Json<serde_json::Value>
         }
     }
     let Ok(self_path) = std::env::current_exe() else {
+        st.updating.store(false, Ordering::SeqCst); // 没开始装 → 放行后续重试
         return Json(serde_json::json!({ "error": "无法定位自身二进制" }));
     };
     match bolloon_agent::updater::install(&Src, &self_path) {
         Ok(report) => {
             let args: Vec<String> = std::env::args().skip(1).collect();
             let new_pid = bolloon_agent::updater::restart(&self_path, &args).ok();
+            if new_pid.is_none() {
+                // 装好了但没起来 → 放行, 让人能再点一次 (不卡死在"安装中")
+                st.updating.store(false, Ordering::SeqCst);
+            }
             Json(serde_json::json!({
                 "installing": true, "restarting": new_pid.is_some(), "new_pid": new_pid, "report": report,
             }))
         }
-        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+        Err(e) => {
+            st.updating.store(false, Ordering::SeqCst); // 装失败 → 放行重试
+            Json(serde_json::json!({ "error": e.to_string() }))
+        }
     }
 }
 
@@ -1271,13 +1413,13 @@ pub async fn dream_run(
     Json(value)
 }
 
-/// GET /api/dream/last → 上次做梦报告
+/// GET /api/dream/last → 上次做梦报告 + 写过的梦想文档
 pub async fn dream_last(State(st): State<AppState>) -> Json<serde_json::Value> {
     let fs = st.forge.lock().await;
-    Json(serde_json::json!({ "last": fs.last_dream }))
+    Json(serde_json::json!({ "last": fs.last_dream, "dreams": fs.dreams }))
 }
 
-/// POST /api/dream/topic → 梦想文档 (对齐 TS `/dream <主题>` 落盘)
+/// POST /api/dream/topic → 梦想文档 (对齐 TS `/dream <主题>` 落盘; 作者取真实 profile)
 pub async fn dream_topic(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
@@ -1286,9 +1428,17 @@ pub async fn dream_topic(
     if topic.is_empty() {
         return Json(serde_json::json!({ "error": "主题不能为空" }));
     }
+    // 作者: 显式传入优先, 否则用本机 profile 的名字 (不硬编码 "user")
+    let author = {
+        let fs = st.forge.lock().await;
+        req["user"]
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| fs.profile.name.clone())
+    };
     let doc = bolloon_agent::dream::dream_doc(
         &topic,
-        req["user"].as_str().unwrap_or("user"),
+        &author,
         req["channel"].as_str().unwrap_or("web"),
         &chrono::Utc::now().to_rfc3339(),
     );
@@ -1301,7 +1451,87 @@ pub async fn dream_topic(
         .collect();
     let path = dir.join(format!("{}-{}.md", chrono::Utc::now().format("%Y-%m-%d"), safe));
     match std::fs::write(&path, doc.as_bytes()) {
-        Ok(()) => Json(serde_json::json!({ "written": path.display().to_string() })),
+        Ok(()) => {
+            let shown = path.display().to_string();
+            // 登记到状态 (做梦历史可查, 不用翻目录)
+            {
+                let mut fs = st.forge.lock().await;
+                if !fs.dreams.contains(&shown) {
+                    fs.dreams.push(shown.clone());
+                }
+                fs.save(&data_dir());
+            }
+            Json(serde_json::json!({ "written": shown, "author": author }))
+        }
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 分享快照: 写到盘上要能原样读回 (链接不是死链)
+    #[test]
+    fn share_snapshot_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("bolloon-share-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("shares")).unwrap();
+        let snap = serde_json::json!({
+            "token": "abcdef0123456789abcdef01",
+            "session_id": "sess-0001",
+            "title": "分享测试",
+            "messages": [{ "role": "user", "text": "你好", "time": "10:00" }],
+        });
+        let token = snap["token"].as_str().unwrap();
+        std::fs::write(
+            dir.join("shares").join(format!("{token}.json")),
+            serde_json::to_string_pretty(&snap).unwrap(),
+        )
+        .unwrap();
+        let got = load_share_in(&dir, token).expect("读回分享");
+        assert_eq!(got["title"], "分享测试");
+        assert_eq!(got["messages"][0]["text"], "你好");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 只认 hex token: 路径穿越 / 空 / 非 hex 一律读不到
+    #[test]
+    fn share_token_rejects_path_traversal() {
+        let dir = std::env::temp_dir();
+        assert!(load_share_in(&dir, "").is_none());
+        assert!(load_share_in(&dir, "../etc/passwd").is_none());
+        assert!(load_share_in(&dir, "abc/def").is_none());
+        assert!(load_share_in(&dir, "zzzz").is_none());
+        // 合法形状但文件不存在 → 仍 None (不冒充有内容)
+        assert!(load_share_in(&dir, "0123456789abcdef").is_none());
+    }
+
+    /// 分享页内容一律转义 (不执行外部脚本)
+    #[test]
+    fn share_page_escapes_html() {
+        let evil = "<script>alert(1)</script>";
+        let out = html_escape(evil);
+        assert!(!out.contains('<'), "{out}");
+        assert!(out.contains("&lt;script&gt;"));
+        assert_eq!(html_escape("a&b\"c'd"), "a&amp;b&quot;c&#39;d");
+    }
+
+    /// 安装互斥: 已在装时第二次 apply 必须被拒 (不并发替换同一二进制)
+    #[test]
+    fn update_gate_is_exclusive() {
+        let gate = std::sync::atomic::AtomicBool::new(false);
+        let first = gate
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+        let second = gate
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+        assert!(first && !second, "第二次申请必须被拒");
+        gate.store(false, Ordering::SeqCst); // 失败释放后可重试
+        let retry = gate
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+        assert!(retry);
     }
 }

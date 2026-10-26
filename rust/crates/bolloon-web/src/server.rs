@@ -56,6 +56,8 @@ pub struct AppState {
     pub memory_db: Arc<Mutex<MemoryDb>>,
     /// 完全访问权限开关 (UI 可随时开/取消; 默认关 = 走 permission 门)
     pub full_access: Arc<std::sync::atomic::AtomicBool>,
+    /// 更新安装互斥 (两个请求同时替换同一二进制会把自己装残)
+    pub updating: Arc<std::sync::atomic::AtomicBool>,
     /// Forge 兼容层状态 (agents/sessions/profile/settings/auth 队列)
     pub forge: Arc<Mutex<crate::native::NativeState>>,
     /// 项目 skills 注册表 (经验提炼后升级到这里; 做梦机制用)
@@ -104,6 +106,7 @@ impl AppState {
                     .unwrap_or_else(|_| MemoryDb::open(":memory:").expect("内存库")),
             )),
             full_access: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            updating: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             forge: Arc::new(Mutex::new(crate::native::NativeState::load(&dir))),
             skills: Arc::new(Mutex::new(bolloon_agent::skills_runtime::SkillEvolver::new())),
             session_store,
@@ -195,23 +198,6 @@ pub struct ChatMessageView {
     pub content: String,
 }
 
-/// bootstrap 响应（hushforge 的 /api/bootstrap 形状）
-#[derive(Serialize)]
-struct BootstrapResponse {
-    state: BootstrapState,
-    update: Option<serde_json::Value>,
-}
-
-#[derive(Serialize)]
-struct BootstrapState {
-    agents: Vec<serde_json::Value>,
-    active_session_id: Option<String>,
-    version: String,
-    edge: bool,
-    messages: Vec<ChatMessageView>,
-    did: String,
-}
-
 #[derive(Deserialize)]
 struct SendRequest {
     text: String,
@@ -224,8 +210,9 @@ struct SendResponse {
     reply: String,
 }
 
-pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
-    let app = Router::new()
+/// 路由表 (serve 与测试共用; 端口绑定与路由分离)
+pub fn app(state: AppState) -> Router {
+    Router::new()
         .route("/", get(index))
         // 原生 UI 数据面 (前端 index.html 期望的形状: agents/sessions/profile/settings/update)
         .route("/api/bootstrap", get(crate::native::bootstrap_native))
@@ -237,6 +224,9 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/api/sessions/delete", post(crate::native::delete_session))
         .route("/api/sessions/truncate", post(crate::native::truncate_session))
         .route("/api/sessions/share", post(crate::native::share_session))
+        // 分享快照取回 (链接真能打开, 不是死链)
+        .route("/api/share/{token}", get(crate::native::share_json))
+        .route("/share/{token}", get(crate::native::share_page))
         .route("/api/agents", post(crate::native::create_agent))
         .route("/api/agents/update", post(crate::native::update_agent))
         .route("/api/profile", post(crate::native::set_profile))
@@ -310,11 +300,18 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/api/update/install", post(update_install))
         // 完全访问权限开关 (可随时开/取消)
         .route("/api/permission", get(get_permission).post(set_permission))
-        .with_state(state);
+        .with_state(state)
+}
 
+pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     tracing::info!("bolloon web listening on http://127.0.0.1:{port}");
-    axum::serve(listener, app)
+    serve_on(state, listener).await
+}
+
+/// 在已绑定的监听器上服务 (测试: 端口 0 → 用 OS 分配的端口, 不抢固定端口)
+pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
+    axum::serve(listener, app(state))
         .await
         .map_err(|e| anyhow::anyhow!("web server: {e}"))
 }
@@ -326,42 +323,6 @@ async fn index() -> Html<&'static str> {
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true, "version": "0.6.10" }))
-}
-
-async fn bootstrap(State(st): State<AppState>) -> Json<BootstrapResponse> {
-    let messages = st.messages.lock().await.clone();
-    let agents = vec![serde_json::json!({
-        "id": "local",
-        "name": "Bolloon 本地智能体",
-        "did": st.identity.did.as_str(),
-        "online": true,
-    })];
-    Json(BootstrapResponse {
-        state: BootstrapState {
-            agents,
-            active_session_id: Some("default".into()),
-            version: st.version.to_string(),
-            edge: false,
-            messages,
-            did: st.identity.did.as_str().to_string(),
-        },
-        update: None,
-    })
-}
-
-async fn models(State(st): State<AppState>) -> Json<serde_json::Value> {
-    let ids = st.llm.provider_ids();
-    let providers: Vec<serde_json::Value> = ids
-        .iter()
-        .map(|id| {
-            serde_json::json!({
-                "id": id,
-                "name": id,
-                "models": st.llm.provider(id).map(|p| p.default_model.clone()).unwrap_or_default(),
-            })
-        })
-        .collect();
-    Json(serde_json::json!({ "providers": providers }))
 }
 
 async fn sessions(State(st): State<AppState>) -> Json<Vec<SessionMeta>> {
@@ -1010,3 +971,100 @@ async fn real_chat(llm: &LlmRuntime, user_text: &str) -> Result<String, String> 
 
 /// 内嵌单页 HTML（hushforge 布局: 284px 侧栏 + 主聊天 + room 面板）
 const INDEX_HTML: &str = include_str!("../assets/index.html");
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    fn offline_llm() -> LlmRuntime {
+        LlmRuntime::new(
+            vec![bolloon_llm::ProviderConfig {
+                id: "test".into(),
+                base_url: "http://127.0.0.1:1/v1".into(),
+                api_key: None,
+                default_model: "test-model".into(),
+            }],
+            1,
+        )
+    }
+
+    /// 真起一个服务 (端口 0), 用 ureq 走真 HTTP:
+    /// bootstrap 带真实消息流 → 分享链接能打开 → 梦想文档作者取 profile → 状态登记
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn share_bootstrap_dream_routes_e2e() {
+        let home = std::env::temp_dir().join(format!("bolloon-web-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        // data_dir() 走 BolloonHome::resolve(); 本进程只有这条用例碰它
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+
+        let state = AppState::new(offline_llm());
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = serve_on(state, listener).await;
+        });
+        let base = format!("http://{addr}");
+
+        // ureq 是阻塞客户端 → 放 spawn_blocking, 不占 tokio worker
+        tokio::task::spawn_blocking(move || {
+            let get_json = |path: &str| -> serde_json::Value {
+                ureq::get(&format!("{base}{path}")).call().unwrap().into_json().unwrap()
+            };
+            let get_text = |path: &str| -> String {
+                ureq::get(&format!("{base}{path}")).call().unwrap().into_string().unwrap()
+            };
+            let post_json = |path: &str, body: serde_json::Value| -> serde_json::Value {
+                ureq::post(&format!("{base}{path}"))
+                    .send_json(body)
+                    .unwrap()
+                    .into_json()
+                    .unwrap()
+            };
+
+            // 1) bootstrap: 首启种子会话 + 真实消息流 + 形状字段
+            let boot = get_json("/api/bootstrap");
+            let sid = boot["state"]["sessions"][0]["id"].as_str().expect("种子会话").to_string();
+            assert!(boot["state"]["messages"].is_array());
+            assert_eq!(boot["state"]["edge"], serde_json::json!(false));
+            assert!(boot["state"]["active_session_id"].as_str().is_some());
+
+            // 2) models: 前端形状 (含 has_key / write_tools)
+            let models = get_json("/api/models");
+            assert!(models["providers"].is_array());
+            assert!(models["providers"][0]["has_key"].is_boolean());
+            assert!(models["write_tools"].is_array());
+
+            // 3) 分享: token 不可猜 (24 hex), 页面与 JSON 都真能打开
+            let share = post_json("/api/sessions/share", serde_json::json!({ "id": sid }));
+            let token = share["token"].as_str().expect("token").to_string();
+            assert_eq!(token.len(), 24);
+            assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+            assert_eq!(share["url"], serde_json::json!(format!("/share/{token}")));
+
+            let page = get_text(&format!("/share/{token}"));
+            assert!(page.contains("只读快照"), "{page}");
+            let snap = get_json(&format!("/api/share/{token}"));
+            assert_eq!(snap["session_id"], serde_json::json!(sid));
+
+            // 坏 token → 如实说不存在 (不冒充)
+            assert!(get_text("/share/deadbeef").contains("分享不存在或已失效"));
+            // 会话不存在 → 明确报错, 不返回假链接
+            let miss = post_json("/api/sessions/share", serde_json::json!({ "id": "sess-nope" }));
+            assert!(miss["error"].as_str().unwrap().contains("会话不存在"));
+
+            // 4) 梦想文档: 作者取真实 profile 名 (不硬编码 user), 并登记到状态
+            let dream = post_json("/api/dream/topic", serde_json::json!({ "topic": "核聚变口径" }));
+            assert_eq!(dream["author"], serde_json::json!("用户"));
+            let written = dream["written"].as_str().expect("写入路径").to_string();
+            assert!(written.ends_with("核聚变口径.md"), "{written}");
+            let last = get_json("/api/dream/last");
+            assert_eq!(last["dreams"], serde_json::json!([written]));
+            assert!(last["last"].is_null(), "还没做过梦 → 如 null 不编报告");
+
+            let _ = std::fs::remove_dir_all(&home);
+        })
+        .await
+        .unwrap();
+    }
+}

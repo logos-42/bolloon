@@ -71,11 +71,16 @@ pub trait UpdateSource {
 
 /// 检查更新 (check 失败 → status=unknown, update_available=false — **不显示提示的前置**)
 pub fn check(source: &dyn UpdateSource) -> UpdateInfo {
+    check_with(source, CURRENT_VERSION)
+}
+
+/// 检查更新 (运行时版本可注入 — 服务端/CLI 的版本可能与编译期常量不同, 比错版本会误报)
+pub fn check_with(source: &dyn UpdateSource, current: &str) -> UpdateInfo {
     match source.latest_version() {
         Ok(latest) => {
-            let avail = update_available(CURRENT_VERSION, &latest).unwrap_or(false);
+            let avail = update_available(current, &latest).unwrap_or(false);
             UpdateInfo {
-                current: CURRENT_VERSION.into(),
+                current: current.into(),
                 latest,
                 update_available: avail,
                 status: "ok".into(),
@@ -83,7 +88,7 @@ pub fn check(source: &dyn UpdateSource) -> UpdateInfo {
             }
         }
         Err(e) => UpdateInfo {
-            current: CURRENT_VERSION.into(),
+            current: current.into(),
             latest: String::new(),
             update_available: false,
             status: format!("unknown ({e})"),
@@ -213,6 +218,24 @@ mod tests {
         assert!(!info.update_available);
         assert!(info.status.starts_with("unknown"), "{}", info.status);
         assert!(info.latest.is_empty());
+    }
+
+    #[test]
+    fn check_with_runtime_version() {
+        // 运行时版本 (服务端 st.version / CLI 实际跑的版本) 参与比较, 不看成编译期常量
+        let src = FakeSource { version: Ok("0.6.11".into()), payload: vec![] };
+        let info = check_with(&src, "0.6.10");
+        assert!(info.update_available);
+        assert_eq!(info.current, "0.6.10");
+        // 运行时已是新版 → 不误报
+        let info = check_with(&src, "0.6.11");
+        assert!(!info.update_available);
+        assert_eq!(info.current, "0.6.11");
+        // 源不可达时, 注入的版本仍如实回显
+        let src = FakeSource { version: Err("network down".into()), payload: vec![] };
+        let info = check_with(&src, "0.6.12");
+        assert_eq!(info.current, "0.6.12");
+        assert!(!info.update_available);
     }
 
     #[test]
