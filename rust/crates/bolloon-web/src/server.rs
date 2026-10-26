@@ -747,6 +747,15 @@ async fn set_permission(
 ) -> Json<serde_json::Value> {
     let on = req.get("full_access").copied().unwrap_or(false);
     st.full_access.store(on, std::sync::atomic::Ordering::SeqCst);
+    // 开启时: 把已挂起的非敏感授权请求直接放行, 让 agent 立即不被门拦截
+    if on {
+        let mut fs = st.forge.lock().await;
+        for r in fs.auth.iter_mut() {
+            if r.status == "pending" && !r.sensitive {
+                r.status = "allow_full".into();
+            }
+        }
+    }
     Json(serde_json::json!({ "full_access": on }))
 }
 

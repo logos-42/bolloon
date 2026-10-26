@@ -364,9 +364,28 @@ pub async fn models(State(st): State<AppState>) -> Json<serde_json::Value> {
     }))
 }
 
-/// 注册表 → 前端可选列表（每家带来源/协议/有无线索/模型数）
+/// 注册表 → 前端可选列表（每家带来源/协议/有无线索/模型数；自定义家排最前）
 pub(crate) fn provider_rows(cfg: &bolloon_llm::LlmConfig) -> Vec<serde_json::Value> {
-    bolloon_llm::list_with_catalog()
+    let mut out: Vec<serde_json::Value> = cfg
+        .custom_providers
+        .values()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.provider_id,
+                "display": if c.display_name.is_empty() { c.provider_id.clone() } else { c.display_name.clone() },
+                "default": c.model,
+                "has_key": !c.api_key.trim().is_empty(),
+                "origin": "custom",
+                "protocol": c.protocol.unwrap_or_else(|| bolloon_llm::Protocol::infer_from_base_url(&c.base_url)).as_str(),
+                "models_count": c.models.len(),
+                "requires_key": true,
+                "selectable": true,
+                "base_url": c.base_url,
+                "note": "自定义 provider (自己填的 base_url/协议)",
+            })
+        })
+        .collect();
+    let catalog_rows: Vec<serde_json::Value> = bolloon_llm::list_with_catalog()
         .into_iter()
         .map(|e| {
             let has_key = !e.requires_api_key
@@ -391,7 +410,9 @@ pub(crate) fn provider_rows(cfg: &bolloon_llm::LlmConfig) -> Vec<serde_json::Val
                 "note": e.auth_note,
             })
         })
-        .collect()
+        .collect();
+    out.extend(catalog_rows);
+    out
 }
 
 /// GET /api/models/options?provider=<id> → 这家的可选模型（目录声明的清单 + 默认模型）
@@ -459,6 +480,24 @@ pub async fn models_select(
     let base_url = req["base_url"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
     let mut cfg = bolloon_llm::config_store::load();
+    // 目录/内置里没有的家 → 当**自定义 provider** 建（自定义必须有 base_url）
+    if bolloon_llm::provider_registry::get(&id).is_none() {
+        let Some(base) = base_url.clone() else {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": format!("{id} 不在目录里 — 自定义 provider 必须给 base_url"),
+            }));
+        };
+        bolloon_llm::config_store::upsert_custom(
+            &mut cfg,
+            &id,
+            &id,
+            &base,
+            None,
+            api_key.as_deref(),
+            model.as_deref(),
+        );
+    }
     bolloon_llm::config_store::apply_provider(
         &mut cfg,
         &id,
@@ -1228,14 +1267,19 @@ pub async fn auth_request(
     let mut fs = st.forge.lock().await;
     fs.next_auth += 1;
     let path = req["path"].as_str().unwrap_or_default().to_string();
+    let sensitive = sensitive_path(&path);
+    // 完全访问模式: 非敏感路径的请求直接放行 (所有门/白名单不拦 agent);
+    // 敏感路径仍是系统硬边界, 任何决策都不可授权。
+    let full = st.full_access.load(Ordering::SeqCst);
+    let status = if full && !sensitive { "allow_full".into() } else { "pending".into() };
     let r = AuthRequest {
         id: format!("auth-{:04}", fs.next_auth),
         agent_id: req["agent_id"].as_str().unwrap_or("agent").into(),
         agent_name: req["agent_name"].as_str().unwrap_or("智能体").into(),
         op: req["op"].as_str().unwrap_or("fs").into(),
-        sensitive: sensitive_path(&path),
+        sensitive,
         path,
-        status: "pending".into(),
+        status,
     };
     fs.auth.push(r.clone());
     Json(serde_json::to_value(r).unwrap())

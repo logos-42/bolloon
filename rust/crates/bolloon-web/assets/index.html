@@ -198,6 +198,30 @@
   .composer-footer{display:flex;gap:8px;padding:0 16px 12px}
   .mini{font-size:12px;padding:5px 9px;border-radius:999px;color:var(--muted)}
   .mini:hover{color:var(--text)}
+  /* ── Apple iOS 风格滑动开关 (可复用 ToggleSwitch) ── */
+  .ts{display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none;font:inherit;color:var(--text);line-height:1}
+  .ts input{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;white-space:nowrap;clip:rect(0 0 0 0);clip-path:inset(50%)}
+  .ts__track{position:relative;flex:none;width:51px;height:31px;border-radius:999px;background:#D1D1D6;transition:background-color .22s ease;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.04)}
+  .ts__thumb{position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.22),0 1px 2px rgba(0,0,0,.12);transition:transform .22s cubic-bezier(.4,.2,.2,1),width .22s cubic-bezier(.4,.2,.2,1)}
+  .ts input:checked + .ts__track{background:#34C759}
+  .ts input:checked + .ts__track .ts__thumb{transform:translateX(20px)}
+  .ts:hover .ts__track{filter:brightness(.98)}
+  .ts:active .ts__track .ts__thumb{width:31px}
+  .ts:active input:not(:checked) + .ts__track .ts__thumb{transform:translateX(0)}
+  .ts:active input:checked + .ts__track .ts__thumb{transform:translateX(16px)}
+  .ts input:focus-visible + .ts__track{box-shadow:0 0 0 3px rgba(52,199,89,.45),inset 0 0 0 .5px rgba(0,0,0,.04)}
+  .ts--disabled{opacity:.5;cursor:not-allowed}
+  .ts--disabled .ts__track{pointer-events:none}
+  .ts__label{font-size:13px;font-weight:500}
+  .ts__hint{font-size:11px;color:var(--muted)}
+  /* composer-footer 内紧凑化: clarity 开关与模型按钮整体变小 */
+  .composer-footer .ts__track{width:44px;height:26px}
+  .composer-footer .ts__thumb{width:22px;height:22px}
+  .composer-footer .ts input:checked + .ts__track .ts__thumb{transform:translateX(18px)}
+  .composer-footer .ts:active .ts__track .ts__thumb{width:26px}
+  .composer-footer .ts:active input:checked + .ts__track .ts__thumb{transform:translateX(14px)}
+  .composer-footer .ts__label{font-size:12px}
+  .composer-footer .mini{padding:3px 8px;font-size:11px}
   #imgPreview{display:flex;gap:6px;padding:0 16px 8px}
   #imgPreview img{height:44px;border-radius:8px;border:1px solid var(--line)}
   dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:16px;width:min(520px,92vw)}
@@ -244,7 +268,7 @@
 <div id="app">
   <aside>
     <div class="brand">
-      <img class="brand-icon" id="brandLogo" src="/icons/apple-touch-icon.png" alt="Bolloon" />
+      <img class="brand-icon" id="brandLogo" src="/icons/icon.png" alt="Bolloon" />
       <span>Bolloon</span>
       <button id="collapseBtn" title="折叠侧边栏" aria-label="折叠侧边栏">☰</button>
     </div>
@@ -287,8 +311,6 @@
       <span class="grow"></span>
       <button id="worldTabBtn" class="mini" title="世界模式（机会流）">🌍 世界 <span id="worldBadge" style="display:none"></span></button>
       <button id="roomBtn" class="mini" title="打开内部商议">内部商议</button>
-      <button id="themeBtn" class="theme-btn" title="主题（跟随系统/深/浅）">☾</button>
-      <button id="authBell" class="mini" title="clarity 验证授权" style="position:relative">🔔<span id="authBadge" style="display:none;position:absolute;top:-4px;right:-4px;background:#e5534b;color:#fff;border-radius:999px;font-size:9px;padding:0 4px;min-width:14px;text-align:center">0</span></button>
     </header>
     <div id="chat"><div class="empty"><h1>我们要做什么？</h1></div></div>
     <div id="worldView">
@@ -321,6 +343,7 @@
     <div id="queueHint" class="hint" style="display:none"></div>
     <div class="composer-footer">
       <button id="modelBtn" class="mini" title="选择模型">⚙ 模型：<span id="modelLabel">…</span></button>
+      <span id="clarityToggleSlot"></span>
     </div>
   </main>
   <aside id="roomPanel" class="room-panel">
@@ -371,6 +394,7 @@
   <div class="avatars" id="avatarPresets"></div>
   <input type="file" id="profileAvatarFile" accept="image/*" style="margin-top:8px" />
   <div class="settings-links">
+    <button id="themeBtn" class="mini" title="主题（跟随系统/深/浅）">☾</button>
     <button id="settingsModelBtn" class="mini">模型：<span id="settingsModelLabel">…</span></button>
     <button id="settingsToolsBtn" class="mini">工具开关</button>
     <button id="settingsUpdateBtn" class="mini">检查更新</button>
@@ -435,6 +459,55 @@ function clearQueue(sid){
 
 const $=(id)=>document.getElementById(id);
 const escapeHTML=(s)=>String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* ── 可复用 Apple iOS 风格滑动开关 (ToggleSwitch) ──
+   支持: 受控/默认状态、禁用、onChange 回调、键盘操作、无障碍标签。
+   用法: const t=createToggle({checked,disabled,label,hint,ariaLabel,onChange});
+        parent.appendChild(t.el);  t.set(v); t.get(); t.disable(v); */
+function createToggle(opts){
+  opts=opts||{};
+  const wrap=document.createElement('label');
+  wrap.className='ts'+(opts.disabled?' ts--disabled':'');
+  const input=document.createElement('input');
+  input.type='checkbox';
+  input.checked=!!opts.checked;
+  input.disabled=!!opts.disabled;
+  if(opts.id) input.id=opts.id;
+  if(opts.ariaLabel) input.setAttribute('aria-label',opts.ariaLabel);
+  const track=document.createElement('span'); track.className='ts__track'; track.setAttribute('aria-hidden','true');
+  const thumb=document.createElement('span'); thumb.className='ts__thumb';
+  track.appendChild(thumb);
+  wrap.appendChild(input); wrap.appendChild(track);
+  if(opts.label){ const t=document.createElement('span'); t.className='ts__label'; t.textContent=opts.label; wrap.appendChild(t); }
+  if(opts.hint){ const h=document.createElement('span'); h.className='ts__hint'; h.textContent=opts.hint; wrap.appendChild(h); }
+  const emit=()=>{ if(opts.disabled) return; opts.onChange&&opts.onChange(input.checked,input); };
+  input.addEventListener('change',emit);
+  return {
+    el:wrap, input,
+    set(v){ input.checked=!!v; },
+    get(){ return input.checked; },
+    disable(v){ input.disabled=!!v; wrap.classList.toggle('ts--disabled',!!v); }
+  };
+}
+
+/* ── Clarity = 完全访问权限开关 (输入框下方) ──
+   开启后所有 permission 门 / 白名单均不拦截 agent 行动;
+   敏感路径与高危命令 (Dangerous denylist) 仍由后端硬边界保护。 */
+let clarityToggle=null;
+async function setPermission(on){
+  try{
+    await api('/api/permission',{method:'POST',body:JSON.stringify({full_access:on})});
+  }catch(e){
+    alert('切换完全访问失败: '+e.message);
+    if(clarityToggle) clarityToggle.set(!on); // 回滚 UI
+  }
+}
+async function initPermission(){
+  try{
+    const p=await api('/api/permission');
+    if(clarityToggle) clarityToggle.set(!!(p&&p.full_access));
+  }catch(e){ /* 忽略: 后端未就绪 */ }
+}
 const avaHTML=(a)=>(a&&a.startsWith('data:image/'))?`<img src="${a}" alt="">`:'';
 
 function svgAvatar(seed,_label){
@@ -518,7 +591,6 @@ async function decideAuth(id,decision){
   try{await api('/api/auth/decide',{method:'POST',body:JSON.stringify({id,decision})});await pollAuth();}
   catch(e){alert(e.message);}
 }
-$('authBell').onclick=()=>{pollAuth();$('authDlg').showModal();};
 async function boot(){
   const j=await api('/api/bootstrap');
   state=j.state; update=j.update;
@@ -1406,6 +1478,14 @@ boot().finally(()=>{
   setTimeout(refreshUpdate,5000);
   setInterval(refreshUpdate,60000);
   setInterval(pollAuth,5000);pollAuth(); // clarity 验证：待授权轮询
+  // clarity 完全访问权限开关: 放在输入框下方
+  clarityToggle=createToggle({
+    checked:false, label:'Clarity 完全访问', hint:'放开所有门禁',
+    ariaLabel:'Clarity 完全访问权限开关',
+    onChange:(v)=>setPermission(v)
+  });
+  $('clarityToggleSlot').appendChild(clarityToggle.el);
+  initPermission();
   resumeRunning();
 });
 </script>

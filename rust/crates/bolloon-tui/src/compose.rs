@@ -19,6 +19,8 @@ pub enum EditAction {
     Backspace,
     /// Enter —— 提交
     Submit,
+    /// Tab —— 接受当前补全候选 (composer 专用; 无补全时等同 Ignore)
+    Accept,
     /// Esc / Ctrl+C —— 取消 (buffer 不提交)
     Cancel,
     HistoryPrev,
@@ -35,6 +37,7 @@ pub enum EditAction {
 pub fn resolve_action(key: &Key) -> EditAction {
     match key {
         Key::Enter => EditAction::Submit,
+        Key::Tab => EditAction::Accept,
         Key::Newline | Key::AltEnter => EditAction::Newline,
         Key::CtrlG => EditAction::OpenDraft,
         Key::AltV => EditAction::PasteImage,

@@ -15,6 +15,7 @@
 //! | `select` | `src/cli/tui-select.ts` | 全屏可滚动光标选择器 (固定高度视窗 + 六种一等选择方式) |
 //! | `scroll` | `src/cli/keymap.ts` | 滚动键位表 + 位移纯函数 (跟随/暂停) |
 //! | `screen` | `src/cli/ink-app.tsx` 的**几何纪律** | 面板壳: 帧高恒定 / 输入行号恒定 / 四个固定行 / 跟随可暂停 |
+//! | `app` | `src/cli/ink-app.tsx` 的**分区账本** | 历史进 scrollback + 底部 6 行 chrome (活动行/rule/状态栏/rule/单行输入/rule) |
 //! | `history` | `src/cli/input-history.ts` | 输入历史落盘 (0600 · 一渠道一文件 · **秘密不写盘**) |
 //! | `input` | `tui-select.ts` 的 `tuiAskLine`/`tuiAskMasked` | raw 模式行输入 (↑↓ 历史) + 掩码输入 (明文不上屏) |
 //! | `compose` | (新增, 无 TS 对应) | 输入缓冲状态机: 多行/Ctrl+G 草稿/Alt+V 贴图的**纯函数**语义 |
@@ -45,9 +46,11 @@
 //! · 多模态发送: `ChatMessage.content` 是单模态 `String`, Alt+V 只把 `@路径` 插进输入,
 //!   像素要真进模型得先改 LLM 层 (欠账)。
 
+pub mod app;
 pub mod boxart;
 pub mod brand;
 pub mod clipboard;
+pub mod completion;
 pub mod compose;
 pub mod help;
 pub mod history;
@@ -62,9 +65,11 @@ pub mod theme;
 pub mod trace;
 pub mod width;
 
-pub use brand::print_banner;
+pub use app::{Activity, Chrome, InputOutcome, StatusBar, TurnStats, RESERVED_LINES};
+pub use brand::{print_banner, render_startup_dashboard, DashboardData};
+pub use completion::{ComplItem, ComplKind};
 pub use history::{append_input_history, load_input_history};
-pub use input::{ask_line, ask_line_with, ask_masked};
+pub use input::{ask_composer, ask_line, ask_line_with, ask_masked, ComplSource};
 pub use loading::{LoadingTui, LOADING_FRAMES};
 pub use panel::{render_agent_message, render_dashboard, render_dialog, render_user_message};
 pub use screen::Screen;

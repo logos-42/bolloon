@@ -20,6 +20,27 @@ use crate::provider_registry::{self, Protocol, ProviderRegistryEntry};
 /// 配置文件名 (与 TS 同名)
 pub const CONFIG_FILE: &str = "bolloon-config.json";
 
+/// 读时间: 字符串(ISO) 或 数字(ms) 都接受 (TS 写 ISO, 早期 Rust 写过数字)
+fn de_flex_time<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) => Ok(s),
+        serde_json::Value::Number(n) => Ok(n.to_string()),
+        // 别的类型 = 文件坏了; 如实报错 (否则会被当成"读到空配置"再盖掉人家)
+        other => Err(serde::de::Error::custom(format!(
+            "updatedAt 既不是 ISO 字符串也不是数字: {other}"
+        ))),
+    }
+}
+
+/// 当前时间 ISO 字符串 (与 TS `new Date().toISOString()` 同形)
+fn now_iso() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
 fn default_temperature() -> f32 {
     0.7
 }
@@ -90,9 +111,9 @@ pub struct LlmConfig {
     pub providers: BTreeMap<String, ProviderSettings>,
     #[serde(default)]
     pub custom_providers: BTreeMap<String, CustomProvider>,
-    /// 最后写入时间 (epoch ms) — 缓存失效用
-    #[serde(default)]
-    pub updated_at: u64,
+    /// 最后写入时间 (**与 TS 一致: ISO 字符串**; 旧文件里的数字也容忍)
+    #[serde(default, deserialize_with = "de_flex_time")]
+    pub updated_at: String,
 }
 
 /// key 从哪来 (界面上要如实标)
@@ -154,13 +175,6 @@ pub fn config_path() -> PathBuf {
     config_dir().join(CONFIG_FILE)
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// 读配置 (坏文件 → 默认配置, 不猜)
 pub fn load_from(dir: &Path) -> LlmConfig {
     let path = dir.join(CONFIG_FILE);
@@ -178,6 +192,31 @@ pub fn save_to(dir: &Path, cfg: &LlmConfig) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join(CONFIG_FILE);
     let tmp = dir.join(format!("{CONFIG_FILE}.tmp"));
+
+    // **不许默默盖掉别人的配置**: 盘上那份解析不了 (例如 TS 改了形状) ⇒ 拒绝覆盖,
+    //   除非显式 BOLLOON_CONFIG_FORCE=1。能解析的则先留一份 .bak (只留最近一份)。
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        if !existing.trim().is_empty() {
+            match serde_json::from_str::<LlmConfig>(&existing) {
+                Ok(_) => {
+                    let _ = std::fs::write(path.with_extension("json.bak"), existing.as_bytes());
+                }
+                Err(e) => {
+                    if std::env::var("BOLLOON_CONFIG_FORCE").is_err() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "现有配置无法解析, 拒绝覆盖 ({}) — 原因: {e}; \
+                                 确认要重建就设 BOLLOON_CONFIG_FORCE=1",
+                                path.display()
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     let raw = serde_json::to_string_pretty(cfg)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     {
@@ -247,14 +286,32 @@ pub fn apply_provider(
         }
     }
     entry.enabled = true;
+    // 自定义家: 同一份设置**镜像**进 customProviders (解析时以那一格为准, 不镜像就等于白填)
+    if let Some(custom) = cfg.custom_providers.get_mut(id) {
+        if let Some(k) = api_key {
+            if !k.trim().is_empty() {
+                custom.api_key = k.trim().to_string();
+            }
+        }
+        if let Some(b) = base_url {
+            if !b.trim().is_empty() {
+                custom.base_url = b.trim().to_string();
+            }
+        }
+        if let Some(m) = model {
+            if !m.trim().is_empty() {
+                custom.model = m.trim().to_string();
+            }
+        }
+    }
     cfg.active_provider = id.to_string();
-    cfg.updated_at = now_ms();
+    cfg.updated_at = now_iso();
 }
 
 /// 设当前使用的一家 (不存在则只记 id, 解析时再报)
 pub fn set_active(cfg: &mut LlmConfig, id: &str) {
     cfg.active_provider = id.to_string();
-    cfg.updated_at = now_ms();
+    cfg.updated_at = now_iso();
 }
 
 /// 新增/更新自定义 provider
@@ -294,7 +351,7 @@ pub fn upsert_custom(
             entry.model = m.trim().to_string();
         }
     }
-    cfg.updated_at = now_ms();
+    cfg.updated_at = now_iso();
 }
 
 /// 这家的 key 从哪来（配置优先 → 环境变量按注册表顺序）; 拿到返回值 = 有 key
@@ -519,7 +576,8 @@ mod tests {
         assert_eq!(back.active_provider, "deepseek");
         assert_eq!(back.providers["deepseek"].api_key, "sk-test");
         assert_eq!(back.providers["deepseek"].model, "deepseek-v4-flash");
-        assert!(back.updated_at > 0);
+        assert!(!back.updated_at.is_empty(), "updatedAt 要写 ISO 字符串: {}", back.updated_at);
+        assert!(back.updated_at.contains('T'), "形如 2026-10-26T…Z: {}", back.updated_at);
 
         #[cfg(unix)]
         {
@@ -663,5 +721,74 @@ mod tests {
         set_active(&mut cfg, "no-such-provider");
         let err = active_resolved(&cfg).unwrap_err();
         assert!(err.contains("no-such-provider"), "要指出是哪家坏: {err}");
+    }
+
+    /// TS 写的配置 (updatedAt 是 **ISO 字符串**, protocol 是 `openai-compatible`) 必须能读
+    #[test]
+    fn reads_ts_written_config() {
+        let raw = r#"{
+          "activeProvider": "goaichat",
+          "providers": { "goaichat": { "enabled": true, "apiKey": "k", "baseUrl": "https://x/v1", "model": "kimi-k3" } },
+          "customProviders": { "goaichat": { "providerId": "goaichat", "displayName": "GoAI",
+             "baseUrl": "https://x/v1", "protocol": "openai-compatible", "apiKey": "k", "model": "kimi-k3", "models": [] } },
+          "updatedAt": "2026-10-24T03:02:26.665Z"
+        }"#;
+        let cfg: LlmConfig = serde_json::from_str(raw).expect("TS 形状必须能读");
+        assert_eq!(cfg.active_provider, "goaichat");
+        assert_eq!(cfg.updated_at, "2026-10-24T03:02:26.665Z");
+        let r = resolve(&cfg, "goaichat").expect("自定义家可解析");
+        assert_eq!(r.protocol, Protocol::OpenAiCompatible, "protocol 串要与 TS 一致");
+        // 写回去仍是 ISO 字符串 + TS 认的协议名
+        let out = serde_json::to_string(&cfg).unwrap();
+        assert!(out.contains("\"updatedAt\":\"2026-10-24T03:02:26.665Z\""), "{out}");
+        assert!(out.contains("\"protocol\":\"openai-compatible\""), "{out}");
+    }
+
+    /// 自定义家: apply_provider 改的 key/基址/模型要**镜像**进 customProviders
+    #[test]
+    fn apply_provider_mirrors_into_custom() {
+        let mut cfg = LlmConfig::default();
+        upsert_custom(&mut cfg, "goaichat", "GoAI", "https://a/v1", None, Some("k1"), Some("m1"));
+        apply_provider(&mut cfg, "goaichat", Some("k2"), Some("https://b/v1"), Some("m2"));
+        let c = &cfg.custom_providers["goaichat"];
+        assert_eq!(c.api_key, "k2");
+        assert_eq!(c.base_url, "https://b/v1");
+        assert_eq!(c.model, "m2");
+        let r = resolve(&cfg, "goaichat").unwrap();
+        assert_eq!(r.model, "m2", "解析要用新值, 不能被旧 custom.model 盖住");
+        assert_eq!(r.base_url, "https://b/v1");
+    }
+
+    /// 盘上那份解析不了 ⇒ **拒绝覆盖** (不许把别人的配置默默盖成空)
+    #[test]
+    fn refuses_to_overwrite_unparseable_config() {
+        let dir = std::env::temp_dir().join(format!("bolloon-cfg-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(CONFIG_FILE);
+        std::fs::write(&path, r#"{"activeProvider":"x","updatedAt":{"weird":1}}"#).unwrap();
+        let cfg = LlmConfig::default();
+        let err = save_to(&dir, &cfg).expect_err("必须拒绝");
+        assert!(err.to_string().contains("拒绝覆盖"), "{err}");
+        // 原文件一个字节没动
+        assert!(std::fs::read_to_string(&path).unwrap().contains("weird"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 能解析的旧文件 → 覆盖前留 .bak (可回滚)
+    #[test]
+    fn keeps_backup_before_overwrite() {
+        let dir = std::env::temp_dir().join(format!("bolloon-cfg-bak-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = LlmConfig::default();
+        apply_provider(&mut cfg, "a", Some("k1"), None, Some("m1"));
+        save_to(&dir, &cfg).unwrap();
+        apply_provider(&mut cfg, "b", Some("k2"), None, Some("m2"));
+        save_to(&dir, &cfg).unwrap();
+        let bak = std::fs::read_to_string(dir.join(format!("{CONFIG_FILE}.bak"))).unwrap();
+        assert!(bak.contains("\"a\""), "备份里应有上一次的 a: {bak}");
+        assert!(!bak.contains("\"b\""), "备份不该含本次: {bak}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

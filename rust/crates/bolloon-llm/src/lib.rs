@@ -23,6 +23,7 @@ pub mod runtime;
 pub use config_store::{
     active_resolved, resolve, LlmConfig, ProviderSettings, Resolved,
 };
+pub use provider_catalog::AuthKind;
 pub use provider_registry::{
     list_builtin, list_catalog, list_with_catalog, Origin, Protocol, ProviderModel,
     ProviderRegistryEntry,

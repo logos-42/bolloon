@@ -17,7 +17,9 @@
 //! 状态机在 `compose.rs` (**纯函数**, 单测在那边钉), 本文件只做真正的 IO。
 
 use crate::compose::{render_input, resolve_action, Compose, EditAction};
+use crate::completion::{apply as apply_compl, detect as detect_compl, filter_items, ComplItem, ComplKind};
 use crate::select::{parse_keys, read_key_raw};
+use crate::theme::{C_BORDER_BRIGHT, C_DIM, RESET};
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -236,7 +238,7 @@ pub fn ask_line_with(
                 EditAction::PasteImage => {
                     notes = paste_image(&mut cx, masked);
                 }
-                EditAction::Ignore => {}
+                EditAction::Accept | EditAction::Ignore => {}
             }
             repaint(&mut drawn, prompt, &cx, masked, cols, max_in, &notes);
         }
@@ -396,6 +398,289 @@ pub fn input_hint(extra: &str) -> String {
 /** 把一行安全截断到 cols (多行输入在单行走不下时给人看的形状) */
 pub fn fit_for_display(s: &str, cols: usize) -> String {
     crate::width::truncate_safe(s, cols)
+}
+
+/// Hermes 式 Terminal Composer (真终端路径用)。
+///
+/// 自绘一帧: 顶 `─` 线 → 多行 `❯` 输入 (复用 `Compose` 状态机) → 底 `─` 线 → 状态栏;
+/// 输入行前缀是 `/` `@` `!` 时, 在框**上方**浮出补全菜单 (不破坏草稿)。
+/// 输入状态全在 `Compose` 里, 刷新/重画都不会丢草稿或光标。
+///
+/// 与 `Chrome` 的关系: composer 只在"等用户输入"这会儿拥有底部区域; 提交后
+/// `Chrome.draw()` 会照常接管 (显示思考状态 + 消息历史)。二者顺序交替, 不重叠。
+/// 进 composer 前清掉下方 chrome 占的区域。
+/// `Chrome.draw()` 结束后光标停在最后一行 (chrome_top + RESERVED_LINES - 1),
+/// 所以上移 `RESERVED_LINES - 1` 行正好回到 chrome_top, 再 `\x1b[J` 清掉整段旧边框。
+pub const COMPOSER_CLEAR_ROWS: usize = 5; // = RESERVED_LINES(6) - 1
+
+/// 补全候选项来源 (调用方注入: `/` 来自 `slash::specs`, `@` 来自 cwd, `!` 来自 shell 提示)
+pub type ComplSource = dyn Fn(ComplKind, &str) -> Vec<ComplItem>;
+
+pub fn ask_composer(
+    status: &str,
+    history: &[String],
+    initial: &str,
+    source: &ComplSource,
+) -> LineResult {
+    let mut guard = RawGuard::enable();
+    if !guard.is_raw() {
+        // 非 TTY: 退化为读一行 (composer 需要 raw 才能逐键); 多行语义交给调用方决定
+        print!("{COMPOSER_PROMPT}");
+        let _ = std::io::stdout().flush();
+        return read_line_plain();
+    }
+
+    let cols = crate::width::term_width();
+    let max_in = max_input_lines();
+    let prompt = COMPOSER_PROMPT;
+    let mut cx = Compose::new(history.to_vec(), initial);
+    let mut compl: Option<(ComplKind, usize, String)> = None;
+    let mut items: Vec<ComplItem> = Vec::new();
+    let mut sel: usize = 0;
+    let mut dismissed = false; // 用户 Esc/Tab 关掉过 → 不再自动重开, 直到下一次编辑
+    let mut notes: Vec<String> = Vec::new();
+    let mut drawn: usize = 0;
+
+    // 先清掉下方 chrome 占的 6 行, 免得旧边框和 composer 叠在一起
+    print!("\x1b[{COMPOSER_CLEAR_ROWS}A\x1b[J");
+    let _ = std::io::stdout().flush();
+
+    // 首帧前先探一次补全 (initial 可能已是 `/xxx`)
+    let (c, it) = recompute_compl(cx.buf(), dismissed, source);
+    compl = c;
+    items = it;
+    if sel >= items.len() {
+        sel = items.len().saturating_sub(1);
+    }
+    paint_composer(&mut drawn, status, &cx, prompt, cols, max_in, compl.is_some(), &items, sel);
+
+    loop {
+        let Some(bytes) = read_key_raw() else {
+            clear_block(drawn);
+            return LineResult { value: String::new(), eof: true, cancelled: false };
+        };
+        for key in parse_keys(&bytes) {
+            match resolve_action(&key) {
+                EditAction::Submit => {
+                    if compl.is_some() {
+                        // 补全打开时 Enter = 接受候选, **不提交**
+                        accept_compl(&mut cx, &compl, &items, &mut sel);
+                        dismissed = true;
+                        compl = None;
+                        items.clear();
+                    } else {
+                        clear_block(drawn);
+                        return LineResult { value: cx.buf().to_string(), eof: false, cancelled: false };
+                    }
+                }
+                EditAction::Accept => {
+                    // Tab: 有补全就接受, 没有就当普通字符忽略
+                    if compl.is_some() {
+                        accept_compl(&mut cx, &compl, &items, &mut sel);
+                        dismissed = true;
+                        compl = None;
+                        items.clear();
+                    }
+                }
+                EditAction::Cancel => {
+                    if compl.is_some() {
+                        dismissed = true;
+                        compl = None;
+                        items.clear();
+                    } else {
+                        clear_block(drawn);
+                        return LineResult { value: String::new(), eof: false, cancelled: true };
+                    }
+                }
+                EditAction::Newline => {
+                    // 换行前先收掉补全, 免得草稿里混入菜单状态
+                    dismissed = true;
+                    compl = None;
+                    items.clear();
+                    cx.newline();
+                    notes.clear();
+                }
+                EditAction::Backspace => {
+                    dismissed = false;
+                    cx.backspace();
+                    notes.clear();
+                }
+                EditAction::Insert(c) => {
+                    dismissed = false;
+                    cx.insert(c);
+                    notes.clear();
+                }
+                EditAction::HistoryPrev => {
+                    if !cx.history_prev() {
+                        notes = vec!["没有更早的历史".to_string()];
+                    } else {
+                        dismissed = false;
+                        notes.clear();
+                    }
+                }
+                EditAction::HistoryNext => {
+                    if !cx.history_next() {
+                        notes = vec!["已经是最新一行".to_string()];
+                    } else {
+                        dismissed = false;
+                        notes.clear();
+                    }
+                }
+                EditAction::OpenDraft => {
+                    notes = open_draft(&mut guard, &mut cx, false);
+                    dismissed = true;
+                    compl = None;
+                    items.clear();
+                    // 编辑器占过屏 ⇒ 输入块位置未知, 从当前行重新起一帧
+                    print!("\r\x1b[J");
+                    drawn = 0;
+                }
+                EditAction::PasteImage => {
+                    notes = paste_image(&mut cx, false);
+                    dismissed = true;
+                    compl = None;
+                    items.clear();
+                }
+                EditAction::Ignore => {}
+            }
+            // 重新探测补全 (dismissed 已在上面按需重置)
+            let (c, it) = recompute_compl(cx.buf(), dismissed, source);
+            compl = c;
+            items = it;
+            if sel >= items.len() {
+                sel = items.len().saturating_sub(1);
+            }
+            paint_composer(&mut drawn, status, &cx, prompt, cols, max_in, compl.is_some(), &items, sel);
+        }
+    }
+}
+
+const COMPOSER_PROMPT: &str = "❯ ";
+
+/// 重新算补全状态 (纯转发, 便于在循环里调用)
+fn recompute_compl(
+    buf: &str,
+    dismissed: bool,
+    source: &ComplSource,
+) -> (Option<(ComplKind, usize, String)>, Vec<ComplItem>) {
+    if dismissed {
+        return (None, Vec::new());
+    }
+    match detect_compl(buf) {
+        Some((k, start, q)) => {
+            let all = source(k, &q);
+            let items = filter_items(&all, &q);
+            (Some((k, start, q)), items)
+        }
+        None => (None, Vec::new()),
+    }
+}
+
+/// 接受当前高亮候选: 把触发符+查询那段替换成 `触发符+值+空格`
+fn accept_compl(
+    cx: &mut Compose,
+    compl: &Option<(ComplKind, usize, String)>,
+    items: &[ComplItem],
+    sel: &mut usize,
+) {
+    if let Some((k, start, q)) = compl {
+        if let Some(it) = items.get(*sel) {
+            let new = apply_compl(cx.buf(), *k, *start, q.len(), &it.value);
+            cx.set_buf(&new);
+        }
+    }
+}
+
+/// 把整个 composer 帧重画一遍 (相对定位: 上移 `drawn-1` 行 + 清到屏末)。
+/// 与 `repaint` 同口径 —— 多行时长短不一, 按行重画才稳, 绝不靠终端折行。
+fn paint_composer(
+    drawn: &mut usize,
+    status: &str,
+    cx: &Compose,
+    prompt: &str,
+    cols: usize,
+    max_lines: usize,
+    compl_open: bool,
+    items: &[ComplItem],
+    sel: usize,
+) {
+    let frame = composer_frame(prompt, cx.buf(), false, cols, max_lines, status, compl_open, items, sel);
+    if *drawn > 1 {
+        print!("\x1b[{}A", *drawn - 1);
+    }
+    print!("\r\x1b[J{}", frame);
+    let _ = std::io::stdout().flush();
+    *drawn = frame.lines().count();
+}
+
+/// 拼一帧文本 (补全菜单 + 顶线 + 输入块 + 底线 + 状态栏)
+fn composer_frame(
+    prompt: &str,
+    buf: &str,
+    masked: bool,
+    cols: usize,
+    max_lines: usize,
+    status: &str,
+    compl_open: bool,
+    items: &[ComplItem],
+    sel: usize,
+) -> String {
+    let w = cols.saturating_sub(1).max(8);
+    let rule = format!("{C_BORDER_BRIGHT}{}{RESET}", "─".repeat(w));
+    let mut out = String::new();
+
+    // 补全菜单浮在框上方 (需要时出现, 不占满屏)
+    if compl_open && !items.is_empty() {
+        out.push_str(&render_compl_menu(items, sel, cols));
+    } else if compl_open && items.is_empty() {
+        out.push_str(&format!(
+            "{C_DIM}  Shell 模式: 直接输入命令 · Enter 执行 · Tab 接受 · Esc 关闭{RESET}\x1b[K\n"
+        ));
+    }
+
+    // 顶线
+    out.push_str(&rule);
+    out.push('\n');
+
+    // 多行输入块 (复用 compose::render_input, `❯ ` 提示符)
+    let r = render_input(prompt, buf, masked, cols, max_lines, &[]);
+    for l in r.text.lines() {
+        out.push_str(l);
+        out.push('\n');
+    }
+
+    // 底线
+    out.push_str(&rule);
+    out.push('\n');
+
+    // 状态栏 (已是调用方按真实 Runtime 数据渲染好的行)
+    out.push_str(status);
+    out.push('\n');
+
+    out
+}
+
+/// 渲染补全菜单: 高亮行反白 + `→ ` 符号前缀 (符号通道不依赖颜色), 其余行暗色。
+/// 最多 8 行, 高亮项始终可见 (简单视窗, 候选通常很少)。
+fn render_compl_menu(items: &[ComplItem], sel: usize, cols: usize) -> String {
+    let max_h = 8;
+    let start = sel.saturating_sub(max_h - 1);
+    let end = (start + max_h).min(items.len());
+    let mut s = String::new();
+    for i in start..end {
+        let it = &items[i];
+        let body = match &it.hint {
+            Some(h) => format!("{}  {}", it.label, h),
+            None => it.label.clone(),
+        };
+        let body = crate::width::truncate_safe(&body, cols.saturating_sub(2));
+        if i == sel {
+            s.push_str(&format!("\x1b[7m→ {body}\x1b[0m\x1b[K\n"));
+        } else {
+            s.push_str(&format!("{C_DIM}  {body}{RESET}\x1b[K\n"));
+        }
+    }
+    s
 }
 
 #[cfg(test)]

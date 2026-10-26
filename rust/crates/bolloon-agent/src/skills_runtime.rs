@@ -112,6 +112,11 @@ impl SkillsRegistry {
         self.skills.len()
     }
 
+    /// 已学技能名列表 (升序) —— Dashboard「Available Skills」分区用
+    pub fn names(&self) -> Vec<String> {
+        self.skills.keys().cloned().collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
     }

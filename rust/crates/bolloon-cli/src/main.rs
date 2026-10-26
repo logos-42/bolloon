@@ -68,6 +68,12 @@ enum Commands {
         /// 直接指定模型 (跳过交互)
         #[arg(long)]
         model: Option<String>,
+        /// 自定义家的 API 基址 (目录里没有的 id 必须给; 也可用于临时改目录家的基址)
+        #[arg(long)]
+        base_url: Option<String>,
+        /// 从 stdin 读一行当 key (不进 shell history / 不落 ps)
+        #[arg(long)]
+        api_key_stdin: bool,
     },
     /// 自动更新 (有新版本才会提示)
     Update {
@@ -141,6 +147,10 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info".into()),
         )
+        // 结构化日志走 stderr: 与 CLI/TUI 的 stdout 绘制区域严格分离。
+        // 启动仪表盘 (LoadingTui) 独占 stdout, 日志不会覆盖面板或与之交错;
+        // 非交互/重定向场景下 stdout 与 stderr 也各自成流, 行为可预期。
+        .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();
@@ -152,8 +162,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Memory { action }) => run_memory(action),
         Some(Commands::Task { action }) => run_task(action),
         Some(Commands::Chat { channel }) => run_chat(&channel).await,
-        Some(Commands::Model { provider, usable, filter, model }) => {
-            run_model(provider, usable, filter, model)
+        Some(Commands::Model { provider, usable, filter, model, base_url, api_key_stdin }) => {
+            run_model(provider, usable, filter, model, base_url, api_key_stdin)
         }
         Some(Commands::Update { action }) => run_update(action),
         Some(Commands::Dream { topic, domain }) => run_dream(topic, &domain),
@@ -253,11 +263,52 @@ fn run_status() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 交互式会话 —— 消息框走 `tui::render_user_message` / `render_agent_message`
+/// 交互式会话 —— **复刻 TS `ink-app.tsx` 的分区账本**
+///
+/// ```text
+///   行 1 … history   历史区 (直接 println 进终端 scrollback, 永不重绘)
+///   活动行            思考颜文字 / 工具秒表 / 提示 (固定 1 行)
+///   ────────────
+///   状态栏            左段 model │ ctx │ ◷ │ ↑ │ ⚙ + 右对齐 ▸标题
+///   ────────────
+///   ❯ 输入            恒 1 行 (单行编辑器, 带反显光标)
+///   ────────────
+/// ```
+///
+/// 与旧实现的关键差别: 不再"整屏自绘 + 固定高正文区", 而是 TS 2026-09-30 定下的
+/// 「历史进 scrollback、程序只管底部 6 行」—— 用户上滚/框选/复制都不跟程序抢屏幕。
+/// `@` 补全: 列当前目录条目 (按查询串前缀过滤), 目录名带尾 `/`。
+/// 纯 IO, 不碰终端; 失败 (无权限/路径没了) 就给空列表, 不卡住输入。
+fn cwd_candidates(q: &str) -> Vec<tui::ComplItem> {
+    let dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let q = q.to_ascii_lowercase();
+    let mut out: Vec<tui::ComplItem> = Vec::new();
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !q.is_empty() && !name.to_ascii_lowercase().contains(&q) {
+            continue;
+        }
+        let is_dir = e.path().is_dir();
+        let value = if is_dir {
+            format!("{name}/")
+        } else {
+            name.clone()
+        };
+        out.push(tui::ComplItem {
+            label: format!("@{name}"),
+            value,
+            hint: Some(if is_dir { "目录".to_string() } else { "文件".to_string() }),
+        });
+    }
+    out.sort_by(|a, b| a.label.cmp(&b.label));
+    out
+}
+
 async fn run_chat(channel: &str) -> anyhow::Result<()> {
     let (llm, model) = build_chat_llm();
-
-    tui::print_banner(Some(env!("CARGO_PKG_VERSION")));
 
     let mut history = tui::load_input_history(Some(channel));
     // 会话本体 (消息/标题/模型/附件 + 落盘): 命令逻辑全在 `chat_command`, 这里只做接线
@@ -268,62 +319,116 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
         jobs: &jobs,
     };
 
-    // 全屏面板壳 (**几何不抖**: 帧高恒定 / 输入行号恒定 / 跟随可暂停) —— 只有真终端才用;
-    //   非 TTY 走下面的纯 println 分支, 免得往管道里灌 ANSI。
+    // 只有真终端才用 chrome; 非 TTY 走纯 println (免得往管道里灌 ANSI)
     let full = tui::select::tui_capable();
-    // 帧高 = 终端行数 **减 1**: 最后一行留给输入块 (`ask_line` 就在它上面原地重画)。
-    //   不减这一行的话, 单行输入也会把整帧顶上去一格 (帧顶那条永远看不到); 多行输入
-    //   (`Ctrl+J`) 再额外占行, 靠往上滚消化 —— 这是**有意的**, 与 `screen` 的帧内几何无关。
-    let frame_rows = if full {
-        Some(tui::width::term_height().saturating_sub(1))
+    let mut chrome = tui::Chrome::new(tui::width::term_height(), tui::width::term_width());
+    chrome.hint = tui::help::HINT.to_string();
+    refresh_status(&mut chrome, &sess);
+
+    // 启动 Dashboard (仿 Hermes 欢迎界面): 圆角边框 + 左侧 Logo + 右侧 Tools/MCP/Skills + 状态栏
+    // 一次性静态屏: **从顶部打印**, 再让 chrome 钉在最底 6 行。绝不能用 `print_above`
+    // (它把光标移到 chrome 顶行上方再**向下** println, 会与最底 chrome 重叠并被擦掉)。
+    let wide_enough = tui::width::term_width() >= 64 && tui::width::term_height() >= 24;
+    if wide_enough {
+        let dash = build_dashboard(&sess);
+        let lines = tui::render_startup_dashboard(&dash);
+        if full {
+            chrome.reset_screen(); // 清屏, 去掉残留的 shell 提示符 (如 `rust %`)
+            for l in &lines {
+                println!("{l}");
+            }
+            chrome.draw();
+        } else {
+            for l in &lines {
+                println!("{l}");
+            }
+        }
     } else {
-        None
-    };
-    let mut screen = tui::Screen::new(None, frame_rows);
-    // 提示行是 Screen 的最后一个固定行 (rows-1); 文案唯一事实源在 `tui::help`
-    screen.hint = tui::help::HINT.to_string();
-    screen.status = status_line(&sess);
-    let mut drawn: usize = 0;
-    // `/undo` 回退出来的那条消息放这里, 下一轮直接进输入框 (不替人自动发送)
-    let mut prefill = String::new();
-    // **整段会话持有 raw 模式**: 提交后到下一次输入之间(画帧/等模型)也必须是 raw,
-    //   否则抢先敲的 `\r` 会被 cooked 行规程换成 `\n`(Enter 变换行), 整行还会压在
-    //   canonical 缓冲里等换行 ⇒ 两句并成一句。机制见 `tui::input::RawState`。
+        tui::print_banner(Some(env!("CARGO_PKG_VERSION")));
+    }
+
+    // **整段会话持 raw 模式**: 提交后到下一次输入之间也必须是 raw, 否则抢先敲的 `\r` 会被
+    //   cooked 行规程换成 `\n`。机制见 `tui::input::RawState`。
     let raw = tui::input::hold_raw_mode();
     // 毫秒时钟: 轮末 agent 循环判 loop 任务是否"到点"
     let now_ms = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u128;
 
+    // Esc / Ctrl+C 双击退出窗口 (TS `timing.ts` ESC_DOUBLE_MS)
+    let mut last_cancel: Option<std::time::Instant> = None;
+    // 命令改出来的回填内容 (`/undo` `/retry`)
+    let mut prefill = String::new();
+
     loop {
+        chrome.refresh_size();
+        refresh_status(&mut chrome, &sess);
+        if matches!(chrome.activity, tui::Activity::Thinking { .. }) {
+            chrome.activity = tui::Activity::Idle;
+        }
         if full {
-            if drawn > 0 {
-                // 回到帧首 + 清到屏末 (重绘一帧的起点, 也是帧的分界)
-                print!("\x1b[{drawn}A\x1b[J");
-            }
-            print!("{}", screen.render());
-            println!(); // 输入行单独占一行 (ask_line 在它上面原地重画)
-            drawn = screen.rows() + 1;
-        } else if sess.messages.is_empty() {
-            println!("{}", screen.hint);
+            chrome.draw();
         }
 
         // 轮末 agent 循环: 到点的 loop → steer → queue 优先自动跑;
         // 只有没自动任务时才阻塞等用户输入 (auto 条目不进输入历史)
         let (text, is_auto) = if let Some(sched) = sess.next_scheduled(now_ms()) {
             (format!("{} {}", sched.marker(), sched.text()), true)
-        } else {
-            let r = tui::ask_line_with("› ", &history, &prefill, false);
+        } else if full {
+            // Hermes 式 Terminal Composer: 自绘「顶/底 ─ + ❯ 多行输入 + 状态栏」,
+            // 支持 `/ @ !` 前缀补全 (不破坏草稿)。输入状态在 `Compose` 里, 刷新不丢。
+            let cols = tui::width::term_width();
+            let status_line = chrome.status.render(cols);
+            let r = tui::input::ask_composer(
+                &status_line,
+                &history,
+                &prefill,
+                &|kind: tui::ComplKind, q: &str| match kind {
+                    tui::ComplKind::Slash => slash::specs()
+                        .iter()
+                        .map(|s| tui::ComplItem {
+                            label: s.name.to_string(),
+                            value: s.name.trim_start_matches('/').to_string(),
+                            hint: Some(s.summary.to_string()),
+                        })
+                        .collect(),
+                    tui::ComplKind::At => cwd_candidates(q),
+                    tui::ComplKind::Bang => Vec::new(), // 无候选: composer 显示 Shell 模式提示
+                },
+            );
             prefill.clear();
             if r.eof {
                 break; // Ctrl+D / 管道断了
             }
             if r.cancelled {
-                // Esc / Ctrl+C 只**丢掉这一行输入** (以前是直接退出会话 —— 回填/改稿时太容易误杀);
-                //   退出走 `/exit` 或 Ctrl+D
+                let now = std::time::Instant::now();
+                let twice = last_cancel
+                    .map(|t| now.duration_since(t).as_millis() <= tui::app::DOUBLE_TAP_MS)
+                    .unwrap_or(false);
+                last_cancel = Some(now);
+                if twice {
+                    break;
+                }
+                // 第一次 Esc/Ctrl+C 只丢这一行输入 (回填/改稿时太容易误杀)
                 emit(
-                    &mut screen,
+                    &mut chrome,
                     full,
-                    &["(已取消当前输入 · 退出用 /exit 或 Ctrl+D)".to_string()],
+                    &[format!(
+                        "{}· 已取消当前输入 (再按一次 Esc / Ctrl+C 退出){}",
+                        tui::theme::C_DIM,
+                        tui::theme::RESET
+                    )],
                 );
+                continue;
+            }
+            last_cancel = None;
+            (r.value.trim().to_string(), false)
+        } else {
+            let r = tui::ask_line_with("› ", &history, &prefill, false);
+            prefill.clear();
+            if r.eof {
+                break;
+            }
+            if r.cancelled {
+                println!("(已取消当前输入 · 退出用 /exit 或 Ctrl+D)");
                 continue;
             }
             (r.value.trim().to_string(), false)
@@ -344,8 +449,8 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
         if let Some((spec, args)) = slash::parse(&line) {
             match sess.exec(&ctx, spec, &args).await {
                 chat_command::Cmd::Say(lines) => {
-                    emit(&mut screen, full, &lines);
-                    screen.status = status_line(&sess);
+                    emit(&mut chrome, full, &lines);
+                    refresh_status(&mut chrome, &sess);
                     continue;
                 }
                 chat_command::Cmd::Prefill(back) => {
@@ -353,10 +458,9 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
                     continue;
                 }
                 chat_command::Cmd::Clear | chat_command::Cmd::Redraw => {
-                    // 真清屏: 从 0 重画 (正文也一起没了 —— /clear 的语义就是"从头来")
-                    print!("\x1b[2J\x1b[H");
-                    drawn = 0;
-                    screen.status = status_line(&sess);
+                    // 真清屏: 历史也一起没了 (`/clear` 的语义就是"从头来")
+                    chrome.reset_screen();
+                    refresh_status(&mut chrome, &sess);
                     continue;
                 }
                 chat_command::Cmd::Update { install } => {
@@ -365,7 +469,7 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
                         Ok(()) => vec!["✓ 更新流程已执行 (输出见上)".to_string()],
                         Err(e) => vec![format!("✗ 更新失败: {e}")],
                     };
-                    emit(&mut screen, full, &lines);
+                    emit(&mut chrome, full, &lines);
                     continue;
                 }
                 chat_command::Cmd::Quit { .. } => break,
@@ -377,7 +481,7 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
         } else if text.starts_with('/') {
             // 未知命令: 如实说, 不把它当普通消息发给模型
             emit(
-                &mut screen,
+                &mut chrome,
                 full,
                 &[format!("✗ 没有这个命令: {text} (用 /help 看全部)")],
             );
@@ -392,94 +496,9 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
             history.push(prompt.clone());
         }
 
-        // 附件 (`/image` `/paste`) 真进模型: build_user_message 把文件读成 base64 data URL
-        // 塞进 ChatMessage.images (OpenAI 视觉数组), 正文仍留 @路径供人核对; 失败时附件原样保留
-        let user_msg = match sess.build_user_message(&prompt) {
-            Ok(m) => m,
-            Err(e) => {
-                emit(
-                    &mut screen,
-                    full,
-                    &[
-                        format!("✗ 附件没发出去: {e}"),
-                        "  (附件已保留; 换支持视觉的模型, 或 BOLLOON_VISION=1 强制重发)".to_string(),
-                    ],
-                );
-                continue;
-            }
-        };
-        sess.attachments.clear();
-
-        let user_box = tui::render_user_message(&user_msg.content);
-        if full {
-            screen.push_many(&user_box);
-            screen.status = status_line(&sess);
-        } else {
-            println!("{user_box}");
-        }
-        sess.messages.push(bolloon_llm::ChatMessage {
-            role: "user".into(),
-            content: user_msg.content.clone(),
-            name: None,
-            tool_call_id: None,
-            tool_calls: None,
-            images: user_msg.images,
-        });
-        let _ = sess.save();
-
-        let params = bolloon_llm::GenerateParams::new(&sess.model, sess.messages.clone());
-        match llm.generate("env", params).await {
-            Ok(res) => {
-                // 工具调用行: 一行说清**它在做什么** (复用 TS trace-line 的中文动作短语)
-                if !res.tool_calls.is_empty() {
-                    let header = tui::panel::render_tool_calls_header(res.tool_calls.len());
-                    if full {
-                        screen.push(&header);
-                    } else {
-                        println!("{header}");
-                    }
-                    for c in &res.tool_calls {
-                        let item = tui::panel::ToolCallListItem {
-                            tool: c.function.name.clone(),
-                            status: "ok".into(),
-                            duration_ms: None,
-                            args: serde_json::from_str(&c.function.arguments).ok(),
-                            output: None,
-                            error: None,
-                        };
-                        let line = tui::panel::render_tool_call_list_item(&item, 0, res.tool_calls.len());
-                        if full {
-                            screen.push(&line);
-                        } else {
-                            println!("{line}");
-                        }
-                    }
-                }
-                // 空回复**不出空框** —— `render_agent_message` 是唯一收口点
-                let boxed = tui::render_agent_message(&res.content);
-                if full {
-                    screen.push_many(&boxed);
-                } else {
-                    println!("{boxed}");
-                }
-                sess.messages.push(bolloon_llm::ChatMessage {
-                    role: "assistant".into(),
-                    content: res.content,
-                    name: None,
-                    tool_call_id: None,
-                    images: vec![],
-                    tool_calls: None,
-                });
-                let _ = sess.save();
-            }
-            Err(e) => {
-                let msg = format!("✗ LLM 调用失败: {e}（已记日志, 不冒充成功回复）");
-                if full {
-                    screen.push(&msg);
-                } else {
-                    println!("{msg}");
-                }
-            }
+        match send_one(&mut chrome, full, &mut sess, &llm, &prompt).await {
+            Ok(()) => {}
+            Err(e) => emit(&mut chrome, full, &[format!("✗ {e}")]),
         }
 
         // ── 轮末 agent 循环 ── 到点的 loop → steer → queue 自动跑。
@@ -490,7 +509,7 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
             auto_rounds += 1;
             if auto_rounds > 6 {
                 emit(
-                    &mut screen,
+                    &mut chrome,
                     full,
                     &["… 自动循环已连跑 6 轮, 先停下 (/busy interrupt 可整体暂停)".to_string()],
                 );
@@ -499,31 +518,34 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
             let Some(sched) = sess.next_scheduled(now_ms()) else { break };
             let auto_text = format!("{} {}", sched.marker(), sched.text());
             let is_loop = matches!(sched, chat_command::Scheduled::Loop(_));
-            match send_one(&mut screen, full, &mut sess, &llm, &auto_text).await {
+            match send_one(&mut chrome, full, &mut sess, &llm, &auto_text).await {
                 Ok(()) => {
                     if is_loop {
                         for l in sess.after_loop_turn(&ctx).await {
-                            emit(&mut screen, full, &[l]);
+                            emit(&mut chrome, full, &[l]);
                         }
                     }
-                    screen.status = status_line(&sess);
+                    refresh_status(&mut chrome, &sess);
                 }
                 Err(e) => {
-                    emit(&mut screen, full, &[format!("✗ 自动循环: {e}")]);
+                    emit(&mut chrome, full, &[format!("✗ 自动循环: {e}")]);
                     break;
                 }
             }
         }
     }
+    chrome.clear();
     drop(raw); // 先还终端, 再打印收尾 (不然输出会粘在输入行上)
     println!("{}已退出会话{}", tui::theme::C_DIM, tui::theme::RESET);
     Ok(())
 }
 
-/// 发一条用户消息, 把模型回复贴进屏与会话。
-/// 附件已在 `build_user_message` 里读成 base64 data URL 进 `ChatMessage.images` (多模态, 真进模型)。
+/// 发一条用户消息: 用户框先上屏 → 活动行进入"思考中" → 拿到结果后工具行 + 回复框上屏。
+///
+/// 模型调用期间用 `select!` 喂 100ms tick, 活动行的颜文字与秒表真的在动 ——
+/// 旧实现是阻塞 await, 那几秒屏幕完全静止 (用户以为卡死)。
 async fn send_one(
-    screen: &mut tui::Screen,
+    chrome: &mut tui::Chrome,
     full: bool,
     sess: &mut chat_command::ChatSession,
     llm: &LlmRuntime,
@@ -537,8 +559,8 @@ async fn send_one(
 
     let user_box = tui::render_user_message(&user_msg.content);
     if full {
-        screen.push_many(&user_box);
-        screen.status = status_line(sess);
+        let lines: Vec<String> = user_box.split('\n').map(|s| s.to_string()).collect();
+        chrome.print_above(&lines);
     } else {
         println!("{user_box}");
     }
@@ -553,38 +575,82 @@ async fn send_one(
     let _ = sess.save();
 
     let params = bolloon_llm::GenerateParams::new(&sess.model, sess.messages.clone());
-    match llm.generate("env", params).await {
-        Ok(res) => {
-            if !res.tool_calls.is_empty() {
-                let header = tui::panel::render_tool_calls_header(res.tool_calls.len());
-                if full {
-                    screen.push(&header);
-                } else {
-                    println!("{header}");
+    let started = std::time::Instant::now();
+    if full {
+        chrome.activity = tui::Activity::Thinking { started };
+        chrome.draw();
+    }
+    let mut fut = std::pin::pin!(llm.generate("env", params));
+    let res = if full {
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+        loop {
+            tokio::select! {
+                r = &mut fut => break r,
+                _ = tick.tick() => {
+                    chrome.tick();
+                    chrome.refresh_size();
+                    chrome.draw();
                 }
+            }
+        }
+    } else {
+        fut.await
+    };
+    let elapsed_ms = started.elapsed().as_millis();
+
+    if full {
+        chrome.activity = tui::Activity::Idle;
+    }
+    match res {
+        Ok(res) => {
+            let mut above: Vec<String> = vec![];
+            if !res.tool_calls.is_empty() {
+                above.push(tui::panel::render_tool_calls_header(res.tool_calls.len()));
                 for c in &res.tool_calls {
+                    let args: Option<serde_json::Value> =
+                        serde_json::from_str(&c.function.arguments).ok();
+                    // 中文动作短语 (`trace-line.ts`): `🔧 读文件 · read_file src/main.rs`
                     let item = tui::panel::ToolCallListItem {
-                        tool: c.function.name.clone(),
+                        tool: tui::trace::trace_label(&c.function.name),
                         status: "ok".into(),
-                        duration_ms: None,
-                        args: serde_json::from_str(&c.function.arguments).ok(),
+                        duration_ms: None, // 真执行时长要等工具回路接上, 不编
+                        args,
                         output: None,
                         error: None,
                     };
-                    let line = tui::panel::render_tool_call_list_item(&item, 0, res.tool_calls.len());
-                    if full {
-                        screen.push(&line);
-                    } else {
-                        println!("{line}");
-                    }
+                    above.push(tui::panel::render_tool_call_list_item(
+                        &item,
+                        0,
+                        res.tool_calls.len(),
+                    ));
                 }
             }
+            // 空回复**不出空框** —— `render_agent_message` 是唯一收口点
             let boxed = tui::render_agent_message(&res.content);
+            above.extend(boxed.split('\n').map(|s| s.to_string()));
             if full {
-                screen.push_many(&boxed);
+                chrome.print_above(&above);
             } else {
-                println!("{boxed}");
+                for l in &above {
+                    println!("{l}");
+                }
             }
+
+            // 状态栏活数据段: 上游 usage 是真的就拿真的 (没给就不显示, 不编)
+            let u = res.usage;
+            let ctx = u.prompt_tokens + u.completion_tokens;
+            let tps = if elapsed_ms > 0 {
+                (u.completion_tokens as u128 * 1000 / elapsed_ms) as u32
+            } else {
+                0
+            };
+            chrome.status.stats = tui::TurnStats {
+                ctx_tokens: ctx,
+                elapsed_ms,
+                tps,
+                tools: res.tool_calls.len() as u32,
+            };
+
             sess.messages.push(bolloon_llm::ChatMessage {
                 role: "assistant".into(),
                 content: res.content,
@@ -594,26 +660,79 @@ async fn send_one(
                 tool_calls: None,
             });
             let _ = sess.save();
+            refresh_status(chrome, sess);
             Ok(())
         }
-        Err(e) => Err(format!("LLM 调用失败: {e}（已记日志, 不冒充成功回复）")),
+        Err(e) => {
+            refresh_status(chrome, sess);
+            Err(format!("LLM 调用失败: {e}（已记日志, 不冒充成功回复）"))
+        }
     }
 }
 
-/// 状态栏文案 (会话 ID 短尾 + 模型 + 渠道) —— 命令改了模型/标题后要跟着变
-fn status_line(sess: &chat_command::ChatSession) -> String {
-    let tail: String = sess.id.chars().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect();
-    format!("model {} · 会话 {} · {}", sess.model, sess.channel, tail)
+/// 状态栏: 模型名去掉 provider 前缀 (TS `index.ts` L1126-1129), 标题跟着会话走
+fn refresh_status(chrome: &mut tui::Chrome, sess: &chat_command::ChatSession) {
+    let model = sess
+        .model
+        .rsplit('/')
+        .next()
+        .unwrap_or(&sess.model)
+        .to_string();
+    chrome.status.model = model;
+    chrome.status.agent = sess.channel.clone();
+    chrome.status.title = sess.title.clone();
 }
 
-/// 把几行文本送进 transcript (全屏) 或 stdout (非 TTY)
-fn emit(screen: &mut tui::Screen, full: bool, lines: &[String]) {
+/// 把几行文本送进历史区 (全屏) 或 stdout (非 TTY)
+fn emit(chrome: &mut tui::Chrome, full: bool, lines: &[String]) {
     if full {
-        screen.push_many(&lines.join("\n"));
+        let flat: Vec<String> = lines
+            .iter()
+            .flat_map(|l| l.split('\n').map(|s| s.to_string()))
+            .collect();
+        chrome.print_above(&flat);
     } else {
         for l in lines {
             println!("{l}");
         }
+    }
+}
+
+/// 组装启动 Dashboard 的数据快照 (全部从运行时读, 不硬编码示例)
+fn build_dashboard(sess: &chat_command::ChatSession) -> tui::DashboardData {
+    let model = sess.model.rsplit('/').next().unwrap_or(&sess.model).to_string();
+    // 运行目录: home 折成 ~ (显示用)
+    let home = bolloon_agent::home::BolloonHome::resolve()
+        .root()
+        .to_string_lossy()
+        .to_string();
+    let dir = sess
+        .dir
+        .to_string_lossy()
+        .replacen(&home, "~", 1)
+        .to_string();
+    // 技能: 真实读取 SkillsRegistry (对话中自动蒸馏出来的)
+    let skills_path = sess
+        .dir
+        .parent()
+        .map(|p| p.join("skills.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("skills.json"));
+    let skills = bolloon_agent::skills_runtime::SkillEvolver::load_json(&skills_path)
+        .registry
+        .names();
+    tui::DashboardData {
+        product: "BOLLOON".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        build: "local".into(),
+        date: chrono::Local::now().format("%Y-%m-%d").to_string(),
+        model,
+        dir,
+        session_id: sess.id.chars().take(8).collect(),
+        // 内置 harness 工具 (真实): kernel_loop / harness 里注册的 read_file + shell
+        tools: vec!["read_file".into(), "shell".into()],
+        mcp: vec![], // 按 ~/.bolloon/mcp.json 配置加载, 未配置则为空
+        skills,
+        update_status: "⚙ 本地构建".into(),
     }
 }
 
@@ -626,6 +745,8 @@ fn run_model(
     usable_only: bool,
     filter: Option<String>,
     model_arg: Option<String>,
+    base_url: Option<String>,
+    api_key_stdin: bool,
 ) -> anyhow::Result<()> {
     let cfg = bolloon_llm::config_store::load();
 
@@ -719,8 +840,72 @@ fn run_model(
         println!("已取消 (配置未变)");
         return Ok(());
     };
-    let Some(entry) = bolloon_llm::provider_registry::get(&id) else {
-        anyhow::bail!("未知 provider: {id} (bolloon model 列出全部)");
+    // 目录/内置里没有的 id = **自定义家** (必须有 base_url; 交互式会问)
+    let mut custom_base: Option<String> = base_url.clone().filter(|b| !b.trim().is_empty());
+    let entry = match bolloon_llm::provider_registry::get(&id) {
+        Some(e) => e,
+        // 已经配过的自定义家 → 沿用它的 base_url/模型/协议 (不用每次重填)
+        None if cfg.custom_providers.contains_key(&id) => {
+            let c = cfg.custom_providers.get(&id).expect("刚判过存在");
+            if custom_base.is_none() && !c.base_url.trim().is_empty() {
+                custom_base = Some(c.base_url.clone());
+            }
+            bolloon_llm::provider_registry::ProviderRegistryEntry {
+                id: id.clone(),
+                display_name: if c.display_name.is_empty() { id.clone() } else { c.display_name.clone() },
+                origin: bolloon_llm::Origin::Custom,
+                protocol: c
+                    .protocol
+                    .unwrap_or_else(|| bolloon_llm::Protocol::infer_from_base_url(&c.base_url)),
+                default_base_url: c.base_url.clone(),
+                default_model: c.model.clone(),
+                api_key_env_vars: vec![],
+                auth: bolloon_llm::AuthKind::Bearer,
+                auth_supported: true,
+                auth_note: "自定义 (自己填的 base_url/协议)".to_string(),
+                requires_api_key: false,
+                is_local: false,
+                family_signal: "自定义".to_string(),
+                models: vec![],
+            }
+        }
+        None => {
+            let base = match custom_base.clone() {
+                Some(b) => b,
+                None if tui::select::tui_capable() => {
+                    let line = tui::ask_line(
+                        &format!("{id} 不在目录里 → API 基址 base_url (例 https://api.xxx.com/v1) › "),
+                        &[],
+                        false,
+                    );
+                    if line.cancelled || line.eof || line.value.trim().is_empty() {
+                        println!("已取消 (自定义家必须给 base_url)");
+                        return Ok(());
+                    }
+                    line.value.trim().to_string()
+                }
+                None => anyhow::bail!(
+                    "{id} 不在目录里 — 自定义家必须给基址: bolloon model {id} --base-url https://api.xxx.com/v1 --model <模型>"
+                ),
+            };
+            custom_base = Some(base.clone());
+            bolloon_llm::provider_registry::ProviderRegistryEntry {
+                id: id.clone(),
+                display_name: id.clone(),
+                origin: bolloon_llm::Origin::Custom,
+                protocol: bolloon_llm::Protocol::infer_from_base_url(&base),
+                default_base_url: base.clone(),
+                default_model: String::new(),
+                api_key_env_vars: vec![],
+                auth: bolloon_llm::AuthKind::Bearer,
+                auth_supported: true,
+                auth_note: "自定义 (自己填的 base_url/协议)".to_string(),
+                requires_api_key: false,
+                is_local: false,
+                family_signal: "自定义".to_string(),
+                models: vec![],
+            }
+        }
     };
 
     // 模型: 命令行给的 → 交互输入 (提示默认与可选数) → 内置默认
@@ -760,10 +945,20 @@ fn run_model(
         entry.default_model.clone()
     };
 
-    // 密钥: 已有则留空不改; 交互式走掩码输入, 非交互式提示环境变量
+    // 密钥: --api-key-stdin 优先 → 否则已有则留空不改 → 交互式掩码输入
     let mut api_key: Option<String> = None;
+    if api_key_stdin {
+        use std::io::BufRead;
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line)?;
+        let k = line.trim().to_string();
+        if k.is_empty() {
+            anyhow::bail!("--api-key-stdin 但 stdin 是空的");
+        }
+        api_key = Some(k);
+    }
     let already = bolloon_llm::config_store::key_of(&cfg, &entry);
-    if entry.requires_api_key && tui::select::tui_capable() {
+    if api_key.is_none() && entry.requires_api_key && tui::select::tui_capable() {
         let prompt = match &already {
             Some((_, src)) => format!("api_key (已存于 {}, 留空不改) › ", src.as_str()),
             None => "api_key (掩码, 不上屏) › ".to_string(),
@@ -785,27 +980,40 @@ fn run_model(
         }
     }
 
-    // base_url: 目录没给基址的家必须自己填
-    let mut base_url: Option<String> = None;
-    if entry.default_base_url.is_empty() {
+    // base_url: 命令行给的 / 自定义家已问过 / 目录没给基址的再问一次
+    let mut base_override: Option<String> = custom_base.clone();
+    if base_override.is_none() && entry.default_base_url.is_empty() {
         if tui::select::tui_capable() {
             let line = tui::ask_line("这家目录里没给 API 基址 → base_url › ", &[], false);
             if line.cancelled || line.eof || line.value.trim().is_empty() {
                 println!("未填 base_url — 已取消");
                 return Ok(());
             }
-            base_url = Some(line.value.trim().to_string());
+            base_override = Some(line.value.trim().to_string());
         } else {
-            anyhow::bail!("{id} 目录里没给基址 — 用 /api/models/select 或 web 界面填 base_url");
+            anyhow::bail!("{id} 目录里没给基址 — 用 --base-url 或 web 界面填");
         }
     }
 
+    let is_custom = bolloon_llm::provider_registry::get(&id).is_none();
     let mut cfg = bolloon_llm::config_store::load();
+    if is_custom {
+        let base = base_override.clone().unwrap_or_default();
+        bolloon_llm::config_store::upsert_custom(
+            &mut cfg,
+            &id,
+            &id,
+            &base,
+            None,
+            api_key.as_deref(),
+            if model.trim().is_empty() { None } else { Some(model.trim()) },
+        );
+    }
     bolloon_llm::config_store::apply_provider(
         &mut cfg,
         &id,
         api_key.as_deref(),
-        base_url.as_deref(),
+        base_override.as_deref(),
         if model.trim().is_empty() { None } else { Some(model.trim()) },
     );
     bolloon_llm::config_store::save(&cfg)?;

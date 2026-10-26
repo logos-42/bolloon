@@ -304,6 +304,8 @@ pub enum Key {
     Down,
     Left,
     Right,
+    /// Tab —— 补全接受 (composer 里用; 普通选择器不响应)
+    Tab,
     Enter,
     /**
      * Ctrl+J (0x0a) —— raw 模式下 `Enter` 是 `\r` (0x0d)、`Ctrl+J` 是 `\n` (0x0a),
@@ -398,6 +400,10 @@ pub fn parse_keys(bytes: &[u8]) -> Vec<Key> {
             }
             b' ' => {
                 out.push(Key::Space);
+                i += 1;
+            }
+            0x09 => {
+                out.push(Key::Tab);
                 i += 1;
             }
             _ => {
@@ -584,6 +590,7 @@ pub fn tui_select(title: &str, items: &[TuiChoice], opts: &SelectOptions) -> Opt
         };
 
         match key {
+            Key::Tab => {} // 选择器不响应 Tab (composer 专用)
             Key::Up => {
                 cursor = if cursor > 0 { cursor - 1 } else { lines.len() - 1 };
                 num_buf.clear();

@@ -33,16 +33,20 @@ impl Origin {
 
 /// 调用协议 (只有 4 条真实现; special 不在其中)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
 pub enum Protocol {
     /// OpenAI 兼容 `POST {base}/chat/completions`
+    /// (**串行化名与 TS 逐字一致**: `openai-compatible`, 不是 kebab 自动生成的 `open-ai-compatible`)
     #[default]
+    #[serde(rename = "openai-compatible", alias = "open-ai-compatible", alias = "openai_compatible")]
     OpenAiCompatible,
     /// Anthropic `POST {base}/messages` + `x-api-key`
+    #[serde(rename = "anthropic")]
     Anthropic,
     /// Gemini `POST {base}/models/{model}:generateContent`
+    #[serde(rename = "gemini")]
     Gemini,
     /// 本机 Ollama `POST {base}/api/chat`
+    #[serde(rename = "ollama")]
     Ollama,
 }
 

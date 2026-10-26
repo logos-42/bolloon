@@ -35,6 +35,21 @@ pub const LOADING_FRAMES: [&str; 6] = [
 const HIDE: &str = "\x1b[?25l";
 const SHOW: &str = "\x1b[?25h";
 
+/// 原地重绘后把光标停回面板**左上角 (列 0)**。
+///
+/// 关键: 必须带 `\r`。只上移 `\x1b[{up}A` 会让光标停在本帧底框所在列,
+/// 下一帧顶框 (标题栏) 就从该列向右打印、超出宽度后换行 —— 产生重复/错位边框。
+/// 这是启动面板"标题栏重复 + 底框残留"的根因。
+fn redraw_suffix(up: usize) -> String {
+    format!("\x1b[{up}A\r")
+}
+
+/// 收尾: 光标移到面板**正下方一行**并交还正常输出 (显示光标 + 换行),
+/// 避免 `stop()` 之后 tracing 日志 / Shell 提示符覆盖面板顶部。
+fn park_below_suffix(up: usize) -> String {
+    format!("\x1b[{up}B\r\n")
+}
+
 #[derive(Debug, Clone)]
 pub struct LoadingStep {
     pub label: String,
@@ -240,13 +255,14 @@ impl LoadingTui {
         self.handle = Some(handle);
     }
 
-    /** 收尾: 画最后一帧 (不带 spinner) 并把光标显示回来 */
+    /** 收尾: 画最后一帧 (不带 spinner) 并把光标显示回来、移到面板下方 */
     pub fn stop(&mut self, ok: bool) {
-        {
+        let up = {
             let mut g = self.inner.lock().unwrap();
             g.finished = true;
             g.ok = ok;
-        }
+            region_lines(&g.steps, &g.current)
+        };
         if let Some(tx) = self.tx.take() {
             let _ = tx.send(());
         }
@@ -254,7 +270,8 @@ impl LoadingTui {
             let _ = h.join();
         }
         self.draw(false);
-        print!("{SHOW}");
+        // 落点: 面板正下方一行 (列 0, 显示光标, 换行) —— 后续 tracing 日志/提示符不再覆盖面板
+        print!("{}{SHOW}", park_below_suffix(up));
         let _ = std::io::stdout().flush();
     }
 
@@ -266,7 +283,7 @@ impl LoadingTui {
                 region_lines(&g.steps, &g.current),
             )
         };
-        print!("{frame}\x1b[{up}A");
+        print!("{frame}{}", redraw_suffix(up));
         let _ = std::io::stdout().flush();
     }
 
@@ -305,7 +322,7 @@ fn tick_loop(inner: Arc<Mutex<Inner>>, rx: Receiver<()>) {
                 if finished {
                     return;
                 }
-                print!("{frame}\x1b[{up}A");
+                print!("{frame}{}", redraw_suffix(up));
                 let _ = std::io::stdout().flush();
             }
         }
@@ -343,11 +360,14 @@ mod tests {
     /// 帧行数 = 上边框 + 艺术字 + steps + spinner + 下边框 (**原地刷新靠它回退光标**)
     #[test]
     fn frame_line_count_is_stable() {
+        let _g = crate::width::test_lock().lock().unwrap();
+        crate::width::set_term_size(80, 24);
         let s = steps();
         let frame = render_dashboard_frame(&s, "加载中…", 0, true);
         assert_eq!(frame.lines().count(), region_lines(&s, "加载中…"));
         // 1 顶框 + N 艺术字 + 3 steps + 1 spinner + 1 底框
         assert_eq!(frame.lines().count(), 1 + art_for(&s, "加载中…").len() + 3 + 1 + 1);
+        crate::width::clear_term_size();
     }
 
     /// 窄屏: 装不下大号艺术字就降档 (**绝不折行** —— 折行会把光标数学打乱, 整块重画)
@@ -397,5 +417,71 @@ mod tests {
         assert!(f.contains("身份") && f.contains("✓"), "ok 状态要带 ✓: {f:?}");
         t.set_message("收尾");
         assert!(t.frame(true).contains("收尾"));
+    }
+
+    /// 原地重绘后缀必须把光标归零到列 0: 否则下一帧顶框向右错位、换行产生重复边框
+    #[test]
+    fn redraw_suffix_parks_at_column_zero() {
+        let s = redraw_suffix(7);
+        assert!(s.starts_with("\x1b[7A"), "应先上移 7 行: {s:?}");
+        assert!(s.ends_with('\r'), "必须以 \\r 归零列, 否则顶框错位: {s:?}");
+        assert!(!s.contains('\n'), "原地重绘不得插入换行 (会滚动出残留行)");
+    }
+
+    /// 收尾后缀应把光标移到面板正下方并换行, 交还正常输出
+    #[test]
+    fn park_below_suffix_moves_below_frame() {
+        let s = park_below_suffix(7);
+        assert!(s.starts_with("\x1b[7B"), "应先下移 7 行到面板下方: {s:?}");
+        assert!(s.ends_with('\n'), "应以换行交还 Shell/日志: {s:?}");
+    }
+
+    /// 一帧只有一条顶框与一条底框 (无重复残留)
+    #[test]
+    fn frame_has_single_top_and_bottom_border() {
+        let _g = crate::width::test_lock().lock().unwrap();
+        crate::width::set_term_size(100, 30);
+        let s = steps();
+        let frame = render_dashboard_frame(&s, "加载中…", 0, true);
+        let lines: Vec<&str> = frame.lines().collect();
+        assert_eq!(
+            lines.iter().filter(|l| l.starts_with('┌')).count(),
+            1,
+            "顶框 (标题栏) 只能有一条: {frame}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| l.starts_with('└')).count(),
+            1,
+            "底框只能有一条: {frame}"
+        );
+        // 所有行显示列宽一致 (面板不歪, 不会因宽字符错位溢出)
+        let widths: Vec<usize> = lines.iter().map(|l| disp_width(l)).collect();
+        let first = widths[0];
+        assert!(
+            widths.iter().all(|w| *w == first),
+            "行宽不一致 (错位/溢出): {widths:?}"
+        );
+        crate::width::clear_term_size();
+    }
+
+    /// 多次 redraw 序列拼接后, 顶框/底框仍各只出现一次 (模拟连续刷新不累积边框)
+    #[test]
+    fn repeated_redraw_does_not_accumulate_borders() {
+        let _g = crate::width::test_lock().lock().unwrap();
+        crate::width::set_term_size(100, 30);
+        let s = steps();
+        // 模拟 start + 8 次步骤刷新 + 收尾, 把 draw 发出的字节流拼起来
+        let up = region_lines(&s, "加载中…");
+        let mut stream = String::new();
+        for i in 0..8 {
+            stream.push_str(&render_dashboard_frame(&s, &format!("步{i}"), i, true));
+            stream.push_str(&redraw_suffix(up));
+        }
+        stream.push_str(&render_dashboard_frame(&s, "完成", 0, false));
+        stream.push_str(&park_below_suffix(up));
+        // 每一帧内部各 1 条顶/底框; 跨帧不累积 (控制序列只是移光标, 不重复打印边框行)
+        assert_eq!(stream.matches('┌').count(), 9, "9 帧应各 1 条顶框, 无残留: {stream}");
+        assert_eq!(stream.matches('└').count(), 9, "9 帧应各 1 条底框, 无残留: {stream}");
+        crate::width::clear_term_size();
     }
 }

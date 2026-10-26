@@ -105,9 +105,202 @@ pub fn print_banner(version: Option<&str>) {
     println!();
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// 启动 Dashboard (仿 Hermes Agent 欢迎界面)
+//
+// 复刻 `src/cli/ink-app.tsx` 的「启动欢迎面板」: 圆角 Unicode 边框 + 左侧 ASCII Logo
+// (垂直居中) + 右侧 Tools / MCP / Skills 分区 + 底部状态栏。所有数据从运行时读,
+// 按**终端显示列宽**对齐 (CJK 全角算 2 列, 绝不按字符串长度), 可复用、可换数据。
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Dashboard 的数据快照 —— 渲染逻辑与此结构**分离**, 换数据不用改布局
+pub struct DashboardData {
+    pub product: String,
+    pub version: String,
+    pub build: String,
+    pub date: String,
+    pub model: String,
+    /// 运行目录 (已把 home 折成 ~)
+    pub dir: String,
+    /// 会话 ID (短)
+    pub session_id: String,
+    /// 可用工具名 (内置 harness 工具, 真实)
+    pub tools: Vec<String>,
+    /// MCP 服务名 (无配置则空)
+    pub mcp: Vec<String>,
+    /// 已学技能名
+    pub skills: Vec<String>,
+    /// 更新状态描述
+    pub update_status: String,
+}
+
+fn dash(w: usize) -> String {
+    "─".repeat(w)
+}
+
+/// 顶栏: `╭─ BOLLOON v0.6.10 · 2026-10-26 · local ──────────╮`
+/// 顶栏: `╭─ BOLLOON v0.6.10 · 2026-10-26 · local ──────────╮`
+///
+/// 标题两侧各留 1 空格, 剩余用横线**对称**填充 (`left_dash + 1 + tw + 1 + right_dash = inner`)。
+/// 总长恒为 `inner + 2 = w`, 边框闭合。
+fn dash_top(title: &str, w: usize) -> String {
+    use crate::width::{disp_width, truncate};
+    use crate::theme::{C_ACCENT, C_BORDER_BRIGHT, RESET};
+    let inner = w.saturating_sub(2);
+    let t = truncate(title, inner.saturating_sub(2));
+    let tw = disp_width(&t);
+    let total_pad = inner.saturating_sub(tw).saturating_sub(2); // 去掉标题两侧各 1 空格
+    let left_dash = total_pad / 2;
+    let right_dash = total_pad - left_dash;
+    format!(
+        "{C_BORDER_BRIGHT}╭{ld} {C_ACCENT}{t}{RESET} {C_BORDER_BRIGHT}{rd}╮{RESET}",
+        ld = dash(left_dash),
+        rd = dash(right_dash),
+    )
+}
+
+/// 底栏: `╰──────────────────────────────────────────────╯`
+fn dash_bottom(w: usize) -> String {
+    use crate::theme::{C_BORDER_BRIGHT, RESET};
+    format!("{C_BORDER_BRIGHT}╰{}╯{RESET}", dash(w.saturating_sub(2)))
+}
+
+
+/// 渲染启动 Dashboard, 返回逐行字符串 (含圆角边框与分区)
+pub fn render_startup_dashboard(d: &DashboardData) -> Vec<String> {
+    use crate::theme::{BOLD, C_ACCENT, C_BORDER_BRIGHT, C_DIM, C_MUTED, C_OK, RESET};
+    use crate::width::pad_to_width;
+    let w = crate::width::term_width().clamp(64, 120);
+    let inner = w.saturating_sub(2);
+    let sep = 1usize;
+    let left_w = ((inner.saturating_sub(sep)) * 2 / 5).max(20).min(40);
+    let right_w = inner.saturating_sub(sep).saturating_sub(left_w);
+
+    let mut out: Vec<String> = Vec::new();
+    let title = format!("{} v{} · {} · {}", d.product, d.version, d.date, d.build);
+    out.push(dash_top(&title, w));
+
+    // ── 左列: 机器人头 + 字标 + 标语 (垂直居中靠后面补空行) ──
+    let mut left: Vec<String> = robot_head();
+    left.push(format!("{C_ACCENT}{BOLD}     BOLLOON{RESET}"));
+    left.push(format!("{C_DIM}  Bolloon Agent{RESET}"));
+    left.push(format!("{C_DIM}  P2P AI Agent · 文档智能体{RESET}"));
+
+    // ── 右列: Tools / MCP / Skills 三个分区 ──
+    let mut right: Vec<String> = Vec::new();
+    right.push(format!(
+        "{C_ACCENT}Available Tools{RESET}  {C_DIM}{}{RESET}",
+        d.tools.len()
+    ));
+    if d.tools.is_empty() {
+        right.push(format!("  {C_MUTED}·{RESET} {C_DIM}无{RESET}"));
+    } else {
+        for t in &d.tools {
+            right.push(format!("  {C_MUTED}·{RESET} {t}"));
+        }
+    }
+    right.push(format!(
+        "{C_ACCENT}MCP Servers{RESET}  {C_DIM}{}{RESET}",
+        d.mcp.len()
+    ));
+    if d.mcp.is_empty() {
+        right.push(format!("  {C_MUTED}·{RESET} {C_DIM}未配置 (按 mcp.json 加载){RESET}"));
+    } else {
+        for m in &d.mcp {
+            right.push(format!("  {C_MUTED}·{RESET} {m}"));
+        }
+    }
+    right.push(format!(
+        "{C_ACCENT}Available Skills{RESET}  {C_DIM}{}{RESET}",
+        d.skills.len()
+    ));
+    if d.skills.is_empty() {
+        right.push(format!("  {C_MUTED}·{RESET} {C_DIM}暂无 (对话中自动蒸馏){RESET}"));
+    } else {
+        for s in &d.skills {
+            right.push(format!("  {C_MUTED}·{RESET} {s}"));
+        }
+    }
+
+    // 垂直居中: 较短的一列在上/下各补一半空行, 使两列视觉同轴
+    let rows = left.len().max(right.len());
+    let pad_top_l = (rows - left.len()) / 2;
+    let pad_top_r = (rows - right.len()) / 2;
+    let blank_l = pad_to_width("", left_w);
+    let blank_r = pad_to_width("", right_w);
+    for i in 0..rows {
+        let l = if i < pad_top_l {
+            blank_l.clone()
+        } else {
+            left.get(i - pad_top_l).cloned().unwrap_or_else(|| blank_l.clone())
+        };
+        let r = if i < pad_top_r {
+            blank_r.clone()
+        } else {
+            right.get(i - pad_top_r).cloned().unwrap_or_else(|| blank_r.clone())
+        };
+        out.push(format!(
+            "{C_BORDER_BRIGHT}│{RESET}{}{C_BORDER_BRIGHT}│{RESET}{}{C_BORDER_BRIGHT}│{RESET}",
+            pad_to_width(&l, left_w),
+            pad_to_width(&r, right_w),
+        ));
+    }
+
+    // ── 底部状态栏 ──
+    let status = format!(
+        "model {model} · {dir} · #{sid} · tools {tn} · skills {sk} · {upd}",
+        model = d.model,
+        dir = d.dir,
+        sid = d.session_id,
+        tn = d.tools.len(),
+        sk = d.skills.len(),
+        upd = d.update_status,
+    );
+    out.push(format!(
+        "{C_BORDER_BRIGHT}│ {RESET}{}{C_BORDER_BRIGHT} │{RESET}",
+        pad_to_width(&status, inner.saturating_sub(2)),
+    ));
+    out.push(dash_bottom(w));
+
+    // 框外 Welcome 提示
+    out.push(format!(
+        "{C_OK}▸ Ready.{RESET} {C_DIM}输入消息开始对话 (Enter 发送 · /help 看命令){RESET}"
+    ));
+    out
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 直接渲染 Dashboard (不走 pty, 真实 UTF-8) 验证每行显示宽度恒等于终端宽
+    #[test]
+    fn dashboard_width_is_constant() {
+        crate::width::set_term_size(64, 30);
+        let d = DashboardData {
+            product: "BOLLOON".into(),
+            version: "0.6.10".into(),
+            build: "local".into(),
+            date: "2026-10-26".into(),
+            model: "kimi-k3".into(),
+            dir: "~/chat".into(),
+            session_id: "20261026".into(),
+            tools: vec!["read_file".into(), "shell".into()],
+            mcp: vec![],
+            skills: vec![],
+            update_status: "本地构建".into(),
+        };
+        let lines = render_startup_dashboard(&d);
+        for (i, l) in lines.iter().enumerate() {
+            let w = crate::width::disp_width(l);
+            if i < lines.len() - 1 {
+                // 倒数第 1 行是框外 Welcome, 不锁宽
+                assert_eq!(w, 64, "row {i} width={w}: {l:?}");
+            }
+        }
+        crate::width::clear_term_size();
+    }
 
     /// 机器人头 6 行, 逐字对齐 TS `ROBOT_HEAD`
     #[test]
