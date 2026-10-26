@@ -81,11 +81,9 @@ const fn a(name: &'static str, of: &'static str, category: &'static str, summary
 use Status::{Na, Planned, Ready};
 
 // ── 待接 / 不适用的原因 (集中一处, 改口径只改这里) ─────────────
-const R_AGENT_LOOP: &str = "chat 目前直连 LLM, 没有 agent 循环 ⇒ 没有「下一轮注入 / 后台跑」的挂点";
 const R_MSG_PLATFORM: &str = "bolloon 没有 Telegram/Discord/Slack 网关, 会话不能交接出去";
 const R_NOUS: &str = "这是 Hermes/Nous 的账号与计费体系, bolloon 里不存在";
 const R_UI_SETTING: &str = "bolloon 只有一套品牌主题, 没有可切换皮肤/状态栏/宠物";
-const R_SNAPSHOT: &str = "状态快照要先把 config/state 收成一个可回滚单元, 本轮没做";
 const R_SKILLS: &str = "chat 还没挂工具/技能循环; skills 运行时装在 agent 侧";
 const R_MCP: &str = "chat 没接 MCP 客户端 (agent 侧才有 mcp.rs)";
 const R_VOICE: &str = "没有语音/唤醒词管线";
@@ -108,43 +106,43 @@ const RAW: &[Spec] = &[
     s("/branch", C_SESSION, "/branch [--here] [name]", "从当前会话分叉出新线程", Na(R_MSG_PLATFORM)),
     a("/fork", "/branch", C_SESSION, "分叉出新线程"),
     s("/worktree", C_SESSION, "/worktree [new [name]|list|prune [--dry-run]]", "查看/新建/清理 git worktree", Ready),
-    s("/rollback", C_SESSION, "/rollback [number] [--all]", "列出/恢复文件系统检查点", Planned(R_SNAPSHOT)),
-    s("/snapshot", C_SESSION, "/snapshot [create|restore <id>|prune]", "创建/恢复 config 与 state 快照", Planned(R_SNAPSHOT)),
+    s("/rollback", C_SESSION, "/rollback [number] [--all]", "列出/恢复文件系统检查点", Ready),
+    s("/snapshot", C_SESSION, "/snapshot [create|restore <id>|prune]", "创建/恢复 config 与 state 快照", Ready),
     a("/snap", "/snapshot", C_SESSION, "创建/恢复状态快照"),
-    s("/stop", C_SESSION, "/stop", "杀掉所有后台进程", Planned("chat 不起后台进程; /bg 接好后才有意义")),
-    s("/review", C_SESSION, "/review [instructions]", "派一个独立子智能体复查刚讨论的工作", Planned("subagents 有底座, 但 chat 没有 dispatch 入口")),
+    s("/stop", C_SESSION, "/stop", "中断所有后台任务 (/bg 起的)", Ready),
+    s("/review", C_SESSION, "/review [instructions]", "以第三方审查者身份独立复查本会话", Ready),
     s("/plan", C_SESSION, "/plan [task]", "把实施计划写成 markdown 落到 ~/.bolloon/rust/plans/ (不执行)", Ready),
     s("/egress", C_SESSION, "/egress [status]", "Docker 出口代理状态", Na("没有 Docker 出口代理这层")),
     s("/resume", C_SESSION, "/resume [name]", "恢复一个已命名的会话", Ready),
     s("/sessions", C_SESSION, "/sessions", "列出本机所有会话并给出恢复方式", Ready),
 
     // ==== 上下文 ====
-    s("/compress", C_CONTEXT, "/compress [here [N] | focus topic | --preview]", "压缩上下文 (here N 保留最近 N 轮)", Ready),
+    s("/compress", C_CONTEXT, "/compress [here [N] | focus <topic> | --preview]", "压缩上下文: here N 截断(保留最近 N 轮); focus <topic> 模型摘要替换旧历史", Ready),
     a("/compact", "/compress", C_CONTEXT, "压缩上下文"),
     s("/status", C_CONTEXT, "/status", "会话/模型/token 估算/上下文占用", Ready),
     s("/context", C_CONTEXT, "/context [all]", "上下文窗口明细 (占用条 + 分类 + 压缩统计)", Ready),
     a("/ctx", "/context", C_CONTEXT, "上下文窗口明细"),
 
     // ==== 后台与自动化 ====
-    s("/bg", C_AUTO, "/bg <prompt>", "在独立后台会话里跑一条提示", Planned(R_AGENT_LOOP)),
-    s("/btw", C_AUTO, "/btw <question>", "不打断当前对话, 顺带问一个旁支问题", Planned(R_AGENT_LOOP)),
-    s("/agents", C_AUTO, "/agents", "看活跃的子智能体与在跑的任务", Planned("subagents 有执行板, chat 没接")),
-    a("/tasks", "/agents", C_AUTO, "看活跃智能体与任务"),
+    s("/bg", C_AUTO, "/bg <prompt>", "在独立后台会话里跑一条提示", Ready),
+    s("/btw", C_AUTO, "/btw <question>", "不打断当前对话, 顺带问一个旁支问题", Ready),
+    s("/agents", C_AUTO, "/agents", "看后台任务 (/bg 起的) 与在跑状态", Ready),
+    a("/tasks", "/agents", C_AUTO, "看后台任务与状态"),
     s("/journey", C_AUTO, "/journey [list|delete <id>|edit <id>]", "学习旅程时间线", Na("bolloon 没有学习旅程这层")),
     a("/learning", "/journey", C_AUTO, "学习旅程时间线"),
     a("/memory-graph", "/journey", C_AUTO, "学习旅程时间线"),
-    s("/queue", C_AUTO, "/queue [<prompt>|list|edit N <prompt>|rm N|move A B|clear]", "排队下一轮的提示 (可增删改排)", Planned(R_AGENT_LOOP)),
+    s("/queue", C_AUTO, "/queue [<prompt>|list|edit N <prompt>|rm N|move A B|clear]", "排队下一轮的提示 (可增删改排)", Ready),
     a("/q", "/queue", C_AUTO, "排队提示词"),
-    s("/steer", C_AUTO, "/steer <prompt>", "在下次工具调用后注入一条消息", Planned(R_AGENT_LOOP)),
+    s("/steer", C_AUTO, "/steer <prompt>", "在下次工具调用后注入一条消息", Ready),
     a("/s", "/steer", C_AUTO, "注入消息"),
-    s("/goal", C_AUTO, "/goal [text | show | pause | resume | clear | status]", "设定跨轮持续目标", Planned("goal.rs 是判定器, chat 没有跨轮驱动器")),
+    s("/goal", C_AUTO, "/goal [text | show | pause | resume | clear | status]", "设定跨轮持续目标 (每条消息都会带上; 轮末由 loop/steer/queue 调度)", Ready),
     s("/heartbeat", C_AUTO, "/heartbeat [every <interval> <prompt> | status | pause|resume|clear]", "空闲时定时回到本会话", Planned("heartbeat.rs 是注册表, chat 没有调度器")),
     a("/hb", "/heartbeat", C_AUTO, "空闲定时回到会话"),
-    s("/refine", C_AUTO, "/refine [focus]", "复盘本对话, 把经验写进 memory/skills", Planned(R_AGENT_LOOP)),
-    s("/loop", C_AUTO, "/loop [interval] <prompt> [--times N] [--until <条件>]", "在本会话里按间隔重复跑一条提示", Planned(R_AGENT_LOOP)),
+    s("/refine", C_AUTO, "/refine [focus]", "复盘本对话, 把经验写进 memory/skills", Ready),
+    s("/loop", C_AUTO, "/loop [interval] <prompt> [--times N] [--until <条件>]", "在本会话里按间隔重复跑一条提示", Ready),
     a("/proactive", "/loop", C_AUTO, "重复跑提示"),
     s("/moa", C_AUTO, "/moa <prompt>", "用 Mixture of Agents 跑一条提示再切回原模型", Planned("没有多模型编排层")),
-    s("/subgoal", C_AUTO, "/subgoal [text | remove N | clear]", "给当前目标加/删子条件", Planned("goal.rs 只有判定器, 没有目标存储")),
+    s("/subgoal", C_AUTO, "/subgoal [text | remove N | clear]", "给当前目标加/删子条件", Ready),
 
     // ==== 配置 ====
     s("/export", C_CONFIG, "/export [profile] [-o out.tar.gz]", "导出一个 profile (config/skills/theme)", Planned("bolloon 没有 profile 概念 (只有一套 home)")),
@@ -169,7 +167,7 @@ const RAW: &[Spec] = &[
     s("/indicator", C_CONFIG, "/indicator [ascii|emoji|kaomoji|unicode]", "忙时指示器样式", Planned("加载动画已是固定 6 帧")),
     s("/voice", C_CONFIG, "/voice [on|off|tts|status]", "语音模式", Na(R_VOICE)),
     s("/wake", C_CONFIG, "/wake [on|off|status]", "唤醒词监听", Na(R_VOICE)),
-    s("/busy", C_CONFIG, "/busy [queue|steer|interrupt|status]", "忙碌时消息怎么处理", Planned(R_AGENT_LOOP)),
+    s("/busy", C_CONFIG, "/busy [queue|steer|interrupt|status]", "忙碌时消息怎么处理", Ready),
     s("/autoprune", C_CONFIG, "/autoprune [on|off|later|status]", "自动清理旧会话", Planned("会话库刚落地, 清理策略还没定")),
 
     // ==== 信息 ====
@@ -197,7 +195,7 @@ const RAW: &[Spec] = &[
     // ==== 工具与技能 ====
     s("/tools", C_TOOLS, "/tools [list|disable|enable] [name...]", "管理工具", Planned(R_SKILLS)),
     s("/toolsets", C_TOOLS, "/toolsets", "列出可用工具集", Planned(R_SKILLS)),
-    s("/skills", C_TOOLS, "/skills", "列出已装技能", Planned(R_SKILLS)),
+    s("/skills", C_TOOLS, "/skills", "列出已装技能 (读 skills.json)", Ready),
     s("/memory", C_TOOLS, "/memory [pending|approve|reject|approval]", "记忆审批闸", Planned("bolloon 记忆走 memory_db (remember/recall), 没有审批闸")),
     s("/bundles", C_TOOLS, "/bundles", "技能包", Planned(R_SKILLS)),
     s("/pet", C_TOOLS, "/pet [toggle|list|scale <n>|<slug>]", "桌面宠物", Na(R_UI_SETTING)),
@@ -470,6 +468,6 @@ mod tests {
     fn ready_count_is_what_we_claim() {
         let ready = specs().iter().filter(|s| s.status.is_ready()).count();
         // 含别名 (别名继承本体状态), 所以这个数 > "真命令数"
-        assert_eq!(ready, 33, "Ready 命令数变了: {ready} (改了就在这里同步口径)");
+        assert_eq!(ready, 53, "Ready 命令数变了: {ready} (改了就在这里同步口径)");
     }
 }

@@ -22,6 +22,14 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallMsg>>,
+    /// 附件图片 (**data URL**, `data:image/png;base64,…`)。
+    ///
+    /// 序列化口径见 `messages_payload`: **非空时** `content` 变成 OpenAI 视觉数组
+    /// `[{type:text},{type:image_url}]`; 为空时消息形状与旧版**完全一致**
+    /// (旧会话文件/旧调用方零迁移)。2026-10-26 前 `content` 是单模态 String,
+    /// 贴图只能插 `@路径` —— 那是欠账, 这一版补上。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -251,7 +259,7 @@ impl LlmRuntime {
             .post(&url)
             .json(&serde_json::json!({
                 "model": params.model,
-                "messages": params.messages,
+                "messages": messages_payload(&params.messages),
                 "tools": params.tools,
                 "temperature": params.temperature,
                 "max_tokens": params.max_tokens,
@@ -322,6 +330,73 @@ impl LlmRuntime {
             return parse_response(parsed, &params.model);
         }
     }
+}
+
+/**
+ * 消息数组 → 请求体里的 `messages`。
+ *
+ * 规则 (唯一收口, 别在调用方各拼一份):
+ *   · **没图**: 原样序列化 (与旧版字节一致, 老会话文件/老调用方零迁移);
+ *   · **有图**: `content` 换成 OpenAI 视觉数组 `[{type:text},{type:image_url,…}]`,
+ *     其余字段 (role/name/tool_call_id/tool_calls) 原样带上。
+ */
+pub fn messages_payload(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .map(|m| {
+            if m.images.is_empty() {
+                return serde_json::to_value(m).unwrap_or(serde_json::Value::Null);
+            }
+            let mut parts = vec![serde_json::json!({ "type": "text", "text": m.content })];
+            for url in &m.images {
+                parts.push(serde_json::json!({
+                    "type": "image_url",
+                    "image_url": { "url": url }
+                }));
+            }
+            let mut o = serde_json::json!({ "role": m.role, "content": parts });
+            if let Some(n) = &m.name {
+                o["name"] = serde_json::json!(n);
+            }
+            if let Some(id) = &m.tool_call_id {
+                o["tool_call_id"] = serde_json::json!(id);
+            }
+            if let Some(tcs) = &m.tool_calls {
+                o["tool_calls"] = serde_json::to_value(tcs).unwrap_or(serde_json::Value::Null);
+            }
+            o
+        })
+        .collect()
+}
+
+/**
+ * 模型名是否**已知**支持视觉输入 (前缀匹配, 保守清单)。
+ *
+ * 这不是能力协商 —— OpenAI 兼容接口没有这个端点; 清单只防一个最常见的坑:
+ * 默认模型 `deepseek-chat` 是纯文本, 把像素发过去只会收获一个 400。
+ * 不在清单里的模型用 `BOLLOON_VISION=1` 强制 (调用方负责)。
+ */
+pub fn is_vision_model(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    const PREFIXES: &[&str] = &[
+        "gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-5", "o3", "o4-", "chatgpt-4o",
+        "claude-3", "claude-sonnet", "claude-opus", "claude-haiku",
+        "gemini", "qwen-vl", "qwen2-vl", "qwen2.5-vl", "glm-4v", "glm-4.5v", "glm-4.6v",
+        "grok-2-vision", "grok-4", "pixtral", "llama-3.2-90b", "llama-3.2-11b", "llama-4",
+        "mistral-small-3.1", "doubao-1.5-vision", "kimi-latest",
+    ];
+    PREFIXES.iter().any(|p| m.starts_with(p))
+}
+
+/** 发图前的闸: 已知视觉模型放行; 不认识就给出人话错误 (含强制开关提示) */
+pub fn check_vision(model: &str, images: usize) -> Result<(), String> {
+    if images == 0 || is_vision_model(model) {
+        return Ok(());
+    }
+    Err(format!(
+        "模型 {model} 不在已知视觉清单里, {images} 张图片发过去大概率 400; \
+         确认支持就用 BOLLOON_VISION=1 强制发送"
+    ))
 }
 
 /// 解析 OpenAI 响应
@@ -429,6 +504,103 @@ fn truncate(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
+    fn msg(role: &str, text: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.into(),
+            content: text.into(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+            images: vec![],
+        }
+    }
+
+    /// **没图**: 请求体里的消息与旧版形状完全一致 (老调用方零迁移)
+    #[test]
+    fn payload_without_images_keeps_plain_shape() {
+        let v = messages_payload(&[msg("user", "你好")]);
+        assert_eq!(v[0]["role"], "user");
+        assert_eq!(v[0]["content"], "你好");
+        assert!(v[0].get("images").is_none(), "没图就不许出现 images 字段");
+    }
+
+    /// **有图**: content 变成 text + image_url 数组 (OpenAI 视觉形状)
+    #[test]
+    fn payload_with_images_uses_vision_array() {
+        let mut m = msg("user", "看图");
+        m.images = vec!["data:image/png;base64,AAAA".into(), "data:image/jpeg;base64,BBBB".into()];
+        let v = messages_payload(&[m]);
+        let content = v[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3, "1 段文本 + 2 张图");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "看图");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,AAAA");
+        assert_eq!(content[2]["image_url"]["url"], "data:image/jpeg;base64,BBBB");
+        assert_eq!(v[0]["role"], "user");
+    }
+
+    /// 视觉闸: 默认模型 (deepseek-chat) 拦下, 已知视觉模型放行, 0 张图放行
+    #[test]
+    fn vision_gate_blocks_unknown_models() {
+        assert!(check_vision("deepseek-chat", 0).is_ok(), "没图永远放行");
+        assert!(check_vision("deepseek-chat", 1).is_err(), "默认纯文本模型拦下");
+        assert!(check_vision("deepseek-chat", 2).is_err());
+        let e = check_vision("deepseek-chat", 1).unwrap_err();
+        assert!(e.contains("BOLLOON_VISION"), "错误里要给强制开关: {e}");
+        assert!(check_vision("gpt-4o", 1).is_ok());
+        assert!(check_vision("gemini-2.0-flash", 1).is_ok());
+        assert!(check_vision("qwen-vl-max", 1).is_ok());
+        assert!(check_vision("Claude-Sonnet-4", 1).is_ok(), "大小写不敏感");
+    }
+
+    /// 带图请求真的把视觉数组发上线路 (mock server 抓包核对请求体)
+    #[tokio::test]
+    async fn request_body_carries_image_parts() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 65536];
+            let n = sock.read(&mut buf).await.unwrap();
+            let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = raw.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+            let resp = r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#;
+            let out = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                resp.len(),
+                resp
+            );
+            let _ = sock.write_all(out.as_bytes()).await;
+            body
+        });
+
+        let rt = LlmRuntime::new(
+            vec![ProviderConfig {
+                id: "mock-vision".into(),
+                base_url: format!("http://{addr}/v1"),
+                api_key: None,
+                default_model: "gpt-4o".into(),
+            }],
+            1,
+        );
+        let mut m = msg("user", "这是什么图?");
+        m.images = vec!["data:image/png;base64,AAAA".into()];
+        let res = rt
+            .generate("mock-vision", GenerateParams::new("gpt-4o", vec![m]))
+            .await
+            .unwrap();
+        assert_eq!(res.content, "ok");
+
+        let body = server.await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let content = v["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,AAAA");
+    }
+
+
     #[test]
     fn sanitize_rejects_dot() {
         assert_eq!(sanitize_tool_name("contact.list_authorized"), "contact_list_authorized");
@@ -533,6 +705,7 @@ mod tests {
                     content: "hi".into(),
                     name: None,
                     tool_call_id: None,
+                    images: vec![],
                     tool_calls: None,
                 }]),
             )
@@ -585,6 +758,7 @@ mod tests {
                     content: "hi".into(),
                     name: None,
                     tool_call_id: None,
+                    images: vec![],
                     tool_calls: None,
                 }]),
             )

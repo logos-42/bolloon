@@ -14,8 +14,11 @@
 //! **终端 UI 复用原 TS 的 CLI TUI** (`src/cli/` 那套纯 ANSI 视觉层), 见 `tui` 模块的来源对照表。
 //! 本文件只做"接线": 品牌 banner / 启动仪表盘 / 状态面板 / 消息框 / 选择器全走 `tui`, 不在这里画字符。
 
+use bolloon_llm::LlmRuntime;
 use bolloon_tui as tui;
 use clap::{Parser, Subcommand};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 mod chat_command;
 mod slash;
@@ -238,7 +241,7 @@ fn run_status() -> anyhow::Result<()> {
 
 /// 交互式会话 —— 消息框走 `tui::render_user_message` / `render_agent_message`
 async fn run_chat(channel: &str) -> anyhow::Result<()> {
-    let llm = build_llm_from_env();
+    let llm = Arc::new(build_llm_from_env());
     let model = std::env::var("BOLLOON_MODEL").unwrap_or_else(|_| "deepseek-chat".to_string());
 
     tui::print_banner(Some(env!("CARGO_PKG_VERSION")));
@@ -246,6 +249,11 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
     let mut history = tui::load_input_history(Some(channel));
     // 会话本体 (消息/标题/模型/附件 + 落盘): 命令逻辑全在 `chat_command`, 这里只做接线
     let mut sess = chat_command::ChatSession::new(&model, channel);
+    let jobs = chat_command::Jobs::new();
+    let ctx = chat_command::ChatCtx {
+        llm: Arc::clone(&llm),
+        jobs: &jobs,
+    };
 
     // 全屏面板壳 (**几何不抖**: 帧高恒定 / 输入行号恒定 / 跟随可暂停) —— 只有真终端才用;
     //   非 TTY 走下面的纯 println 分支, 免得往管道里灌 ANSI。
@@ -269,6 +277,8 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
     //   否则抢先敲的 `\r` 会被 cooked 行规程换成 `\n`(Enter 变换行), 整行还会压在
     //   canonical 缓冲里等换行 ⇒ 两句并成一句。机制见 `tui::input::RawState`。
     let raw = tui::input::hold_raw_mode();
+    // 毫秒时钟: 轮末 agent 循环判 loop 任务是否"到点"
+    let now_ms = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u128;
 
     loop {
         if full {
@@ -283,24 +293,35 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
             println!("{}", screen.hint);
         }
 
-        let r = tui::ask_line_with("› ", &history, &prefill, false);
-        prefill.clear();
-        if r.eof {
-            break; // Ctrl+D / 管道断了
-        }
-        if r.cancelled {
-            // Esc / Ctrl+C 只**丢掉这一行输入** (以前是直接退出会话 —— 回填/改稿时太容易误杀);
-            //   退出走 `/exit` 或 Ctrl+D
-            emit(
-                &mut screen,
-                full,
-                &["(已取消当前输入 · 退出用 /exit 或 Ctrl+D)".to_string()],
-            );
-            continue;
-        }
-        let text = r.value.trim().to_string();
+        // 轮末 agent 循环: 到点的 loop → steer → queue 优先自动跑;
+        // 只有没自动任务时才阻塞等用户输入 (auto 条目不进输入历史)
+        let (text, is_auto) = if let Some(sched) = sess.next_scheduled(now_ms()) {
+            (format!("{} {}", sched.marker(), sched.text()), true)
+        } else {
+            let r = tui::ask_line_with("› ", &history, &prefill, false);
+            prefill.clear();
+            if r.eof {
+                break; // Ctrl+D / 管道断了
+            }
+            if r.cancelled {
+                // Esc / Ctrl+C 只**丢掉这一行输入** (以前是直接退出会话 —— 回填/改稿时太容易误杀);
+                //   退出走 `/exit` 或 Ctrl+D
+                emit(
+                    &mut screen,
+                    full,
+                    &["(已取消当前输入 · 退出用 /exit 或 Ctrl+D)".to_string()],
+                );
+                continue;
+            }
+            (r.value.trim().to_string(), false)
+        };
         if text.is_empty() {
             continue;
+        }
+        if !is_auto {
+            if tui::append_input_history(&text, Some(channel)) && !history.contains(&text) {
+                history.push(text.clone());
+            }
         }
 
         // ── 命令面 ──────────────────────────────────────────
@@ -308,7 +329,7 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
         let line = if text == "?" { "/help".to_string() } else { text.clone() };
         let mut prompt = text.clone();
         if let Some((spec, args)) = slash::parse(&line) {
-            match sess.exec(spec, &args) {
+            match sess.exec(&ctx, spec, &args).await {
                 chat_command::Cmd::Say(lines) => {
                     emit(&mut screen, full, &lines);
                     screen.status = status_line(&sess);
@@ -350,16 +371,33 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
             continue;
         }
 
-        // **秘密不写历史** (判据见 tui::history::looks_secret) —— 助记词/私钥不该被翻出来
-        if tui::append_input_history(&prompt, Some(channel)) && !history.contains(&prompt) {
+        // **秘密不写历史**: 只有用户真输入才进输入历史; 自动跑的 loop/steer/queue 条目不写
+        if !is_auto
+            && tui::append_input_history(&prompt, Some(channel))
+            && !history.contains(&prompt)
+        {
             history.push(prompt.clone());
         }
 
-        // 附件 (`/image` `/paste`) 拼进正文: 单模态 content 的现实做法 —— 给路径, 不冒充多模态
-        let outgoing = sess.outgoing(&prompt);
+        // 附件 (`/image` `/paste`) 真进模型: build_user_message 把文件读成 base64 data URL
+        // 塞进 ChatMessage.images (OpenAI 视觉数组), 正文仍留 @路径供人核对; 失败时附件原样保留
+        let user_msg = match sess.build_user_message(&prompt) {
+            Ok(m) => m,
+            Err(e) => {
+                emit(
+                    &mut screen,
+                    full,
+                    &[
+                        format!("✗ 附件没发出去: {e}"),
+                        "  (附件已保留; 换支持视觉的模型, 或 BOLLOON_VISION=1 强制重发)".to_string(),
+                    ],
+                );
+                continue;
+            }
+        };
         sess.attachments.clear();
 
-        let user_box = tui::render_user_message(&outgoing);
+        let user_box = tui::render_user_message(&user_msg.content);
         if full {
             screen.push_many(&user_box);
             screen.status = status_line(&sess);
@@ -368,10 +406,11 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
         }
         sess.messages.push(bolloon_llm::ChatMessage {
             role: "user".into(),
-            content: outgoing,
+            content: user_msg.content.clone(),
             name: None,
             tool_call_id: None,
             tool_calls: None,
+            images: user_msg.images,
         });
         let _ = sess.save();
 
@@ -415,6 +454,7 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
                     content: res.content,
                     name: None,
                     tool_call_id: None,
+                    images: vec![],
                     tool_calls: None,
                 });
                 let _ = sess.save();
@@ -428,10 +468,123 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
                 }
             }
         }
+
+        // ── 轮末 agent 循环 ── 到点的 loop → steer → queue 自动跑。
+        // **成功/失败都要跑**: 没配 key 时也要把队列/插话/loop 推完 (每轮失败就停, 不刷屏)。
+        // 单次会话内最多 6 轮自动, 防止把终端吞住; 用户下次输入仍优先。
+        let mut auto_rounds = 0usize;
+        loop {
+            auto_rounds += 1;
+            if auto_rounds > 6 {
+                emit(
+                    &mut screen,
+                    full,
+                    &["… 自动循环已连跑 6 轮, 先停下 (/busy interrupt 可整体暂停)".to_string()],
+                );
+                break;
+            }
+            let Some(sched) = sess.next_scheduled(now_ms()) else { break };
+            let auto_text = format!("{} {}", sched.marker(), sched.text());
+            let is_loop = matches!(sched, chat_command::Scheduled::Loop(_));
+            match send_one(&mut screen, full, &mut sess, &llm, &auto_text).await {
+                Ok(()) => {
+                    if is_loop {
+                        for l in sess.after_loop_turn(&ctx).await {
+                            emit(&mut screen, full, &[l]);
+                        }
+                    }
+                    screen.status = status_line(&sess);
+                }
+                Err(e) => {
+                    emit(&mut screen, full, &[format!("✗ 自动循环: {e}")]);
+                    break;
+                }
+            }
+        }
     }
     drop(raw); // 先还终端, 再打印收尾 (不然输出会粘在输入行上)
     println!("{}已退出会话{}", tui::theme::C_DIM, tui::theme::RESET);
     Ok(())
+}
+
+/// 发一条用户消息, 把模型回复贴进屏与会话。
+/// 附件已在 `build_user_message` 里读成 base64 data URL 进 `ChatMessage.images` (多模态, 真进模型)。
+async fn send_one(
+    screen: &mut tui::Screen,
+    full: bool,
+    sess: &mut chat_command::ChatSession,
+    llm: &LlmRuntime,
+    text: &str,
+) -> Result<(), String> {
+    let user_msg = match sess.build_user_message(text) {
+        Ok(m) => m,
+        Err(e) => return Err(format!("附件发送失败: {e} (附件已保留)")),
+    };
+    sess.attachments.clear();
+
+    let user_box = tui::render_user_message(&user_msg.content);
+    if full {
+        screen.push_many(&user_box);
+        screen.status = status_line(sess);
+    } else {
+        println!("{user_box}");
+    }
+    sess.messages.push(bolloon_llm::ChatMessage {
+        role: "user".into(),
+        content: user_msg.content.clone(),
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+        images: user_msg.images,
+    });
+    let _ = sess.save();
+
+    let params = bolloon_llm::GenerateParams::new(&sess.model, sess.messages.clone());
+    match llm.generate("env", params).await {
+        Ok(res) => {
+            if !res.tool_calls.is_empty() {
+                let header = tui::panel::render_tool_calls_header(res.tool_calls.len());
+                if full {
+                    screen.push(&header);
+                } else {
+                    println!("{header}");
+                }
+                for c in &res.tool_calls {
+                    let item = tui::panel::ToolCallListItem {
+                        tool: c.function.name.clone(),
+                        status: "ok".into(),
+                        duration_ms: None,
+                        args: serde_json::from_str(&c.function.arguments).ok(),
+                        output: None,
+                        error: None,
+                    };
+                    let line = tui::panel::render_tool_call_list_item(&item, 0, res.tool_calls.len());
+                    if full {
+                        screen.push(&line);
+                    } else {
+                        println!("{line}");
+                    }
+                }
+            }
+            let boxed = tui::render_agent_message(&res.content);
+            if full {
+                screen.push_many(&boxed);
+            } else {
+                println!("{boxed}");
+            }
+            sess.messages.push(bolloon_llm::ChatMessage {
+                role: "assistant".into(),
+                content: res.content,
+                name: None,
+                tool_call_id: None,
+                images: vec![],
+                tool_calls: None,
+            });
+            let _ = sess.save();
+            Ok(())
+        }
+        Err(e) => Err(format!("LLM 调用失败: {e}（已记日志, 不冒充成功回复）")),
+    }
 }
 
 /// 状态栏文案 (会话 ID 短尾 + 模型 + 渠道) —— 命令改了模型/标题后要跟着变

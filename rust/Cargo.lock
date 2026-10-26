@@ -231,6 +231,7 @@ name = "bolloon-cli"
 version = "0.6.10"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bolloon-agent",
  "bolloon-llm",
  "bolloon-p2p",

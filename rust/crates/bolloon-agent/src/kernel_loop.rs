@@ -112,6 +112,7 @@ impl<S: LoopStrategy> KernelLoop<S> {
                     content: ctx,
                     name: None,
                     tool_call_id: None,
+                    images: vec![],
                     tool_calls: None,
                 },
             );
@@ -179,6 +180,7 @@ impl<S: LoopStrategy> KernelLoop<S> {
                     content: out_txt,
                     name: None,
                     tool_call_id: Some(tc.id.clone()),
+                    images: vec![],
                     tool_calls: None,
                 });
                 if !tool_ok {
@@ -199,6 +201,7 @@ impl<S: LoopStrategy> KernelLoop<S> {
                 content: resp.content.clone(),
                 name: None,
                 tool_call_id: None,
+                images: vec![],
                 tool_calls: Some(
                     resp.tool_calls
                         .iter()
@@ -323,6 +326,7 @@ mod tests {
             content: "请读取文件".into(),
             name: None,
             tool_call_id: None,
+            images: vec![],
             tool_calls: None,
         }];
         let steps = loop_.run("test-model", messages, vec![], None).await.unwrap();

@@ -28,3 +28,5 @@ ureq = { version = "2", features = ["json"] }
 hex.workspace = true
 libc.workspace = true
 bolloon-tui = { path = "../bolloon-tui" }
+base64 = { workspace = true }
+

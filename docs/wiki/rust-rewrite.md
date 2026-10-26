@@ -343,6 +343,26 @@ Hermes/Nous 账号计费面 (`/login` `/topup` `/subscription` …) · 只有一
 **边界**: 视觉编码未接 (`/image` `/paste` 只把 `@路径` 拼进消息) · `/compress` 是**截断**不是摘要 ·
 非 TTY 仍一行一读。
 
+## 2026-10-26 第十七批 (视觉编码 + agent 循环 + 快照回滚: 上批三条边界全部收掉)
+
+| 层 | 改了什么 |
+| --- | --- |
+| `bolloon-llm` | `ChatMessage.images: Vec<String>` (data URL) · `messages_payload()` 唯一收口 (无图时形状与旧版一致; 有图时 content 变视觉数组) · `is_vision_model()` / `check_vision()` 闸 |
+| `bolloon-cli` `chat_command` | 轮末调度 `next_scheduled` (busy: steer/queue/interrupt) · `/queue` `/steer` `/busy` `/loop` `/goal` `/subgoal` `/bg` `/agents` `/tasks` `/stop` `/btw` `/review` `/refine` · `/snapshot` `/rollback` · `/compress focus` 摘要 · `/skills` |
+| `bolloon-cli` `main` | 每轮之后 (成功/失败) 推一次调度, 自动轮带来源标记、不进输入历史、单次≤6 轮 |
+| `bolloon-cli` `slash` | 15 条命令状态翻 Ready (118 条 = 53 可用 / 33 待接 / 18 不适用) |
+
+**关键判据**:
+- **像素真进模型**: 请求体 mock 抓包断言 `content[1].type == "image_url"`; 被视觉闸拒绝时附件**保留**可换模型重发。
+- **循环不会卡死**: 调度取走即消费、loop 取走即排下一次、自动轮上限 6、失败即停。
+- **快照真恢复**: 改坏 `skills.json` → `/rollback 1` → 内容回到快照里的字节。
+- **摘要 ≠ 截断**: `focus` 走模型并把结果以 assistant 角色放最前; `here N` 继续自称截断。
+
+**验证**: `cargo check --workspace --all-targets` 0/0 · `cargo test --workspace` **618/618** · 真机 pty **32 项** PASS。
+
+**仍未做 (照实)**: `/heartbeat` (需要能收定时器的非阻塞输入循环) · `/moa` (多模型编排) ·
+`/goal` 的 `draft/gate/wait` 子命令 · `/timestamps` `/focus` 等展示类开关 · 网关/账号/宠物一类仍 `Na`。
+
 ## DIAP Rust SDK (本机 /Users/apple/Downloads/DIAP_Rust_SDK)
 
 同日更新: 0.2.7→**0.3.0** (edition 2021→2024, rust-version 1.99, ed25519-dalek 2→3) + iroh 1.4 API 对齐 (`NodeAddr`→`EndpointAddr`, `builder(presets::N0)`, `addr()/id()`, `remote_id()`)。3 个 examples 修复对齐新 API, `cargo build --examples` 0 警告过; **lib 测试 46 passed / 0 failed / 4 ignored** (修 nonce_manager/did_cache 测试缺 `async` — edition 2024 必需; key_generator 测试对齐废弃函数空占位语义; noir_embedded/noir_universal 测试输入自洽 + 默认 backend 未启用时切 Simplified)。crates.io 下载走 rsproxy 镜像 (直连超时/代理 SSL reset, 2026-10-25 实测)。提交 `fdbef37` + `aa9ec66`。

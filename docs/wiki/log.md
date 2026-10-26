@@ -1,5 +1,7 @@
 # Wiki 日志
 
+| 2026-10-26 | feat(rust) | **Rust 第十七批: 视觉编码 + agent 循环 + 快照回滚 (欠账清账) — 618 测试全绿 + 真机 pty 32 项** —— 上批三条边界 (`/image` 只插 `@路径`、`/compress` 只截断、`/help skills` 只指路) 全部收掉。① **视觉编码**: `ChatMessage` 加 `images: Vec<String>` (data URL), `messages_payload` 唯一收口 —— 有图时 content 变 OpenAI 视觉数组 `[{type:text},{type:image_url}]`, **没图时形状与旧版字节一致** (老会话文件零迁移); `is_vision_model`/`check_vision` 守默认纯文本模型 (deepseek-chat 发图必 400), `BOLLOON_VISION=1` 强制; CLI 侧 `/image` `/paste` `Alt+V` → 真读文件 base64 进 `images` (8MB 上限/扩展名白名单), 拒绝时**附件保留**可换模型重发。② **agent 循环** (点亮 15 条): 轮末调度器 `next_scheduled` (纯函数) 按 `/busy` 模式取「到点 loop → steer → queue」, 成功/失败都推 (没 key 也要把队列推完, 每轮失败即停); `/queue` 全子命令 (list/edit/rm/move/clear) · `/steer` · `/busy queue\|steer\|interrupt` · `/loop [30s\|5m\|1h] <prompt> [--times N] [--until 条件]` (到点触发 + 模型判定 until) · `/goal` `/subgoal` (每轮消息带 `【当前目标】`) · `/bg` 后台会话 (tokio 任务 + `chat/jobs/*.md`) · `/agents` `/tasks` `/stop` (abort) · `/btw` 旁支提问 · `/review` 独立复查 · `/refine` (模型复盘 → memory_db lesson + skills promote)。③ **快照回滚**: `/snapshot create\|restore <id>\|prune` + `/rollback [N\|latest]`, 覆盖 `config/` + memory.db/memory.json/skills.json/judgments.json/task-board.json, 真复制真恢复。④ **`/compress focus <主题>` 真摘要** (模型生成, 用 assistant 角色放最前, 保留最近 2 轮; `--preview` 只报不调), `here N` 仍如实叫截断。⑤ `/skills` `/help skills` 真读 `skills.json` (`SkillEvolver::index_for_prompt`)。**命令面**: 118 条 = 42 命令 Ready + 11 可用别名 (53) · Planned 33 · Na 18, 每条非 Ready 仍写原因。**验证**: `cargo check --workspace --all-targets` 0/0 · `cargo test --workspace` **618/618** (+11: llm 视觉 3 · cli 命令 8... 实为 cli 31/llm 17) · **真机 pty 32 项** (老 18 全回归 + 新 14: goal 前缀进消息 · queue 轮末自动跑 · snapshot 真建目录 · compress 预览 · 视觉闸拦下且附件保留 · bg/agents · skills · busy · rollback 真恢复)。**踩坑**: ① 视觉闸提示太长被窄屏截断 (BOLLOON_VISION 提示被吃掉) ⇒ 拆成两行; ② 轮末调度原先只在模型成功分支里跑 ⇒ 没配 key 时队列永远不动, 移到 match 之后; ③ 摘要若用 user 角色会多算一轮 (`turns()` 数 user 消息) ⇒ 改 assistant; ④ 测试夹具目录要嵌 `chat/` 子目录, 否则 `parent()` 落到 `/tmp` 会把快照恢复写进系统临时目录。 | rust/crates/bolloon-llm/src/runtime.rs · rust/crates/bolloon-cli/src/{chat_command,slash,main}.rs · docs/wiki/rust-rewrite.md |
+
 | 2026-10-26 | feat(rust) | **Rust 第十六批: `bolloon chat` 命令面全量注册 (118 条) + 27 条真实现 — 全 workspace 607 测试全绿 + 真机 pty 18 项** —— 用户给出 Hermes 风格 118 条 `/命令` 要求「都要有」。做法: **注册表全量 + 能做真做 + 不能做写清原因**, 不拿"没实现"冒充"已实现"。① `slash.rs` (**唯一事实源**): 118 条 (93 命令 + 25 别名, 别名用 `alias_of` 继承本体状态, 测试钉「别名不许自带实现」); 每条带分类/用法/说明 + 状态 (`Ready` / `Planned(还差什么)` / `Na(为什么本仓库没有)`) + 帮助页 `/help [<命令>|<关键词>]` 分类渲染; 测试逐条核对用户给的命令面 (**少一条就红**)。② `chat_command.rs`: `ChatSession` (会话本体 + 落盘 `~/.bolloon/rust/chat/sessions/<id>.json` **0600**) + `Cmd` 结果枚举 (Say/Send/Prefill/Clear/Redraw/Update/Quit), 命令逻辑不碰终端。③ **27 条真实现**: `/new` `/reset` `/clear` `/redraw` `/history` `/save <json\|md\|html> [file] [redact]` `/retry` `/undo [N]` (回填输入框不替人发) `/title` `/prompt` `/compose` (真起 `$EDITOR`) `/resume` `/sessions` `/compress` (`here N`/`--preview`, **如实叫截断**) `/status` `/context` `/config` `/model` `/diff` `/profile` `/help` `/copy` (真写系统剪贴板) `/paste` `/image` `/update` `/version` `/quit --delete` `/plan` `/worktree`。④ **85 条标 [待接]/[不适用]** 并逐条给原因 (例: `/handoff` 没有消息网关; `/login` 是 Nous 账号体系; `/yolo` 审批门在 Harness; `/voice` 没有语音管线)。⑤ **行为修正**: `Esc`/`Ctrl+C` 现在只丢当前输入 (以前直接退出会话, 回填/改稿太容易误杀), 退出走 `/exit` 或 `Ctrl+D`; 整段会话持 raw 模式 (`hold_raw_mode`, 可重入深度计数) 免得提交空档里抢先敲的 `\r` 被 cooked 行规程换成 `\n`。**验证**: `cargo check --workspace --all-targets` 0/0 · `cargo test --workspace` **607/607** (+25: slash 8 · chat_command 17) · **真机 pty 18 项全 PASS** (多行输入 6 · 草稿/贴图 6 · 命令面 6: `/history` 列两条 · `/undo` 回填并真生效 · `/save md` 落文件且内容只含回退后剩下的 · `/sessions` · `/new` 换标题) · 管道模式 `printf '/help\n/exit\n' \| bolloon chat` 输出 118 条命令 + 7 个分类。**边界**: 视觉编码仍未接 (Alt+V/`/image` 只把 `@路径` 拼进消息); `/compress` 是截断不是摘要; 会话库刚落地, `autoprune` 之类清理策略未定。 | rust/crates/bolloon-cli/src/{slash,chat_command}.rs (新) · rust/crates/bolloon-cli/src/main.rs · rust/crates/bolloon-tui/src/{input,select,lib}.rs · docs/wiki/rust-rewrite.md |
 
 | 2026-10-26 | feat(rust) | **Rust 第十五批: `bolloon chat` 帮助文案 + 四条快捷键**全实现** — tui 112 / 全 workspace 582 全绿 + 真机 pty 4 项** —— leo 三问「这段帮助文案要落到哪个终端? 不只是帮助页, 要完成实现, 只在 Rust 实现」/「这次做到哪一步?」→「文案 + 快捷键全实现」。**落点**: 只落 `bolloon chat` 这个 Rust 终端界面 (帮助页走 `Screen` 正文 `/help`, 摘要走 `rows-1` 固定提示行); Web 终端 / `bolloon model` 选择器 / TS 版 CLI 都不吃这份文案 (TS 侧一行未动)。**新增 3 模块**: `compose` (输入缓冲状态机纯函数: `resolve_action` 键→意图 · `Compose` 缓冲/历史游标/暂存 · `render_input` 多行几何 每行 ≤ cols-1 + 超行留尾部 `… (+N 行)`) · `help` (键位文案**唯一事实源**, `HELP_ITEMS` 与 `resolve_action` 测试逐条互钉 ⇒ 写了没做/做了没写立刻红) · `clipboard` (剪贴板图片 → `~/.bolloon/rust/paste/paste-<ms>.png`, 平台差异只在这一处: macOS pngpaste/AppleScript · Linux wl-paste/xclip · Windows PowerShell, `BOLLOON_PASTE_CMD` 整条接管)。**真实现**: `Ctrl+J`/`Alt+Enter` 换行 (raw 下 Enter=`\r` 与 Ctrl+J=`\n` 是不同字节 ⇒ 可分辨) · `Ctrl+G` 起 `$VISUAL/$EDITOR` 写草稿 (真交还/重进 raw, 草稿空则保留原输入) · `Alt+V` 贴图落盘并插入 `@路径` · `/help` 帮助页 (不写历史) · 输入块多行重画 (上移 N 行 + 清到屏末) · 帧高改 `term_height()-1` 把最后一行留给输入块 (原来单行输入也会把整帧顶上滚一格)。**验证**: `cargo check --workspace --all-targets` **0/0** · `cargo test --workspace` **582/582** (+25: compose 10 · clipboard 6 · help 4 · select 3 · input 2) · **真机 pty** 四项全 PASS (中文两行经 Ctrl+J 进同一条消息 · `/help` 出 8 条键位 · `VISUAL=/bin/sh` 真跑编辑器往返读回草稿 · `Alt+V` 真落 7 字节 PNG 并插 `@路径`)。**踩坑**: ① `std::io::stdin()` 的 8KB 用户态缓冲 + `poll` 混用 ⇒ 中文续字节被当"孤独的 Esc"丢弃 (真机打 `第一行` 只剩 `行`), 改**裸 `libc::read`**; ② 原读到 `0x1b` 就阻塞再读 2 字节 ⇒ Esc 挂住, 改 `poll` 40ms 宽限 (Alt+Enter/Alt+V 也靠这个窗口识别)。**边界**: `ChatMessage.content` 单模态 `String` ⇒ Alt+V 只插 `@路径`, **像素没进模型** (视觉编码要改 `bolloon-llm` 请求体, 记欠账); 掩码输入禁换行/草稿/贴图; 缓冲无光标移动 (`← →` 明确不响应); 非 TTY 仍一行一读。 | rust/crates/bolloon-tui/src/{compose,help,clipboard}.rs (新) · rust/crates/bolloon-tui/src/{input,select,lib}.rs · rust/crates/bolloon-cli/src/main.rs · docs/wiki/rust-rewrite.md |
@@ -716,6 +718,61 @@
 | 2026-07-06 | fix | server.ts 三处 (主 chat / regenerate / v3 P2P) 加 `fullResponse` 空内容兜底, abort 时设默认文本, 防止前端 segmentChatReply('') 返回 [] 导致气泡不渲染 | server.ts 各处 broadcast |
 
 ## 详细日志
+### [2026-10-26] feat(rust) | 视觉编码 + agent 循环 + 快照回滚 (欠账清账, 618 测试)
+
+### 触发
+leo: 「ChatMessage.content 单模态 ⇒ /image /paste 只插 @路径, 像素没进模型; /compress 是截断不是摘要;
+/help skills 只指路。要修这些」「agent 循环 / 会话快照回滚 / 视觉编码 按优先级做完」「这些没有完成的, 要搞定, 都做」。
+
+### ① 视觉编码 (优先级 1)
+- `bolloon_llm::ChatMessage` 增 `images: Vec<String>` (data URL), `#[serde(default, skip_serializing_if)]`
+  ⇒ 旧会话文件直接读得进; **没图时消息形状与旧版字节一致**。
+- `messages_payload()` 是**唯一收口**: 有图时 `content` 变 `[{type:text},{type:image_url,image_url:{url}}]`。
+- `is_vision_model()` 保守前缀清单 + `check_vision()` 闸; `BOLLOON_VISION=1` 强制。
+- CLI: `/image` `/paste` `Alt+V` 登记的附件在发送时**真读文件** → base64 data URL (png/jpg/webp/gif, 8MB 上限);
+  正文仍留 `@路径` 供人核对; 被闸拒绝时**附件保留** (换模型可直接重发)。
+- 证据: mock server 抓包断言请求体里是视觉数组 (`request_body_carries_image_parts`)。
+
+### ② agent 循环 (优先级 2, 点亮 15 条命令)
+- **轮末调度器**: `next_scheduled(now)` 纯函数, 顺序由 `/busy` 定 —
+  `steer`(默认): 到点 loop → 插话 → 排队; `queue`: 排队 → 插话 → loop; `interrupt`: 全停 (东西不丢)。
+- `run_chat` 在**每轮之后**(成功/失败都算) 推调度, 单次最多 6 轮自动; 自动轮的文本带来源标记
+  (`【queue 排队】` / `【steer 插话】` / `【loop 定时任务】`), 不进输入历史。
+- `/queue` (`/q`) 全子命令: 排队 / list / edit N / rm N / move A B / clear; 落会话文件 (可 /resume)。
+- `/loop` (`/proactive`): `30s|5m|1h|裸秒` + `--times N` + `--until <条件>` (每轮跑完问一次模型是否满足),
+  `status|pause|resume|stop`; 取走即排下一次 (出错也不会死循环重排)。
+- `/goal` `/subgoal`: 目标每条消息都带 `【当前目标】` (+子条件), `pause` 后不带; `draft/gate/wait` 明确未支持。
+- `/bg`: tokio 后台会话 (独立上下文, 结果写 `chat/jobs/<id>.md`), `/agents` `/tasks` 看板, `/stop` abort。
+- `/btw` 旁支提问、`/review` 独立复查: 一次性调用, 结果**不进主上下文**。
+- `/refine`: 模型提炼 ≤3 条经验 → `memory_db` lesson 层 + `skills.json` promote (用户显式调用即批准)。
+
+### ③ 快照回滚 (优先级 3)
+- `/snapshot [create|restore <id>|prune]` + `/rollback [N|latest]`: 快照目录 `chat/snapshots/<id>/`,
+  覆盖 `config/*` + `memory.db` / `memory.json` / `skills.json` / `judgments.json` / `task-board.json`;
+  restore 逐文件复制回来并打印字节数 (真的恢复, 不是"检查点已记录")。prune 保留最近 3 个。
+
+### ④ 顺带清掉的两条边界
+- `/compress focus <主题>`: 模型**摘要** (200 字内, assistant 角色放最前, 保留最近 2 轮), `--preview` 只报不调;
+  `here N` 仍是截断, 输出里继续写明区别。
+- `/skills` 与 `/help skills`: 真读 `skills.json` 的 `SkillEvolver::index_for_prompt()`。
+
+### 命令面口径 (118 条)
+42 条命令 Ready + 11 条可用别名 = **53 条可用**; Planned 33 · Na 18 (每条仍写原因)。测试
+`every_ready_command_has_an_impl` 把 53 条各跑一遍, 出现"标了可用但没接实现"就红。
+
+### 验证
+`cargo check --workspace --all-targets` **0/0** · `cargo test --workspace` **618/618**
+(agent 301 · cli **31** · harness 13 · 26 · llm **17** · 48 · tui 113 · 5 · 64) ·
+**真机 pty 32 项**: 老 18 全回归 (多行/草稿/贴图/命令面) + 新 14 (goal 前缀进消息 · queue 轮末自动跑 ·
+snapshot 真建目录 · compress 预览 · 视觉闸拦下且附件保留 · bg/agents · skills · busy · rollback 真恢复)。
+
+### 踩坑
+1. 视觉闸错误信息太长, 窄屏被截断 ⇒ `BOLLOON_VISION` 提示被吃掉 ⇒ 拆两行输出。
+2. 轮末调度原先写在模型**成功**分支里 ⇒ 没配 key 时队列永远不动; 移到 match 之后 (失败那轮也推, 每轮失败即停)。
+3. 摘要消息若用 `user` 角色会被 `turns()` 多算一轮 ⇒ 改 `assistant` (也更像"模型自己的复盘")。
+4. 测试夹具目录必须嵌 `chat/` 子目录 (与生产 `<root>/chat` 同构), 否则 `dir.parent()` 落到 `/tmp`,
+   restore 会把快照写进系统临时目录 —— 这是**会误伤真机**的一类 fixture bug。
+
 ### [2026-10-26] feat(rust) | `bolloon chat` 命令面: 118 条全量注册 + 27 条真实现
 
 ### 触发

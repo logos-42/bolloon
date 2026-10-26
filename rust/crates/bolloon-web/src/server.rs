@@ -954,6 +954,7 @@ async fn real_chat(llm: &LlmRuntime, user_text: &str) -> Result<String, String> 
             content: "你是 Bolloon 智能体，运行在去中心化智能体资源交流网络中。回答中文，简洁、有依据。".into(),
             name: None,
             tool_call_id: None,
+            images: vec![],
             tool_calls: None,
         },
         ChatMessage {
@@ -961,6 +962,7 @@ async fn real_chat(llm: &LlmRuntime, user_text: &str) -> Result<String, String> 
             content: user_text.to_string(),
             name: None,
             tool_call_id: None,
+            images: vec![],
             tool_calls: None,
         },
     ];
