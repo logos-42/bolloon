@@ -135,6 +135,9 @@ pub struct NativeState {
     pub directory: Vec<bolloon_agent::directory::DirectoryEntry>,
     /// 好友请求簿 (consent 状态机)
     pub friends: bolloon_agent::contacts::FriendBook,
+    // ── 做梦机制 (整理记忆与经验 → 升级 skills) ──
+    /// 上一次做梦报告 (None = 从没做过)
+    pub last_dream: Option<serde_json::Value>,
     pub active_group: String,
     pub next_agent: u64,
     pub next_session: u64,
@@ -1200,4 +1203,105 @@ pub async fn friend_list(State(st): State<AppState>) -> Json<serde_json::Value> 
         "friends": fs.friends.friends(),
         "requests": fs.friends.requests(),
     }))
+}
+
+// ────────────────────────── 做梦机制 (整理记忆/经验 → 升级 skills) ──────────────────────────
+
+/// 做梦用的记忆视图 (从 SQLite 记忆库取; 回忆全量)
+fn dream_memories(st: &AppState) -> Vec<bolloon_agent::memory::MemoryEntry> {
+    let db = match st.memory_db.try_lock() {
+        Ok(g) => g,
+        Err(_) => return vec![], // 忙 → 不做梦 (不打扰)
+    };
+    let now_ms = now_ms();
+    db.recall("local", None, 500, now_ms)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            let layer = match r.layer.as_str() {
+                "lesson" => bolloon_agent::memory::MemoryLayer::Lesson,
+                "decision" => bolloon_agent::memory::MemoryLayer::Decision,
+                "temporary" => bolloon_agent::memory::MemoryLayer::Temporary,
+                _ => bolloon_agent::memory::MemoryLayer::RunFact,
+            };
+            bolloon_agent::memory::MemoryEntry {
+                id: format!("mem-{:06}", r.id),
+                content: r.content,
+                layer,
+                importance: r.importance,
+                created_at: chrono::DateTime::from_timestamp_millis(r.created_at_ms as i64)
+                    .unwrap_or_else(chrono::Utc::now),
+                expires_at: r
+                    .expires_at_ms
+                    .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64)),
+            }
+        })
+        .collect()
+}
+
+/// POST /api/dream → 触发一次做梦 (整理记忆与经验, 升级项目 skills)
+pub async fn dream_run(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let domain = req["domain"].as_str().unwrap_or("all");
+    // 忙就不做梦 (不打扰正在跑的任务)
+    let idle_ms = req["idle_ms"].as_u64().unwrap_or(u64::MAX);
+    let busy = req["busy"].as_bool().unwrap_or(false);
+    if !bolloon_agent::dream::should_dream(idle_ms, req["threshold_ms"].as_u64().unwrap_or(0), busy) {
+        return Json(serde_json::json!({ "skipped": true, "reason": "忙或不够空闲 — 做梦不打扰" }));
+    }
+
+    let memories = dream_memories(&st);
+    let mut judgments = st.judgments.lock().await;
+    let mut skills = st.skills.lock().await;
+    let report = bolloon_agent::dream::dream(
+        &bolloon_agent::dream::DreamInput { memories: &memories, now_ms: now_ms() },
+        &mut judgments,
+        &mut skills,
+        domain,
+    );
+    let value = serde_json::to_value(&report).unwrap_or_default();
+    // 落盘上次报告
+    {
+        let mut fs = st.forge.lock().await;
+        fs.last_dream = Some(value.clone());
+        fs.save(&data_dir());
+    }
+    Json(value)
+}
+
+/// GET /api/dream/last → 上次做梦报告
+pub async fn dream_last(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    Json(serde_json::json!({ "last": fs.last_dream }))
+}
+
+/// POST /api/dream/topic → 梦想文档 (对齐 TS `/dream <主题>` 落盘)
+pub async fn dream_topic(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let topic = req["topic"].as_str().unwrap_or_default().trim().to_string();
+    if topic.is_empty() {
+        return Json(serde_json::json!({ "error": "主题不能为空" }));
+    }
+    let doc = bolloon_agent::dream::dream_doc(
+        &topic,
+        req["user"].as_str().unwrap_or("user"),
+        req["channel"].as_str().unwrap_or("web"),
+        &chrono::Utc::now().to_rfc3339(),
+    );
+    let dir = data_dir().join("dreams");
+    let _ = std::fs::create_dir_all(&dir);
+    let safe: String = topic
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .take(40)
+        .collect();
+    let path = dir.join(format!("{}-{}.md", chrono::Utc::now().format("%Y-%m-%d"), safe));
+    match std::fs::write(&path, doc.as_bytes()) {
+        Ok(()) => Json(serde_json::json!({ "written": path.display().to_string() })),
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
 }

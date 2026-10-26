@@ -90,6 +90,24 @@ const MERGE_THRESHOLD: f64 = 0.6;
 const CONTRADICT_HINTS: [&str; 4] = ["不要", "不许", "禁止", "别"];
 
 impl JudgmentStore {
+    /// JSON 落盘 (做梦/启动恢复用)
+    pub fn save_json(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let raw = serde_json::to_string_pretty(self.snapshot())?;
+        if let Some(d) = path.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::write(path, raw)
+    }
+
+    /// JSON 载入 (坏文件 → 空库, 不冒充有判断)
+    pub fn load_json(path: &std::path::Path) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Vec<Judgment>>(&raw).ok())
+            .map(Self::from_entries)
+            .unwrap_or_default()
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

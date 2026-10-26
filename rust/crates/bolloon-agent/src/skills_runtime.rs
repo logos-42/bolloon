@@ -133,6 +133,30 @@ pub struct SkillEvolver {
 pub const SKILL_BODY_MAX: usize = 4000;
 
 impl SkillEvolver {
+    /// JSON 落盘 (做梦升级后的 skills 要能跨进程复用)
+    pub fn save_json(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let all: Vec<&Skill> = self.registry.skills.values().collect();
+        let raw = serde_json::to_string_pretty(&all)?;
+        if let Some(d) = path.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::write(path, raw)
+    }
+
+    /// JSON 载入 (坏文件 → 空注册表)
+    pub fn load_json(path: &std::path::Path) -> Self {
+        let skills: Vec<Skill> = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default();
+        let mut reg = SkillsRegistry::new();
+        for s in skills {
+            reg.hashes.insert(content_hash(&s.body));
+            reg.skills.insert(s.name.clone(), s);
+        }
+        Self { registry: reg, log: vec![] }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

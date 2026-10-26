@@ -15,6 +15,7 @@ pub mod world;
 pub mod goal;
 pub mod contacts;
 pub mod directory;
+pub mod dream;
 pub mod heartbeat;
 pub mod setup;
 pub mod subagents;

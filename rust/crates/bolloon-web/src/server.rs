@@ -58,6 +58,8 @@ pub struct AppState {
     pub full_access: Arc<std::sync::atomic::AtomicBool>,
     /// Forge 兼容层状态 (agents/sessions/profile/settings/auth 队列)
     pub forge: Arc<Mutex<crate::native::NativeState>>,
+    /// 项目 skills 注册表 (经验提炼后升级到这里; 做梦机制用)
+    pub skills: Arc<Mutex<bolloon_agent::skills_runtime::SkillEvolver>>,
     pub session_store: Arc<bolloon_agent::SessionStore>,
     pub version: &'static str,
 }
@@ -103,6 +105,7 @@ impl AppState {
             )),
             full_access: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             forge: Arc::new(Mutex::new(crate::native::NativeState::load(&dir))),
+            skills: Arc::new(Mutex::new(bolloon_agent::skills_runtime::SkillEvolver::new())),
             session_store,
             version: "0.6.10",
         }
@@ -275,6 +278,10 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/api/friends/accept", post(crate::native::friend_accept))
         .route("/api/friends/reject", post(crate::native::friend_reject))
         .route("/api/friends", get(crate::native::friend_list))
+        // 做梦机制 (整理记忆与经验 → 升级项目 skills)
+        .route("/api/dream", post(crate::native::dream_run))
+        .route("/api/dream/last", get(crate::native::dream_last))
+        .route("/api/dream/topic", post(crate::native::dream_topic))
         .route("/api/send", post(send))
         .route("/api/health", get(health))
         // 群聊

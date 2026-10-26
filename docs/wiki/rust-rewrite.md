@@ -197,6 +197,19 @@ Web 接线: `/api/judgment` (top-N 注入门 + 入库即演化, action 如实回
 | **`bolloon-agent/runtime`** (12 测试) | **AgentRuntime 多 session/多 agent 并发**: registry per-agent 独立快照+memory, per-session 独立历史, 跨 agent 访问拒; **每轮 system prompt 注入**: `assemble_system_prompt` = [快照稳定层 soul+agent+memory 摘录] + [动态层当前轮], 稳定层逐字不变 (测试钉: 三轮 stable 相等、盘改不见、re-freeze 后生效); **长执行 loop**: 上限 **200 轮** (冻结常量 MAX_ROUNDS, 跑满如实收尾不冒充完成), **工具调用次数不限** (单轮 20 工具真测), **无畏并发** (join_all 同时发起, 20×20ms 总耗时 ≪ 串行 400ms, 测试钉), **错误恢复** (工具失败/LLM 全重试失败 → 错误进上下文继续不中断), **超时重试** (指数退避 llm_retries=2), **目标 review** (goal_criteria 逐条核对, 未过打回继续直至上限, review 纯函数) |
 | web/cli env 收口 | 两处 `data_dir()` 删本地口径, 统一走 `BolloonHome::resolve()` (单一真源, 四端共享); workflow 默认迭代 50 → **200** + 冻结测试 |
 
+## 2026-10-26 第十六批 (做梦机制 dream: 整理记忆→提炼判断力→升级 skills, 幂等闭环 + 464 测试全绿)
+
+| Rust 模块 | 冻结语义 |
+| --- | --- |
+| **`bolloon-agent/dream`** (8 测试) | **四个阶段每阶段如实记账, 不硬造产出**: ① **整理** `consolidate` — 临时层过期 (expires_at ≤ now) 剔除 + 相似记忆 jaccard ≥ 0.6 (与 judgment merge 同口径) 贪心聚类归并, 簇文本**保留最长的一条** (信息量最大, 不截断); ② **提炼** 经验 → `JudgmentStore::evolve`, **反向冲突标给用户 (`notes`) 不静默覆盖**, Created/Merged/Contradicted/Superseded 分别计数; ③ **升级** 经验 → `SkillCandidate` → `SkillEvolver::promote` (走批准门, 重复/垃圾被拒**计数不静默**); ④ **灵感** 从真实条目里挑 (簇成员最多的一条, 100 字截断), **没素材就如实报 `empty-memory`「梦境空空」, 不编洞察**; `should_dream(idle_ms, threshold_ms, busy)` 纯判定 (忙 → 不打扰); `dream_doc` 对齐 TS `/dream <主题>` 落盘文档 |
+| **幂等 (本轮核心验证)** | 同一批记忆连做两次梦: 第一次 `新建 2 · 并入 0 · 晋升 2`; 第二次 `新建 0 · 并入 2 · 晋升 0 · 被拒 2` ⇒ **重复做梦不重复晋升** (测试 `second_dream_is_idempotent` 钉住, 且 `registry.len() == 首次晋升数`) |
+| 跨进程积累 | `JudgmentStore::save_json/load_json` + `SkillEvolver::save_json/load_json` (坏文件 → 空库, **不冒充有判断/有技能**); 落盘 `~/.bolloon/rust/judgments.json` / `skills.json` ⇒ 一夜一夜地升级, 不是每次从零 |
+| CLI | `bolloon dream [主题] [--domain all]` — 读 SQLite 记忆库 (500 条) → 做梦 → 打印报告 (扫描/过期/归并 · 判断力新建/并入/冲突 · skills 晋升/被拒 · 灵感) → 落盘; 给主题另写 `dreams/<日期>-<主题>.md`。**顺带收口**: `memory remember/recall` 从 `memory.json` 迁到 **SQLite `memory.db` 单一真源** (与 Web 同源; temporary 层给 1h TTL), 死代码 `memory_path/load_memory_store/save_memory_store` 删除 |
+| Web | `POST /api/dream` (busy/不够空闲 → `skipped` 不做梦, 不打扰正在跑的任务) · `GET /api/dream/last` · `POST /api/dream/topic`; `AppState` 增 `skills: Arc<Mutex<SkillEvolver>>`, `NativeState` 增 `last_dream` (落盘) |
+| 门禁 | `cargo test --workspace` **464 passed / 0 failed**; dream 8/8; CLI 真跑两次做梦复现幂等 (`新建 0 · 并入 2 · 晋升 0 · 被拒 2`) |
+
+**诚实边界**: 提炼是**纯函数 (不调 LLM)**, 真语义抽象待接 LLM 端口; 无 cron 自动触发 (靠 CLI/`/api/dream` 手动或 kernel/cron 排程); `bolloon-web` 仍有 4 条 `unused variable st` + 2 个未接线 bootstrap/models 死代码告警 (预先存在, 本轮未动)。
+
 ## DIAP Rust SDK (本机 /Users/apple/Downloads/DIAP_Rust_SDK)
 
 同日更新: 0.2.7→**0.3.0** (edition 2021→2024, rust-version 1.99, ed25519-dalek 2→3) + iroh 1.4 API 对齐 (`NodeAddr`→`EndpointAddr`, `builder(presets::N0)`, `addr()/id()`, `remote_id()`)。3 个 examples 修复对齐新 API, `cargo build --examples` 0 警告过; **lib 测试 46 passed / 0 failed / 4 ignored** (修 nonce_manager/did_cache 测试缺 `async` — edition 2024 必需; key_generator 测试对齐废弃函数空占位语义; noir_embedded/noir_universal 测试输入自洽 + 默认 backend 未启用时切 Simplified)。crates.io 下载走 rsproxy 镜像 (直连超时/代理 SSL reset, 2026-10-25 实测)。提交 `fdbef37` + `aa9ec66`。

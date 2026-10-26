@@ -7,7 +7,6 @@
 //!   bolloon memory remember|recall → 记忆 (落盘 ~/.bolloon/rust/memory.json)
 //!   bolloon task publish|id        → 任务公告 (bolloon-task/1)
 //!   bolloon --version              → 版本
-
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -40,6 +39,13 @@ enum Commands {
     Update {
         #[command(subcommand)]
         action: UpdateAction,
+    },
+    /// 做梦 (整理记忆与经验, 升级项目 skills)
+    Dream {
+        /// 主题 (给了就写梦想文档)
+        topic: Option<String>,
+        #[arg(long, default_value = "all")]
+        domain: String,
     },
 }
 
@@ -136,7 +142,79 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Memory { action }) => run_memory(action),
         Some(Commands::Task { action }) => run_task(action),
         Some(Commands::Update { action }) => run_update(action),
+        Some(Commands::Dream { topic, domain }) => run_dream(topic, &domain),
     }
+}
+
+/// 做梦: 整理记忆与经验 → 升级项目 skills
+fn run_dream(topic: Option<String>, domain: &str) -> anyhow::Result<()> {
+    let home = bolloon_agent::home::BolloonHome::resolve();
+    home.ensure_agent("cli")?;
+    // 记忆素材 (SQLite 记忆库)
+    let db = bolloon_agent::memory_db::MemoryDb::open(
+        home.root().join("memory.db").to_str().unwrap_or("memory.db"),
+    )?;
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    let memories: Vec<bolloon_agent::memory::MemoryEntry> = db
+        .recall("local", None, 500, now_ms)?
+        .into_iter()
+        .map(|r| bolloon_agent::memory::MemoryEntry {
+            id: format!("mem-{:06}", r.id),
+            content: r.content,
+            layer: match r.layer.as_str() {
+                "lesson" => bolloon_agent::memory::MemoryLayer::Lesson,
+                "decision" => bolloon_agent::memory::MemoryLayer::Decision,
+                "temporary" => bolloon_agent::memory::MemoryLayer::Temporary,
+                _ => bolloon_agent::memory::MemoryLayer::RunFact,
+            },
+            importance: r.importance,
+            created_at: chrono::DateTime::from_timestamp_millis(r.created_at_ms as i64)
+                .unwrap_or_else(chrono::Utc::now),
+            expires_at: r
+                .expires_at_ms
+                .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64)),
+        })
+        .collect();
+
+    // 判断力与 skills 落盘 (跨进程积累: 一夜一夜地升级, 不是每次从零)
+    let jpath = home.root().join("judgments.json");
+    let spath = home.root().join("skills.json");
+    let mut judgments = bolloon_agent::judgment::JudgmentStore::load_json(&jpath);
+    let mut skills = bolloon_agent::skills_runtime::SkillEvolver::load_json(&spath);
+    let report = bolloon_agent::dream::dream(
+        &bolloon_agent::dream::DreamInput { memories: &memories, now_ms },
+        &mut judgments,
+        &mut skills,
+        domain,
+    );
+
+    println!("🌙 做梦报告 (domain={domain})");
+    println!("  扫描记忆: {} 条 | 过期清除: {} | 归并经验: {} 条", report.scanned, report.expired, report.consolidated);
+    println!("  判断力: 新建 {} · 并入 {} · 反向冲突 {}", report.judgments_created, report.judgments_merged, report.judgments_contradicted);
+    println!("  skills: 晋升 {} · 被拒 {}", report.skills_promoted, report.skills_rejected);
+    if let Some(ins) = &report.insight {
+        println!("  🌙 {ins}");
+    } else {
+        println!("  🌙 梦境空空 — 多对话让记忆沉淀出洞察后, /dream 就有素材了");
+    }
+    for n in &report.notes {
+        println!("  {n}");
+    }
+    // 落盘 (下次做梦接着升级)
+    let _ = judgments.save_json(&jpath);
+    let _ = skills.save_json(&spath);
+    println!("  ✓ 已沉淀: {} (判断力) · {} (skills)", jpath.display(), spath.display());
+    // 主题 → 梦想文档
+    if let Some(t) = topic {
+        let doc = bolloon_agent::dream::dream_doc(&t, "cli", "cli", &chrono::Utc::now().to_rfc3339());
+        let dir = home.root().join("dreams");
+        std::fs::create_dir_all(&dir)?;
+        let safe: String = t.chars().filter(|c| c.is_alphanumeric() || *c == '-').take(40).collect();
+        let path = dir.join(format!("{}-{}.md", chrono::Utc::now().format("%Y-%m-%d"), safe));
+        std::fs::write(&path, doc.as_bytes())?;
+        println!("  ✓ 梦想文档: {}", path.display());
+    }
+    Ok(())
 }
 
 /// 更新 tip (有更新才 Some; 检测不到/同版本 → None, tip 栏不出现)
@@ -253,50 +331,44 @@ fn data_dir() -> std::path::PathBuf {
     bolloon_agent::home::BolloonHome::resolve().root().to_path_buf()
 }
 
-fn memory_path() -> std::path::PathBuf {
-    data_dir().join("memory.json")
-}
-
-fn load_memory_store() -> bolloon_agent::MemoryStore {
-    match std::fs::read_to_string(memory_path()) {
-        Ok(raw) => serde_json::from_str::<Vec<bolloon_agent::MemoryEntry>>(&raw)
-            .map(bolloon_agent::MemoryStore::from_snapshot)
-            .unwrap_or_default(),
-        Err(_) => bolloon_agent::MemoryStore::new(),
-    }
-}
-
-fn save_memory_store(store: &bolloon_agent::MemoryStore) {
+/// 记忆库 (SQLite 单一真源 — 与 Web 同源; 做梦/召回都读它)
+fn memory_db() -> anyhow::Result<bolloon_agent::memory_db::MemoryDb> {
     let dir = data_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    if let Ok(raw) = serde_json::to_string_pretty(store.snapshot()) {
-        let _ = std::fs::write(memory_path(), raw);
+    std::fs::create_dir_all(&dir)?;
+    Ok(bolloon_agent::memory_db::MemoryDb::open(
+        dir.join("memory.db").to_str().unwrap_or("memory.db"),
+    )?)
+}
+
+fn layer_name(layer: &str) -> &'static str {
+    match layer {
+        "lesson" => "lesson",
+        "decision" => "decision",
+        "temporary" => "temporary",
+        _ => "run_fact",
     }
 }
 
 fn run_memory(action: MemoryAction) -> anyhow::Result<()> {
+    let db = memory_db()?;
     match action {
         MemoryAction::Remember { content, importance, layer } => {
-            let layer = match layer.as_str() {
-                "lesson" => bolloon_agent::MemoryLayer::Lesson,
-                "decision" => bolloon_agent::MemoryLayer::Decision,
-                "temporary" => bolloon_agent::MemoryLayer::Temporary,
-                _ => bolloon_agent::MemoryLayer::RunFact,
-            };
-            let mut store = load_memory_store();
-            let entry = store.remember(content, layer, importance, None).clone();
-            save_memory_store(&store);
-            println!("已记住 {} (layer={}, importance={:.2})", entry.id, entry.layer, entry.importance);
+            let name = layer_name(&layer);
+            let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+            // temporary 层给 1h TTL (与 memory.rs 衰减语义一致)
+            let ttl = if name == "temporary" { Some(3_600_000u64) } else { None };
+            let row = db.remember("local", name, &content, importance, now_ms, ttl)?;
+            println!("已记住 mem-{:06} (layer={}, importance={:.2})", row.id, row.layer, row.importance);
         }
         MemoryAction::Recall { query, top } => {
-            let store = load_memory_store();
-            let items = store.recall(query.as_deref(), top, chrono::Utc::now());
+            let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+            let items = db.recall("local", query.as_deref(), top, now_ms)?;
             if items.is_empty() {
                 println!("(无匹配记忆)");
                 return Ok(());
             }
-            for e in items {
-                println!("{} [{}] {:.2} — {}", e.id, e.layer, e.importance, e.content);
+            for r in items {
+                println!("mem-{:06} [{}] {:.2} — {}", r.id, r.layer, r.importance, r.content);
             }
         }
     }
