@@ -2082,17 +2082,35 @@ fn skills_lines(path: &Path) -> Vec<String> {
 }
 
 fn config_lines() -> Vec<String> {
-    let provider = std::env::var("BOLLOON_PROVIDER").unwrap_or_else(|_| "(未设, 走默认)".into());
-    let model = std::env::var("BOLLOON_MODEL").unwrap_or_else(|_| "deepseek-chat".into());
-    let base = std::env::var("BOLLOON_BASE_URL").unwrap_or_else(|_| "(provider 自带)".into());
-    let has_key = std::env::var("BOLLOON_API_KEY").map(|k| !k.trim().is_empty()).unwrap_or(false);
-    vec![
-        format!("provider {provider}"),
-        format!("model    {model}{}", if bolloon_llm::is_vision_model(&model) { " (视觉)" } else { "" }),
-        format!("base_url {base}"),
-        format!("api_key  {}", if has_key { "有 (env, 不显示)" } else { "没有" }),
-        "改配置: env 或 ~/.bolloon/rust/config/ (chat 里用 /model 只改本会话)".to_string(),
-    ]
+    let cfg = bolloon_llm::config_store::load();
+    let path = bolloon_llm::config_store::config_path();
+    let resolved = bolloon_llm::config_store::active_resolved(&cfg).ok();
+    match resolved {
+        Some(r) => vec![
+            format!("provider {}", r.id),
+            format!("protocol {}", r.protocol.as_str()),
+            format!("model    {}{}", r.model, if bolloon_llm::is_vision_model(&r.model) { " (视觉)" } else { "" }),
+            format!("base_url {}", r.base_url),
+            format!("api_key  {} (不显示明文)", r.auth_ref()),
+            format!("配置文件 {} (0600)", path.display()),
+            "改配置: bolloon model (内置 13 + 目录 200+ 家) 或环境变量".to_string(),
+        ],
+        None => {
+            let provider = std::env::var("BOLLOON_PROVIDER").unwrap_or_else(|_| "(未选)".into());
+            let model = std::env::var("BOLLOON_MODEL").unwrap_or_else(|_| "deepseek-chat".into());
+            let base = std::env::var("BOLLOON_BASE_URL").unwrap_or_else(|_| "(provider 自带)".into());
+            let has_key =
+                std::env::var("BOLLOON_API_KEY").map(|k| !k.trim().is_empty()).unwrap_or(false);
+            vec![
+                format!("provider {provider} (配置里没有可用家)"),
+                format!("model    {model}"),
+                format!("base_url {base}"),
+                format!("api_key  {}", if has_key { "有 (env, 不显示)" } else { "没有" }),
+                format!("配置文件 {} (空)", path.display()),
+                "先跑 `bolloon model` 选一家并填 key (200+ 家可选)".to_string(),
+            ]
+        }
+    }
 }
 
 fn git_diff(args: &str) -> Vec<String> {

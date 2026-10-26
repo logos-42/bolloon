@@ -22,7 +22,9 @@ use axum::Json;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
-use crate::server::{data_dir, AppState};
+use bolloon_llm::{ChatMessage, GenerateParams, LlmRuntime};
+
+use crate::server::{data_dir, AppState, ChatMessageView};
 
 // ────────────────────────── 数据模型 (前端视图形状) ──────────────────────────
 
@@ -332,27 +334,225 @@ pub async fn version(State(st): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "version": st.version }))
 }
 
-/// GET /api/models (前端形状)
+/// GET /api/models (前端形状) — **全量 200+ 家** (内置 13 + 目录 + 自定义)
 pub async fn models(State(st): State<AppState>) -> Json<serde_json::Value> {
-    let providers: Vec<serde_json::Value> = st
-        .llm
-        .provider_ids()
+    let cfg = bolloon_llm::config_store::load();
+    let settings = {
+        let fs = st.forge.lock().await;
+        fs.settings.clone()
+    };
+    let active = if settings.provider.trim().is_empty() {
+        cfg.active_provider.clone()
+    } else {
+        settings.provider.clone()
+    };
+    let providers = provider_rows(&cfg);
+    // 已经存过 key 的家 (界面用来显示"留空不修改")
+    let secret_set: serde_json::Map<String, serde_json::Value> = cfg
+        .providers
         .iter()
-        .map(|id| {
-            let cfg = st.llm.provider(id);
+        .filter(|(_, s)| !s.api_key.trim().is_empty())
+        .map(|(id, _)| (id.clone(), serde_json::json!(true)))
+        .collect();
+    Json(serde_json::json!({
+        "providers": providers,
+        "count": providers.len(),
+        "active": active,
+        "active_model": settings.model,
+        "write_tools": WRITE_TOOLS,
+        "secret_set": secret_set,
+    }))
+}
+
+/// 注册表 → 前端可选列表（每家带来源/协议/有无线索/模型数）
+pub(crate) fn provider_rows(cfg: &bolloon_llm::LlmConfig) -> Vec<serde_json::Value> {
+    bolloon_llm::list_with_catalog()
+        .into_iter()
+        .map(|e| {
+            let has_key = !e.requires_api_key
+                || bolloon_llm::config_store::key_of(cfg, &e).is_some();
+            let model = cfg
+                .providers
+                .get(&e.id)
+                .map(|s| s.model.clone())
+                .filter(|m| !m.is_empty())
+                .unwrap_or_else(|| e.default_model.clone());
             serde_json::json!({
-                "name": id,
-                "display": id,
-                "default": cfg.map(|c| c.default_model.clone()).unwrap_or_default(),
-                "has_key": cfg.map(|c| c.api_key.is_some()).unwrap_or(false),
+                "name": e.id,
+                "display": e.display_name,
+                "default": model,
+                "has_key": has_key,
+                "origin": e.origin.as_str(),
+                "protocol": e.protocol.as_str(),
+                "models_count": e.models.len(),
+                "requires_key": e.requires_api_key,
+                "selectable": e.selectable(),
+                "base_url": e.default_base_url,
+                "note": e.auth_note,
+            })
+        })
+        .collect()
+}
+
+/// GET /api/models/options?provider=<id> → 这家的可选模型（目录声明的清单 + 默认模型）
+pub async fn models_options(
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let id = q.get("provider").map(|s| s.trim().to_string()).unwrap_or_default();
+    if id.is_empty() {
+        return Json(serde_json::json!({ "error": "缺少 provider" }));
+    }
+    // 自定义家 → 用它自己填的模型清单；其余走注册表（内置已挂目录模型）
+    if let Some(custom) = bolloon_llm::config_store::load().custom_providers.get(&id) {
+        let models: Vec<serde_json::Value> = custom
+            .models
+            .iter()
+            .map(|m| serde_json::json!({ "id": m, "name": m }))
+            .collect();
+        return Json(serde_json::json!({
+            "provider": id,
+            "display": custom.display_name,
+            "default": custom.model,
+            "models": models,
+            "count": models.len(),
+            "note": "自定义 provider",
+        }));
+    }
+    let Some(entry) = bolloon_llm::provider_registry::get(&id) else {
+        return Json(serde_json::json!({ "provider": id, "models": [], "count": 0 }));
+    };
+    let models: Vec<serde_json::Value> = entry
+        .models
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "name": m.name,
+                "tool_calling": m.tool_calling,
+                "reasoning": m.reasoning,
+                "context_length": m.context_length,
             })
         })
         .collect();
     Json(serde_json::json!({
-        "providers": providers,
-        "write_tools": WRITE_TOOLS,
-        "secret_set": {},
+        "provider": entry.id,
+        "display": entry.display_name,
+        "protocol": entry.protocol.as_str(),
+        "default": entry.default_model,
+        "models": models,
+        "count": models.len(),
+        "note": entry.auth_note,
     }))
+}
+
+/// POST /api/models/select — 选一家/一个模型（可顺带存 key、改 base_url）
+pub async fn models_select(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let id = req["provider"].as_str().unwrap_or_default().trim().to_string();
+    if id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺少 provider" }));
+    }
+    let model = req["model"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let api_key = req["api_key"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let base_url = req["base_url"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+
+    let mut cfg = bolloon_llm::config_store::load();
+    bolloon_llm::config_store::apply_provider(
+        &mut cfg,
+        &id,
+        api_key.as_deref(),
+        base_url.as_deref(),
+        model.as_deref(),
+    );
+    if let Err(e) = bolloon_llm::config_store::save(&cfg) {
+        return Json(serde_json::json!({ "ok": false, "error": format!("配置写盘失败: {e}") }));
+    }
+    // UI 设置与配置保持一致（前端据此显示当前 provider/model）
+    {
+        let mut fs = st.forge.lock().await;
+        fs.settings.provider = id.clone();
+        if let Some(m) = &model {
+            fs.settings.model = m.clone();
+        } else if let Ok(r) = bolloon_llm::config_store::resolve(&cfg, &id) {
+            fs.settings.model = r.model.clone();
+        }
+        fs.save(&data_dir());
+    }
+    st.reload_llm().await;
+
+    match bolloon_llm::config_store::resolve(&cfg, &id) {
+        Ok(r) => Json(serde_json::json!({
+            "ok": true,
+            "provider": r.id,
+            "model": r.model,
+            "protocol": r.protocol.as_str(),
+            "base_url": r.base_url,
+            "auth": r.auth_ref(), // 只回 authRef, 不回 key
+        })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "provider": id, "error": e })),
+    }
+}
+
+/// POST /api/models/test — 真发一条最小请求验证「这家 + 这个 key + 这个模型」通不通
+pub async fn models_test(
+    State(_st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let id = req["provider"].as_str().unwrap_or_default().trim().to_string();
+    if id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺少 provider" }));
+    }
+    let mut cfg = bolloon_llm::config_store::load();
+    // 允许"边填边测": 请求里的 key/base/model 覆盖磁盘配置 (不写盘)
+    bolloon_llm::config_store::apply_provider(
+        &mut cfg,
+        &id,
+        req["api_key"].as_str().filter(|s| !s.trim().is_empty()),
+        req["base_url"].as_str().filter(|s| !s.trim().is_empty()),
+        req["model"].as_str().filter(|s| !s.trim().is_empty()),
+    );
+    let r = match bolloon_llm::config_store::resolve(&cfg, &id) {
+        Ok(r) => r,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "provider": id, "error": e })),
+    };
+
+    let mut rt = LlmRuntime::new(vec![], 1);
+    rt.add_resolved(&r);
+    let mut params = GenerateParams::new(
+        r.model.clone(),
+        vec![ChatMessage {
+            role: "user".into(),
+            content: "ping".into(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+            images: vec![],
+        }],
+    );
+    params.max_tokens = 8;
+    params.temperature = 0.0;
+    let started = std::time::Instant::now();
+    match rt.generate(&r.id, params).await {
+        Ok(g) => Json(serde_json::json!({
+            "ok": true,
+            "provider": r.id,
+            "model": r.model,
+            "protocol": r.protocol.as_str(),
+            "auth": r.auth_ref(),
+            "ms": started.elapsed().as_millis() as u64,
+            "sample": g.content.chars().take(60).collect::<String>(),
+        })),
+        Err(e) => Json(serde_json::json!({
+            "ok": false,
+            "provider": r.id,
+            "model": r.model,
+            "protocol": r.protocol.as_str(),
+            "ms": started.elapsed().as_millis() as u64,
+            "error": e.to_string(),
+        })),
+    }
 }
 
 // ────────────────────────── agents ──────────────────────────
@@ -681,24 +881,143 @@ pub async fn set_settings(
     }
     let s = fs.settings.clone();
     fs.save(&data_dir());
+    drop(fs); // 下面 reload_llm 也要拿 forge 锁
+
+    // provider/model/key/base_url 落到**跨端同一份**配置 (~/.bolloon/bolloon-config.json, 0600)
+    if !s.provider.trim().is_empty() {
+        let mut cfg = bolloon_llm::config_store::load();
+        bolloon_llm::config_store::apply_provider(
+            &mut cfg,
+            s.provider.trim(),
+            req["api_key"].as_str().filter(|k| !k.trim().is_empty()),
+            req["base_url"].as_str().filter(|b| !b.trim().is_empty()),
+            if s.model.trim().is_empty() { None } else { Some(s.model.trim()) },
+        );
+        let _ = bolloon_llm::config_store::save(&cfg);
+    }
+    // key 变了 → 模型通路立刻重建 (不用重启 web)
+    st.reload_llm().await;
     Json(serde_json::to_value(s).unwrap())
 }
 
 // ────────────────────────── chat (SSE 形状) ──────────────────────────
 
-async fn generate_reply(st: &AppState, text: &str) -> String {
-    let has_key = st
-        .llm
-        .provider_ids()
-        .iter()
-        .any(|id| st.llm.provider(id).map(|c| c.api_key.is_some()).unwrap_or(false));
-    if !has_key {
-        return format!(
-            "收到：「{}」\n\n当前未配置 LLM API Key（BOLLOON_API_KEY），我还不能真正思考。配置后这条消息会走真模型。\n\n在此期间我可以：管理待办清单、写记忆、发任务公告、发起群聊邀请、执行钱包工具。",
-            text
-        );
+/// web 对话的系统提示词（薄层：身份 + 纪律；工具循环在 CLI/agent 那边）
+const WEB_SYSTEM_PROMPT: &str = "你是 Bolloon 智能体，运行在去中心化智能体资源交流网络中。\
+回答用中文，简洁、有依据；不确定就说不确定，不编造事实。";
+
+/// **真模型调用**（web 对话唯一出口）
+/// provider 选取顺序: UI 选中 → 配置 activeProvider → runtime 里第一家可用
+pub async fn reply_with_model(st: &AppState, text: &str) -> Result<String, String> {
+    let (ui_provider, ui_model) = {
+        let fs = st.forge.lock().await;
+        (
+            fs.settings.provider.trim().to_string(),
+            fs.settings.model.trim().to_string(),
+        )
+    };
+    let cfg = bolloon_llm::config_store::load();
+    let wanted = if !ui_provider.is_empty() {
+        ui_provider
+    } else if !cfg.active_provider.trim().is_empty() {
+        cfg.active_provider.trim().to_string()
+    } else {
+        String::new()
+    };
+
+    let mut llm = st.llm_snapshot();
+    // UI 选的家可能还没进 runtime（刚填的 key/模型）→ 重建一次再取
+    if !wanted.is_empty() && llm.provider(&wanted).is_none() {
+        st.reload_llm().await;
+        llm = st.llm_snapshot();
     }
-    format!("（模型通路已配置）收到：「{text}」。真 token 流式生成待接 bolloon_llm::LlmRuntime 流式接口。")
+    let provider_id = if wanted.is_empty() {
+        llm.provider_ids().into_iter().next().ok_or_else(|| {
+            "还没有可用的模型供应商 — 点右上角模型/「选择模型」选一家并填 API Key \
+             （内置 13 家 + 目录 200+ 家）; 也可以用 BOLLOON_API_KEY 环境变量"
+                .to_string()
+        })?
+    } else {
+        wanted
+    };
+
+    if llm.provider(&provider_id).is_none() {
+        // 解析一次，给出**准确原因**（缺 key / 缺模型 / 缺基址）
+        return Err(bolloon_llm::config_store::resolve(&cfg, &provider_id)
+            .err()
+            .unwrap_or_else(|| format!("{provider_id} 没装进模型通路 — 检查 provider 名称")));
+    }
+
+    let model = if !ui_model.is_empty() {
+        ui_model
+    } else {
+        llm.provider(&provider_id)
+            .map(|p| p.default_model.clone())
+            .unwrap_or_default()
+    };
+    if model.trim().is_empty() {
+        return Err(format!("{provider_id} 还没选模型 — 在「选择模型」里填一个模型名"));
+    }
+
+    // 上下文: 最近 12 条 + 当前这句
+    let mut messages = vec![ChatMessage {
+        role: "system".into(),
+        content: WEB_SYSTEM_PROMPT.into(),
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+        images: vec![],
+    }];
+    {
+        let msgs = st.messages.lock().await;
+        let start = msgs.len().saturating_sub(12);
+        let last = msgs.len().saturating_sub(1);
+        for (i, m) in msgs[start..].iter().enumerate() {
+            let idx = start + i;
+            let role = if m.role == "assistant" { "assistant" } else { "user" };
+            // 调用方（/api/send）可能已经把本轮用户输入写进历史 → 去重，避免同一句发两遍
+            if idx == last && role == "user" && m.content == text {
+                continue;
+            }
+            messages.push(ChatMessage {
+                role: role.into(),
+                content: m.content.clone(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+                images: vec![],
+            });
+        }
+    }
+    messages.push(ChatMessage {
+        role: "user".into(),
+        content: text.to_string(),
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+        images: vec![],
+    });
+
+    let mut params = GenerateParams::new(model, messages);
+    params.temperature = 0.7;
+    params.max_tokens = 4096;
+    llm.generate(&provider_id, params)
+        .await
+        .map(|g| g.content)
+        .map_err(|e| format!("模型调用失败（{provider_id}）: {e}"))
+}
+
+/// 记一轮对话（历史要能被下一轮读到）
+async fn remember_turn(st: &AppState, text: &str, reply: &str) {
+    let mut msgs = st.messages.lock().await;
+    msgs.push(ChatMessageView { role: "user".into(), content: text.to_string() });
+    msgs.push(ChatMessageView { role: "assistant".into(), content: reply.to_string() });
+    let _ = st
+        .session_store
+        .append(&bolloon_agent::SessionEvent::User { text: text.to_string() });
+    let _ = st
+        .session_store
+        .append(&bolloon_agent::SessionEvent::Assistant { text: reply.to_string() });
 }
 
 /// POST /api/chat → {reply} (非流式降级)
@@ -707,7 +1026,13 @@ pub async fn chat(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let text = req["message"].as_str().unwrap_or_default().to_string();
-    let reply = generate_reply(&st, &text).await;
+    let reply = match reply_with_model(&st, &text).await {
+        Ok(r) => r,
+        Err(e) => e, // 错误也是"回答"：界面要能看到到底缺什么
+    };
+    if !reply.is_empty() {
+        remember_turn(&st, &text, &reply).await;
+    }
     Json(serde_json::json!({ "reply": reply }))
 }
 
@@ -717,7 +1042,13 @@ pub async fn chat_stream(
     Json(req): Json<serde_json::Value>,
 ) -> impl axum::response::IntoResponse {
     let text = req["message"].as_str().unwrap_or_default().to_string();
-    let reply = generate_reply(&st, &text).await;
+    let reply = match reply_with_model(&st, &text).await {
+        Ok(r) => r,
+        Err(e) => e,
+    };
+    if !reply.is_empty() {
+        remember_turn(&st, &text, &reply).await;
+    }
     let chunks: Vec<String> = {
         let chars: Vec<char> = reply.chars().collect();
         chars.chunks(24).map(|c| c.iter().collect()).collect()

@@ -11,6 +11,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
+use crate::config_store::Resolved;
+use crate::provider_registry::Protocol;
+
 /// 对话消息（OpenAI 形状）
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChatMessage {
@@ -178,11 +181,18 @@ impl ConcurrencyGate {
     }
 }
 
+/// 一个 provider 槽位 = 连接配置 + 走哪条协议分支
+#[derive(Debug, Clone)]
+pub struct ProviderSlot {
+    pub cfg: ProviderConfig,
+    pub protocol: Protocol,
+}
+
 /// LLM 运行时
 #[derive(Debug)]
 pub struct LlmRuntime {
     client: reqwest::Client,
-    providers: HashMap<String, ProviderConfig>,
+    providers: HashMap<String, ProviderSlot>,
     gate: ConcurrencyGate,
 }
 
@@ -197,19 +207,55 @@ impl LlmRuntime {
             client,
             providers: providers
                 .into_iter()
-                .map(|p| (p.id.clone(), p))
+                .map(|p| {
+                    let slot = ProviderSlot { cfg: p, protocol: Protocol::OpenAiCompatible };
+                    (slot.cfg.id.clone(), slot)
+                })
                 .collect(),
             gate: ConcurrencyGate::new(max_concurrency),
         }
     }
 
-    /// 注册/替换 provider
+    /// 注册/替换 provider（默认走 OpenAI 兼容协议）
     pub fn add_provider(&mut self, cfg: ProviderConfig) {
-        self.providers.insert(cfg.id.clone(), cfg);
+        self.add_provider_with(cfg, Protocol::OpenAiCompatible);
+    }
+
+    /// 注册/替换 provider 并指定协议分支
+    pub fn add_provider_with(&mut self, cfg: ProviderConfig, protocol: Protocol) {
+        self.providers.insert(cfg.id.clone(), ProviderSlot { cfg, protocol });
+    }
+
+    /// 从解析好的配置注册（协议、基址、key、模型一条带过来）
+    pub fn add_resolved(&mut self, r: &Resolved) {
+        self.add_provider_with(
+            ProviderConfig {
+                id: r.id.clone(),
+                base_url: r.base_url.clone(),
+                api_key: r.api_key.clone(),
+                default_model: r.model.clone(),
+            },
+            r.protocol,
+        );
+    }
+
+    /// 用当前配置重建: 只装**解析成功**的家 (没 key/没模型的进来只会在调用时报错)
+    pub fn from_config(cfg: &crate::config_store::LlmConfig, max_concurrency: usize) -> Self {
+        let usable = crate::config_store::usable(cfg);
+        let mut rt = Self::new(vec![], max_concurrency);
+        for r in &usable {
+            rt.add_resolved(r);
+        }
+        rt
     }
 
     pub fn provider(&self, id: &str) -> Option<&ProviderConfig> {
-        self.providers.get(id)
+        self.providers.get(id).map(|s| &s.cfg)
+    }
+
+    /// 这家走哪条协议
+    pub fn protocol_of(&self, id: &str) -> Option<Protocol> {
+        self.providers.get(id).map(|s| s.protocol)
     }
 
     /// provider id 列表（web 展示用, 不含 key）
@@ -223,22 +269,22 @@ impl LlmRuntime {
         provider_id: &str,
         params: GenerateParams,
     ) -> Result<GenerateResult, LlmError> {
-        let provider = self
+        let slot = self
             .providers
             .get(provider_id)
             .ok_or_else(|| LlmError::Config(format!("provider {provider_id} 未配置")))?;
 
         // 并发闸（唯一咽喉）
-        let key = format!("{}|{}", provider.id, provider.base_url);
+        let key = format!("{}|{}", slot.cfg.id, slot.cfg.base_url);
         if !self.gate.acquire(&key).await {
             return Err(LlmError::ConcurrencyQueueFull);
         }
 
         let result = self
-            .do_generate(provider, &params)
+            .do_generate(slot, &params)
             .await
             .inspect_err(|e| {
-                tracing::debug!(provider = %provider.id, error = %e, "llm call failed");
+                tracing::debug!(provider = %slot.cfg.id, error = %e, "llm call failed");
             });
         self.gate.release(&key).await;
         result
@@ -246,28 +292,45 @@ impl LlmRuntime {
 
     async fn do_generate(
         &self,
-        provider: &ProviderConfig,
+        slot: &ProviderSlot,
         params: &GenerateParams,
     ) -> Result<GenerateResult, LlmError> {
-        let url = format!(
-            "{}/chat/completions",
-            provider.base_url.trim_end_matches('/')
-        );
+        match slot.protocol {
+            Protocol::OpenAiCompatible => {
+                let (url, headers, body) = openai_request(&slot.cfg, params);
+                let v = self.post_json(slot, params, &url, headers, body).await?;
+                parse_openai_response(v, &params.model)
+            }
+            Protocol::Anthropic => {
+                let (url, headers, body) = anthropic_request(&slot.cfg, params)?;
+                let v = self.post_json(slot, params, &url, headers, body).await?;
+                parse_anthropic_response(v, &params.model)
+            }
+            Protocol::Gemini => {
+                let (url, headers, body) = gemini_request(&slot.cfg, params)?;
+                let v = self.post_json(slot, params, &url, headers, body).await?;
+                parse_gemini_response(v, &params.model)
+            }
+            Protocol::Ollama => {
+                let (url, headers, body) = ollama_request(&slot.cfg, params);
+                let v = self.post_json(slot, params, &url, headers, body).await?;
+                parse_ollama_response(v, &params.model)
+            }
+        }
+    }
 
-        let mut req = self
-            .client
-            .post(&url)
-            .json(&serde_json::json!({
-                "model": params.model,
-                "messages": messages_payload(&params.messages),
-                "tools": params.tools,
-                "temperature": params.temperature,
-                "max_tokens": params.max_tokens,
-            }))
-            .timeout(params.timeout());
-
-        if let Some(key) = &provider.api_key {
-            req = req.bearer_auth(key);
+    /// 发请求 + 重试/退避 + 状态码判定 → JSON（协议无关的唯一出网口）
+    async fn post_json(
+        &self,
+        slot: &ProviderSlot,
+        params: &GenerateParams,
+        url: &str,
+        headers: Vec<(String, String)>,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, LlmError> {
+        let mut req = self.client.post(url).json(&body).timeout(params.timeout());
+        for (k, v) in &headers {
+            req = req.header(k, v);
         }
 
         // 退避参数（429/5xx）
@@ -291,7 +354,8 @@ impl LlmRuntime {
             };
             let elapsed = started.elapsed();
             tracing::debug!(
-                provider = %provider.id,
+                provider = %slot.cfg.id,
+                protocol = slot.protocol.as_str(),
                 model = %params.model,
                 status = resp.status().as_u16(),
                 elapsed_ms = elapsed.as_millis(),
@@ -299,7 +363,7 @@ impl LlmRuntime {
             );
 
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let raw = resp.text().await.unwrap_or_default();
 
             // 可重试：429 / 5xx（指数退避）
             if status.as_u16() == 429 || status.as_u16() >= 500 {
@@ -320,16 +384,173 @@ impl LlmRuntime {
             if !status.is_success() {
                 return Err(LlmError::Http {
                     status: status.as_u16(),
-                    body: truncate(&body, 300),
+                    body: truncate(&raw, 300),
                 });
             }
 
-            // 解析
-            let parsed: serde_json::Value =
-                serde_json::from_str(&body).map_err(|e| LlmError::Parse(e.to_string()))?;
-            return parse_response(parsed, &params.model);
+            return serde_json::from_str(&raw).map_err(|e| LlmError::Parse(e.to_string()));
         }
     }
+}
+
+// ────────────────────────── 4 条协议: 请求体 ──────────────────────────
+
+fn base_of(cfg: &ProviderConfig) -> String {
+    cfg.base_url.trim_end_matches('/').to_string()
+}
+
+/// OpenAI 兼容: `POST {base}/chat/completions`
+fn openai_request(
+    cfg: &ProviderConfig,
+    params: &GenerateParams,
+) -> (String, Vec<(String, String)>, serde_json::Value) {
+    let url = format!("{}/chat/completions", base_of(cfg));
+    let mut headers = vec![];
+    if let Some(key) = &cfg.api_key {
+        headers.push(("Authorization".to_string(), format!("Bearer {key}")));
+    }
+    let mut body = serde_json::json!({
+        "model": params.model,
+        "messages": messages_payload(&params.messages),
+        "temperature": params.temperature,
+        "max_tokens": params.max_tokens,
+    });
+    // 空 tools 不发 (有些家对 `"tools": []` 直接 400 — 200+ 家里不能赌)
+    if !params.tools.is_empty() {
+        body["tools"] = serde_json::to_value(&params.tools).unwrap_or_default();
+    }
+    (url, headers, body)
+}
+
+/// Anthropic: `POST {base}/messages` + `x-api-key` + `anthropic-version`
+fn anthropic_request(
+    cfg: &ProviderConfig,
+    params: &GenerateParams,
+) -> Result<(String, Vec<(String, String)>, serde_json::Value), LlmError> {
+    let key = cfg
+        .api_key
+        .as_ref()
+        .ok_or_else(|| LlmError::Config("anthropic 协议需要 api_key".into()))?;
+    let url = format!("{}/messages", base_of(cfg));
+    let headers = vec![
+        ("x-api-key".to_string(), key.clone()),
+        ("anthropic-version".to_string(), "2023-06-01".to_string()),
+    ];
+    // system 消息要抬到顶层 `system` (Anthropic 不认 system role)
+    let mut system = String::new();
+    let mut msgs = vec![];
+    for m in &params.messages {
+        if m.role == "system" {
+            if !system.is_empty() {
+                system.push_str("\n\n");
+            }
+            system.push_str(&m.content);
+            continue;
+        }
+        let role = if m.role == "assistant" { "assistant" } else { "user" };
+        msgs.push(serde_json::json!({ "role": role, "content": m.content }));
+    }
+    let mut body = serde_json::json!({
+        "model": params.model,
+        "max_tokens": params.max_tokens,
+        "temperature": params.temperature,
+        "messages": msgs,
+    });
+    if !system.is_empty() {
+        body["system"] = serde_json::Value::String(system);
+    }
+    if !params.tools.is_empty() {
+        let tools: Vec<serde_json::Value> = params
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.function.name,
+                    "description": t.function.description,
+                    "input_schema": t.function.parameters,
+                })
+            })
+            .collect();
+        body["tools"] = serde_json::Value::Array(tools);
+    }
+    Ok((url, headers, body))
+}
+
+/// Gemini: `POST {base}/models/{model}:generateContent` + `x-goog-api-key`
+fn gemini_request(
+    cfg: &ProviderConfig,
+    params: &GenerateParams,
+) -> Result<(String, Vec<(String, String)>, serde_json::Value), LlmError> {
+    let key = cfg
+        .api_key
+        .as_ref()
+        .ok_or_else(|| LlmError::Config("gemini 协议需要 api_key".into()))?;
+    let url = format!("{}/models/{}:generateContent", base_of(cfg), params.model);
+    let headers = vec![("x-goog-api-key".to_string(), key.clone())];
+    let mut contents = vec![];
+    let mut system = String::new();
+    for m in &params.messages {
+        if m.role == "system" {
+            if !system.is_empty() {
+                system.push('\n');
+            }
+            system.push_str(&m.content);
+            continue;
+        }
+        let role = if m.role == "assistant" { "model" } else { "user" };
+        contents.push(serde_json::json!({
+            "role": role,
+            "parts": [{ "text": m.content }],
+        }));
+    }
+    let mut body = serde_json::json!({
+        "contents": contents,
+        "generationConfig": {
+            "temperature": params.temperature,
+            "maxOutputTokens": params.max_tokens,
+        },
+    });
+    if !system.is_empty() {
+        body["systemInstruction"] = serde_json::json!({ "parts": [{ "text": system }] });
+    }
+    if !params.tools.is_empty() {
+        let decls: Vec<serde_json::Value> = params
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.function.name,
+                    "description": t.function.description,
+                    "parameters": t.function.parameters,
+                })
+            })
+            .collect();
+        body["tools"] = serde_json::json!([{ "functionDeclarations": decls }]);
+    }
+    Ok((url, headers, body))
+}
+
+/// Ollama 本机: `POST {base}/api/chat` (不需要 key)
+fn ollama_request(
+    cfg: &ProviderConfig,
+    params: &GenerateParams,
+) -> (String, Vec<(String, String)>, serde_json::Value) {
+    let url = format!("{}/api/chat", base_of(cfg));
+    let msgs: Vec<serde_json::Value> = params
+        .messages
+        .iter()
+        .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+        .collect();
+    let body = serde_json::json!({
+        "model": params.model,
+        "messages": msgs,
+        "stream": false,
+        "options": {
+            "temperature": params.temperature,
+            "num_predict": params.max_tokens,
+        },
+    });
+    (url, vec![], body)
 }
 
 /**
@@ -399,8 +620,8 @@ pub fn check_vision(model: &str, images: usize) -> Result<(), String> {
     ))
 }
 
-/// 解析 OpenAI 响应
-fn parse_response(v: serde_json::Value, model: &str) -> Result<GenerateResult, LlmError> {
+/// 解析 OpenAI 兼容响应
+fn parse_openai_response(v: serde_json::Value, model: &str) -> Result<GenerateResult, LlmError> {
     let choices = v
         .get("choices")
         .and_then(|c| c.as_array())
@@ -460,6 +681,178 @@ fn parse_response(v: serde_json::Value, model: &str) -> Result<GenerateResult, L
         })
         .unwrap_or_default();
 
+    Ok(GenerateResult {
+        content,
+        tool_calls,
+        finish_reason,
+        usage,
+        model: model.to_string(),
+    })
+}
+
+/// 解析 Anthropic 响应 (`content[]` 文本块 + `tool_use` 块)
+fn parse_anthropic_response(v: serde_json::Value, model: &str) -> Result<GenerateResult, LlmError> {
+    let blocks = v
+        .get("content")
+        .and_then(|c| c.as_array())
+        .ok_or_else(|| LlmError::Parse("content 缺失".into()))?;
+    let mut content = String::new();
+    let mut tool_calls = vec![];
+    for b in blocks {
+        match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+            "text" => {
+                if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                    content.push_str(t);
+                }
+            }
+            "tool_use" => {
+                let id = b.get("id").and_then(|s| s.as_str()).unwrap_or("tool").to_string();
+                let name = b.get("name").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                let arguments = b
+                    .get("input")
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "{}".to_string());
+                tool_calls.push(ToolCallMsg {
+                    id,
+                    call_type: "function".into(),
+                    function: FunctionCall { name, arguments },
+                });
+            }
+            _ => {}
+        }
+    }
+    let finish_reason = v
+        .get("stop_reason")
+        .and_then(|s| s.as_str())
+        .unwrap_or("stop")
+        .to_string();
+    let usage = v
+        .get("usage")
+        .map(|u| Usage {
+            prompt_tokens: u.get("input_tokens").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+            completion_tokens: u
+                .get("output_tokens")
+                .and_then(|n| n.as_u64())
+                .unwrap_or(0) as u32,
+        })
+        .unwrap_or_default();
+    Ok(GenerateResult {
+        content,
+        tool_calls,
+        finish_reason,
+        usage,
+        model: model.to_string(),
+    })
+}
+
+/// 解析 Gemini 响应 (`candidates[0].content.parts[]`)
+fn parse_gemini_response(v: serde_json::Value, model: &str) -> Result<GenerateResult, LlmError> {
+    let cand = v
+        .get("candidates")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .ok_or_else(|| LlmError::Parse("candidates 缺失".into()))?;
+    let parts = cand
+        .get("content")
+        .and_then(|c| c.get("parts"))
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut content = String::new();
+    let mut tool_calls = vec![];
+    let mut idx = 0usize;
+    for p in &parts {
+        if let Some(t) = p.get("text").and_then(|t| t.as_str()) {
+            content.push_str(t);
+        }
+        if let Some(fc) = p.get("functionCall") {
+            idx += 1;
+            let name = fc.get("name").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let arguments = fc
+                .get("args")
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| "{}".to_string());
+            tool_calls.push(ToolCallMsg {
+                id: format!("gemini-call-{idx}"),
+                call_type: "function".into(),
+                function: FunctionCall { name, arguments },
+            });
+        }
+    }
+    let finish_reason = cand
+        .get("finishReason")
+        .and_then(|s| s.as_str())
+        .unwrap_or("stop")
+        .to_lowercase();
+    let usage = v
+        .get("usageMetadata")
+        .map(|u| Usage {
+            prompt_tokens: u.get("promptTokenCount").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+            completion_tokens: u
+                .get("candidatesTokenCount")
+                .and_then(|n| n.as_u64())
+                .unwrap_or(0) as u32,
+        })
+        .unwrap_or_default();
+    Ok(GenerateResult {
+        content,
+        tool_calls,
+        finish_reason,
+        usage,
+        model: model.to_string(),
+    })
+}
+
+/// 解析 Ollama 响应 (`message.content` + `message.tool_calls`)
+fn parse_ollama_response(v: serde_json::Value, model: &str) -> Result<GenerateResult, LlmError> {
+    let msg = v
+        .get("message")
+        .ok_or_else(|| LlmError::Parse("message 缺失".into()))?;
+    let content = msg
+        .get("content")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+    let tool_calls = msg
+        .get("tool_calls")
+        .and_then(|t| t.as_array())
+        .map(|arr| {
+            arr.iter()
+                .enumerate()
+                .filter_map(|(i, tc)| {
+                    let f = tc.get("function")?;
+                    let name = f.get("name")?.as_str()?.to_string();
+                    let arguments = f
+                        .get("arguments")
+                        .map(|a| {
+                            if a.is_string() {
+                                a.as_str().unwrap_or("{}").to_string()
+                            } else {
+                                a.to_string()
+                            }
+                        })
+                        .unwrap_or_else(|| "{}".to_string());
+                    Some(ToolCallMsg {
+                        id: format!("ollama-call-{}", i + 1),
+                        call_type: "function".into(),
+                        function: FunctionCall { name, arguments },
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let finish_reason = if v.get("done").and_then(|d| d.as_bool()).unwrap_or(false) {
+        v.get("done_reason")
+            .and_then(|s| s.as_str())
+            .unwrap_or("stop")
+            .to_string()
+    } else {
+        "stop".to_string()
+    };
+    let usage = Usage {
+        prompt_tokens: v.get("prompt_eval_count").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+        completion_tokens: v.get("eval_count").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+    };
     Ok(GenerateResult {
         content,
         tool_calls,
@@ -628,7 +1021,7 @@ mod tests {
             }],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5}
         });
-        let r = parse_response(v, "m").unwrap();
+        let r = parse_openai_response(v, "m").unwrap();
         assert_eq!(r.tool_calls.len(), 1);
         assert_eq!(r.tool_calls[0].function.name, "read_file");
         assert_eq!(r.finish_reason, "tool_calls");
@@ -640,7 +1033,7 @@ mod tests {
         let v = serde_json::json!({
             "choices": [{"message": {"content": "你好"}, "finish_reason": "stop"}]
         });
-        let r = parse_response(v, "m").unwrap();
+        let r = parse_openai_response(v, "m").unwrap();
         assert_eq!(r.content, "你好");
         assert!(r.tool_calls.is_empty());
     }
@@ -766,5 +1159,190 @@ mod tests {
             .expect("429 退避后应成功");
         assert_eq!(r.content, "ok");
         server.abort();
+    }
+
+    // ────────── 4 条协议分支 (支撑 200+ provider 的关键) ──────────
+
+    fn cfg(id: &str, base: &str, key: Option<&str>) -> ProviderConfig {
+        ProviderConfig {
+            id: id.into(),
+            base_url: base.into(),
+            api_key: key.map(|s| s.to_string()),
+            default_model: "m".into(),
+        }
+    }
+
+    #[test]
+    fn openai_request_omits_empty_tools_keeps_them_when_present() {
+        let p = GenerateParams::new("m", vec![msg("user", "hi")]);
+        let (url, headers, body) =
+            openai_request(&cfg("deepseek", "https://api.x/v1", Some("sk")), &p);
+        assert_eq!(url, "https://api.x/v1/chat/completions");
+        assert_eq!(headers[0].0, "Authorization");
+        assert_eq!(headers[0].1, "Bearer sk");
+        assert!(body.get("tools").is_none(), "空 tools 不发 (有的家会 400)");
+
+        let mut p2 = p.clone();
+        p2.tools = vec![ToolSchema {
+            tool_type: "function".into(),
+            function: FunctionSchema {
+                name: "shell".into(),
+                description: "跑命令".into(),
+                parameters: serde_json::json!({"type":"object"}),
+            },
+        }];
+        let (_, headers, body) = openai_request(&cfg("deepseek", "https://api.x/v1", None), &p2);
+        assert!(body["tools"].is_array());
+        assert!(headers.is_empty(), "没 key 就不带鉴权头");
+    }
+
+    #[test]
+    fn anthropic_request_hoists_system_and_uses_x_api_key() {
+        let p = GenerateParams::new(
+            "claude-sonnet-5",
+            vec![msg("system", "你是 bolloon"), msg("user", "你好")],
+        );
+        let (url, headers, body) =
+            anthropic_request(&cfg("anthropic", "https://api.anthropic.com/v1", Some("sk-a")), &p)
+                .unwrap();
+        assert_eq!(url, "https://api.anthropic.com/v1/messages");
+        assert!(headers.iter().any(|(k, v)| k == "x-api-key" && v == "sk-a"));
+        assert!(
+            headers.iter().any(|(k, v)| k == "anthropic-version" && v == "2023-06-01"),
+            "Anthropic 必须带版本头"
+        );
+        assert_eq!(body["system"], "你是 bolloon", "system 抬到顶层");
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1, "system 不再占消息位");
+        assert_eq!(body["messages"][0]["role"], "user");
+        // 没 key → 明确报错 (不是发出去再 401)
+        let err = anthropic_request(&cfg("anthropic", "https://api.anthropic.com/v1", None), &p);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn gemini_request_builds_generate_content_url() {
+        let p = GenerateParams::new("gemini-3.5-flash", vec![msg("user", "hi")]);
+        let (url, headers, body) = gemini_request(
+            &cfg("gemini", "https://generativelanguage.googleapis.com/v1beta", Some("k")),
+            &p,
+        )
+        .unwrap();
+        assert_eq!(
+            url,
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+        );
+        assert_eq!(headers[0].0, "x-goog-api-key");
+        assert_eq!(body["contents"][0]["parts"][0]["text"], "hi");
+        assert!(body["generationConfig"]["maxOutputTokens"].is_number());
+    }
+
+    #[test]
+    fn ollama_request_has_no_auth_and_uses_api_chat() {
+        let p = GenerateParams::new("llama4", vec![msg("user", "hi")]);
+        let (url, headers, body) =
+            ollama_request(&cfg("ollama", "http://localhost:11434", None), &p);
+        assert_eq!(url, "http://localhost:11434/api/chat");
+        assert!(headers.is_empty());
+        assert_eq!(body["stream"], serde_json::json!(false), "非流式才是一次性结果");
+        assert!(body["options"]["num_predict"].is_number());
+    }
+
+    #[test]
+    fn parse_anthropic_and_gemini_and_ollama() {
+        let a = parse_anthropic_response(
+            serde_json::json!({
+                "content": [
+                    {"type":"text","text":"你好"},
+                    {"type":"tool_use","id":"t1","name":"shell","input":{"cmd":"ls"}}
+                ],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 3, "output_tokens": 5}
+            }),
+            "claude",
+        )
+        .unwrap();
+        assert_eq!(a.content, "你好");
+        assert_eq!(a.tool_calls[0].function.name, "shell");
+        assert!(a.tool_calls[0].function.arguments.contains("ls"));
+        assert_eq!(a.usage.completion_tokens, 5);
+
+        let g = parse_gemini_response(
+            serde_json::json!({
+                "candidates": [{
+                    "content": {"parts": [{"text":"hi"}, {"functionCall":{"name":"shell","args":{"cmd":"pwd"}}}]},
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 2}
+            }),
+            "gemini",
+        )
+        .unwrap();
+        assert_eq!(g.content, "hi");
+        assert_eq!(g.tool_calls[0].function.name, "shell");
+        assert_eq!(g.finish_reason, "stop");
+        assert_eq!(g.usage.prompt_tokens, 7);
+
+        let o = parse_ollama_response(
+            serde_json::json!({
+                "message": {"content": "本地回", "tool_calls": [{"function": {"name": "shell", "arguments": {"a": 1}}}]},
+                "done": true,
+                "done_reason": "stop",
+                "prompt_eval_count": 4,
+                "eval_count": 6
+            }),
+            "llama4",
+        )
+        .unwrap();
+        assert_eq!(o.content, "本地回");
+        assert!(o.tool_calls[0].function.arguments.contains("\"a\":1"));
+        assert_eq!(o.usage.completion_tokens, 6);
+    }
+
+    /// 真发一次 Anthropic 形状请求 (mock server 抓 URL/头) — 证明分派真的改了出网形状
+    #[tokio::test]
+    async fn anthropic_protocol_really_hits_messages_endpoint() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 65536];
+            let n = sock.read(&mut buf).await.unwrap();
+            let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+            let resp = r#"{"content":[{"type":"text","text":"来自 anthropic"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}"#;
+            let out = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                resp.len(),
+                resp
+            );
+            let _ = sock.write_all(out.as_bytes()).await;
+            raw
+        });
+
+        let mut rt = LlmRuntime::new(vec![], 1);
+        rt.add_provider_with(
+            cfg("anthropic", &format!("http://{addr}/v1"), Some("sk-a")),
+            Protocol::Anthropic,
+        );
+        let res = rt
+            .generate("anthropic", GenerateParams::new("claude-sonnet-5", vec![msg("user", "hi")]))
+            .await
+            .unwrap();
+        assert_eq!(res.content, "来自 anthropic");
+
+        let raw = server.await.unwrap();
+        assert!(raw.starts_with("POST /v1/messages"), "路径要是 /messages: {raw}");
+        assert!(raw.to_lowercase().contains("x-api-key: sk-a"), "要带 x-api-key");
+        assert!(raw.to_lowercase().contains("anthropic-version"), "要带版本头");
+    }
+
+    /// from_config: 配置解析出来的家带着正确协议进 runtime
+    #[test]
+    fn runtime_built_from_config_carries_protocols() {
+        let cfg = crate::config_store::LlmConfig::default();
+        let rt = LlmRuntime::from_config(&cfg, 2);
+        // 本机 ollama 无需 key → 一定解析成功, 协议是 Ollama
+        assert_eq!(rt.protocol_of("ollama"), Some(Protocol::Ollama));
+        assert!(rt.protocol_of("nonexistent").is_none());
     }
 }

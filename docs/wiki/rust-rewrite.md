@@ -363,6 +363,26 @@ Hermes/Nous 账号计费面 (`/login` `/topup` `/subscription` …) · 只有一
 **仍未做 (照实)**: `/heartbeat` (需要能收定时器的非阻塞输入循环) · `/moa` (多模型编排) ·
 `/goal` 的 `draft/gate/wait` 子命令 · `/timestamps` `/focus` 等展示类开关 · 网关/账号/宠物一类仍 `Na`。
 
+## 2026-10-26 第十八批 (Rust 侧 200+ provider + web 真对话 + CLI model 全量, 645 测试全绿)
+
+**背景**: web 端「对话」此前是**桩** —— `generate_reply` 只回「模型通路已配置」不回模型; LLM 侧只有 OpenAI 兼容一条协议、provider 只能从环境变量来。本轮把 TS 那套 provider 能力在 Rust 补齐。
+
+| Rust 模块 | 冻结语义 |
+| --- | --- |
+| **`bolloon-llm/provider_catalog`** (4 测试) | **与 TS 同一份事实源**: `include_str!("../../../../src/llm/data/provider-catalog.json")` (223 家 / 8174 模型 / 936KB, **不复制不手抄**); 形状不认就拒 (`MIN_PROVIDERS_FOR_TRUST=100`, 少了当坏文件); **族判定** npm 包名 → 云凭证环境变量 → 兜底 openai-compatible, **每条带 signal 理由**; **鉴权形状** bearer / x-api-key / x-goog-api-key / none / special (`special` ⇒ `supported=false`, 如实标"不支持"不假装能用) |
+| **`bolloon-llm/provider_registry`** (6 测试) | 内置 13 家 (与 TS `DEFAULT_PROVIDER_CONFIGS` 逐条对齐: id/基址/默认模型) + 自定义 + 目录 → **同一个 `ProviderRegistryEntry`** (`origin` 三值); **目录同名/别名去重** (gemini↔google / kimi↔moonshotai / glm↔zhipuai / qwen↔alibaba / mimo↔xiaomi / grok↔xai), 内置家的模型清单从目录挂过来 ⇒ 界面可下拉选模型; 总表 **225 家** (内置 13 + 目录 223 − 别名 6 − 同名若干) |
+| **`bolloon-llm/config_store`** (10 测试) | **与 TS 同路径同形状**: `${BOLLOON_HOME:-~/.bolloon}/bolloon-config.json`, camelCase (`activeProvider` / `providers` / `customProviders`), **0600 + tmp + 原子 rename** (单写入路径), 坏文件 → 空配置**不猜**; 解析顺序 配置 key → 环境变量 (按注册表变量名顺序) → 注册表默认; **缺 key/缺模型/缺基址给可操作报错** (点名环境变量); 回显只给 `authRef` (`config` / `env:XXX` / `none`), **永不回显密钥** |
+| **`bolloon-llm/runtime` 四协议** (9 测试) | `ProviderConfig` 不变 (零 churn), 协议放在 `ProviderSlot`; `generate` 分派 **4 条真分支**: openai-compatible `/chat/completions` · **anthropic `/messages`** (`x-api-key` + `anthropic-version`, system 抬顶层) · **gemini `:generateContent`** (`x-goog-api-key`, `contents/parts`, `systemInstruction`) · **ollama `/api/chat`** (无鉴权, `stream:false`); 出网/重试/退避**唯一收口** `post_json`; **空 tools 不再发** (有的家见 `[]` 直接 400); `LlmRuntime::from_config` 只装能解析的家 |
+| **web: 真对话** | `/api/chat` · `/api/chat/stream` · `/api/send` 统一走 `reply_with_model`: provider = UI 选中 → 配置 active → runtime 第一家, 模型 = UI → provider 默认; 上下文取最近 12 条 + 本轮, 并把轮次写回 `messages` + `sessions/*.jsonl`; 失败把**原因**当回答返回 (缺 key / 缺模型 / HTTP 4xx) 而不是假装成功; `AppState.llm` 改 `RwLock<Arc<LlmRuntime>>` + `reload_llm()` (改 key 不用重启) |
+| **web: 200+ 列表/测试/选型** | `GET /api/models` · `/api/models/providers` 回**全量 225 家** (origin/protocol/has_key/models_count/note); `GET /api/models/options?provider=` 回该家模型清单; `POST /api/models/select` 选一家 (可带 key/base_url/model, 落盘 0600 + 重载 runtime); `POST /api/models/test` **真发一条 ping** (max_tokens 8) 回 ok/ms/协议/错误; `/api/settings` 的 `api_key`/`base_url` 不再被忽略 |
+| **web UI** | 模型弹窗: **筛选框** (id/名称/协议) + **按来源 optgroup** (内置/已配置/目录) + 模型 **datalist** 建议 + **测试连接** 按钮 (显示 ✓ 协议/model/ms 或 ✗ 原因); 家数提示 |
+| **CLI `bolloon model`** | 从 5 家硬编码 → **全量 225 家** 全屏选择器 (分组: 当前/已配置/内置/目录) + `--filter` 关键词 + `--usable` 只看可用 + 直接 `bolloon model deepseek --model deepseek-v4-flash`; 密钥**掩码输入** (已存则留空不改), 落盘同 TS 同一份 config; 结束回显 provider/protocol/base_url/model/authRef |
+| **CLI `bolloon chat`** | 通路改为 `build_chat_llm()`: **配置 activeProvider 优先** → env 三件套 → 本机可用家; 选中的家连**协议**一起装进 `"env"` 槽位, 故 200+ 家里任何一家都能直接对话; `/config` 显示配置来源与 authRef |
+
+**门禁 (真跑)**: `cargo test --workspace` **645 passed / 0 failed** (llm 44 · web 5 · cli 113 …); 真起 web (`BOLLOON_HOME` 临时目录): `/api/models/providers` **231 家** (含条目 `count`) → `POST /api/models/select {"provider":"deepseek"}` → `{"ok":true,"protocol":"openai-compatible","auth":"env:DEEPSEEK_API_KEY"}` → `POST /api/chat` **真打到上游** (返回 401 是本机 env key 失效, 证明通路已通); `/api/models/options?provider=deepseek` 回 4 个模型; 坏家/缺 key 都给出点名报错; CLI `bolloon model --filter deepseek` 列表、`bolloon model deepseek --model ...` 落盘 `0600` 全通过; pty 抓 `bolloon chat` 首屏: 机器人头 + BOLLOON 字标 + 状态行 `model deepseek-v4-flash` (来自 config store) + 输入条。
+
+**诚实边界**: ① **流式仍是「先整段生成再切块」** — `chat/stream` 的 delta 是事后按 24 字切, 不是上游 token 流 (真 SSE 待接 reqwest stream); ② 工具循环/agent loop 在 CLI 侧有, **web 侧仍是单轮** (web 是薄层); ③ 图片只走 OpenAI 视觉数组, anthropic/gemini 分支**暂不发图**; ④ `special` 家 (AWS/Azure/Vertex/watsonx 等, 约 20 家) **如实不支持**, 用自定义 provider 也需自备签名; ⑤ 上游模型发现 (`/v1/models` 拉取 + 30 分钟缓存) 未移植, 模型清单来自目录快照 (可手填); ⑥ 目录来自 TS 烘焙文件, **刷新要跑 TS 的 `scripts/gen-provider-catalog.ts`** (Rust 侧不自己拉 models.dev)。
+
 ## DIAP Rust SDK (本机 /Users/apple/Downloads/DIAP_Rust_SDK)
 
 同日更新: 0.2.7→**0.3.0** (edition 2021→2024, rust-version 1.99, ed25519-dalek 2→3) + iroh 1.4 API 对齐 (`NodeAddr`→`EndpointAddr`, `builder(presets::N0)`, `addr()/id()`, `remote_id()`)。3 个 examples 修复对齐新 API, `cargo build --examples` 0 警告过; **lib 测试 46 passed / 0 failed / 4 ignored** (修 nonce_manager/did_cache 测试缺 `async` — edition 2024 必需; key_generator 测试对齐废弃函数空占位语义; noir_embedded/noir_universal 测试输入自洽 + 默认 backend 未启用时切 Simplified)。crates.io 下载走 rsproxy 镜像 (直连超时/代理 SSL reset, 2026-10-25 实测)。提交 `fdbef37` + `aa9ec66`。

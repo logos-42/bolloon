@@ -27,7 +27,7 @@ use bolloon_x402::{
     direct_payment::{verify_direct_payment, DirectPaymentConfig, PaymentClaim, RpcObservation},
     paid_info::{compute_content_hash, PaidInfoItem},
 };
-use bolloon_llm::{ChatMessage, GenerateParams, LlmRuntime};
+use bolloon_llm::{LlmRuntime, ProviderConfig};
 use bolloon_p2p::{GroupAcl, GroupStore, KeyPair};
 use std::io::Read;
 
@@ -39,7 +39,8 @@ pub fn data_dir() -> std::path::PathBuf {
 /// 服务状态（从上层注入）
 #[derive(Clone)]
 pub struct AppState {
-    pub llm: Arc<LlmRuntime>,
+    /// 模型运行时 — **可热替换**: 用户在 UI 里改 provider/key 后重建 (Arc 快照, 不持锁过 await)
+    pub llm: Arc<std::sync::RwLock<Arc<LlmRuntime>>>,
     pub sessions: Arc<Mutex<Vec<SessionMeta>>>,
     pub messages: Arc<Mutex<Vec<ChatMessageView>>>,
     pub identity: Arc<KeyPair>,
@@ -90,7 +91,7 @@ impl AppState {
             .unwrap_or_default();
 
         Self {
-            llm: Arc::new(llm),
+            llm: Arc::new(std::sync::RwLock::new(Arc::new(llm))),
             sessions: Arc::new(Mutex::new(vec![])),
             messages: Arc::new(Mutex::new(restored)),
             identity,
@@ -112,6 +113,49 @@ impl AppState {
             session_store,
             version: "0.6.10",
         }
+    }
+
+    /// 取当前 runtime 快照（Arc 克隆，不持锁过 await）
+    pub fn llm_snapshot(&self) -> Arc<LlmRuntime> {
+        self.llm
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// 配置/选择变了 → 重建 runtime（只装**能解析**的家：有 key 或本机服务）
+    pub async fn reload_llm(&self) {
+        let mut cfg = bolloon_llm::config_store::load();
+        {
+            // UI 里选中的 provider/model 也参与解析（不落盘，只影响本次 runtime）
+            let fs = self.forge.lock().await;
+            let p = fs.settings.provider.trim().to_string();
+            let m = fs.settings.model.trim().to_string();
+            if !p.is_empty() {
+                bolloon_llm::config_store::apply_provider(
+                    &mut cfg,
+                    &p,
+                    None,
+                    None,
+                    if m.is_empty() { None } else { Some(m.as_str()) },
+                );
+            }
+        }
+        let mut rt = LlmRuntime::from_config(&cfg, 2);
+        // 环境变量兜底（BOLLOON_API_KEY/BASE_URL/MODEL 三件套仍然有效）
+        if let Ok(key) = std::env::var("BOLLOON_API_KEY") {
+            if !key.trim().is_empty() {
+                rt.add_provider(ProviderConfig {
+                    id: "env".into(),
+                    base_url: std::env::var("BOLLOON_BASE_URL")
+                        .unwrap_or_else(|_| "https://api.minimaxi.com/v1".to_string()),
+                    api_key: Some(key),
+                    default_model: std::env::var("BOLLOON_MODEL")
+                        .unwrap_or_else(|_| "deepseek-chat".to_string()),
+                });
+            }
+        }
+        *self.llm.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(rt);
     }
 }
 
@@ -218,6 +262,11 @@ pub fn app(state: AppState) -> Router {
         .route("/api/bootstrap", get(crate::native::bootstrap_native))
         .route("/api/version", get(crate::native::version))
         .route("/api/models", get(crate::native::models))
+        // 200+ provider: 全量列表 / 选一家 / 真连一次
+        .route("/api/models/providers", get(providers))
+        .route("/api/models/options", get(crate::native::models_options))
+        .route("/api/models/select", post(crate::native::models_select))
+        .route("/api/models/test", post(crate::native::models_test))
         .route("/api/sessions", get(sessions).post(crate::native::create_session))
         .route("/api/sessions/branch", post(crate::native::branch_session))
         .route("/api/sessions/update", post(crate::native::update_session))
@@ -311,6 +360,8 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
 
 /// 在已绑定的监听器上服务 (测试: 端口 0 → 用 OS 分配的端口, 不抢固定端口)
 pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
+    // 启动即按本机配置装好模型通路 (200+ provider 里能解析的那些)
+    state.reload_llm().await;
     axum::serve(listener, app(state))
         .await
         .map_err(|e| anyhow::anyhow!("web server: {e}"))
@@ -341,8 +392,8 @@ async fn send(State(st): State<AppState>, Json(req): Json<SendRequest>) -> Json<
         });
     }
 
-    // 真实模型调用（唯一咽喉 generate）
-    let reply = match real_chat(&st.llm, &req.text).await {
+    // 真实模型调用（唯一咽喉 generate；provider/model 由 UI 选择与配置决定）
+    let reply = match crate::native::reply_with_model(&st, &req.text).await {
         Ok(r) => r,
         Err(e) => format!("[AI 服务调用失败] {e}"),
     };
@@ -591,22 +642,20 @@ async fn clarity(
     Json(clarity_of(&sid, &events, &[], &[]))
 }
 
-/// 模型供应商列表 (配置里的 provider ids + 当前默认模型)
+/// 模型供应商列表 — **全量 200+ 家**（内置 13 + 目录 223 + 自定义），带来源/协议/有无线索
 async fn providers(State(st): State<AppState>) -> Json<serde_json::Value> {
-    let ids = st.llm.provider_ids();
-    let items: Vec<serde_json::Value> = ids
-        .iter()
-        .map(|id| {
-            let cfg = st.llm.provider(id);
-            serde_json::json!({
-                "id": id,
-                "base_url": cfg.map(|c| c.base_url.clone()).unwrap_or_default(),
-                "model": cfg.map(|c| c.default_model.clone()).unwrap_or_default(),
-                "has_key": cfg.map(|c| c.api_key.is_some()).unwrap_or(false),
-            })
-        })
-        .collect();
-    Json(serde_json::json!({ "providers": items }))
+    let cfg = bolloon_llm::config_store::load();
+    let active = {
+        let fs = st.forge.lock().await;
+        let ui = fs.settings.provider.trim().to_string();
+        if ui.is_empty() { cfg.active_provider.clone() } else { ui }
+    };
+    let items = crate::native::provider_rows(&cfg);
+    Json(serde_json::json!({
+        "providers": items,
+        "count": items.len(),
+        "active": active,
+    }))
 }
 
 /// 自动更新检查 (源不可达/无更新 → update_available=false, 前端不显示入口)
@@ -938,38 +987,7 @@ fn bs58_encode(bytes: &[u8]) -> String {
     bolloon_p2p::b58_encode(bytes)
 }
 
-/// 单轮模型调用：provider 取第一个已配置的（web 是薄层, 不嵌 loop）
-async fn real_chat(llm: &LlmRuntime, user_text: &str) -> Result<String, String> {
-    let ids = llm.provider_ids();
-    let provider_id = ids
-        .first()
-        .ok_or_else(|| "未配置模型 provider（bolloon model 设置）".to_string())?;
-    let provider = llm
-        .provider(provider_id)
-        .ok_or_else(|| format!("provider {provider_id} 缺失"))?;
 
-    let messages = vec![
-        ChatMessage {
-            role: "system".into(),
-            content: "你是 Bolloon 智能体，运行在去中心化智能体资源交流网络中。回答中文，简洁、有依据。".into(),
-            name: None,
-            tool_call_id: None,
-            images: vec![],
-            tool_calls: None,
-        },
-        ChatMessage {
-            role: "user".into(),
-            content: user_text.to_string(),
-            name: None,
-            tool_call_id: None,
-            images: vec![],
-            tool_calls: None,
-        },
-    ];
-    let params = GenerateParams::new(provider.default_model.clone(), messages);
-    let result = llm.generate(provider_id, params).await.map_err(|e| e.to_string())?;
-    Ok(result.content)
-}
 
 /// 内嵌单页 HTML（hushforge 布局: 284px 侧栏 + 主聊天 + room 面板）
 const INDEX_HTML: &str = include_str!("../assets/index.html");

@@ -55,8 +55,20 @@ enum Commands {
         #[arg(long, default_value = "default")]
         channel: String,
     },
-    /// 选模型供应商 (全屏光标选择器 + 掩码输入, 复用原 TS tui-select)
-    Model,
+    /// 选模型供应商 (全量 200+ 家: 内置 13 + 目录 + 自定义; 密钥掩码输入, 落盘 0600)
+    Model {
+        /// 直接选这家 (不给 = 进全屏选择器)
+        provider: Option<String>,
+        /// 只列可用的家 (有 key 或本机服务)
+        #[arg(long)]
+        usable: bool,
+        /// 关键词筛选 (id / 名称 / 协议)
+        #[arg(long)]
+        filter: Option<String>,
+        /// 直接指定模型 (跳过交互)
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// 自动更新 (有新版本才会提示)
     Update {
         #[command(subcommand)]
@@ -140,7 +152,9 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Memory { action }) => run_memory(action),
         Some(Commands::Task { action }) => run_task(action),
         Some(Commands::Chat { channel }) => run_chat(&channel).await,
-        Some(Commands::Model) => run_model(),
+        Some(Commands::Model { provider, usable, filter, model }) => {
+            run_model(provider, usable, filter, model)
+        }
         Some(Commands::Update { action }) => run_update(action),
         Some(Commands::Dream { topic, domain }) => run_dream(topic, &domain),
     }
@@ -241,8 +255,7 @@ fn run_status() -> anyhow::Result<()> {
 
 /// 交互式会话 —— 消息框走 `tui::render_user_message` / `render_agent_message`
 async fn run_chat(channel: &str) -> anyhow::Result<()> {
-    let llm = Arc::new(build_llm_from_env());
-    let model = std::env::var("BOLLOON_MODEL").unwrap_or_else(|_| "deepseek-chat".to_string());
+    let (llm, model) = build_chat_llm();
 
     tui::print_banner(Some(env!("CARGO_PKG_VERSION")));
 
@@ -604,77 +617,210 @@ fn emit(screen: &mut tui::Screen, full: bool, lines: &[String]) {
     }
 }
 
-/// 选模型供应商 —— 全屏光标选择器 (`tui::tui_select`) + 密钥走**掩码输入** (明文不上屏)
-fn run_model() -> anyhow::Result<()> {
-    let llm = build_llm_from_env();
-    let mut choices: Vec<tui::TuiChoice> = llm
-        .provider_ids()
-        .iter()
-        .map(|id| tui::TuiChoice {
-            value: id.clone(),
-            label: format!("● {id} (已配置)"),
-            hint: llm.provider(id).map(|p| p.base_url.clone()),
-            group: Some("已配置".into()),
-            cancel: false,
-        })
-        .collect();
-    for (id, url) in [
-        ("openai", "https://api.openai.com/v1"),
-        ("deepseek", "https://api.deepseek.com/v1"),
-        ("minimaxi", "https://api.minimaxi.com/v1"),
-        ("ollama", "http://127.0.0.1:11434/v1"),
-        ("custom", "(自定义 base_url)"),
-    ] {
+/// 选模型供应商 —— 全量 200+ 家 (内置 13 + 目录 223 + 自定义)
+///
+/// 交互: 全屏光标选择器 (`tui::tui_select`, 支持输入筛选) + 模型行输入 + 密钥**掩码输入**;
+/// 落盘: `~/.bolloon/bolloon-config.json` (0600, 与 TS/web 同一份)。
+fn run_model(
+    provider: Option<String>,
+    usable_only: bool,
+    filter: Option<String>,
+    model_arg: Option<String>,
+) -> anyhow::Result<()> {
+    let cfg = bolloon_llm::config_store::load();
+
+    // 目录 → 选择项 (已配置的排在"已配置"组, 其余按来源分组)
+    let mut choices: Vec<tui::TuiChoice> = vec![];
+    let kw = filter.unwrap_or_default().trim().to_lowercase();
+    for e in bolloon_llm::list_with_catalog() {
+        let has_key = !e.requires_api_key
+            || bolloon_llm::config_store::key_of(&cfg, &e).is_some();
+        let is_active = cfg.active_provider.trim() == e.id;
+        if usable_only && !has_key {
+            continue;
+        }
+        if !kw.is_empty() {
+            let hay = format!(
+                "{} {} {} {}",
+                e.id,
+                e.display_name,
+                e.protocol.as_str(),
+                e.origin.as_str()
+            )
+            .to_lowercase();
+            if !hay.contains(&kw) {
+                continue;
+            }
+        }
+        let group = if is_active {
+            "当前".to_string()
+        } else if has_key {
+            "已配置".to_string()
+        } else if e.origin == bolloon_llm::Origin::Builtin {
+            "内置".to_string()
+        } else {
+            "目录".to_string()
+        };
+        let mark = if is_active { "▶" } else if has_key { "●" } else { "○" };
+        let label = format!(
+            "{mark} {} · {}{}",
+            e.display_name,
+            e.id,
+            if has_key { "" } else { " (无 key)" }
+        );
+        let hint = format!(
+            "{} · {} · {} 模型 · {}",
+            e.protocol.as_str(),
+            e.origin.as_str(),
+            e.models.len(),
+            if e.default_base_url.is_empty() {
+                "目录未给基址".to_string()
+            } else {
+                e.default_base_url.clone()
+            }
+        );
         choices.push(tui::TuiChoice {
-            value: id.to_string(),
-            label: format!("○ {id}"),
-            hint: Some(url.to_string()),
-            group: Some("内置".into()),
+            value: e.id,
+            label,
+            hint: Some(hint),
+            group: Some(group),
             cancel: false,
         });
     }
 
-    let opts = tui::select::SelectOptions {
-        unit: "家".to_string(),
-        cancel_label: "Cancel (保持当前配置)".into(),
-        ..Default::default()
+    let total = bolloon_llm::list_with_catalog().len();
+    println!("共 {total} 家可选 (内置 13 + 目录 + 自定义), 当前筛选出 {} 家", choices.len());
+
+    // 非终端 / 显式给了 provider ⇒ 不弹全屏菜单
+    let interactive = provider.is_none();
+    let picked: Option<String> = if let Some(p) = provider.clone() {
+        Some(p)
+    } else if !tui::select::tui_capable() {
+        for c in choices.iter().take(40) {
+            println!(
+                "  [{}] {} {}",
+                c.group.clone().unwrap_or_default(),
+                c.label,
+                c.hint.clone().unwrap_or_default()
+            );
+        }
+        println!("用法: bolloon model <provider> [--model <模型>]   (密钥: 交互式掩码输入或环境变量)");
+        return Ok(());
+    } else {
+        let opts = tui::select::SelectOptions {
+            unit: "家".to_string(),
+            cancel_label: "Cancel (保持当前配置)".into(),
+            ..Default::default()
+        };
+        tui::tui_select("选一个模型供应商", &choices, &opts)
     };
 
-    if !tui::select::tui_capable() {
-        // 非终端 ⇒ 不进全屏菜单 (与 TS 同: 本模块不做降级决定, 由调用方分流)
-        for (i, c) in choices.iter().enumerate() {
-            println!("{:>3}. {} {}", i + 1, c.label, c.hint.clone().unwrap_or_default());
-        }
-        println!("用法: BOLLOON_BASE_URL / BOLLOON_API_KEY / BOLLOON_MODEL 三个环境变量生效");
+    let Some(id) = picked else {
+        println!("已取消 (配置未变)");
         return Ok(());
-    }
+    };
+    let Some(entry) = bolloon_llm::provider_registry::get(&id) else {
+        anyhow::bail!("未知 provider: {id} (bolloon model 列出全部)");
+    };
 
-    match tui::tui_select("选一个模型供应商", &choices, &opts) {
-        None => println!("已取消 (配置未变)"),
-        Some(id) => {
-            println!("已选: {id}");
-            let base = tui::ask_line("base_url › ", &[], false);
-            if base.cancelled || base.eof || base.value.trim().is_empty() {
-                println!(
-                    "未填 base_url — 沿用 {}",
-                    llm.provider("env").map(|p| p.base_url.clone()).unwrap_or_default()
-                );
-                return Ok(());
+    // 模型: 命令行给的 → 交互输入 (提示默认与可选数) → 内置默认
+    let model = if let Some(m) = model_arg {
+        m
+    } else if tui::select::tui_capable() && interactive {
+        let hint = if entry.default_model.is_empty() {
+            if entry.models.len() == 1 {
+                entry.models[0].id.clone()
+            } else {
+                String::new()
             }
-            let key = tui::ask_masked("api_key (掩码, 不上屏) › ");
-            if key.cancelled || key.eof {
+        } else {
+            entry.default_model.clone()
+        };
+        println!(
+            "{} 有 {} 个模型可选{}",
+            entry.display_name,
+            entry.models.len(),
+            if entry.models.is_empty() {
+                String::new()
+            } else {
+                format!("（前几个: {}）", entry.models.iter().take(5).map(|m| m.id.clone()).collect::<Vec<_>>().join(", "))
+            }
+        );
+        let line = tui::ask_line(&format!("model (回车 = {}) › ", if hint.is_empty() { "手填" } else { &hint }), &[], false);
+        if line.cancelled || line.eof {
+            println!("已取消 (配置未变)");
+            return Ok(());
+        }
+        if line.value.trim().is_empty() {
+            hint
+        } else {
+            line.value.trim().to_string()
+        }
+    } else {
+        entry.default_model.clone()
+    };
+
+    // 密钥: 已有则留空不改; 交互式走掩码输入, 非交互式提示环境变量
+    let mut api_key: Option<String> = None;
+    let already = bolloon_llm::config_store::key_of(&cfg, &entry);
+    if entry.requires_api_key && tui::select::tui_capable() {
+        let prompt = match &already {
+            Some((_, src)) => format!("api_key (已存于 {}, 留空不改) › ", src.as_str()),
+            None => "api_key (掩码, 不上屏) › ".to_string(),
+        };
+        if already.is_some() {
+            let line = tui::ask_masked(&prompt);
+            if !line.cancelled && !line.eof && !line.value.trim().is_empty() {
+                api_key = Some(line.value.trim().to_string());
+            }
+        } else {
+            let line = tui::ask_masked(&prompt);
+            if line.cancelled || line.eof {
                 println!("已取消 (未读取密钥)");
                 return Ok(());
             }
-            // **诚实边界**: Rust 侧还没有 config store ⇒ 本命令**不落盘**, 只给出 env 用法,
-            //   且**绝不回显密钥** (只报长度)。
-            println!("\n生效方式 (当前进程):");
-            println!("  export BOLLOON_BASE_URL={}", base.value.trim());
-            println!(
-                "  export BOLLOON_API_KEY=<你的密钥: 已读入 {} 个字符, 不回显>",
-                key.value.chars().count()
-            );
-            println!("\n注: Rust 侧暂无 config store, 本命令不写盘; 落盘待 setup 那条线。");
+            if !line.value.trim().is_empty() {
+                api_key = Some(line.value.trim().to_string());
+            }
+        }
+    }
+
+    // base_url: 目录没给基址的家必须自己填
+    let mut base_url: Option<String> = None;
+    if entry.default_base_url.is_empty() {
+        if tui::select::tui_capable() {
+            let line = tui::ask_line("这家目录里没给 API 基址 → base_url › ", &[], false);
+            if line.cancelled || line.eof || line.value.trim().is_empty() {
+                println!("未填 base_url — 已取消");
+                return Ok(());
+            }
+            base_url = Some(line.value.trim().to_string());
+        } else {
+            anyhow::bail!("{id} 目录里没给基址 — 用 /api/models/select 或 web 界面填 base_url");
+        }
+    }
+
+    let mut cfg = bolloon_llm::config_store::load();
+    bolloon_llm::config_store::apply_provider(
+        &mut cfg,
+        &id,
+        api_key.as_deref(),
+        base_url.as_deref(),
+        if model.trim().is_empty() { None } else { Some(model.trim()) },
+    );
+    bolloon_llm::config_store::save(&cfg)?;
+
+    // 回显: 只报 authRef 与解析结果, 绝不回显密钥
+    match bolloon_llm::config_store::resolve(&cfg, &id) {
+        Ok(r) => {
+            println!("\n✓ 已保存 ({})", bolloon_llm::config_store::config_path().display());
+            println!("  provider: {}  ({})", r.id, r.protocol.as_str());
+            println!("  base_url: {}", r.base_url);
+            println!("  model:    {}", r.model);
+            println!("  鉴权:     {}", r.auth_ref());
+        }
+        Err(e) => {
+            println!("\n⚠ 配置已存, 但还不能调用: {e}");
         }
     }
     Ok(())
@@ -972,6 +1118,55 @@ fn load_identity_or_create() -> anyhow::Result<bolloon_p2p::KeyPair> {
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
     Ok(kp)
+}
+
+/// chat 的模型通路 —— **与 web / `bolloon model` 同一份配置**
+///
+/// 顺序: 配置文件里的 activeProvider（`bolloon model` 选的）→ 环境变量三件套 → 本机可用家。
+/// 老代码固定用 provider 槽位 `"env"`；这里把选中的那家**装进 `"env"` 槽位**（协议一起带过去），
+/// 所以 200+ 家里任何一家（anthropic/gemini/ollama/openai 兼容）都能直接对话。
+fn build_chat_llm() -> (Arc<bolloon_llm::LlmRuntime>, String) {
+    let cfg = bolloon_llm::config_store::load();
+    let mut rt = bolloon_llm::LlmRuntime::from_config(&cfg, 2);
+    let mut model = std::env::var("BOLLOON_MODEL").unwrap_or_else(|_| "deepseek-chat".to_string());
+
+    let picked = if !cfg.active_provider.trim().is_empty() {
+        bolloon_llm::config_store::resolve(&cfg, cfg.active_provider.trim()).ok()
+    } else {
+        None
+    };
+
+    match picked {
+        Some(r) => {
+            if !r.model.is_empty() {
+                model = r.model.clone();
+            }
+            rt.add_provider_with(
+                bolloon_llm::ProviderConfig {
+                    id: "env".into(),
+                    base_url: r.base_url.clone(),
+                    api_key: r.api_key.clone(),
+                    default_model: r.model.clone(),
+                },
+                r.protocol,
+            );
+        }
+        None => {
+            // 配置里没有可用家 → 环境变量兜底
+            let key = std::env::var("BOLLOON_API_KEY").ok().filter(|k| !k.trim().is_empty());
+            if let Some(key) = key {
+                let base_url = std::env::var("BOLLOON_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.minimaxi.com/v1".to_string());
+                rt.add_provider(bolloon_llm::ProviderConfig {
+                    id: "env".into(),
+                    base_url,
+                    api_key: Some(key),
+                    default_model: model.clone(),
+                });
+            }
+        }
+    }
+    (Arc::new(rt), model)
 }
 
 /// 从环境变量构建 LLM runtime（不落盘密钥）

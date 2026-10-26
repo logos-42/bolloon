@@ -381,12 +381,16 @@
 
 <dialog id="modelDlg">
   <h3 style="margin:0 0 6px">选择模型</h3>
+  <div class="hint" id="providerCountHint"></div>
+  <label>筛选 provider（200+ 家，可搜索 id / 名称 / 协议）</label>
+  <input id="providerFilter" placeholder="例如 deepseek / gemini / openai-compatible" />
   <label>Provider</label><select id="providerSelect"></select>
-  <label>Model</label><input id="modelInput" placeholder="留空 = provider 默认" />
+  <label>Model</label><input id="modelInput" list="modelList" placeholder="留空 = provider 默认" />
+  <datalist id="modelList"></datalist>
   <label>API Key（可选；保存在本机 0600，不明文返回）</label><input id="apiKeyInput" type="password" placeholder="已保存则留空" />
   <label>Base URL（可选；custom / 代理）</label><input id="baseUrlInput" placeholder="留空 = provider 默认" />
   <div class="hint" id="modelHint"></div>
-  <div class="row"><button onclick="document.getElementById('modelDlg').close()">取消</button><button class="primary" id="modelSave">保存</button></div>
+  <div class="row"><button id="modelTest">测试连接</button><button onclick="document.getElementById('modelDlg').close()">取消</button><button class="primary" id="modelSave">保存</button></div>
 </dialog>
 
 <dialog id="toolsDlg">
@@ -749,19 +753,56 @@ function updateStreamingBubble(index,text){
   if(nearBottom(chat))chat.scrollTop=chat.scrollHeight;
 }
 
+function providerGroupOf(p){return p.origin==='builtin'?'内置':(p.origin==='custom'?'自定义':'目录');}
+function providerOptionLabel(p){
+  const tags=[p.protocol||'',(p.models_count?p.models_count+' 模型':'')].filter(Boolean).join(' / ');
+  return `${p.display||p.name} · ${p.name}${tags?' ('+tags+')':''}${p.has_key?'':' · 无 key'}`;
+}
+function fillProviderSelect(){
+  const sel=$('providerSelect');
+  const current=(sel.dataset.userPicked?sel.value:(state.settings.provider||''))||'';
+  const kw=($('providerFilter').value||'').trim().toLowerCase();
+  const all=models.providers||[];
+  const list=all.filter(p=>!kw||[p.name,p.display,p.protocol,p.origin].join(' ').toLowerCase().includes(kw));
+  const groups={'内置':[],'自定义':[],'目录':[]};
+  list.forEach(p=>groups[providerGroupOf(p)].push(p));
+  let html='';
+  for(const [g,arr] of Object.entries(groups)){
+    if(!arr.length)continue;
+    html+=`<optgroup label="${g}（${arr.length}）">`+
+      arr.map(p=>`<option value="${p.name}" ${p.name===current?'selected':''}>${escapeHTML(providerOptionLabel(p))}</option>`).join('')+
+      `</optgroup>`;
+  }
+  if(!list.some(p=>p.name===current)) html=`<option value="${escapeHTML(current)}" selected>${escapeHTML(current||'默认')}</option>`+html;
+  sel.innerHTML=html;
+  $('providerCountHint').textContent=`共 ${models.count||all.length} 家 · 当前显示 ${list.length} 家${kw?'（筛选：'+kw+'）':''}`;
+}
+async function loadModelOptions(){
+  const p=$('providerSelect').value;
+  if(!p)return;
+  try{
+    const j=await api('/api/models/options?provider='+encodeURIComponent(p));
+    const list=(j.models||[]).slice(0,800);
+    $('modelList').innerHTML=list.map(m=>`<option value="${escapeHTML(m.id)}"></option>`).join('');
+    const cur=models.providers.find(x=>x.name===p)||{};
+    $('modelHint').textContent=[
+      '协议：'+(j.protocol||cur.protocol||'-'),
+      j.default?('默认模型：'+j.default):'',
+      '可选模型：'+(j.count||0)+' 个（可下拉选择或手输）',
+      cur.has_key?'已检测到 key':'未检测到 key（发不出去）',
+      j.note||''
+    ].filter(Boolean).join(' · ');
+  }catch(e){$('modelHint').textContent='读取模型清单失败：'+e.message;}
+}
 function renderModel(){
   $('modelLabel').textContent=(state.settings.provider||'默认')+' / '+(state.settings.model||'default');
   $('settingsModelLabel').textContent=(state.settings.provider||'默认')+' / '+(state.settings.model||'default');
   const sel=$('providerSelect');
-  const current=state.settings.provider||'';
-  const opts=models.providers.map(p=>`<option value="${p.name}" ${p.name===current?'selected':''}>${escapeHTML(p.display||p.name)}${p.has_key?'':'（无 key）'}</option>`);
-  if(!models.providers.some(p=>p.name===current)){
-    opts.unshift(`<option value="${current}" selected>${escapeHTML(current||'默认')}</option>`);
-  }
-  sel.innerHTML=opts.join('');
+  delete sel.dataset.userPicked;
+  fillProviderSelect();
   $('modelInput').value=state.settings.model||'';
   const cur=models.providers.find(p=>p.name===state.settings.provider);
-  $('modelHint').textContent=cur?('默认模型：'+(cur.default||'未提供')+(cur.has_key?' · 已检测到 key':' · 未检测到 key（将发不出去）')):'';
+  $('modelHint').textContent=cur?('协议：'+(cur.protocol||'-')+(cur.has_key?' · 已检测到 key':' · 未检测到 key（发不出去）')):'';
   const secretSet=(models.secret_set&&models.secret_set[state.settings.provider])||false;
   $('apiKeyInput').value='';
   $('apiKeyInput').placeholder=secretSet?'已保存密钥（留空不修改）':'粘贴 API Key';
@@ -996,7 +1037,7 @@ function openSettings(){
 }
 $('account').onclick=openSettings;
 $('settingsBtn').onclick=(e)=>{e.stopPropagation();openSettings();};
-$('settingsModelBtn').onclick=()=>{document.getElementById('profileDlg').close();document.getElementById('modelDlg').showModal();};
+$('settingsModelBtn').onclick=()=>{document.getElementById('profileDlg').close();document.getElementById('modelDlg').showModal();loadModelOptions();};
 $('settingsToolsBtn').onclick=()=>{document.getElementById('profileDlg').close();document.getElementById('toolsDlg').showModal();};
 $('settingsUpdateBtn').onclick=async()=>{
   const b=$('settingsUpdateBtn');
@@ -1047,7 +1088,22 @@ function renderImgPreview(){
   $('imgPreview').innerHTML=pendingImages.map((im,i)=>`<div style="position:relative"><img src="${im}"><button style="position:absolute;top:-8px;right:-8px;border-radius:50%;padding:0 6px" onclick="pendingImages.splice(${i},1);renderImgPreview()">×</button></div>`).join('');
 }
 
-$('modelBtn').onclick=()=>document.getElementById('modelDlg').showModal();
+$('modelBtn').onclick=()=>{document.getElementById('modelDlg').showModal();loadModelOptions();};
+$('providerFilter').oninput=()=>fillProviderSelect();
+$('providerSelect').onchange=()=>{$('providerSelect').dataset.userPicked='1';loadModelOptions();};
+$('modelTest').onclick=async()=>{
+  const b=$('modelTest');const old=b.textContent;
+  b.disabled=true;b.textContent='测试中…';
+  try{
+    const j=await api('/api/models/test',{method:'POST',body:JSON.stringify({
+      provider:$('providerSelect').value,model:$('modelInput').value,
+      api_key:$('apiKeyInput').value,base_url:$('baseUrlInput').value})});
+    $('modelHint').textContent=j.ok
+      ? `✓ 连通（${j.protocol} · ${j.model} · ${j.ms}ms）示例：${j.sample||'（空）'}`
+      : `✗ ${j.error||'连接失败'}`;
+  }catch(e){$('modelHint').textContent='✗ '+e.message;}
+  finally{b.disabled=false;b.textContent=old;}
+};
 $('modelSave').onclick=async()=>{
   try{
     state.settings=await api('/api/settings',{method:'POST',body:JSON.stringify({
