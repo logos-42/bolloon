@@ -101,6 +101,21 @@ impl BolloonHome {
         Ok(self.agent_dir(agent_id)?.join("sessions"))
     }
 
+    /// persona 目录 (~/.bolloon/rust/persona)
+    pub fn persona_dir(&self) -> PathBuf {
+        self.root.join("persona")
+    }
+
+    /// 某 agent 专属 persona 文件 (~/.bolloon/rust/persona/<agentId>/persona.json)
+    pub fn agent_persona_path(&self, agent_id: &str) -> Result<PathBuf, HomeError> {
+        Ok(self.persona_dir().join(agent_id).join("persona.json"))
+    }
+
+    /// 全局 persona 文件 (~/.bolloon/rust/persona/persona.json)
+    pub fn global_persona_path(&self) -> PathBuf {
+        self.persona_dir().join("persona.json")
+    }
+
     /// 建 agent 目录族 (幂等)
     pub fn ensure_agent(&self, agent_id: &str) -> Result<PathBuf, HomeError> {
         let dir = self.agent_dir(agent_id)?;
@@ -132,6 +147,22 @@ fn dirs_home() -> PathBuf {
     std::env::var("HOME")
         .map(|h| PathBuf::from(h))
         .unwrap_or_else(|_| PathBuf::from("/tmp"))
+}
+
+/// persona 来源路径 (**三级回落**, 对齐 TS `pi-sdk-session-manager.ts`):
+/// 1. `persona/<agentId>/persona.json` 存在 → 用它 (按智能体各自一份)
+/// 2. 否则全局 `persona/persona.json` 存在 → 用它 (缺省回落)
+/// 3. 都没有 → None (空快照, dynamic.snapshot 层不拼 ## Persona 段)
+pub fn persona_source_path(home: &BolloonHome, agent_id: &str) -> Option<PathBuf> {
+    let agent = home.agent_persona_path(agent_id).ok()?;
+    if agent.exists() {
+        return Some(agent);
+    }
+    let global = home.global_persona_path();
+    if global.exists() {
+        return Some(global);
+    }
+    None
 }
 
 /// 冻结的文档快照 (装载时拍; 运行期间即真源)
@@ -180,6 +211,16 @@ impl DocSnapshot {
         let now = DocSnapshot::freeze(&self.kind, path);
         now.content_hash != self.content_hash
     }
+
+    /// 空快照 (文档本就不存在; 内容与哈希都空, 指纹 = 空串)
+    pub fn empty(kind: &str) -> Self {
+        Self {
+            kind: kind.into(),
+            content: String::new(),
+            content_hash: String::new(),
+            stat: DocStat { mtime_ms: 0, size: 0 },
+        }
+    }
 }
 
 /// agent 文档三件套快照 (soul / agent / persona / memory)
@@ -207,7 +248,8 @@ impl AgentDocs {
 
     /// 按 channel 区分**全局(home) / 项目内(project_root)** 身份文件来源:
     /// `local` → 项目内优先(贴当前工程), 回退全局; 其它 → 全局优先, 项目内补充。
-    /// persona 始终取全局 (`~/.bolloon/persona/persona.json`); id_class = channel。
+    /// persona 按 agentId 三级回落 (`persona/<agentId>/persona.json` → 全局 `persona/persona.json`);
+    /// id_class = channel。
     pub fn freeze_with(
         home: &BolloonHome,
         agent_id: &str,
@@ -237,10 +279,10 @@ impl AgentDocs {
         if agent.content.is_empty() {
             agent.content = default_agent_doc(agent_id);
         }
-        let persona = DocSnapshot::freeze(
-            "persona",
-            &home.root().join(".bolloon").join("persona").join("persona.json"),
-        );
+        // persona 按 agentId 三级回落 (见 persona_source_path); 无源 = 空快照
+        let persona_path = persona_source_path(home, agent_id)
+            .unwrap_or_else(|| home.global_persona_path());
+        let persona = DocSnapshot::freeze("persona", &persona_path);
         let memory = DocSnapshot::freeze("memory", &home.agent_memory_path(agent_id)?);
         Ok(Self {
             agent_id: agent_id.into(),
@@ -256,9 +298,10 @@ impl AgentDocs {
     pub fn any_disk_drift(&self, home: &BolloonHome) -> Result<bool, HomeError> {
         Ok(self.soul.disk_drifted(&home.agent_soul_path(&self.agent_id)?)
             || self.agent.disk_drifted(&home.agent_doc_path(&self.agent_id)?)
-            || self
-                .persona
-                .disk_drifted(&home.root().join(".bolloon").join("persona").join("persona.json"))
+            || self.persona.disk_drifted(
+                &persona_source_path(home, &self.agent_id)
+                    .unwrap_or_else(|| home.global_persona_path()),
+            )
             || self.memory.disk_drifted(&home.agent_memory_path(&self.agent_id)?))
     }
 }
@@ -394,5 +437,28 @@ mod tests {
         let m2 = h.agent_memory_path("a2").unwrap();
         assert_ne!(m1, m2, "agent 之间 memory 互不串");
         assert!(m1.parent().unwrap() != m2.parent().unwrap());
+    }
+
+    #[test]
+    fn persona_falls_back_agent_then_global() {
+        // persona 按 agentId 三级回落, 对齐 TS pi-sdk-session-manager
+        let h = tmp_home("persona");
+        h.ensure_agent("a1").unwrap();
+        // ① 无 persona 文件 → 空快照 (dynamic.snapshot 不拼 ## Persona 段)
+        let docs = AgentDocs::freeze(&h, "a1").unwrap();
+        assert!(docs.persona.content.is_empty(), "无 persona = 空快照");
+        // ② 全局 persona 存在 → 回落全局
+        std::fs::create_dir_all(h.persona_dir()).unwrap();
+        std::fs::write(h.global_persona_path(), "{\"name\":\"全局\"}").unwrap();
+        let docs2 = AgentDocs::freeze(&h, "a1").unwrap();
+        assert!(docs2.persona.content.contains("全局"), "回落全局 persona");
+        // ③ agent 专属 persona 优先于全局
+        std::fs::create_dir_all(h.persona_dir().join("a1")).unwrap();
+        std::fs::write(h.agent_persona_path("a1").unwrap(), "{\"name\":\"专属\"}").unwrap();
+        let docs3 = AgentDocs::freeze(&h, "a1").unwrap();
+        assert!(docs3.persona.content.contains("专属"), "agent 专属 persona 优先");
+        assert!(!docs3.persona.content.contains("全局"));
+        // drift 检测跟随回落路径
+        assert!(!docs3.any_disk_drift(&h).unwrap());
     }
 }

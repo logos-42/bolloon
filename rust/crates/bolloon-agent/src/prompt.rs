@@ -393,6 +393,7 @@ pub fn build_system_prompt(
     judgment_injection: Option<&InjectionResult>,
     history_chars: usize,
     dynamic: &str,
+    memory_recall: Option<&str>,
     ctx: &AssembleContext,
 ) -> SystemPromptText {
     let mut layers = builtin_layers();
@@ -427,6 +428,19 @@ pub fn build_system_prompt(
             max_chars: 500,
             content: tp.into(),
         });
+    }
+    // 记忆召回 (top-N, **不进签名载荷**, 纯本地注入; 空 = 不拼该层)
+    if let Some(mem) = memory_recall {
+        if !mem.trim().is_empty() {
+            layers.push(PromptLayer {
+                id: "dynamic.memory".into(),
+                version: "1.0.0".into(),
+                priority: 205,
+                applies_to: vec![AppliesTo::All],
+                max_chars: 900,
+                content: format!("# Memory\n{mem}"),
+            });
+        }
     }
     if let Some(inj) = judgment_injection {
         if inj.did_inject {
@@ -636,6 +650,7 @@ mod tests {
             Some(&inj),
             2300,
             "第 3 轮",
+            None,
             &AssembleContext { channel: "local", role: None, tool: None },
         );
         // 全部层都在
@@ -664,6 +679,7 @@ mod tests {
             None,
             0,
             "",
+            None,
             &AssembleContext { channel: "group", role: None, tool: None },
         );
         assert!(p.text.contains("群聊合作语气"));

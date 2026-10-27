@@ -769,11 +769,16 @@ def main():
                     "没找到 ESC[?25h")
             scr = Screen(COLS, ROWS)
             scr.feed(all_bytes)
+            # 收尾是**退出时**打印的, 很可能已经滚出可见区 ⇒ 判据看全量字节, 不看屏幕快照
+            raw = all_bytes.decode("utf8", "ignore")
             R.check("T8.3a 退出摘要有标题/时长/恢复命令/落盘路径",
-                    all(k in scr.text() for k in ("会话结束", "会话    ", "时长    ", "--resume", "落盘    ")),
-                    "缺字段; 尾行=" + " | ".join(scr.text().splitlines()[-6:]))
-            R.check("T8.3 屏上留下会话收尾行", "会话结束" in scr.text(),
-                    "已退出会话" in scr.text(), scr.text().splitlines()[-3:])
+                    all(k in raw for k in ("会话结束", "会话    ", "时长    ", "--resume", "落盘    ")),
+                    "缺字段; 尾部=" + " | ".join(raw.splitlines()[-6:]))
+            R.check("T8.3 退出留下会话收尾行", "会话结束" in raw,
+                    "尾部=" + " | ".join(raw.splitlines()[-3:]))
+            R.check("T8.4 退出摘要带经验闭环 (记忆/判断力/技能)",
+                    "经验    " in raw and ("做梦" in raw),
+                    "尾部=" + " | ".join(raw.splitlines()[-4:]))
             t = None
 
 

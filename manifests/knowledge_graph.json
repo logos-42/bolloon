@@ -186,7 +186,7 @@
       "id": "current-status.md",
       "type": "chapter",
       "label": "Bolloon 当前状态",
-      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize, organize-result-box, unreported-escape, loop-completeness-check, write-file-default-permit, cli-kubo-autostart, terminal-tool, denylist-only-guard, js-yaml-esm-fix, dep-upgrade-2026-09-08, cli-fast-start, zero-install-warnings, agent-gateway-bootstrap, mobile-gateway, qr-scan-join, net-command, shared-context, ios-appintents-deeplink, circuit-relay-v2, p2p-circuit-inbound, next-tools-2026-09-13, clarify-channel, browser-cdp, computer-use, patch-tool, setup-wizard, skill-share-ipfs, x402-paid-info, paid-info-verify, x402-direct-payment, x402-onchain-verify, cron-tick-lock, cron-dnd-quiet, mobile-tap-network, gateway-join-closed-loop, gateway-join-tool, deepseek-reasoning-content, address-broadcast-tofu, npm-0.4.23, npm-0.4.24, npm-0.5.0, mobile-self-join, delegate-real-execution, ios-sim-join-e2e, pkg-rename-hibs-bolloon, compliance-privacy-gate, adaptive-icon, store-flavor, permissions-doc, durable-run, run-store, run-state-machine, checkpoint, recovery-protocol, phase-0, acceptance-matrix, api-runs, cli-runs, durable-run-m1-hard-constraint, persistence-strict, run-lock, corrupt-fallback, degradations, update-protocol, version-info, install-identity, update-manager, update-state, update-lock, doctor, publish-gate, bare-word-commands, runtime-bootstrap, install-protocol, path-config, package-manager, doctor, open-tasks-public-projection, public-open-tasks-2026-09-23, task-open-announcement-live-2026-09-24, skill-doc-cli-parity-2026-09-24, task-announce-board-docs, task-group-channel-docs, x402-order-identity, eip-3009-bol1-nonce, x402-buyer-pay-cli, v0.5.4-tui-session-wallet, bolloon-native-macro-kernel-2026-10-02, web-render-silent-noop-2026-10-02, mobile-web-bundle-selfcontained-2026-10-02, phone-pair-reverse-2026-10-17]",
+      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize, organize-result-box, unreported-escape, loop-completeness-check, write-file-default-permit, cli-kubo-autostart, terminal-tool, denylist-only-guard, js-yaml-esm-fix, dep-upgrade-2026-09-08, cli-fast-start, zero-install-warnings, agent-gateway-bootstrap, mobile-gateway, qr-scan-join, net-command, shared-context, ios-appintents-deeplink, circuit-relay-v2, p2p-circuit-inbound, next-tools-2026-09-13, clarify-channel, browser-cdp, computer-use, patch-tool, setup-wizard, skill-share-ipfs, x402-paid-info, paid-info-verify, x402-direct-payment, x402-onchain-verify, cron-tick-lock, cron-dnd-quiet, mobile-tap-network, gateway-join-closed-loop, gateway-join-tool, deepseek-reasoning-content, address-broadcast-tofu, npm-0.4.23, npm-0.4.24, npm-0.5.0, mobile-self-join, delegate-real-execution, ios-sim-join-e2e, pkg-rename-hibs-bolloon, compliance-privacy-gate, adaptive-icon, store-flavor, permissions-doc, durable-run, run-store, run-state-machine, checkpoint, recovery-protocol, phase-0, acceptance-matrix, api-runs, cli-runs, durable-run-m1-hard-constraint, persistence-strict, run-lock, corrupt-fallback, degradations, update-protocol, version-info, install-identity, update-manager, update-state, update-lock, doctor, publish-gate, bare-word-commands, runtime-bootstrap, install-protocol, path-config, package-manager, doctor, open-tasks-public-projection, public-open-tasks-2026-09-23, task-open-announcement-live-2026-09-24, skill-doc-cli-parity-2026-09-24, task-announce-board-docs, task-group-channel-docs, x402-order-identity, eip-3009-bol1-nonce, x402-buyer-pay-cli, v0.5.4-tui-session-wallet, bolloon-native-macro-kernel-2026-10-02, web-render-silent-noop-2026-10-02, mobile-web-bundle-selfcontained-2026-10-02, phone-pair-reverse-2026-10-17, avatar-hashavatar-2026-10-27, phone-did-login-2026-10-27, web-account-menu-2026-10-27]",
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/current-status.md"
@@ -199,6 +199,24 @@
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/decentralized-memory-design.md"
+    },
+    {
+      "id": "deliberation-design.md",
+      "type": "chapter",
+      "label": "群内商议机制设计（推选 / 发言 / 并发）",
+      "tags": "[deliberation, group-chat, election, floor, concurrency, advisor, external-agent, hushfusion]",
+      "stage": "draft",
+      "audience": "self",
+      "source_file": "docs/wiki/deliberation-design.md"
+    },
+    {
+      "id": "desktop-app-plan.md",
+      "type": "chapter",
+      "label": "桌面版 App 规划 (Win/mac/Linux)",
+      "tags": "[desktop, electron, packaging, release]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/desktop-app-plan.md"
     },
     {
       "id": "diap-address-binding.md",
@@ -361,6 +379,15 @@
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/kernel-design-principles.md"
+    },
+    {
+      "id": "kernel-dual-core.md",
+      "type": "chapter",
+      "label": "双核 Kernel — 对等互维互保设计（草稿）",
+      "tags": "[kernel, dual-core, ha, heartbeat, fencing, staggered-phase, reliability]",
+      "stage": "draft",
+      "audience": "self",
+      "source_file": "docs/wiki/kernel-dual-core.md"
     },
     {
       "id": "kv-prefix-cache.md",
@@ -570,6 +597,24 @@
       "source_file": "docs/wiki/runtime-profile.md"
     },
     {
+      "id": "rust-cli-render-ownership.md",
+      "type": "protocol",
+      "label": "Rust CLI 终端渲染所有权: 底部固定 composer (单一渲染者 + 日志隔离 + 真 pty 门)",
+      "tags": "[rust, cli, tui, ansi, composer, render-ownership, logbus, tracing, pty-gate, vt-replay, ctrl-c, status-bar, session-title]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/rust-cli-render-ownership.md"
+    },
+    {
+      "id": "rust-rewrite.md",
+      "type": "chapter",
+      "label": "Bolloon Rust 原生版 (rust-rewrite-1.99 分支) 重写台账",
+      "tags": "[rust-rewrite, kernel, harness, p2p, task-board, memory, session-store, v0.6.10]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/rust-rewrite.md"
+    },
+    {
       "id": "setup-protocol.md",
       "type": "chapter",
       "label": "Bolloon 初始化协议 (Setup Protocol)",
@@ -709,6 +754,16 @@
     {
       "from": "current-status.md",
       "to": "log.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "rust-rewrite.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "rust-cli-render-ownership.md",
       "type": "references"
     },
     {
@@ -1083,6 +1138,11 @@
     },
     {
       "from": "index.md",
+      "to": "desktop-app-plan.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
       "to": "task-protocol.md",
       "type": "references"
     },
@@ -1109,6 +1169,11 @@
     {
       "from": "index.md",
       "to": "pulse-ledger-design.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "deliberation-design.md",
       "type": "references"
     },
     {
@@ -1238,6 +1303,21 @@
     },
     {
       "from": "index.md",
+      "to": "rust-rewrite.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "kernel-dual-core.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "rust-cli-render-ownership.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
       "to": "decentralized-memory-design.md",
       "type": "references"
     },
@@ -1264,6 +1344,11 @@
     {
       "from": "kernel-design-principles.md",
       "to": "bolloon-native-macro-kernel.md",
+      "type": "references"
+    },
+    {
+      "from": "kernel-design-principles.md",
+      "to": "kernel-dual-core.md",
       "type": "references"
     },
     {
@@ -1427,6 +1512,26 @@
       "type": "references"
     },
     {
+      "from": "log.md",
+      "to": "rust-rewrite.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "deliberation-design.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "kernel-dual-core.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "kernel-design-principles.md",
+      "type": "references"
+    },
+    {
       "from": "model-discovery.md",
       "to": "provider-registry.md",
       "type": "references"
@@ -1542,22 +1647,37 @@
       "type": "references"
     },
     {
+      "from": "rust-cli-render-ownership.md",
+      "to": "cli-startup-panel.md",
+      "type": "references"
+    },
+    {
+      "from": "rust-cli-render-ownership.md",
+      "to": "cli-reply-stream-hygiene.md",
+      "type": "references"
+    },
+    {
+      "from": "rust-cli-render-ownership.md",
+      "to": "rust-rewrite.md",
+      "type": "references"
+    },
+    {
       "from": "update-protocol.md",
       "to": "runtime-bootstrap-protocol.md",
       "type": "references"
     }
   ],
   "stats": {
-    "node_count": 73,
-    "edge_count": 177,
+    "node_count": 78,
+    "edge_count": 192,
     "node_types": {
       "meta": 16,
-      "protocol": 21,
-      "chapter": 35,
+      "protocol": 22,
+      "chapter": 39,
       "claim": 1
     },
     "edge_types": {
-      "references": 175,
+      "references": 190,
       "supersedes": 2
     }
   }

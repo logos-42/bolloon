@@ -279,6 +279,9 @@ pub fn app(state: AppState) -> Router {
         // 左上角 logo / 头像兜底图全都不显示。内嵌字节 (Tauri 壳只带二进制, 不能靠磁盘路径)。
         .route("/icons/{name}", get(icon_file))
         .route("/favicon.ico", get(favicon))
+        // 确定性头像: 稳定 ID → 同一张图 (hashavatar 本地生成; 旧版是"人人同脸"的渐变 SVG)
+        .route("/api/avatars", get(avatar_families))
+        .route("/api/avatar/{seed}", get(avatar_svg))
         .route("/api/sessions/delete", post(crate::native::delete_session))
         .route("/api/sessions/truncate", post(crate::native::truncate_session))
         .route("/api/sessions/share", post(crate::native::share_session))
@@ -287,6 +290,15 @@ pub fn app(state: AppState) -> Router {
         .route("/share/{token}", get(crate::native::share_page))
         .route("/api/agents", post(crate::native::create_agent))
         .route("/api/agents/update", post(crate::native::update_agent))
+        .route("/api/agents/delete", post(crate::native::delete_agent))
+        .route("/api/agents/share", post(crate::native::share_agent))
+        .route("/api/agents/ping", post(crate::native::set_agent_ping))
+        .route("/api/wallet/authorize", post(crate::native::authorize_wallet))
+        .route("/api/phone/bind", post(crate::native::bind_phone))
+        .route("/api/phone", get(crate::native::phone_status))
+        // 手机号登录 = 挑战-应答 + 公钥验签 (证明手机号与 DID 同一个身份; 不是短信登录)
+        .route("/api/phone/challenge", post(crate::native::phone_challenge))
+        .route("/api/phone/login", post(crate::native::phone_login))
         .route("/api/profile", post(crate::native::set_profile))
         .route("/api/settings", post(crate::native::set_settings))
         .route("/api/chat", post(crate::native::chat))
@@ -441,6 +453,31 @@ async fn favicon() -> axum::response::Response {
         FAVICON_32,
     )
         .into_response()
+}
+
+/// `/api/avatar/<seed>`: 确定性头像 (同一 seed 永远同一张图)
+#[derive(Deserialize)]
+struct AvatarQuery {
+    /// 家族序号 (0..31); 缺省按 seed 派生
+    k: Option<u8>,
+}
+
+async fn avatar_svg(Path(seed): Path<String>, Query(q): Query<AvatarQuery>) -> axum::response::Response {
+    let svg = crate::avatar::svg(&seed, q.k);
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "image/svg+xml; charset=utf-8"),
+            // 头像按身份恒定: 长缓存, 打开面板不再重算
+            (axum::http::header::CACHE_CONTROL, "public, max-age=604800"),
+        ],
+        svg,
+    )
+        .into_response()
+}
+
+/// `/api/avatars`: 家族目录 (前端"换头像家族"的按钮来源)
+async fn avatar_families() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "families": crate::avatar::families() }))
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -1301,6 +1338,57 @@ mod route_tests {
             );
             // 被拒的没入库
             assert_eq!(get_json("/api/world/cards")["count"], serde_json::json!(1));
+
+            // ── 手机号: 绑定 (DID 签名) → 身份一致 → 挑战登录 → 一次性 → 篡改必须露馅 ──
+            assert_eq!(get_json("/api/phone")["bound"], serde_json::json!(false));
+            let bind = post_json(
+                "/api/phone/bind",
+                serde_json::json!({ "phone": "+86 138 0000 0000" }),
+            );
+            assert_eq!(bind["ok"], serde_json::json!(true), "{bind}");
+            assert_eq!(bind["verified"], serde_json::json!(true));
+            assert_eq!(bind["phone"], serde_json::json!("8613800000000"), "手机号要归一成纯数字");
+            let pk = bind["public_key"].as_str().expect("公钥").to_string();
+            assert_eq!(pk.len(), 64, "公钥是 32 字节 hex");
+
+            let pst = get_json("/api/phone");
+            assert_eq!(pst["identity_match"], serde_json::json!(true), "{pst}");
+            assert_eq!(pst["checks"]["signature"], serde_json::json!(true));
+
+            // 一个手机号不许被第二个 DID 顶掉 (把绑定文件写成别的 DID 模拟另一台机器)
+            let bpath = data_dir().join("phone_binding.json");
+            let good = std::fs::read_to_string(&bpath).unwrap();
+            let mut other: serde_json::Value = serde_json::from_str(&good).unwrap();
+            other["did"] = serde_json::json!("did:pi:someone-else");
+            std::fs::write(&bpath, serde_json::to_string_pretty(&other).unwrap()).unwrap();
+            let clash = post_json("/api/phone/bind", serde_json::json!({ "phone": "8613800000000" }));
+            assert!(
+                clash["error"].as_str().unwrap().contains("已绑定另一个 DID"),
+                "{clash}"
+            );
+
+            std::fs::write(&bpath, &good).unwrap();
+            let ch = post_json("/api/phone/challenge", serde_json::json!({}));
+            assert_eq!(ch["nonce"].as_str().unwrap().len(), 32, "{ch}");
+            let login = post_json("/api/phone/login", serde_json::json!({}));
+            assert_eq!(login["ok"], serde_json::json!(true), "{login}");
+            // 挑战一次性: 同一个 nonce 重放必拒
+            let replay = post_json("/api/phone/login", serde_json::json!({}));
+            assert!(replay["error"].as_str().unwrap().contains("已用过"), "{replay}");
+
+            // 篡改签名 ⇒ "身份一致" 必须变 false (证明它在真验签, 不是自己签自己)
+            let mut tampered: serde_json::Value = serde_json::from_str(&good).unwrap();
+            let mut flipped: Vec<char> = tampered["signature"].as_str().unwrap().chars().collect();
+            flipped[0] = if flipped[0] == 'a' { 'b' } else { 'a' };
+            tampered["signature"] = serde_json::json!(flipped.into_iter().collect::<String>());
+            std::fs::write(&bpath, serde_json::to_string_pretty(&tampered).unwrap()).unwrap();
+            let after = get_json("/api/phone");
+            assert_eq!(after["identity_match"], serde_json::json!(false), "{after}");
+            assert_eq!(after["checks"]["signature"], serde_json::json!(false));
+            // 被篡改的绑定也不能登录
+            let _ = post_json("/api/phone/challenge", serde_json::json!({}));
+            let bad = post_json("/api/phone/login", serde_json::json!({}));
+            assert_eq!(bad["ok"], serde_json::json!(false), "{bad}");
 
             let _ = std::fs::remove_dir_all(&home);
         })

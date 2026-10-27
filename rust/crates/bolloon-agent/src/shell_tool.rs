@@ -84,7 +84,8 @@ fn first_bin(cmd: &str) -> String {
     first.rsplit('/').next().unwrap_or(first).to_string()
 }
 
-fn denied_path(text: &str) -> Option<String> {
+/// 路径 deny（文件族与 shell 同源：读写删都不许碰凭据/密钥/系统敏感路径）
+pub fn denied_path(text: &str) -> Option<String> {
     let t = text.replace('\\', "/");
     for p in DENY_PATHS {
         if t.contains(p) {

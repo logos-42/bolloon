@@ -90,6 +90,8 @@
   .room-composer{flex:none;display:flex;gap:6px;padding:8px 12px;border-top:1px solid var(--line);align-items:flex-end}
   .room-composer textarea{flex:1;min-height:44px;max-height:140px;resize:vertical;font-size:12px;line-height:1.5;padding:7px 9px;border-radius:10px;background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn-border)}
   .room-composer button{font-size:11px;padding:8px 10px;border-radius:10px;white-space:nowrap}
+  .room-composer #roomGuideBtn{background:linear-gradient(135deg,var(--accent),#9fb52f);border-color:var(--accent);color:#1a1300;font-weight:600}
+  .room-controls #roomStopBtn{background:linear-gradient(135deg,#f0a14a,#e4663a);border-color:#e4663a;color:#1b1206;font-weight:600}
   .room-msg-guide{border-color:var(--accent)}
   .room-members .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--muted);margin-right:3px}
   .room-members .dot.thinking{background:var(--glow);animation:pulse 1.2s infinite}
@@ -108,7 +110,10 @@
   #app.collapsed .sec,#app.collapsed .item .txt,#app.collapsed .item .dots,#app.collapsed .account .who{display:none}
   #app.collapsed .side-actions{flex-direction:column}
   #app.collapsed .account{justify-content:center}
-  .brand-icon{width:30px;height:30px;border-radius:9px;object-fit:cover;flex:none;box-shadow:0 0 0 1px var(--line)}
+  /* logo 用内联 SVG: 30px 下比 1254px 的 PNG 更锐, 且**不发图片请求** ——
+     旧版 <img src="/icons/icon.png"> 一旦静态路由缺失/跑的是旧二进制, 左上角就是一块空白。 */
+  .brand-icon{display:block;width:30px;height:30px;border-radius:9px;overflow:hidden;flex:none;box-shadow:0 0 0 1px var(--line)}
+  .brand-icon svg{width:100%;height:100%;display:block}
   .side-actions{display:flex;gap:8px;padding:0 12px 10px;align-items:center}
   .icon-btn{display:grid;place-items:center;width:38px;height:34px;padding:0}
   .icon-btn svg{width:18px;height:18px}
@@ -117,9 +122,10 @@
   #updateBtn.available{color:#1a1300;background:var(--glow);border-color:var(--glow);animation:pulse 1.6s infinite}
   button{font:inherit;color:var(--btn-text);background:var(--btn-bg);border:1px solid var(--btn-border);border-radius:10px;padding:7px 10px;cursor:pointer}
   button:hover{border-color:var(--accent)}
-  button.primary{background:linear-gradient(180deg,#2b6cb0,#1f4f80);color:#fff;border-color:#2b6cb0;font-weight:600}
+  /* 主按钮统一 bolloon 色系 (accent #c4d640); 原来是外部品牌的蓝, 与发送按钮两套配色 */
+  button.primary{background:linear-gradient(180deg,#d5e455,#b6c92f);color:#1a1300;border-color:#b6c92f;font-weight:600}
   @media (prefers-color-scheme: light){
-    button.primary{background:linear-gradient(180deg,#eef5ff,#dbeafe);color:#0b1220;border-color:#c9d9ea}
+    button.primary{background:linear-gradient(180deg,#c4d640,#a4b630);color:#1a1300;border-color:#a4b630}
   }
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,209,102,.55)}70%{box-shadow:0 0 0 10px rgba(255,209,102,0)}100%{box-shadow:0 0 0 0 rgba(255,209,102,0)}}
   .side-scroll{flex:1;overflow:auto;padding:0 8px 8px}
@@ -160,7 +166,8 @@
   .msg.bot.streaming::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:linear-gradient(110deg,transparent 30%,rgba(255,255,255,.12) 50%,transparent 70%);background-size:220% 100%;animation:shimmer 1.35s linear infinite}
   @media (prefers-color-scheme:light){.msg.bot.streaming::after{background:linear-gradient(110deg,transparent 30%,rgba(37,99,235,.12) 50%,transparent 70%)}}
   @keyframes shimmer{0%{background-position:180% 0}100%{background-position:-80% 0}}
-  .msg.bot::before{content:"";position:absolute;left:-36px;top:2px;width:26px;height:26px;border-radius:8px;background:url('/icons/apple-touch-icon.png') center/cover;box-shadow:0 0 0 1px var(--line)}
+  /* 消息旁的智能体头像 = 该智能体的确定性头像 (renderChat 设 --bot-ava), 没有就留空不画破图 */
+  .msg.bot::before{content:"";position:absolute;left:-36px;top:2px;width:26px;height:26px;border-radius:8px;background:var(--bot-ava,none) center/cover;box-shadow:0 0 0 1px var(--line)}
   .msg.bot p{margin:0 0 8px}
   .msg.bot p:last-child{margin-bottom:0}
   .msg.bot h1,.msg.bot h2,.msg.bot h3,.msg.bot h4{margin:8px 0 6px;line-height:1.3}
@@ -182,6 +189,10 @@
   .msg-actions svg{width:18px;height:18px}
   .menu{position:fixed;z-index:30;min-width:158px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:5px;box-shadow:0 12px 32px rgba(0,0,0,.28)}
   .menu.hidden{display:none}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:60;max-width:70vw;
+         background:var(--panel);border:1px solid var(--accent);border-radius:10px;padding:9px 13px;
+         font-size:12.5px;color:var(--text);box-shadow:0 12px 32px rgba(0,0,0,.32)}
+  .toast.hidden{display:none}
   .menu button{display:block;width:100%;text-align:left;background:transparent;border:none;border-radius:7px;padding:7px 9px;font-size:13px;color:var(--text)}
   .menu button:hover{background:var(--active)}
   .msg img{max-width:220px;border-radius:8px;display:block;margin-top:6px}
@@ -191,8 +202,8 @@
   .composer .edit-btn svg{width:17px;height:17px}
   .composer #send{min-width:58px;display:grid;place-items:center;background:linear-gradient(135deg,var(--accent),#9fb52f);border-color:var(--accent);color:#1a1300;font-weight:600;box-shadow:0 1px 0 rgba(0,0,0,.06)}
   .composer #send:hover{filter:brightness(1.06)}
-  /* 终止态: bolloon 色系 (暖琥珀→珊瑚), 不再用外部品牌的写死红 */
-  .composer #send.stop{background:linear-gradient(135deg,#f0a14a,#e4663a);border-color:#e4663a;color:#1b1206}
+  /* 终止态: 与发送同一 bolloon 色系 (accent #c4d640), 只是更亮一档 + 方块图标, 不引入外部品牌色 */
+  .composer #send.stop{background:linear-gradient(135deg,#e6f07a,var(--accent));border-color:#e6f07a;color:#1a1300}
   .composer #send.stop:hover{filter:brightness(1.08)}
   .composer #send svg{width:17px;height:17px}
   .chat-new{display:grid;place-items:center;width:32px;height:32px;padding:0;border-radius:9px;flex:none}
@@ -234,8 +245,11 @@
   .settings-links{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
   .row{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
   .avatars{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
-  .avatars button{padding:0;border:none;background:none;width:44px;height:44px;border-radius:50%;overflow:hidden}
+  .avatars{max-height:132px;overflow-y:auto}
+  .avatars button{padding:0;border:none;background:none;width:44px;height:44px;border-radius:50%;overflow:hidden;position:relative}
+  .avatars button.on{box-shadow:0 0 0 2px var(--accent)}
   .avatars img{width:44px;height:44px;border-radius:50%}
+  .avatars button.auto{display:grid;place-items:center;font-size:11px;color:var(--muted);border:1px dashed var(--line)}
   .tools{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
   .tools label{display:flex;align-items:center;gap:8px;color:var(--text);font-size:13px}
   .tools input{width:auto}
@@ -298,7 +312,8 @@
   body.desktop3col #app.collapsed{grid-template-columns:56px 66px minmax(0,1fr)}
   body.desktop3col #app.room-open{grid-template-columns:56px 284px minmax(0,1fr) var(--roomw,360px)}
   body.desktop3col #app.collapsed.room-open{grid-template-columns:56px 66px minmax(0,1fr) var(--roomw,360px)}
-  body.desktop3col .rail-logo{width:30px;height:30px;border-radius:9px;object-fit:cover;flex:none;cursor:pointer;box-shadow:0 0 0 1px var(--line)}
+  body.desktop3col .rail-logo{display:block;width:30px;height:30px;border-radius:9px;overflow:hidden;flex:none;cursor:pointer;box-shadow:0 0 0 1px var(--line)}
+  body.desktop3col .rail-logo svg{width:100%;height:100%;display:block}
   body.desktop3col .rail-btn{width:38px;height:34px;padding:0;border-radius:9px;font-size:15px;display:grid;place-items:center}
   body.desktop3col .rail-btn.on{border-color:var(--accent);color:var(--accent);font-weight:600}
   /* 更新按钮在桌面三栏里上移到第一栏 rail (有更新才显形, 脉冲态与侧栏同款) — 第二栏不再重复 */
@@ -362,12 +377,21 @@
 </head>
 <body>
 <div id="sessionMenu" class="menu hidden"></div>
+<div id="agentMenu" class="menu hidden"></div>
+<div id="toast" class="toast hidden"></div>
+
+<dialog id="askDlg">
+  <h3 id="askTitle" style="margin:0 0 4px">输入</h3>
+  <div class="hint" id="askHint" style="color:var(--muted);font-size:12px;margin:0 0 8px"></div>
+  <input id="askInput" />
+  <div class="row"><button id="askCancel">取消</button><button class="primary" id="askOk">确定</button></div>
+</dialog>
 <div id="app">
   <!-- 2026-10-26 (用户): 桌面三栏 — 第一栏: 全局导航栏。
        仅 Tauri 壳显示 (?app=desktop → body.desktop3col); 网页端 display:none。
        职责: 只做模块切换 + 全局入口 (relay 到现有按钮), 不放列表 — 列表在第二栏。 -->
   <nav class="primary-rail" id="primaryRail">
-    <img class="rail-logo" id="railLogo" src="/icons/icon.png" alt="Bolloon" />
+    <span class="rail-logo" id="railLogo" role="img" aria-label="Bolloon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#effb06"/><ellipse cx="15.9" cy="17.6" rx="6.5" ry="7.7" fill="none" stroke="#1b1a19" stroke-width="4.2"/><circle cx="15.9" cy="5.6" r="2.5" fill="#1b1a19"/></svg></span>
     <button class="rail-btn on" data-module="chat" title="智能体 / 会话">💬</button>
     <button class="rail-btn" data-module="world" title="世界（机会流）">🌍</button>
     <button class="rail-btn" data-module="contacts" title="通讯录（好友 / 群聊）">📒</button>
@@ -380,7 +404,7 @@
   </nav>
   <aside>
     <div class="brand">
-      <img class="brand-icon" id="brandLogo" src="/icons/icon.png" alt="Bolloon" />
+      <span class="brand-icon" id="brandLogo" role="img" aria-label="Bolloon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#effb06"/><ellipse cx="15.9" cy="17.6" rx="6.5" ry="7.7" fill="none" stroke="#1b1a19" stroke-width="4.2"/><circle cx="15.9" cy="5.6" r="2.5" fill="#1b1a19"/></svg></span>
       <span>Bolloon</span>
       <button id="collapseBtn" title="折叠侧边栏" aria-label="折叠侧边栏">☰</button>
     </div>
@@ -427,7 +451,7 @@
       </div>
     </div>
     <div class="side-update"><button id="updateBtn" title="安装更新" style="display:none">⟳ 更新</button></div>
-    <div class="account" id="account">
+    <div class="account" id="account" title="点击绑定手机号 / 查看身份">
       <div class="ava-wrap">
         <div class="ava" id="accountAva"></div>
         <button class="gear" id="settingsBtn" title="设置">⚙</button>
@@ -545,6 +569,13 @@
   <label>头像（自动生成；也可上传图片）</label>
   <div class="avatars" id="avatarPresets"></div>
   <input type="file" id="profileAvatarFile" accept="image/*" style="margin-top:8px" />
+  <label>手机号（DID 签名绑定 · 身份一致才能登录）</label>
+  <div class="row" style="gap:6px;align-items:center">
+    <input id="phoneInput" placeholder="+86 138 0000 0000" style="flex:1" />
+    <button class="mini" id="phoneBindBtn">签名绑定</button>
+    <button class="mini" id="phoneLoginBtn">登录校验</button>
+  </div>
+  <div class="hint" id="phoneStatus" style="color:var(--muted);font-size:12px"></div>
   <div class="settings-links">
     <button id="themeBtn" class="mini" title="主题（跟随系统/深/浅）">☾</button>
     <button id="settingsModelBtn" class="mini">模型：<span id="settingsModelLabel">…</span></button>
@@ -660,24 +691,40 @@ async function initPermission(){
     if(clarityToggle) clarityToggle.set(!!(p&&p.full_access));
   }catch(e){ /* 忽略: 后端未就绪 */ }
 }
-// 头像渲染: ① 有真图 (data URL) 就用; ② 否则用**确定性 SVG** (按 seed 生成, 本地零依赖);
-// 以前没有 ② 时直接返回空串 ⇒ 左下角用户栏 / 智能体默认头像全空白 (leo 2026-10-27)。
-// 幂等: 已经是 data URI 就原样返回 (svgAvatar 在某些版本里已自带前缀, 再包一次会变成双层编码)
-const svgDataURI=(svg)=>{const t=String(svg);return t.startsWith('data:')?t:`data:image/svg+xml;utf8,${encodeURIComponent(t)}`;};
-const avaHTML=(a,seed)=>{
-  if(a&&a.startsWith('data:image/'))return `<img src="${a}" alt="">`;
-  // 兼容: 老存档里把裸 `<svg ...>` 存进了 avatar 字段 (预设按钮的老写法) —— 直接包成 data URI
-  if(a&&String(a).trim().startsWith('<svg'))return `<img src="${svgDataURI(String(a).trim())}" alt="">`;
-  const key=String(a||seed||'bolloon');
-  return `<img src="${svgDataURI(svgAvatar(key,key[0]||'B'))}" alt="">`;
+// 头像 (hashavatar, 服务端本地生成): ① 自定义上传图 (data URI) 原样用;
+// ② `hv:<家族序号>` = 用户手选的家族; ③ 其余按**稳定 ID** 生成 —— 同一 ID 永远同一张图。
+// 旧存档里服务端写死的渐变图 (`data-forge-avatar` / `data-bolloon-avatar`) 一律当"自动"处理,
+// 否则升级后所有人还是同一张渐变脸 (不用改数据)。
+let AV_FAMILIES=[];
+// 老存档里的渐变头像标记: 服务端写的是 URL 编码后的 data URI ⇒ `=` 会变成 %3D,
+// 所以判据要同时认 "=" 与 "%3D" (只认裸 = 的话, 老数据一条都认不出来, 等于没迁移)
+const legacyAutoAvatar=a=>/data-(?:forge|bolloon)-avatar(=|%3D)/i.test(String(a||''));
+const avatarURL=(seed,style)=>{
+  const s=encodeURIComponent(String(seed||'bolloon'));
+  const m=/^hv:(\d+)$/.exec(String(style||''));
+  return m?`/api/avatar/${s}?k=${m[1]}`:`/api/avatar/${s}`;
 };
-
-function svgAvatar(seed,_label){
-  let h=0; for(const ch of String(seed||'x')) h=(h*31+ch.charCodeAt(0))%360;
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" data-forge-avatar="1"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${h},88%,66%)"/><stop offset="1" stop-color="hsl(${(h+42)%360},72%,38%)"/></linearGradient><radialGradient id="h" cx="30%" cy="22%" r="70%"><stop offset="0" stop-color="rgba(255,255,255,.55)"/><stop offset="1" stop-color="rgba(255,255,255,0)"/></radialGradient></defs><rect width="96" height="96" rx="48" fill="url(#g)"/><circle cx="48" cy="48" r="46" fill="url(#h)"/><circle cx="70" cy="28" r="12" fill="rgba(255,255,255,.20)"/><path d="M22 68 Q48 42 74 68" stroke="rgba(255,255,255,.40)" stroke-width="5" fill="none" stroke-linecap="round"/><circle cx="36" cy="45" r="5" fill="#fff" opacity=".92"/><circle cx="60" cy="45" r="5" fill="#fff" opacity=".92"/></svg>`;
-  return 'data:image/svg+xml;utf8,'+encodeURIComponent(svg);
+const avaHTML=(style,seed)=>{
+  if(style&&String(style).startsWith('data:image/')&&!legacyAutoAvatar(style))return `<img src="${style}" alt="">`;
+  return `<img src="${avatarURL(seed||style,style)}" alt="">`;
+};
+async function loadAvatarFamilies(){
+  try{const r=await api('/api/avatars');AV_FAMILIES=r.families||[];}catch(_){AV_FAMILIES=[];}
 }
-
+/// 头像家族选择器: 「自动」+ 全部家族 (缩略图走同一张 seed, 只有家族不同)
+function renderAvatarChoices(hostId, seed, current){
+  const host=$(hostId);
+  const cur=/^hv:(\d+)$/.test(String(current||''))?String(current):'';
+  const head=`<button class="auto${cur?'':' on'}" data-av="" title="自动（按身份生成，换 ID 才换图）">自动</button>`;
+  host.innerHTML=head+AV_FAMILIES.map(f=>
+    `<button data-av="hv:${f.i}" class="${cur==='hv:'+f.i?'on':''}" title="${f.name}"><img src="/api/avatar/${encodeURIComponent(seed||'bolloon')}?k=${f.i}" alt="${f.name}"></button>`
+  ).join('');
+  [...host.children].forEach(b=>b.onclick=()=>{
+    const file=hostId==='agentAvatarPresets'?$('agentAvatarFile'):$('profileAvatarFile');
+    file.dataset.avatar=b.dataset.av||'';
+    [...host.children].forEach(x=>x.classList.toggle('on',x===b));
+  });
+}
 function mdToHTML(src){
   const codes=[];
   let s=String(src||'');
@@ -757,6 +804,9 @@ async function boot(){
   const j=await api('/api/bootstrap');
   state=j.state; update=j.update;
   models=await api('/api/models');
+  // 手机号绑定状态 (左侧用户栏要显示"已绑定 / 身份一致")
+  try{state.phone=await api('/api/phone');}catch(_){state.phone={bound:false};}
+  await loadAvatarFamilies();
   renderAll();
 }
 
@@ -942,6 +992,7 @@ function renderSidebar(){
     <div class="item ${a.id===state.active_agent_id?'active':''}" onclick="pickAgent('${a.id}')">
       <div class="ava" title="编辑名字和头像" onclick="event.stopPropagation();editAgent('${a.id}')">${avaHTML(a.avatar,a.id)}</div>
       <div class="txt"><b>${escapeHTML(a.name)}</b><small>${a.did.slice(0,20)}…</small></div>
+      <button class="dots" title="智能体设置" onclick="openAgentMenu(event,'${a.id}')">⋯</button>
     </div>`).join('');
   const sess=state.sessions.filter(s=>s.agent_id===state.active_agent_id)
     .slice().sort((a,b)=>(b.pinned?1:0)-(a.pinned?1:0));
@@ -954,15 +1005,18 @@ function renderSidebar(){
   $('accountName').textContent=state.profile.name;
   $('accountDid').textContent=state.profile.did;
   $('accountAva').innerHTML=avaHTML(state.profile.avatar,state.profile.did||'me');
+  if(state.phone&&state.phone.bound){$('accountDid').textContent=state.phone.phone+' · did:…'+String(state.profile.did).slice(-8);}
 }
 
 function renderHeader(){
   const a=state.agents.find(x=>x.id===state.active_agent_id)||{};
   $('agentName').textContent=a.name||'智能体';
   $('agentDid').textContent=a.did||'';
-  // 表头头像同样走确定性生成 (原来指向 /icons/... 那条路 404)
-  $('agentHeaderAva').outerHTML=`<span id="agentHeaderAva">${avaHTML(a.avatar,a.id||'agent')}</span>`;
-  $('agentHeaderAva').onclick=()=>editAgent(a.id);
+  // 表头头像 = 该智能体的确定性头像; 直接写 src 保住 .agent-head-ava 的 28px 尺寸
+  // (旧版用 outerHTML 换了整颗 <img> ⇒ class 丢了 ⇒ 头像是 96px 的大脸)
+  const hdr=$('agentHeaderAva');
+  hdr.src=avatarURL(a.id||'agent',a.avatar);
+  hdr.onclick=()=>editAgent(a.id);
 }
 
 function nearBottom(el){return el.scrollHeight-el.scrollTop-el.clientHeight<140;}
@@ -971,6 +1025,9 @@ function renderChat(){
   const chat=$('chat');
   const msgs=(s&&s.messages)||[];
   const stick=nearBottom(chat);
+  // 当前智能体的头像 (CSS 的 .msg.bot::before 读这个变量)
+  const ag=state.agents.find(x=>x.id===state.active_agent_id)||{};
+  chat.style.setProperty('--bot-ava',`url("${avatarURL(ag.id||'agent',ag.avatar)}")`);
   if(!s||msgs.length===0){chat.innerHTML='<div class="empty"><h1>我们要做什么？</h1></div>';return;}
   chat.innerHTML=msgs.map((m,i)=>{
     const role=m.role==='user'?'user':'bot';
@@ -1169,6 +1226,142 @@ async function retryMessage(i){
   await submitMessage(text,images);
 }
 
+// ── 智能体 ⋯ 菜单 (改默认全局名称 / 授权钱包 / 固定 ping / 分享 / 删除) ──
+let menuAgentId='';
+function toast(msg){
+  const t=$('toast'); t.textContent=msg; t.classList.remove('hidden');
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.add('hidden'), 3200);
+}
+// 桌面壳 (Tauri/WKWebView) 里 window.prompt/confirm 是被禁用的 (返回 null),
+// 用它们做的菜单项等于点了没反应 —— 统一走页内 askText()。
+function askText(title,value,hint){
+  return new Promise(resolve=>{
+    const d=$('askDlg');
+    $('askTitle').textContent=title||'输入';
+    $('askHint').textContent=hint||'';
+    $('askInput').value=value||'';
+    const done=v=>{d.close();$('askOk').onclick=null;$('askCancel').onclick=null;d.onkeydown=null;resolve(v);};
+    $('askOk').onclick=()=>done($('askInput').value);
+    $('askCancel').onclick=()=>done(null);
+    d.onkeydown=ev=>{if(ev.key==='Enter'){ev.preventDefault();done($('askInput').value);}};
+    d.showModal();
+    setTimeout(()=>{$('askInput').focus();$('askInput').select();},0);
+  });
+}
+
+function openAgentMenu(e,id){
+  e.stopPropagation();
+  menuAgentId=id;
+  const a=state.agents.find(x=>x.id===id)||{};
+  const ip=state.agent_ping||{};
+  const m=$('agentMenu');
+  m.innerHTML=`
+    <button onclick="renameAgentGlobal()">改默认全局名称</button>
+    <button onclick="authorizeWallet()">授权钱包</button>
+    <button onclick="fixAgentPing()">固定 ping${ip[id]?`（${ip[id]}s）`:''}</button>
+    <button onclick="shareAgent(menuAgentId)">分享</button>
+    <button onclick="deleteAgent(menuAgentId)">删除</button>`;
+  m.classList.remove('hidden');
+  const w=180,h=190;
+  m.style.left=Math.min(e.clientX,innerWidth-w)+'px';
+  m.style.top=Math.min(e.clientY,innerHeight-h)+'px';
+  void a;
+}
+document.addEventListener('click',()=>$('agentMenu').classList.add('hidden'));
+
+async function renameAgentGlobal(){
+  const a=state.agents.find(x=>x.id===menuAgentId); if(!a)return;
+  const name=await askText('改默认全局名称',a.name,'新建会话、分享链接都用这个名字');
+  if(!name||!name.trim())return;
+  try{
+    const r=await api('/api/agents/update',{method:'POST',body:JSON.stringify({id:a.id,name:name.trim()})});
+    const i=state.agents.findIndex(x=>x.id===r.id); if(i>=0)state.agents[i]=r;
+    renderAll(); toast('已改名: '+r.name);
+  }catch(err){toast('改名失败: '+err.message);}
+}
+
+async function authorizeWallet(){
+  const addr=await askText('授权钱包','','EVM 0x… 或 Solana 地址；DID 私钥会对这条授权签名');
+  if(!addr||!addr.trim())return;
+  try{
+    const r=await api('/api/wallet/authorize',{method:'POST',body:JSON.stringify({address:addr.trim()})});
+    if(r.error)throw new Error(r.error);
+    toast(`钱包已授权 ${r.address.slice(0,6)}…${r.address.slice(-4)} · 签名 ${String(r.signature).slice(0,10)}… · 验签 ${r.verified?'通过':'失败'}`);
+  }catch(err){toast('授权失败: '+err.message);}
+}
+
+async function fixAgentPing(){
+  const cur=(state.agent_ping||{})[menuAgentId]||60;
+  const v=await askText('固定 ping 间隔（秒）',String(cur),'5–86400 秒；固定间隔发送，不走自适应退避');
+  if(!v)return;
+  const secs=parseInt(v,10);
+  if(!(secs>=5&&secs<=86400)){toast('间隔要在 5–86400 秒之间');return;}
+  try{
+    const r=await api('/api/agents/ping',{method:'POST',body:JSON.stringify({id:menuAgentId,seconds:secs})});
+    if(r.error)throw new Error(r.error);
+    state.agent_ping=Object.assign({},state.agent_ping,{[r.id]:r.seconds});
+    toast(`已固定 ping = ${r.seconds}s`);
+  }catch(err){toast('设置失败: '+err.message);}
+}
+
+async function shareAgent(id){
+  try{
+    const r=await api('/api/agents/share',{method:'POST',body:JSON.stringify({id})});
+    if(r.error)throw new Error(r.error);
+    const link=location.origin+r.url;
+    try{await navigator.clipboard.writeText(link);toast('分享链接已复制: '+link);}catch(_){toast('分享链接: '+link);}
+  }catch(err){toast('分享失败: '+err.message);}
+}
+
+async function deleteAgent(id){
+  // 按用户要求: **不弹确认框**。所以这里只做一次真实调用, 结果如实回报。
+  try{
+    const r=await api('/api/agents/delete',{method:'POST',body:JSON.stringify({id})});
+    if(r.error)throw new Error(r.error);
+    toast(`已删除 ${r.deleted_agent} (连带 ${r.deleted_sessions} 条会话)`);
+    // 以前这里写 `load()` —— 本文件根本没有这个名字 (入口叫 boot) ⇒ 删除其实成功了,
+    // 但前端抛 "load is not defined", 列表不动、还报"删除失败"。
+    await boot();
+  }catch(err){toast('删除失败: '+err.message);}
+}
+
+// ── 设置页里的手机号: DID 签名绑定 + 挑战-应答登录校验 ──
+async function refreshPhone(){
+  const st=$('phoneStatus');
+  st.textContent='查询中…';
+  try{
+    const r=await api('/api/phone');
+    state.phone=r;
+    if(!r.bound){st.textContent='尚未绑定手机号（绑定用本机 DID 私钥签名，无短信验证码）';return;}
+    $('phoneInput').value=r.phone||'';
+    st.innerHTML=`已绑定 <b>${r.phone}</b> · DID ${String(r.did).slice(0,18)}… · 身份一致: `
+      + (r.identity_match?'<span style="color:var(--accent)">是</span>':'<span style="color:#e4663a">否（签名/公钥对不上，重新绑定）</span>');
+    // 左下角那行也从 DID 换成手机号 (绑定/登录后立刻生效, 不用等下一次 renderAll)
+    if(state&&state.profile)renderSidebar();
+  }catch(err){st.textContent='查询失败: '+err.message;}
+}
+$('phoneBindBtn').onclick=async()=>{
+  const phone=$('phoneInput').value.trim();
+  if(!phone){$('phoneStatus').textContent='先填手机号';return;}
+  try{
+    const r=await api('/api/phone/bind',{method:'POST',body:JSON.stringify({phone})});
+    if(r.error)throw new Error(r.error);
+    await refreshPhone();
+    toast('手机号已用 DID 签名绑定');
+  }catch(err){$('phoneStatus').textContent='绑定失败: '+err.message;}
+};
+$('phoneLoginBtn').onclick=async()=>{
+  try{
+    const c=await api('/api/phone/challenge',{method:'POST',body:'{}'});
+    if(c.error)throw new Error(c.error);
+    const r=await api('/api/phone/login',{method:'POST',body:JSON.stringify({})});
+    if(r.error)throw new Error(r.error);
+    await refreshPhone();
+    $('phoneStatus').textContent=`登录${r.ok?'成功':'被拒'} · ${r.reason}`;
+    toast(r.ok?'登录成功：手机号与 DID 身份一致':'登录被拒：'+r.reason);
+  }catch(err){$('phoneStatus').textContent='登录失败: '+err.message;}
+};
+
 function openSessionMenu(e,id){
   e.stopPropagation();
   menuSessionId=id;
@@ -1189,7 +1382,7 @@ document.addEventListener('click',()=>$('sessionMenu').classList.add('hidden'));
 async function renameSession(){
   const s=state.sessions.find(x=>x.id===menuSessionId);
   if(!s)return;
-  const title=prompt('重命名会话',s.title||'');
+  const title=await askText('重命名会话',s.title,'');
   if(!title||!title.trim())return;
   try{
     const u=await api('/api/sessions/update',{method:'POST',body:JSON.stringify({id:s.id,title:title.trim()})});
@@ -1199,7 +1392,7 @@ async function renameSession(){
 async function deleteSession(){
   const id=menuSessionId,s=state.sessions.find(x=>x.id===id);
   if(!s)return;
-  if(!confirm('删除会话「'+(s.title||'新对话')+'」？此操作不可撤销。'))return;
+  // 与智能体删除一致: 不弹确认框 (window.confirm 在桌面壳里也不可用, 弹了等于删不掉)
   try{
     const r=await api('/api/sessions/delete',{method:'POST',body:JSON.stringify({id})});
     state.sessions=state.sessions.filter(x=>x.id!==id);
@@ -1256,10 +1449,8 @@ function editAgent(id){
   $('agentPersona').value=a.persona||'';
   $('agentWorkspace').value=a.workspace||'';
   $('agentGlobalDir').value=a.global_dir||'';
-  const presets=['熔岩','等离子','星云','磁场','量子','混沌','曙光','深空'];
-  $('agentAvatarPresets').innerHTML=presets.map((n,i)=>`<button title="${n}"><img src="${svgAvatar(n+a.id,n[0])}" alt="${n}"></button>`).join('');
-  [...$('agentAvatarPresets').children].forEach((b,i)=>b.onclick=()=>{$('agentAvatarFile').dataset.avatar=svgDataURI(svgAvatar(presets[i]+a.id,presets[i][0]));});
   $('agentAvatarFile').dataset.avatar=a.avatar||'';
+  renderAvatarChoices('agentAvatarPresets',a.id,a.avatar);
   document.getElementById('agentDlg').showModal();
 }
 $('newAgentBtn').onclick=()=>{
@@ -1267,15 +1458,14 @@ $('newAgentBtn').onclick=()=>{
   $('agentDlgTitle').textContent='创建新智能体';
   $('agentSave').textContent='创建';
   $('agentNameInput').value='';$('agentPersona').value='';$('agentWorkspace').value='';$('agentGlobalDir').value='';
-  const presets=['熔岩','等离子','星云','磁场','量子','混沌','曙光','深空'];
-  $('agentAvatarPresets').innerHTML=presets.map((n,i)=>`<button title="${n}"><img src="${svgAvatar(n+Date.now(),n[0])}" alt="${n}"></button>`).join('');
-  [...$('agentAvatarPresets').children].forEach((b,i)=>b.onclick=()=>{$('agentAvatarFile').dataset.avatar=svgDataURI(svgAvatar(presets[i]+Date.now(),presets[i][0]));});
-  delete $('agentAvatarFile').dataset.avatar;
+  $('agentAvatarFile').dataset.avatar='';
+  // 新建时还没有 agent id: 预览按名字生成, 建好后按 id 生成 (同一家族不变)
+  renderAvatarChoices('agentAvatarPresets',$('agentNameInput').value||'bolloon','');
   document.getElementById('agentDlg').showModal();
 };
 $('agentSave').onclick=async()=>{
   try{
-    const avatar=$('agentAvatarFile').dataset.avatar||svgDataURI(svgAvatar($('agentNameInput').value||'agent',($('agentNameInput').value||'A')[0]));
+    const avatar=$('agentAvatarFile').dataset.avatar||'';
     const payload={name:$('agentNameInput').value,avatar,persona:$('agentPersona').value,workspace:$('agentWorkspace').value,global_dir:$('agentGlobalDir').value};
     if(editingAgentId){
       const a=await api('/api/agents/update',{method:'POST',body:JSON.stringify(Object.assign({id:editingAgentId},payload))});
@@ -1293,14 +1483,15 @@ $('agentSave').onclick=async()=>{
 
 function openSettings(){
   $('profileName').value=state.profile.name;
-  const presets=['用户','开发者','探索者','工程师','观测者','架构师','协作者','思考者'];
-  $('avatarPresets').innerHTML=presets.map((n,i)=>`<button title="${n}"><img src="${svgAvatar(n+state.profile.did,n[0])}" alt="${n}"></button>`).join('');
-  [...$('avatarPresets').children].forEach((b,i)=>b.onclick=()=>{$('profileAvatarFile').dataset.avatar=svgDataURI(svgAvatar(presets[i]+state.profile.did,presets[i][0]));});
-  delete $('profileAvatarFile').dataset.avatar;
+  $('profileAvatarFile').dataset.avatar=state.profile.avatar||'';
+  renderAvatarChoices('avatarPresets',state.profile.did||'me',state.profile.avatar);
   $('settingsModelLabel').textContent=(state.settings.provider||'默认')+' / '+(state.settings.model||'default');
   renderSettingsUpdate();
+  refreshPhone();
   document.getElementById('profileDlg').showModal();
 }
+// 左下角用户栏 = 账户设置 (昵称/头像 + 手机号绑定)。以前这里被 openPhoneDlg 覆盖过一次,
+// 结果"设置页"整个够不着 —— 手机号是设置里的一段, 不是另一颗替换掉它的页面。
 $('account').onclick=openSettings;
 $('settingsBtn').onclick=(e)=>{e.stopPropagation();openSettings();};
 $('settingsModelBtn').onclick=()=>{document.getElementById('profileDlg').close();document.getElementById('modelDlg').showModal();loadModelOptions();};
@@ -1312,7 +1503,7 @@ $('settingsUpdateBtn').onclick=async()=>{
 };
 $('profileSave').onclick=async()=>{
   try{
-    const avatar=$('profileAvatarFile').dataset.avatar||state.profile.avatar;
+    const avatar=$('profileAvatarFile').dataset.avatar||'';
     state.profile=await api('/api/profile',{method:'POST',body:JSON.stringify({name:$('profileName').value,avatar})});
     document.getElementById('profileDlg').close();renderSidebar();
   }catch(e){alert(e.message);}

@@ -7,6 +7,7 @@
 //!
 //! 版本 0.6.10（与 TS 版保持一致）。
 
+pub mod avatar;
 pub mod native;
 pub mod server;
 pub use server::*;

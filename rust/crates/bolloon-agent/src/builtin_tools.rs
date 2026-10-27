@@ -174,7 +174,14 @@ pub fn read_file_def() -> ToolDef {
 /// 纪律: dashboard 的「可用工具」必须是**真实注册且能执行**的工具 —— 不许再把
 /// 硬编码名字清单（或移植台账的 184 个名字）当成已具备的能力。
 pub fn builtin_tool_defs() -> Vec<ToolDef> {
-    vec![read_file_def(), crate::shell_tool::shell_def()]
+    let mut defs = vec![read_file_def(), crate::shell_tool::shell_def()];
+    defs.extend(crate::file_tools::file_tool_defs());
+    defs.extend(crate::search_tools::search_tool_defs());
+    defs.extend(crate::git_tools::git_tool_defs());
+    defs.extend(crate::net_tools::net_tool_defs());
+    defs.extend(crate::domain_tools::domain_tool_defs());
+    defs.extend(crate::updater_tools::updater_tool_defs());
+    defs
 }
 
 /// 内置工具**统一分发执行器**（按 tool 名分派到对应工具族）。
@@ -183,6 +190,12 @@ pub fn builtin_tool_defs() -> Vec<ToolDef> {
 /// 但**每个**对外工具的参数、权限、副作用与验收行为仍各自独立（映射与测试独立）。
 pub struct BuiltinExecutor {
     read_file: Arc<ReadFileExecutor>,
+    file: Arc<crate::file_tools::FileExecutor>,
+    search: Arc<crate::search_tools::SearchExecutor>,
+    git: Arc<crate::git_tools::GitExecutor>,
+    net: Arc<crate::net_tools::NetExecutor>,
+    domain: Arc<crate::domain_tools::DomainExecutor>,
+    updater: Arc<crate::updater_tools::UpdaterExecutor>,
     shell: Arc<ShellExecutor>,
 }
 
@@ -192,6 +205,12 @@ impl BuiltinExecutor {
     pub fn new(cancel: Arc<AtomicBool>, bypass: bool) -> Self {
         Self {
             read_file: Arc::new(ReadFileExecutor),
+            file: Arc::new(crate::file_tools::FileExecutor),
+            search: Arc::new(crate::search_tools::SearchExecutor),
+            git: Arc::new(crate::git_tools::GitExecutor),
+            net: Arc::new(crate::net_tools::NetExecutor),
+            domain: Arc::new(crate::domain_tools::DomainExecutor),
+            updater: Arc::new(crate::updater_tools::UpdaterExecutor),
             shell: Arc::new(ShellExecutor::with_mode(cancel, bypass)),
         }
     }
@@ -202,6 +221,16 @@ impl ToolExecutor for BuiltinExecutor {
     async fn execute(&self, call: ToolCall) -> ToolResult {
         match call.name.as_str() {
             "read_file" => self.read_file.execute(call).await,
+            "write_file" | "edit_file" | "list_directory" | "mkdir" | "move_file" | "delete_file" => {
+                self.file.execute(call).await
+            }
+            "grep_files" | "glob_files" => self.search.execute(call).await,
+            "git_status" | "git_diff" | "git_log" | "git_show" | "git_branch" | "git_add"
+            | "git_commit" | "git_push" => self.git.execute(call).await,
+            "web_fetch" | "web_search" => self.net.execute(call).await,
+            "read_skill" | "list_skills" | "todo_add" | "todo_list" | "todo_done" | "remember"
+            | "recall" | "task_list" => self.domain.execute(call).await,
+            "check_update" => self.updater.execute(call).await,
             "shell" => self.shell.execute(call).await,
             // 已注册但没接执行器 ⇒ **如实说没接线**, 绝不返回空成功
             other => ToolResult {
@@ -346,9 +375,10 @@ mod tests {
     async fn registration_puts_tool_in_registry() {
         let reg = ToolRegistry::new();
         register_builtin_tools(&reg).await;
-        assert_eq!(reg.len().await, 2, "read_file + shell");
+        assert!(reg.len().await >= 29, "read_file + shell + 文件 + 搜索 + Git + 网络 + 领域 + 更新: {}", reg.len().await);
         assert!(reg.get("read_file").await.is_some());
         assert!(reg.get("shell").await.is_some());
+        assert!(reg.get("write_file").await.is_some());
     }
 
     /// **最小闭环集成**: 注册 → 桥接成模型 schema → Harness 门执行 → 结果可读。
@@ -358,9 +388,11 @@ mod tests {
         let reg = ToolRegistry::new();
         register_builtin_tools(&reg).await;
         let schemas = tool_defs_to_schemas(&reg.list().await);
-        assert_eq!(schemas.len(), 2, "read_file + shell");
+        // 工具族会持续迁移增长 ⇒ 只断言下限与关键成员（不断言精确数量）
+        assert!(schemas.len() >= 29, "read_file+shell+文件+搜索+Git+网络+领域+更新: {}", schemas.len());
         let names: Vec<&str> = schemas.iter().map(|s| s.function.name.as_str()).collect();
         assert!(names.contains(&"read_file") && names.contains(&"shell"), "{names:?}");
+        assert!(names.contains(&"write_file"), "{names:?}");
 
         let harness = bolloon_harness::Harness::new(
             std::sync::Arc::new(reg),
@@ -392,6 +424,57 @@ mod tests {
             .await;
         assert!(out2.denied.is_some(), "未注册工具必须被拒 (fail-closed)");
         assert!(out2.result.is_none(), "被拒 = 零执行");
+    }
+
+    /// **权限分级**（决策 2）: 未授予的写类被拒且零执行；授予后可写；
+    /// 但不可逆的 `delete_file` **不随**可逆写一起被授予。
+    #[tokio::test]
+    async fn write_requires_grant_and_delete_stays_harder() {
+        let reg = Arc::new(ToolRegistry::new());
+        register_builtin_tools(&reg).await;
+        let exec = || {
+            Arc::new(BuiltinExecutor::new(Arc::new(AtomicBool::new(false)), false))
+                as Arc<dyn ToolExecutor>
+        };
+
+        // ① 未授予 ⇒ permission 门拒，零执行
+        let h = bolloon_harness::Harness::new(reg.clone(), exec(), bolloon_harness::Budget::new(5, 10_000));
+        let out = h
+            .gate(ToolCall {
+                id: "c1".into(),
+                name: "write_file".into(),
+                arguments: serde_json::json!({ "path": "/tmp/x", "content": "x" }),
+            })
+            .await;
+        let d = out.denied.expect("未授予的写类必须被拒");
+        assert_eq!(d.policy, "permission");
+        assert!(out.result.is_none(), "被拒 = 零执行");
+
+        // ② 授予后可写
+        let h2 = bolloon_harness::Harness::new(reg.clone(), exec(), bolloon_harness::Budget::new(5, 10_000))
+            .with_granted(&["write_file"]);
+        let p = std::env::temp_dir().join(format!("bolloon_grant_{}.txt", std::process::id()));
+        let out2 = h2
+            .gate(ToolCall {
+                id: "c2".into(),
+                name: "write_file".into(),
+                arguments: serde_json::json!({ "path": p.display().to_string(), "content": "ok" }),
+            })
+            .await;
+        assert!(out2.denied.is_none(), "已授予不该被拒: {:?}", out2.denied);
+        assert!(out2.result.expect("有结果").ok);
+        assert!(p.exists());
+
+        // ③ 不可逆 delete 仍被拒（分级：不与可逆写同级）
+        let out3 = h2
+            .gate(ToolCall {
+                id: "c3".into(),
+                name: "delete_file".into(),
+                arguments: serde_json::json!({ "path": p.display().to_string() }),
+            })
+            .await;
+        assert!(out3.denied.is_some(), "不可逆 delete 不该随 write 一起被授予");
+        let _ = std::fs::remove_file(&p);
     }
 
     /// read_file 失败同样带结构化错误码（与 shell 同一套契约）

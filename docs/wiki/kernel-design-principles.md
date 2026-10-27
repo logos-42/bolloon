@@ -258,3 +258,16 @@ K0–K10 的逐项完成度、机器门和历史决策见 [bolloon-native-macro-
 Bolloon 的 Kernel 不是“更大的 Agent”，而是一组让 Agent 能够长期、并发、受约束地工作的共享机制。它的价值不在于拥有最多模块，而在于让每个动作都能回答：谁提出、谁允许、在哪里运行、发生了什么、失败后怎么继续。
 
 保持这个边界，Pi 可以被替换，模型供应商可以并发，通道可以增加，Skill 可以购买和执行，而核心的运行语义不必随每个业务功能重新发明一次。
+
+## 13. 双核互维互保（Dual-Core, 2026-10-27 新增）
+
+Kernel 可运行于两个**对等**实例（A / B），像双肺双肾：平时互相观测与维护，出事时互相保护并代偿。它不改变前 12 条原则，而是把"高可用"约束显式化：
+
+- **对等，不是主备**：A/B 都能承担全部职责（可代偿），执行权仍靠 lease + fencing 唯一，不产生第二条执行路径（守原则 3）。
+- **间隔相位心跳**：两核对 `phase` 取 `interval/2` 错开（`A@0, B@Δ/2, A@Δ, ...`），使每个核在自己两次心跳之间都恰好看到对方一次新鲜心跳——同时感知"对方节奏"和"自己节奏"。
+- **互维护 M**：双向心跳、状态镜像交叉校验、租约续期/孤儿接管、配置对齐（版本漂移即拒接管）。
+- **互保护 P**：P1 防双主（fencing token，旧 token 写入作废）；P2 防误接管（stale + 二次确认窗口双维）；P3 过载不接管（先本地降级，避免双核一起雪崩）；P4 证据保护（接管必须写 Run evidence，守原则 9）。
+- **分工 D（可选）**：A 偏执行面、B 偏维护面只是偏好不是权限；任一核都能顶全部。分工分的是"维护面"，执行权仍唯一。
+- **状态预算（守原则 4）**：HA 自身只允许新增心跳 / lease / fencing 三类状态，不允许新增任何业务状态。
+
+Rust 落地：`rust/crates/bolloon-kernel/src/dual_core.rs`（`DualArbiter` / `DualGuard` / `FileHeartbeatStore`）；接线经 `BOLLOON_HA` / `BOLLOON_KERNEL_CORE` / `BOLLOON_HA_HOME`（`bolloon-cli` 与 `bolloon-web` 已接，`app-tauri` 经内嵌 `bolloon_web::serve` 继承）。设计细节、验收矩阵与待办见 [kernel-dual-core.md](./kernel-dual-core.md)。

@@ -18,6 +18,7 @@ async-trait.workspace = true
 futures.workspace = true
 dashmap.workspace = true
 anyhow.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

@@ -21,6 +21,8 @@ py-bolloon/
 .codex/
 .vscode
 .claude/
+.codex/
+.workbuddy/
 .idea/
 .kilo/
 findings.md

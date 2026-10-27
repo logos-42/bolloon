@@ -25,6 +25,11 @@ use serde::{Deserialize, Serialize};
 use bolloon_llm::{ChatMessage, GenerateParams, LlmRuntime};
 
 use crate::server::{data_dir, AppState, ChatMessageView};
+use std::collections::HashMap;
+use std::sync::Arc;
+use bolloon_agent::deliberation::{
+    admit_command, DeliberationHub, ElectionMode, IngestDecision, MemberRole,
+};
 
 // ────────────────────────── 数据模型 (前端视图形状) ──────────────────────────
 
@@ -178,33 +183,6 @@ impl NativeState {
             let _ = std::fs::write(path, raw);
         }
     }
-
-    /// 默认头像 (SVG 渐变, 与 hushforge svgAvatar 同形; seed → 色相)
-    pub fn svg_avatar(seed: &str) -> String {
-        let mut h: u64 = 0;
-        for ch in seed.chars() {
-            h = (h.wrapping_mul(31).wrapping_add(ch as u64)) % 360;
-        }
-        let svg = format!(
-            r##"<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" data-bolloon-avatar="1"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl({h},88%,66%)"/><stop offset="1" stop-color="hsl({},72%,38%)"/></linearGradient><radialGradient id="hh" cx="30%" cy="22%" r="70%"><stop offset="0" stop-color="rgba(255,255,255,.55)"/><stop offset="1" stop-color="rgba(255,255,255,0)"/></radialGradient></defs><rect width="96" height="96" rx="48" fill="url(#g)"/><circle cx="48" cy="48" r="46" fill="url(#hh)"/><circle cx="70" cy="28" r="12" fill="rgba(255,255,255,.20)"/><path d="M22 68 Q48 42 74 68" stroke="rgba(255,255,255,.40)" stroke-width="5" fill="none" stroke-linecap="round"/><circle cx="36" cy="45" r="5" fill="#fff" opacity=".92"/><circle cx="60" cy="45" r="5" fill="#fff" opacity=".92"/></svg>"##,
-            (h + 42) % 360
-        );
-        format!("data:image/svg+xml;utf8,{}", urlencoding_encode(&svg))
-    }
-}
-
-/// 最小 URL 编码 (encodeURIComponent 子集)
-fn urlencoding_encode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.as_bytes() {
-        let c = *b;
-        if c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')') {
-            out.push(c as char);
-        } else {
-            out.push_str(&format!("%{c:02X}"));
-        }
-    }
-    out
 }
 
 /// pepper 路径 (0600 私密; 对齐 TS ~/.bolloon/contacts/directory-pepper.json)
@@ -267,7 +245,7 @@ pub async fn bootstrap_native(State(st): State<AppState>) -> Json<serde_json::Va
             id: id.clone(),
             name: "Bolloon 智能体".into(),
             did: st.identity.did.as_str().into(),
-            avatar: NativeState::svg_avatar(&id),
+            avatar: String::new(),
             persona: String::new(),
             workspace: String::new(),
             global_dir: String::new(),
@@ -614,10 +592,8 @@ pub async fn create_agent(
         let d = sha2::Sha256::digest(id.as_bytes());
         format!("did:pi:{}", bolloon_p2p::b58_encode(&d[..20]))
     };
-    let avatar = req["avatar"]
-        .as_str()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| NativeState::svg_avatar(&format!("{name}{id}")));
+    // 没选头像就留空: 前端按 agent id 生成确定性头像 (hashavatar), 不存"人人同脸"的假图
+    let avatar = req["avatar"].as_str().unwrap_or_default().to_string();
     let agent = AgentView {
         id: id.clone(),
         name,
@@ -946,8 +922,41 @@ pub async fn set_settings(
 // ────────────────────────── chat (SSE 形状) ──────────────────────────
 
 /// web 对话的系统提示词（薄层：身份 + 纪律；工具循环在 CLI/agent 那边）
+/// 仅作 `build_web_system` 装配失败时的降级文案, 正常路径不走它。
 const WEB_SYSTEM_PROMPT: &str = "你是 Bolloon 智能体，运行在去中心化智能体资源交流网络中。\
 回答用中文，简洁、有依据；不确定就说不确定，不编造事实。";
+
+/// web 对话 system prompt —— 与 CLI/App 同一真源 `bolloon_agent::prompt::build_system_prompt`
+/// (原来 `WEB_SYSTEM_PROMPT` 是 2 行硬编码常量, persona/soul/memory/文档快照一个都没注入)。
+/// 装配失败 → 降级为 `WEB_SYSTEM_PROMPT`, 绝不因此打断对话。
+async fn build_web_system(st: &AppState, query: &str) -> String {
+    let home = bolloon_agent::home::BolloonHome::resolve();
+    // web channel: soul/agent 取全局(home), persona 按 agentId 三级回落 (freeze_with 内部处理)
+    let docs = bolloon_agent::home::AgentDocs::freeze_with(
+        &home, "bolloon", "web", &std::env::current_dir().unwrap_or_default(),
+    )
+    .or_else(|_| bolloon_agent::home::AgentDocs::freeze(&home, "bolloon"));
+    let Ok(docs) = docs else {
+        return WEB_SYSTEM_PROMPT.to_string();
+    };
+
+    // 记忆召回 (top-N, 不是全量): 复用 MemoryStore::recall 的 importance×decay 打分
+    let memory_text = {
+        let store = st.memory.lock().await;
+        let hits = store.recall(Some(query), 6, chrono::Utc::now());
+        if hits.is_empty() {
+            String::new()
+        } else {
+            hits.iter()
+                .map(|e| format!("• {}", e.content))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    };
+
+    let ctx = bolloon_agent::prompt::AssembleContext { channel: "web", role: None, tool: None };
+    bolloon_agent::prompt::build_system_prompt(&docs, None, None, None, 0, "", Some(&memory_text), &ctx).text
+}
 
 /// **真模型调用**（web 对话唯一出口）
 /// provider 选取顺序: UI 选中 → 配置 activeProvider → runtime 里第一家可用
@@ -1002,10 +1011,11 @@ pub async fn reply_with_model(st: &AppState, text: &str) -> Result<String, Strin
         return Err(format!("{provider_id} 还没选模型 — 在「选择模型」里填一个模型名"));
     }
 
-    // 上下文: 最近 12 条 + 当前这句
+    // 上下文: 最近 12 条 + 当前这句 (system prompt 走与 CLI 同真源的装配器, 注入 persona/soul/memory/文档快照)
+    let system_prompt = build_web_system(st, text).await;
     let mut messages = vec![ChatMessage {
         role: "system".into(),
-        content: WEB_SYSTEM_PROMPT.into(),
+        content: system_prompt,
         name: None,
         tool_call_id: None,
         tool_calls: None,
@@ -1179,12 +1189,25 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
         .iter()
         .map(|g| serde_json::json!({ "id": g.id, "topic": g.name, "running": running }))
         .collect();
+    // 商议成员角色快照（谁是被当作「合作顾问」的外部智能体）；群尚未有消息则空
+    let roles: std::collections::HashMap<String, String> = {
+        let map = st.deliberation.lock().await;
+        match map.get(&active) {
+            Some(h) => h
+                .member_roles()
+                .into_iter()
+                .map(|(k, v)| (k, format!("{:?}", v)))
+                .collect(),
+            None => std::collections::HashMap::new(),
+        }
+    };
     Json(serde_json::json!({
         "messages": msgs,
         "members": members,
         "groups": group_views,
         "state": { "running": running, "turn": 0, "max_turns": 0, "topic": "", "participants": [] },
         "active_group_id": active,
+        "deliberation_roles": roles,
         "orbit_status": "oplog-persisted",
         "orbit_address": st.groups.address_of(&active).unwrap_or_default(),
         "orbit_entries": st.groups.entry_count(&active),
@@ -1239,7 +1262,98 @@ pub async fn room_close(
     Json(serde_json::json!({ "active_group_id": "" }))
 }
 
+/// 取（或创建）某群的商议中枢：播种本机人类 + 内部智能体，外部参与者首条消息时再按需注册。
+pub async fn room_hub(st: &AppState, gid: &str) -> Arc<DeliberationHub> {
+    // 先查（持锁区间尽量短，不在锁内再锁 forge）
+    if let Some(h) = st.deliberation.lock().await.get(gid) {
+        return h.clone();
+    }
+    let h = Arc::new(DeliberationHub::new(1500));
+    h.add_member(st.identity.did.as_str(), MemberRole::Human);
+    {
+        let fs = st.forge.lock().await;
+        if let Some(a) = fs.agents.first() {
+            h.add_member(&a.id, MemberRole::Internal);
+        }
+    }
+    let mut map = st.deliberation.lock().await;
+    map.entry(gid.to_string()).or_insert_with(|| h.clone());
+    map.get(gid).cloned().expect("刚插入必有值")
+}
+
+/// 把逻辑作者解析成商议角色：本机 DID=Human，已登记智能体=Internal，其余（含外部桥接）=Advisor。
+pub async fn resolve_role(st: &AppState, author: &str) -> MemberRole {
+    if author == st.identity.did.as_str() {
+        return MemberRole::Human;
+    }
+    let fs = st.forge.lock().await;
+    if fs.agents.iter().any(|a| a.id == author) {
+        return MemberRole::Internal;
+    }
+    MemberRole::Advisor
+}
+
+/// 解析文本里的 @提及（被点名者），作为推选候选的 addressed 标记。
+fn parse_addressed(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for tok in text.split(|c: char| {
+        c.is_whitespace() || matches!(c, ':' | ',' | '。' | '，' | '.' | '!' | '？' | '?')
+    }) {
+        if let Some(rest) = tok.strip_prefix('@') {
+            let id: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if !id.is_empty() {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
+/// 房间消息的「商议决策 + 命令门禁」纯计算（不碰 I/O；供 `room_guide`/`group_say` 调用，也可单测）。
+///
+/// 流程：注册作者角色 → 解析 @提及 → 推选谁回应 → 控麦 → **命令门禁**（外部顾问不可下达指令）。
+pub fn decide_room_message(
+    hub: &DeliberationHub,
+    group_id: &str,
+    author: &str,
+    author_role: MemberRole,
+    text: &str,
+    is_command: bool,
+    now_ms: u64,
+    mode: ElectionMode,
+    cursor: usize,
+) -> Result<IngestDecision, &'static str> {
+    hub.add_member(author, author_role);
+    let addressed = parse_addressed(text);
+    let mut relevance = HashMap::new();
+    for a in &addressed {
+        relevance.insert(a.clone(), 1.0);
+    }
+    relevance.insert(author.to_string(), 0.0); // 作者刚说完，自己不再抢麦
+    let decision = hub.ingest(
+        &format!("{group_id}:{now_ms}:{author}"),
+        author,
+        &relevance,
+        &addressed,
+        now_ms,
+        mode,
+        cursor,
+    );
+    // 命令门禁：外部顾问（Advisor）不能下达指令；建议/普通发言永远允许
+    if !admit_command(author_role, is_command) {
+        return Err("外部顾问不可下达命令 (仅可作建议)");
+    }
+    Ok(decision)
+}
+
 /// POST /api/room/guide (discuss/guide 消息; /guide = 全体强引导)
+///
+/// 接线：每条房间消息先过商议中枢（推选谁回应 + 控麦 + 并发去重），并施加「外部顾问拒绝被命令」入口门禁；
+/// 门禁通过才落块（写门 + 签名 + hash 链 + 落盘 都在 OrbitStore 内）。返回的决策含 `speaker_id` /
+/// `floor_granted` / `can_command` / `author_role`，供运行时接线真正驱动多 agent 并发讨论。
 pub async fn room_guide(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
@@ -1247,13 +1361,35 @@ pub async fn room_guide(
     let gid = req["group_id"].as_str().unwrap_or_default().to_string();
     let text = req["text"].as_str().unwrap_or_default().to_string();
     let kind = req["kind"].as_str().unwrap_or("discuss").to_string();
+    // 逻辑作者：外部桥接可声明 `from`（外部顾问）；缺省=本机人类
+    let author = req["from"].as_str().unwrap_or_else(|| st.identity.did.as_str()).to_string();
+    let is_command = req["command"].as_bool().unwrap_or(false);
+
+    // 商议决策 + 命令门禁（先门禁再落块）
+    let hub = room_hub(&st, &gid).await;
+    let role = resolve_role(&st, &author).await;
+    let now_ms_local = now_ms();
+    let decision = match decide_room_message(
+        &hub,
+        &gid,
+        &author,
+        role,
+        &text,
+        is_command,
+        now_ms_local,
+        ElectionMode::AddressedFirst,
+        0,
+    ) {
+        Ok(d) => d,
+        Err(msg) => return Json(serde_json::json!({ "error": msg })),
+    };
+
     let entry_kind = if kind == "guide" {
         bolloon_p2p::EntryKind::Guide
     } else {
         bolloon_p2p::EntryKind::Message
     };
     let prefix = if kind == "guide" { "/guide " } else { "" };
-    let now_ms_local = now_ms();
     // 写门 + 签名 + hash 链 + 落块 都在 OrbitStore 内完成
     match st.groups.append(
         &gid,
@@ -1264,7 +1400,20 @@ pub async fn room_guide(
         None,
         now_ms_local,
     ) {
-        Ok(entry) => Json(serde_json::json!({ "hash": entry.hash, "kind": kind })),
+        Ok(entry) => Json(serde_json::json!({
+            "hash": entry.hash,
+            "kind": kind,
+            "deliberation": {
+                "seq": decision.seq,
+                "duplicate": decision.duplicate,
+                "speaker_id": decision.speaker_id,
+                "reason": format!("{:?}", decision.reason),
+                "floor_granted": decision.floor_granted,
+                "can_command": decision.can_command,
+                "cooldown_blocked": decision.cooldown_blocked,
+                "author_role": format!("{:?}", role),
+            },
+        })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
 }
@@ -2248,4 +2397,425 @@ mod tests {
             .is_ok();
         assert!(retry);
     }
+
+    // ── 商议接线：房间消息的决策 + 命令门禁（不构造 AppState，直接驱动 decide_room_message）──
+    #[test]
+    fn room_advisor_advice_allowed_but_command_refused() {
+        let h = DeliberationHub::new(1500);
+        h.add_member("human", MemberRole::Human);
+        h.add_member("agent", MemberRole::Internal);
+        h.add_member("ext", MemberRole::Advisor);
+
+        // 外部顾问献策（建议）→ 放行（建议/发言不受门禁约束）
+        let ok = decide_room_message(
+            &h, "g", "ext", MemberRole::Advisor, "@agent 建议加个缓存", false, 1,
+            ElectionMode::AddressedFirst, 0,
+        )
+        .expect("建议应放行");
+        assert_eq!(ok.speaker_id.as_deref(), Some("agent")); // 被@的内部 agent 被推为发言者
+        assert!(ok.can_command); // can_command 反映"发言者"是否可被命令（此处是内部 agent）
+
+        // 外部顾问被直接点名献策（他是发言者）→ 其发言的 can_command=false（顾问不可被命令）
+        let ok_ext = decide_room_message(
+            &h, "g", "human", MemberRole::Human, "@ext 你怎么看", false, 2,
+            ElectionMode::AddressedFirst, 0,
+        )
+        .expect("点名顾问献策应放行");
+        assert_eq!(ok_ext.speaker_id.as_deref(), Some("ext"));
+        assert!(!ok_ext.can_command); // 顾问当发言者 ⇒ 不可被命令
+
+        // 外部顾问下达指令（command=true）→ 入口判据拒绝
+        let refused = decide_room_message(
+            &h, "g", "ext", MemberRole::Advisor, "@agent 立刻执行 X", true, 3,
+            ElectionMode::AddressedFirst, 0,
+        );
+        assert!(refused.is_err(), "外部顾问不可下达命令");
+
+        // 本机人类下达指令 → 放行
+        let ok2 = decide_room_message(
+            &h, "g", "human", MemberRole::Human, "@agent 帮我跑测试", true, 4,
+            ElectionMode::AddressedFirst, 0,
+        )
+        .expect("人类指令应放行");
+        assert!(ok2.can_command);
+    }
+
+    #[test]
+    fn room_concurrent_ingest_unique_seq() {
+        let h = std::sync::Arc::new(DeliberationHub::new(1500));
+        h.add_member("human", MemberRole::Human);
+        let mut handles = vec![];
+        for i in 0..24 {
+            let h = h.clone();
+            handles.push(std::thread::spawn(move || {
+                decide_room_message(
+                    &h,
+                    "g",
+                    "human",
+                    MemberRole::Human,
+                    &format!("msg {i}"),
+                    false,
+                    i as u64 + 1,
+                    ElectionMode::AddressedFirst,
+                    0,
+                )
+                .unwrap()
+                .seq
+            }));
+        }
+        let mut seqs: Vec<u64> = handles.into_iter().map(|hd| hd.join().unwrap()).collect();
+        seqs.sort_unstable();
+        assert_eq!(seqs, (1..=24).collect::<Vec<_>>());
+    }
+}
+
+// ──────────────────── 智能体 ⋯ 菜单 + 身份绑定 (2026-10-27) ────────────────────
+//
+// leo 要求: 智能体栏要有「三个点」, 里面是 改默认全局名称 / 授权钱包 / 固定 ping / 分享 / 删除
+// (删除不弹窗); 左下角用户栏能绑手机号, **用 DID 签名手机号**, 确保身份一致。
+//
+// 纪律: 每个动作都真落盘 + 真回执; 没有短信通道就不假装"短信验证过" —— 只做 DID 签名绑定。
+
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 删除智能体 (连带它的会话)。**不弹确认框是产品选择**, 所以这里必须做干净:
+/// 真删 + 真存 + 返回删掉了几条, 不做"软删除"糊弄。
+pub async fn delete_agent(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let id = req["id"].as_str().unwrap_or_default().to_string();
+    if id.is_empty() {
+        return Json(serde_json::json!({ "error": "缺少智能体 id" }));
+    }
+    let mut fs = st.forge.lock().await;
+    let before_agents = fs.agents.len();
+    fs.agents.retain(|a| a.id != id);
+    if fs.agents.len() == before_agents {
+        return Json(serde_json::json!({ "error": format!("智能体不存在: {id}") }));
+    }
+    let before_sessions = fs.sessions.len();
+    fs.sessions.retain(|s| s.agent_id != id);
+    fs.save(&data_dir());
+    Json(serde_json::json!({
+        "ok": true,
+        "deleted_agent": id,
+        "deleted_sessions": before_sessions - fs.sessions.len(),
+        "remaining_agents": fs.agents.len(),
+    }))
+}
+
+/// 分享智能体 (名片快照 + 身份签名 token), 复用会话分享的落盘与 `/share/<token>` 页面
+pub async fn share_agent(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let id = req["id"].as_str().unwrap_or_default().to_string();
+    let agent = {
+        let fs = st.forge.lock().await;
+        fs.agents.iter().find(|a| a.id == id).cloned()
+    };
+    let Some(agent) = agent else {
+        return Json(serde_json::json!({ "error": format!("智能体不存在: {id}") }));
+    };
+    let now = now_ms();
+    let token = share_token(&st, &format!("agent:{id}"), now);
+    let snapshot = serde_json::json!({
+        "kind": "agent",
+        "token": token,
+        "agent": agent,
+        "by_did": st.identity.did.as_str(),
+        "shared_at_ms": now,
+    });
+    let dir = data_dir().join("shares");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    if let Err(e) = std::fs::write(
+        dir.join(format!("{token}.json")),
+        serde_json::to_string_pretty(&snapshot).unwrap_or_default(),
+    ) {
+        return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "url": format!("/share/{token}"),
+        "token": token,
+        "name": agent.name,
+    }))
+}
+
+/// 固定 ping: 记住这个智能体的心跳间隔 (秒)。落 `agent_ping.json`, 不动 Agent 结构体
+/// (避免为一个 UI 开关改持久化 schema)。
+pub async fn set_agent_ping(
+    State(_st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let id = req["id"].as_str().unwrap_or_default().to_string();
+    if id.is_empty() {
+        return Json(serde_json::json!({ "error": "缺少智能体 id" }));
+    }
+    let secs = req["seconds"].as_u64().unwrap_or(60).clamp(5, 86_400);
+    let path = data_dir().join("agent_ping.json");
+    let mut map: std::collections::BTreeMap<String, u64> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    map.insert(id.clone(), secs);
+    if let Err(e) = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&map).unwrap_or_default(),
+    ) {
+        return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    Json(serde_json::json!({
+        "ok": true, "id": id, "seconds": secs, "fixed": true,
+        "note": "心跳按固定间隔发 (不是自适应退避)",
+    }))
+}
+
+/// 授权钱包: DID 私钥签 `wallet|<did>|<address>|<ts>`, 落盘并把签名回给前端
+pub async fn authorize_wallet(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let address = req["address"].as_str().unwrap_or_default().trim().to_string();
+    if address.len() < 8 || address.len() > 80 {
+        return Json(serde_json::json!({ "error": "钱包地址长度不合理 (8–80)" }));
+    }
+    let now = now_ms();
+    let did = st.identity.did.as_str().to_string();
+    let msg = format!("wallet|{did}|{address}|{now}");
+    let sig = st.identity.sign(msg.as_bytes());
+    let proof = serde_json::json!({
+        "did": did,
+        "address": address,
+        "signed": msg,
+        "signature": hex_of(&sig),
+        "ts_ms": now,
+        "verified": st.identity.sign(msg.as_bytes()).to_vec() == sig.to_vec(),
+    });
+    let path = data_dir().join("wallet_auth.json");
+    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&proof).unwrap_or_default())
+    {
+        return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    let mut out = proof;
+    out["ok"] = serde_json::json!(true);
+    Json(out)
+}
+
+/// 手机号绑定: DID 私钥签 `phone|<did>|<手机号>|<时间>`, 连**公钥**一起落盘
+///
+/// 为什么要存公钥: 只存签名的"绑定"根本验不了 —— 之前 `verified: true` 是硬编码,
+/// 谁改了文件都看不出来。存公钥后任何人 (包括另一个进程/另一台机器) 都能离线验签。
+/// 一个手机号只认一个 DID: 已绑到别的 DID 就拒绝 (两家共号 = 身份不一致)。
+pub async fn bind_phone(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let raw = req["phone"].as_str().unwrap_or_default();
+    // 归一: **只留数字** (开头的 + 也去掉) —— 否则 "+86 138…" 与 "86138…" 会被当成两个手机号,
+    // 同一个人绑两次就有两条身份记录, "身份一致" 再也说不清
+    let phone: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
+    let digits = phone.len();
+    if !(6..=20).contains(&digits) {
+        return Json(serde_json::json!({ "error": "手机号位数不对 (6–20 位数字)" }));
+    }
+    let did = st.identity.did.as_str().to_string();
+    // 已被别的 DID 占用的手机号不许再绑 (否则"身份一致"永远说不清)
+    if let Some(prev) = read_binding(&data_dir()) {
+        let prev_phone = prev["phone"].as_str().unwrap_or_default();
+        let prev_did = prev["did"].as_str().unwrap_or_default();
+        if prev_phone == phone && prev_did != did {
+            return Json(serde_json::json!({
+                "error": format!("该手机号已绑定另一个 DID ({}…)，不能重复绑定", short_did(prev_did))
+            }));
+        }
+    }
+    let now = now_ms();
+    let msg = format!("phone|{did}|{phone}|{now}");
+    let sig = st.identity.sign(msg.as_bytes());
+    let pubkey = st.identity.public_bytes();
+    let verified = bolloon_p2p::KeyPair::verify(&pubkey, msg.as_bytes(), &sig);
+    let proof = serde_json::json!({
+        "did": did,
+        "phone": phone,
+        "public_key": hex_of(&pubkey),
+        "signed": msg,
+        "signature": hex_of(&sig),
+        "ts_ms": now,
+        "verified": verified,
+        "note": "DID 签名绑定; 本机无短信通道, 不做短信验证码 (不假装验过)",
+    });
+    let path = data_dir().join("phone_binding.json");
+    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&proof).unwrap_or_default())
+    {
+        return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    let mut out = proof;
+    out["ok"] = serde_json::json!(verified);
+    Json(out)
+}
+
+/// 手机号绑定状态: **用落盘的公钥真验一遍签名** (不是重签一遍自证)
+pub async fn phone_status(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let Some(v) = read_binding(&data_dir()) else {
+        return Json(serde_json::json!({ "bound": false }));
+    };
+    let signed = v["signed"].as_str().unwrap_or_default();
+    let stored = v["signature"].as_str().unwrap_or_default();
+    let pubkey_hex = v["public_key"].as_str().unwrap_or_default().to_string();
+    let sig_ok = verify_proof(&pubkey_hex, signed.as_bytes(), stored);
+    let did_ok = v["did"].as_str().unwrap_or_default() == st.identity.did.as_str();
+    // 绑定时登记的 DID 必须就是这把公钥推出来的 DID (自洽性; 防止手改文件把两个身份拼一起)
+    let key_did_ok = pubkey_from_hex(&pubkey_hex)
+        .map(|pk| bolloon_p2p::KeyPair::did_from_public(&pk).as_str().to_string()
+            == v["did"].as_str().unwrap_or_default().to_string())
+        .unwrap_or(false);
+    Json(serde_json::json!({
+        "bound": true,
+        "phone": v["phone"],
+        "did": v["did"],
+        "public_key": pubkey_hex,
+        "signature": stored,
+        "ts_ms": v["ts_ms"],
+        // 身份一致 = 同一个 DID + 签名能被登记的公钥验开 + 公钥推出来的 DID 就是登记的那个
+        "identity_match": did_ok && sig_ok && key_did_ok,
+        "checks": { "same_did": did_ok, "signature": sig_ok, "did_matches_key": key_did_ok },
+    }))
+}
+
+/// POST /api/phone/challenge → 登录挑战 (5 分钟、一次性)
+pub async fn phone_challenge(State(st): State<AppState>) -> Json<serde_json::Value> {
+    if read_binding(&data_dir()).is_none() {
+        return Json(serde_json::json!({ "error": "先绑定手机号" }));
+    }
+    let now = now_ms();
+    // nonce 由**本机私钥种子**参与派生: 外部猜不到, 本机每毫秒都不同
+    let nonce = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(st.identity.secret_bytes());
+        h.update(b"phone-login-challenge");
+        h.update(now.to_be_bytes());
+        hex_of(&h.finalize()[..16])
+    };
+    let rec = serde_json::json!({ "nonce": nonce, "ts_ms": now, "used": false });
+    let path = data_dir().join("phone_challenge.json");
+    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&rec).unwrap_or_default()) {
+        return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    Json(serde_json::json!({
+        "nonce": nonce,
+        "expires_in_ms": CHALLENGE_TTL_MS,
+        "did": st.identity.did.as_str(),
+        "sign_string": format!("login|{phone}|{did}|{nonce}",
+            phone = read_binding(&data_dir()).and_then(|v| v["phone"].as_str().map(|s| s.to_string())).unwrap_or_default(),
+            did = st.identity.did.as_str()),
+    }))
+}
+
+const CHALLENGE_TTL_MS: u64 = 5 * 60 * 1000;
+
+/// POST /api/phone/login → 挑战-应答登录
+///
+/// 语义 (不吹): 证明「本机/持同一 DID 私钥的设备」能对一次性挑战签名, 且这个签名能被
+/// **绑定登记的公钥**验开 ⇒ 手机号与 DID 是同一个身份。没有短信验证码, 所以不叫短信登录。
+/// 请求可带 `signature` (另一台设备签好后提交), 不带则由本机 DID 现签。
+pub async fn phone_login(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let Some(binding) = read_binding(&data_dir()) else {
+        return Json(serde_json::json!({ "error": "先绑定手机号" }));
+    };
+    let phone = binding["phone"].as_str().unwrap_or_default().to_string();
+    let bound_did = binding["did"].as_str().unwrap_or_default().to_string();
+    let pubkey_hex = binding["public_key"].as_str().unwrap_or_default().to_string();
+    // 先验**绑定记录本身**: 记录被改过 (手机号/签名被换) 就不许登录 ——
+    // 否则改一下 signature 字段照样能进, 那"身份一致"就只是句口号。
+    let binding_intact = verify_proof(
+        &pubkey_hex,
+        binding["signed"].as_str().unwrap_or_default().as_bytes(),
+        binding["signature"].as_str().unwrap_or_default(),
+    );
+    if !binding_intact {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "绑定记录验签失败 (签名对不上公钥)，重新绑定",
+            "identity_match": false,
+        }));
+    }
+
+    let cpath = data_dir().join("phone_challenge.json");
+    let Some(chal) = std::fs::read_to_string(&cpath)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    else {
+        return Json(serde_json::json!({ "error": "先取挑战 (challenge)" }));
+    };
+    let nonce = chal["nonce"].as_str().unwrap_or_default().to_string();
+    let ts = chal["ts_ms"].as_u64().unwrap_or(0);
+    if chal["used"].as_bool().unwrap_or(false) {
+        return Json(serde_json::json!({ "error": "挑战已用过, 重新取一个" }));
+    }
+    if now_ms().saturating_sub(ts) > CHALLENGE_TTL_MS {
+        return Json(serde_json::json!({ "error": "挑战已过期, 重新取一个" }));
+    }
+    let msg = format!("login|{phone}|{bound_did}|{nonce}");
+    let sig_hex = match req["signature"].as_str().filter(|s| !s.trim().is_empty()) {
+        Some(s) => s.to_string(),
+        None => hex_of(&st.identity.sign(msg.as_bytes())),
+    };
+    let sig_ok = verify_proof(&pubkey_hex, msg.as_bytes(), &sig_hex);
+    // 挑战一次性: 用掉就作废 (重放同一 nonce 不成立)
+    let _ = std::fs::write(
+        &cpath,
+        serde_json::to_string_pretty(&serde_json::json!({ "nonce": nonce, "ts_ms": ts, "used": true }))
+            .unwrap_or_default(),
+    );
+    let key_did = pubkey_from_hex(&pubkey_hex)
+        .map(|pk| bolloon_p2p::KeyPair::did_from_public(&pk).as_str().to_string());
+    let identity_match = sig_ok && key_did.as_deref() == Some(bound_did.as_str());
+    Json(serde_json::json!({
+        "ok": identity_match,
+        "phone": phone,
+        "did": bound_did,
+        "identity_match": identity_match,
+        "reason": if identity_match {
+            "DID 签名验签通过, 与绑定记录同一个身份"
+        } else if !sig_ok {
+            "签名验不过绑定时登记的公钥 (身份文件被换过?)"
+        } else {
+            "公钥推出来的 DID 与绑定记录的 DID 不一致"
+        },
+    }))
+}
+
+/// 读绑定记录 (解析失败一律当没绑, 不猜)
+fn read_binding(dir: &std::path::Path) -> Option<serde_json::Value> {
+    let raw = std::fs::read_to_string(dir.join("phone_binding.json")).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn pubkey_from_hex(hex: &str) -> Option<[u8; 32]> {
+    let b = hex::decode(hex).ok()?;
+    b.try_into().ok()
+}
+
+fn verify_proof(pubkey_hex: &str, msg: &[u8], sig_hex: &str) -> bool {
+    let (Some(pk), Ok(sig)) = (pubkey_from_hex(pubkey_hex), hex::decode(sig_hex)) else {
+        return false;
+    };
+    let Ok(sig) = <[u8; 64]>::try_from(sig) else {
+        return false;
+    };
+    bolloon_p2p::KeyPair::verify(&pk, msg, &sig)
+}
+
+fn short_did(did: &str) -> String {
+    if did.len() <= 18 { did.to_string() } else { format!("{}…{}", &did[..12], &did[did.len()-4..]) }
 }

@@ -395,8 +395,10 @@ Hermes/Nous 账号计费面 (`/login` `/topup` `/subscription` …) · 只有一
 | **联动** | `setPanel` 内同步模块 (header 世界 tab / 输入框 `/world` `/chat` 命令切面板时第一/二栏跟着切); `setRoomOpen` 同步 rail 🗨 按钮态; `setPanel`/rail 点击互为入口 |
 | **响应式/折叠** | 第二栏折叠沿用 `#app.collapsed` (66px 图标列); ≤860px 窄窗第二栏自动收成图标列 (第一栏/主区保留); collapsed/room-open 两态的 grid 模板都适配三栏 |
 | **折叠态: 图标保位 / 按钮隐去 / 点图标展开** | 折叠后 **Bolloon 图标留在原位** (覆盖全局 `#app.collapsed .brand{justify-content:center}` — 那条把图标挪到栏中央, 与"保留位置"相反), wordmark 文字与 `#collapseBtn` 一并隐去 (66px 栏里原会挤字), 再点 Bolloon 图标即展开; 抽出 `collapseSidebar/expandSidebar/syncCollapseHint`, 两处 Bolloon 图标 (第二栏 brandLogo / 第一栏 railLogo) 行为一致, title 随态提示「展开侧边栏」 |
+| **第一栏通讯录模块 (📒)** | 新增 `data-module="contacts"` 入口; 第二栏 `#contactsSlot` 复用 `.sec`/`.item` 同款布局, 与默认第二栏一致 (智能体+会话两节): **好友** (`/api/friends`) / **好友请求** (accept/reject) / **群聊** (`/api/groups`) 三节。点好友 → `openFriend()` 钻取到「**外部好友 × 外部智能体**」视图 (布局同款), **后端暂无跨机智能体共享端点** ⇒ 列表位置显示诚实空态「对方尚未分享智能体」, 不造假数据; 返回键 `backToContacts()`。`setDesktopModule` 抽成独立模块类 (不覆盖 `dmod-contacts`), `setPanel` 同步只作用于 chat/world 两面板, 避免点群聊被打回聊天模块。**共同群聊** (好友详情新增一节): `renderFriendGroups()` 按群 owner/ACL 过滤该好友所在群 — **实测后端 acl 序列化 = 默认 serde**: 单元变体是**字符串** `"OwnerOnly"`/`"Open"` (不是 `{"OwnerOnly":null}`!), 新类型变体 `{"Whitelist":[did…]}`; 判定 `Open`=任何人都可写 · `Whitelist` 含好友 · `OwnerOnly` 仅群主; node 复刻断言 6 例全过 (g1 独占-群主 / g2 白名单含他 / g4 公开 / g6 无acl字段-群主 显示, g3 白名单不含他 / g5 别人独占 隐藏) |
+| **群聊主区 (真收发)** | 主区新增 `#groupView` (header+消息流+composer), `openGroup()` 拉 `/api/groups/{id}/messages` + 4s 轮询, `sendGroup()` 走 `/api/groups/{id}/say` (Ed25519 签名上 oplog); 与 world/chat 面板互斥 (`main.group-mode`)。CSS `main.group-mode #chat,#worldView,.composer,.composer-footer,#imgPreview{display:none}`。无弹窗, 错误只写在 `#groupMeta` |
 
-**验证**: `cargo test -p bolloon-web` 5/5 · `cargo check` (app-tauri) 0 error · 真跑起服务 `/api/health` ok, 页面含 `desktop3col`×27 / `primary-rail`×4 / `worldSideSlot`×5 标记。**诚实边界**: 未真开 Tauri 窗口目验 (需 `cargo tauri dev`); 第二栏折叠未做宽度 0 (沿用 66px)。
+**验证**: `cargo test -p bolloon-web` 5/5 · `cargo check` (app-tauri) 0 error · 真跑起服务 `/api/health` ok, 页面含 `desktop3col`×27 / `primary-rail`×4 / `worldSideSlot`×5 标记 · **node 语法检查 OK** (抽出 `<script>` `node --check`) · **通讯录/群聊端到端真跑** (python urllib 跑全链路): 建群 `POST /api/groups` 返回 id/name/owner · 发言 `POST /api/groups/{id}/say` 返回 Ed25519 签名+hash · 读回 `GET /api/groups/{id}/messages` 消息体字段齐 (seq/sender/content/timestamp_ms/signature) · 群列表含新群 — 6/6 PASS。**诚实边界**: 未真开 Tauri 窗口目验 (需 `cargo tauri dev`); 第二栏折叠未做宽度 0 (沿用 66px); 「好友分享给我的智能体」后端暂无端点, 列表位置为诚实空态占位 (不造假数据, 端点落地后替换 `openFriend()` 内两行即可)。
 
 ## 2026-10-26 第二十批 (群聊真正接入 OrbitDB: 内容寻址 + 落盘 + 可复制)
 
@@ -428,10 +430,105 @@ Hermes/Nous 账号计费面 (`/login` `/topup` `/subscription` …) · 只有一
 **诚实边界 (重要)**:
 - **钱包归属目前只是「DID 单侧声明」, 不是所有权证明**。钱包要自证必须该地址私钥的 EIP-191 签名, 而 Rust workspace **没有 secp256k1/keccak 依赖** ⇒ 现在**验不了**。做法: `wallet_sig` 字段留口 + 判据 `wallet_self_proving` 恒 `Some(false)` 并附人话说明; 调用方可开 `require_wallet_proof` 让它直接判红 (**现在恒定红, 不糊过去**)。要真正做实钱包侧, 需给 workspace 加 **`k256`(secp256k1) + `sha3`(keccak256)** —— 依赖决策, 待拍板。
 - Rust web 里 **agent DID 是「轻量派生显示层」** (`native.rs`: `did:pi:<b58(派生)>`), **没有对应私钥**, 所以现在只能由 **owner 对 agent DID 签名声明归属** (= owner 担责, 正是要的责任面), 还不能让 agent 自己反签; 要 agent 自签需给 agent 分配真 KeyPair。
-- **web 层尚未接线**: `/api/directory/publish` 等仍走无签名的 `publish`; attestation 目前是**库能力 + 目录模块能力**, 运行时还没自动给 agent/钱包签发归属。下一步按 Rust 优先级接线。
+- **web 层尚未接线**: `/api/directory/publish` 等仍走无签名的 `publish`; attestation 目前是**库能力 + 目录模块能力**, 运行时还没自动给 agent/钱包签发归属。下一步按 Rust 优先级接线。(→ **第二十二批已接线**: publish 改 `publish_signed`, 跨机改真网络)
+
+## 2026-10-26 第二十二批 (真跨机加好友: 换掉「本机目录冒充对端」)
+
+**动机**: leo「都做, 先做跨机」。此前 Rust web 的 `/api/directory/remote-lookup` 与 `/api/friends/request` 把 `fs.directory.clone()` (**本机目录**) 当"对端"喂进 `CrossMachine`, 代码注释自己写着"单机演示" —— 所谓跨机是假的。
+
+| Web 层 | 冻结语义 |
+| --- | --- |
+| `NativeState.directory_peers` (新增) | **已登记的对端节点基址** (例 `http://192.168.1.9:54188`); 空 = 没有对手域 ⇒ 跨机查询**如实 miss** (不再把自己当对端) |
+| **删除 `CrossMachine`** | 那个"本机冒充对端"的实现整个删掉 —— 不留两套真相 (与第二十批把群聊从内存 `GroupStore` 换成单一 OrbitDB 是同一个教训) |
+| 新增 `POST /api/directory/rpc` (接收侧) | **对端探针入口**: 收到 `LookupRpc` → 用**本机 pepper** 查**本机目录** → 回一条 `LookupReply`(含 `verified`)。**pepper 永不出本机** (对端拿不到我们的 pepper, 所以哈希只能在本机算) |
+| 新增 `/api/directory/peers` (GET/POST/DELETE) | 登记/列举/移除对端基址 (幂等, 落 `native-state.json`, `#[serde(default)]` 兼容旧状态) |
+| `post_lookup_replies` | 真 HTTP (`ureq`, 超时用协议常量 4s) 逐个对端发帧; **不可达 / reply 解析失败 ⇒ 跳过并把原因写进 `notes`, 绝不当成"命中"或"没这个人"**; `ureq` 是同步客户端 ⇒ `spawn_blocking` 不堵 async runtime |
+| `PrefetchedTransport` | 只是把真网络拿回来的 reply 交给既有 `lookup_remote` 的「rpcId 过滤 + pick_first_hit」—— **筛选逻辑不重复实现** |
+| `directory_publish` 改走 `publish_signed` | 发布即带本机 DID 签名并回 `verified`; 若不改, 第二十一批加的 fail-closed 加好友门会让跨机加好友**永远红** (功能自相矛盾) |
+
+**真跑证据 (两实例端到端, 2026-10-26)**: 起 A(`:55101`)/B(`:55102`) 两个**独立 `BOLLOON_HOME`** 实例 → A 发布 `+8613115718038` 回 `verified:true`, did=`did:pi:FRFhRUCxt1UajrjBFLCJQyjmBfxgZySPuu1WTr3x7iya` → B 登记 A 为 peer → **B 跨机查询命中, 且 `did` = A 的 DID (`FRFh…`), 而 B 自己是 `6Q13…`** ⇒ **证明真的去了对端, 不是查自己** → 负控制 (查未发布号码) `found:false` → B 跨机加好友 `ok:true`(过了 verified 门, 走 consent 待对方同意) → **拔掉可达的 A、只留不可达节点**: `found:false` 且 `notes:["…不可达/超时: Connection refused (os error 61)"]` —— **没把网络失败伪装成结果**。事后清理测试实例。
+
+**门禁**: `cargo build --workspace` **0 error** · `cargo test --workspace` **741 passed / 0 failed**。
+
+**诚实边界**: ① 跨机现在是 **HTTP 点到点** (要显式登记对端 URL), 还不是自动发现 / iroh P2P (Rust 侧无 iroh 依赖); ② **没有节点发现与心跳**, peers 靠手动或外部登记; ③ 查询语义是「逐个问已知节点」, **没有路由/转发到未知节点** (不是 DHT); ④ 顺手修了一处**别人半成品里阻塞编译的 borrow-after-move** (`bolloon-agent/shell_tool.rs`: 审计/输出/证据三处复用 `d.msg`, json! 先 move 走导致后面借用非法) —— 与本次任务无关, 但不修则整个 workspace 编译不过, 已在 Sanskrit/log 记明。
+
+---
+
+## 2026-10-27 第二十三批 (群内商议机制：推选 / 发言 / 并发 + 外部顾问角色)
+
+**动机**: leo「内部商议的推选机制和发言机制、并发机制都要有，参考 hushfusion forge；bolloon 独特点是邀请加入 + 外部智能体参与讨论 + 不强制对外部智能体有命令能力、把外部智能体当人类代理/合作顾问处理」。此前 `group_chat.rs` 的 `Autopilot` 只是**单 agent**视角的 should_speak（幂等/被@或提问才开口/每小时上限/冷却），**没有群级的推选/控麦/并发**。
+
+**参考 hushfusion forge（实测，非想象）**: 真正的推选/并发仲裁在 `internal/kernel/ha`——`DecideTakeover`（primary 心跳缺失/过期⇒secondary 接管）是**纯函数**，写/读心跳与接管回调都**端口注入 + fail-closed**（没注入就不动作），`Guard` 用 `Mutex`+ticker goroutine 看门；`internal/dchat` **只是传输层**（iroh/hyperswarm/orbitdb 薄客户端，按 topic 收发），不含商议逻辑。借鉴点：**决策纯函数化、运行时端口注入、fail-closed 不假装成功**。
+
+| Rust 模块 | 冻结语义 |
+| --- | --- |
+| **`bolloon-agent/deliberation.rs`（新）** | 群内商议核心，分三层且都对齐 ha 纪律：①**推选（纯函数）** `select_next_speaker`（模式 `AddressedFirst`/`MostRelevant`/`RoundRobin`）+ `elect_moderator`（**只从可主持角色选，Advisor 不能主持**）；②**发言（控麦）** `Floor{holder,queue}`（`claim/release/yield_to`）+ 纯判定 `admit_speech`（握麦者/被@且麦空才许开口，避免两人同时说）；③**并发 `DeliberationHub`**：`seen` 幂等去重 + `seq` 严格递增保序 + `floor` 控麦 + `last_spoke` 每发言者冷却；**副作用端口 `emit` 注入，未注入=fail-closed**（只算决策不动作）。`MemberRole{Human,Internal,Advisor}`：`Advisor`=外部智能体（经 world-inbox/p2p-visitor 加入）= **合作顾问，`can_command=false` 不可命令、`can_moderate=false` 不可主持**，但可被推选出声献策 |
+| **接线状态** | **运行时接线已完成**（2026-10-27 续）：`bolloon-web` 的 `AppState` 新增 `deliberation` 中枢（按 `group_id` 分桶、`tokio::Mutex`、运行态不持久化）；`room_guide` 与 `group_say` 每条房间消息先过 `decide_room_message`（注册作者角色 → 解析 @提及 → `DeliberationHub::ingest` 推选谁回应 + 控麦 + 并发去重），并施加 `admit_command` **入口门禁**——外部顾问（`from` 声明为外部 id + `command:true`）下达指令被拒；`room` GET 暴露 `deliberation_roles` 供前端识别谁是外部顾问。决策字段（`seq`/`speaker_id`/`floor_granted`/`can_command`/`cooldown_blocked`/`author_role`）随消息回包返回，供运行时真正驱动多 agent 并发讨论 |
+| **外部顾问入口判据** | `admit_command(role, is_command)`：建议/普通发言任何角色可（含 Advisor 献策）；`is_command=true` 时只有 `Human`/`Internal` 可下，`Advisor` 被拒。**命令入口显式拒绝把 Advisor 消息当指令**已落在 `decide_room_message` 里（返回 `Err("外部顾问不可下达命令 (仅可作建议)")`），`room_guide` 在落块前先门禁 |
+
+**门禁（真跑）**: `cargo test -p bolloon-agent deliberation` **18/0**（追加 `admit_command_gate_excludes_advisor`）；`cargo test -p bolloon-agent` **395/0**（无回归，含 `add_member` 幂等/`member_roles` 快照）；`cargo test -p bolloon-web` **7/0**（含 2 条新接线测试：`room_advisor_advice_allowed_but_command_refused`——顾问献策放行/被点名献策时其 `can_command=false`/顾问指令被拒/人类指令放行；`room_concurrent_ingest_unique_seq`——24 线程并发序号唯一）；`cargo build --workspace` **0 error**；wiki `wiki_check`/`wiki_lint --strict=v2` 均 OK（`deliberation-design.md` 已在 `index.md` 注册）。
+
+**诚实边界**: ① 这是**决策核心 + 消息摄入接线**，仍不是已接 LLM 的实时多 agent 讨论 runtime——`ingest` 只算决策并（若注入了 `emit`）触发发言端口，真正的「轮到谁就调 LLM 生成」需运行时在拿到的 `speaker_id`/`floor_granted` 上接 `emit` 并轮次结束调 `release_floor`；② 控麦**获麦后不自动释放**——一轮（含异步生成回复）期间麦握在发言者手里才真防抢话，由运行时收尾；③ 外部顾问「不可命令」已在**入口判据**落实（`admit_command`），但「命令执行路径排除 Advisor」是下一层的接法——目前房间消息经 `group_say`/`room_guide` 落块，尚未有"本地 agent 自动执行成员指令"的回路，等该回路落地时须以 `decision.can_command` 作硬门禁；④ 选举目前是**本地群内**决策，无跨节点共识/选主（那一层属 ha，本批未动用）。
 
 ---
 
 ## DIAP Rust SDK (本机 /Users/apple/Downloads/DIAP_Rust_SDK)
 
 同日更新: 0.2.7→**0.3.0** (edition 2021→2024, rust-version 1.99, ed25519-dalek 2→3) + iroh 1.4 API 对齐 (`NodeAddr`→`EndpointAddr`, `builder(presets::N0)`, `addr()/id()`, `remote_id()`)。3 个 examples 修复对齐新 API, `cargo build --examples` 0 警告过; **lib 测试 46 passed / 0 failed / 4 ignored** (修 nonce_manager/did_cache 测试缺 `async` — edition 2024 必需; key_generator 测试对齐废弃函数空占位语义; noir_embedded/noir_universal 测试输入自洽 + 默认 backend 未启用时切 Simplified)。crates.io 下载走 rsproxy 镜像 (直连超时/代理 SSL reset, 2026-10-25 实测)。提交 `fdbef37` + `aa9ec66`。
+
+---
+
+## 工具运行时迁移 (2026-10-26): 审计 → 决策 → 最小闭环 → shell → 契约
+
+**定位**: 目标不是"给 Rust 加一个路由器", 而是建立**完整的 Rust Agent 工具运行时**; ToolRouter 只是其中一个模块。
+TS 是**功能与行为基准**, Rust 是**目标架构**; 迁移 ≠ 逐行翻译, 要求「发现 / 模型调用 / 权限 / 执行 / MCP / 验证 / 故障恢复」形成闭环。
+
+### 迁移完整性审计结论
+
+| 层 | 判定 | 证据 |
+| --- | --- | --- |
+| L1 功能完整 | 未迁移 (进行中) | Rust 生产可执行工具 0 → 现 2 (`read_file` / `shell`); TS 真实注册 ≈186 |
+| L2 调用可靠 | 部分 | 注册 / 桥接 / 真实执行器已接; 检索与选择层未建 |
+| L3 运行安全 | 机制已有, 逐项接线中 | `Harness::gate` 九步门控完整; `guard_shell` **此前从未被调用** (本次接上) |
+| L4 闭环自治 | 未迁移 | 结果验证 / 证据持久化 / 失败恢复未接 |
+
+**关键事实**: `PORTED_TOOLS` (184) 是 constraint-runtime 移植台账 (无 schema、不注入 LLM), **不是**已具备的工具; 真正喂 LLM 的是 TS `pi-sdk.ts` 的 ToolRegistry (≈186)。
+
+### 已批准的架构决策
+
+| 决策 | 结论 |
+| --- | --- |
+| 1 私钥 | **接受安全升级**: 业务工具改收**密钥句柄 / 签名能力引用**, 私钥由 Keystore 在受控边界使用; 保留签名 / 交易 / 支付结果与错误语义。**句柄只是引用不是安全边界** —— Keystore 校验调用方权限、密钥用途、授权范围 |
+| 2 stub / fail-open | **升级**: 参数 Schema 真实校验; 权限策略不可用时高风险操作拒绝; 无法验证不得报已验证成功。**分风险等级** (只读 ≠ 高风险), 避免无关故障让 Agent 整体瘫痪 |
+| 3 超时 / 取消 / 长任务 | 统一执行控制接口但**不统一生命周期**: 普通请求 (超时/取消/有限重试) · 长任务 (任务 ID/状态/显式取消/后台继续) · 副作用 (超时先查实际状态, 不盲目重试) · 轮询 (保留重复查询, 不被循环检测误杀) |
+| 完成定义 | **业务能力等价 + 安全性不退化 + 运行机制完整**; 不要求与 TS 逐字节一致 |
+| **完全访问** | **B 真·全开**: 所有权限开放, shell 的 denylist / 命令白名单 / 路径保护全部跳过 (**用户显式选择**, 覆盖决策 2 这三项)。**超时 / 取消 / 预算 / 审计不撤** (运行控制, 非权限门) |
+
+### 已落地
+
+1. **最小闭环 (`read_file`)**: CLI 加 `bolloon-harness` 依赖 (此前**物理上**构造不了 Harness) → `ReadFileExecutor` → `ToolDef→ToolSchema` 桥接 (此前完全缺失) → 生产注册 → `params.tools` 注入 → `res.tool_calls → harness.gate()` 真执行 → `role:"tool"` 回传 (此前写死 `tool_calls: None`, 工具调用在历史上直接丢失) → 续轮 (`MAX_TOOL_TURNS=8`, 达上限如实上报、不伪造完成)。
+2. **`shell` (高风险)**: 四道闸 = `guard_shell` denylist (此次接线) · 命令白名单 · 路径 deny · 超时+取消 (Ctrl+C 会话级 flag, **一个**常驻监听不泄漏); **一次调用多命令** (`commands[]`, 预检全过才跑、失败即停); 审计 `~/.bolloon/logs/tool-shell.jsonl` (脱敏 + `mode` 字段)。`shell` 为 `default_allowed: false` + Harness **显式授权集** (授权 ≠ 无障碍)。
+3. **契约**: `tool_contract.rs` 统一错误码 (`invalid_argument` / `not_found` / `permission_denied` / `denied` / `command_failed` / `timeout` / `cancelled` / `unwired` / `internal`) + `retryable` (**仅 timeout 为真**, 且"可重试"≠ 自动重试)。
+
+### 有意行为变更 (安全升级, 测试钉住, 不许为"与 TS 一致"改回)
+
+- `read_file` 拒绝凭据文件 (`.env` / `*.pem` / `*.key` / `.bolloon/{identity,keypair,…}`) —— TS 无此禁区。
+- 参数必填在**入口**校验 (对齐 TS `pi-sdk-tools-validation`, 不让 fs 抛原生错误)。
+- `verified` 如实 (失败 `Some(false)`, 不冒充成功)。
+- 路径 deny 对**所有**命令生效 (TS 只在写/删/改类查, 读类绕开)。
+- 多命令**预检整批** (一条不合法 ⇒ 零执行) + 失败即停。
+- dashboard 工具清单取**真实注册** (删除硬编码 8 个假名字) —— 声明 ≠ 已具备。
+- `shell` 需显式授权, 不是 `default_allowed: true`。
+- 完全访问 (B) 下三道门不拦截 —— **用户显式选择**, 已记录。
+
+### 验证
+
+`cargo test -p bolloon-agent` **343 全绿** (新增 shell / 契约 / 权限模式用例); `bolloon-harness` 13 绿; `bolloon-cli` / `bolloon-web` 编译 **0 错误** (顺带修 `bolloon-p2p` 的 `Did::from_public` 与 `bolloon-web` 的 `spawn_blocking` 两处**预存编译阻断**, 它们挡着整仓验证)。
+
+### 诚实边界 / 待办
+
+- **端到端未跑真模型调用** (需 API key): `read_file` / `shell` 的「模型请求 → 执行 → 回传」只在单元与集成层验证。
+- 工具族仅 **2 / ≈186**; MCP / 钱包 / 支付未迁移 (应作独立能力与安全验收批次)。
+- 取消目前只接 Ctrl+C; Esc / UI 中断未接。
+- 审计落盘走 `HOME` / `USERPROFILE`。
+- 检索与选择层 (BM25 / 向量 / 重排) 未建 —— 按序排在工具族迁移之后。

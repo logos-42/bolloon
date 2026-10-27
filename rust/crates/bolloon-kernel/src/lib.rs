@@ -11,6 +11,7 @@
 //! - session-lifecycle 会话规则（持久化映射 / 过滤水合 / 运行种子合并）
 //! - transport       通信端口（send / broadcast / peers，未注入即拒）
 //! - ha              Kernel 双活 — 心跳仲裁 (纯机制) + 守护循环 (端口注入)
+//! - dual_core       双核 Kernel — 对等互维互保 + 间隔相位心跳 (staggered phase)
 
 pub mod channel_actor;
 pub mod model_runtime;
@@ -20,6 +21,8 @@ pub mod session_lifecycle;
 pub mod transport;
 pub mod cron;
 pub mod ha;
+pub mod dual_core;
+pub mod orphan_recovery;
 
 pub use channel_actor::{
     ChannelActor, ChannelEvent, ChannelHandle, ChannelId, SerialMailbox,
@@ -37,3 +40,7 @@ pub use session_lifecycle::{
 };
 pub use transport::{Transport, TransportPort, PeerInfo, TransportMessage, TransportError};
 pub use ha::{HeartbeatArbiter, HeartbeatGuard, HeartbeatState, GuardStatus, RecoveryAction};
+pub use dual_core::{
+    BeatSchedule, Beat, CoreId, FencingToken, PeerHealth, TakeoverDecision, HeartbeatStore,
+    DualArbiter, DualGuard,
+};

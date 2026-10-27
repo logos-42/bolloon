@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod chat_command;
+mod learning;
 mod slash;
 
 #[derive(Parser)]
@@ -346,6 +347,17 @@ async fn run_chat(channel: &str, resume: Option<&str>) -> anyhow::Result<()> {
     let mut history = tui::load_input_history(Some(channel));
     // 会话本体 (消息/标题/模型/附件 + 落盘): 命令逻辑全在 `chat_command`, 这里只做接线
     let mut sess = chat_command::ChatSession::new(&model, channel);
+    // 经验闭环 (记忆 / 判断力 / 技能) 从 `<BOLLOON_HOME>` 读进来 —— 终端也要带上历史来聊,
+    // 而不是每次从白纸开始 (leo: 「自动初始化加载 skills 和记忆」)。
+    let mut learn = learning::Learning::load(
+        &std::path::PathBuf::from(
+            std::env::var("BOLLOON_HOME").unwrap_or_else(|_| {
+                let h = std::env::var("HOME").unwrap_or_default();
+                format!("{h}/.bolloon")
+            }),
+        ),
+        "coding",
+    );
     // `--resume <序号|id|标题>`: 启动就接上旧会话 (面板上的标题/模型/消息数都是它的)
     if let Some(key) = resume {
         match sess.load_into(key) {
@@ -397,6 +409,16 @@ async fn run_chat(channel: &str, resume: Option<&str>) -> anyhow::Result<()> {
         tui::print_banner(Some(env!("CARGO_PKG_VERSION")));
     } else {
         println!("BOLLOON {} (rust native)", env!("CARGO_PKG_VERSION"));
+    }
+
+    // 启动即如实报一句: 这次到底加载了多少记忆 / 判断力 / 技能 (0 也照报, 不假装)
+    if wide_enough || !full {
+        if full {
+            chrome.print_above(&[learn.summary_line()]);
+            chrome.draw();
+        } else {
+            println!("{}", learn.summary_line());
+        }
     }
 
     // **整段会话持 raw 模式**: 提交后到下一次输入之间也必须是 raw, 否则抢先敲的 `\r` 会被
@@ -579,7 +601,7 @@ async fn run_chat(channel: &str, resume: Option<&str>) -> anyhow::Result<()> {
             history.push(prompt.clone());
         }
 
-        match send_one(&mut chrome, full, &mut sess, &llm, &prompt, &cancel, bypass).await {
+        match send_one(&mut chrome, full, &mut sess, &mut learn, &llm, &prompt, &cancel, bypass).await {
             Ok(()) => {}
             Err(e) => emit(&mut chrome, full, &[format!("✗ {e}")]),
         }
@@ -601,7 +623,7 @@ async fn run_chat(channel: &str, resume: Option<&str>) -> anyhow::Result<()> {
             let Some(sched) = sess.next_scheduled(now_ms()) else { break };
             let auto_text = format!("{} {}", sched.marker(), sched.text());
             let is_loop = matches!(sched, chat_command::Scheduled::Loop(_));
-            match send_one(&mut chrome, full, &mut sess, &llm, &auto_text, &cancel, bypass).await {
+            match send_one(&mut chrome, full, &mut sess, &mut learn, &llm, &auto_text, &cancel, bypass).await {
                 Ok(()) => {
                     if is_loop {
                         for l in sess.after_loop_turn(&ctx).await {
@@ -620,14 +642,22 @@ async fn run_chat(channel: &str, resume: Option<&str>) -> anyhow::Result<()> {
     chrome.clear();
     // 退出前把会话落盘 (空闲 Ctrl+C / Ctrl+D / 正常 /exit 都走这里)
     let saved_ok = sess.save().is_ok();
+    // 退出前做一次梦 (整理这一会话攒下的记忆 → 判断力/技能), 并把三份档案落盘
+    let dream_line = learning::report_line(&learn.dream_now());
+    let learn_saved = learn.save();
     let summary = sess.exit_summary(session_started.elapsed());
     drop(raw); // 先还终端, 再打印收尾 (不然输出会粘在输入行上)
     println!("{}", plain(&format!("{}── 会话结束 ──{}", tui::theme::C_DIM, tui::theme::RESET)));
     for l in &summary {
         println!("{}", plain(l));
     }
+    println!("{}", plain(&format!("{}经验    {}{}", "", learn.summary_line(), "")));
+    println!("{}", plain(&dream_line));
     if !saved_ok {
         println!("{}", plain("⚠ 会话落盘失败 —— 内容仍在内存, 别急着关终端"));
+    }
+    if let Err(e) = learn_saved {
+        println!("{}", plain(&format!("⚠ 经验落盘失败: {e}")));
     }
     Ok(())
 }
@@ -640,6 +670,7 @@ async fn send_one(
     chrome: &mut tui::Chrome,
     full: bool,
     sess: &mut chat_command::ChatSession,
+    learn: &mut learning::Learning,
     llm: &LlmRuntime,
     text: &str,
     cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -721,7 +752,15 @@ async fn send_one(
 
     let mut convo: Vec<bolloon_llm::ChatMessage> = vec![bolloon_llm::ChatMessage {
         role: "system".into(),
-        content: build_bolloon_system(&sess.channel),
+        content: {
+            let base = build_bolloon_system(&sess.channel);
+            let extra = learn.context_block(text, learning::DEFAULT_BUDGET);
+            if extra.trim().is_empty() {
+                base
+            } else {
+                format!("{base}\n\n# 经验 (跨会话, 按需取用)\n{extra}")
+            }
+        },
         name: None,
         tool_call_id: None,
         tool_calls: None,
@@ -737,6 +776,7 @@ async fn send_one(
     let mut watch = tui::input::watch_interrupts(cancel.clone());
     let mut interrupted = false;
     let mut tools_used: u32 = 0;
+    let mut used_tool_names: Vec<String> = Vec::new();
     let mut turn = 0u32;
     let (final_content, usage) = loop {
         turn += 1;
@@ -805,6 +845,12 @@ async fn send_one(
             };
             if stream_block {
                 chrome.end_stream();
+            }
+            // 经验闭环: 这一轮的事实入记忆, 攒够轮数就做一次梦 (纯函数整理, 不调模型)
+            learn.remember_turn(text, &used_tool_names, true);
+            if let Some(rep) = learn.maybe_dream() {
+                let line = learning::report_line(&rep);
+                emit(chrome, full, &[line]);
             }
             r
         } else {
@@ -881,6 +927,9 @@ async fn send_one(
                 (r.output.clone(), r.ok)
             };
             tools_used += 1;
+            if !used_tool_names.contains(&tc.function.name) {
+                used_tool_names.push(tc.function.name.clone());
+            }
             let args = serde_json::from_str(&tc.function.arguments).ok();
             let item = tui::panel::ToolCallListItem {
                 tool: tui::trace::trace_label(&tc.function.name),
@@ -1177,7 +1226,7 @@ fn build_dashboard(sess: &chat_command::ChatSession) -> tui::DashboardData {
     // leo 2026-10-27: 「skills 也是全局配置的, 不只是会话内获取, 要在电脑搜集其他已有的 skills,
     // 可以折叠压缩, 不全部显示」。做法 = 目录名即技能名 (不读文件, 1297 个也只要几毫秒),
     // 上限封顶; 面板只列前 8 个 + `… 还有 N 个` (list_block 已有这套折叠)。
-    for n in scan_skill_dirs(&home_path, 2000) {
+    for n in learning::machine_skills(&std::path::PathBuf::from(&home), 2000) {
         if !skills.contains(&n) {
             skills.push(n);
         }
@@ -1202,65 +1251,6 @@ fn build_dashboard(sess: &chat_command::ChatSession) -> tui::DashboardData {
         skills,
         update_status: "⚙ 本地构建".into(),
     }
-}
-
-/// 扫本机已有的技能库 (`<dir>/SKILL.md` 的**目录名**就是技能名)。
-///
-/// 为什么要扫: 技能是**全局资产**, 不只活在某个会话的注册表里。用户机器上已经有
-/// Hermes / Claude / Codex 各自的 skill 库, 面板要如实把它们算进去 (多少个, 前几个是谁),
-/// 否则永远显示 "0 · 暂无" —— 那是不知道, 不是没有。
-///
-/// 成本控制: 只看目录 (不读 SKILL.md 内容), 深度 ≤ 4, 跳过隐藏目录与 node_modules,
-/// 上限 `cap` 条。1297 个目录实测 < 30ms。
-fn scan_skill_dirs(home: &std::path::Path, cap: usize) -> Vec<String> {
-    let user_home = std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("/"));
-    let mut roots: Vec<std::path::PathBuf> = vec![
-        home.join("skills"),                  // ~/.bolloon/skills (本仓自己的)
-        user_home.join(".hermes/skills"),     // Hermes 技能库
-        user_home.join(".claude/skills"),     // Claude Code
-        user_home.join(".codex/skills"),      // Codex
-    ];
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd.join(".hermes/skills")); // 项目内的
-    }
-
-    let mut out: Vec<String> = Vec::new();
-    for root in roots {
-        if !root.is_dir() {
-            continue;
-        }
-        // 迭代式遍历 (不递归调栈), 深度上限 4
-        let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(root, 0)];
-        while let Some((dir, depth)) = stack.pop() {
-            if out.len() >= cap {
-                break;
-            }
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-            for e in rd.flatten() {
-                let p = e.path();
-                if !p.is_dir() {
-                    continue;
-                }
-                let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') || name == "node_modules" || name == "target" {
-                    continue;
-                }
-                if p.join("SKILL.md").is_file() && !out.contains(&name) {
-                    out.push(name.clone());
-                    if out.len() >= cap {
-                        break;
-                    }
-                }
-                if depth < 3 {
-                    stack.push((p, depth + 1));
-                }
-            }
-        }
-    }
-    out.sort();
-    out
 }
 
 /// 全局 (~/.bolloon/mcp.json) + 项目 (mcp.json, 含父目录) 合并 MCP server 名 (跨文件夹复用)
