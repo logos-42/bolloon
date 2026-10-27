@@ -333,13 +333,34 @@ impl LlmRuntime {
         for (k, v) in &headers {
             req = req.header(k, v);
         }
-        let resp = req.send().await.map_err(|e| {
-            if e.is_timeout() {
-                LlmError::Timeout
-            } else {
-                LlmError::Network(e.to_string())
+        // 429 / 5xx 退避重试 —— **与非流式那条同策略** (`post_json`), 不能"流式就直接失败":
+        // 真实场景里交互第一轮就走流式, 那里不重试等于把限流直接甩到用户脸上。
+        let max_retries: u32 = 2;
+        let mut attempt: u32 = 0;
+        let resp = loop {
+            let r = req.try_clone().expect("请求必须可克隆").send().await.map_err(|e| {
+                if e.is_timeout() {
+                    LlmError::Timeout
+                } else {
+                    LlmError::Network(e.to_string())
+                }
+            })?;
+            let st = r.status();
+            if (st.as_u16() == 429 || st.as_u16() >= 500) && attempt < max_retries {
+                attempt += 1;
+                let exp: u32 = attempt.saturating_sub(1);
+                let backoff = Duration::from_millis(300 * 2u64.pow(exp));
+                tracing::warn!(
+                    status = st.as_u16(),
+                    backoff_ms = backoff.as_millis(),
+                    stream = true,
+                    "llm retry after backoff"
+                );
+                tokio::time::sleep(backoff).await;
+                continue;
             }
-        })?;
+            break r;
+        };
         let status = resp.status();
         if !status.is_success() {
             let raw = resp.text().await.unwrap_or_default();

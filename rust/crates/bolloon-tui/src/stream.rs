@@ -106,13 +106,28 @@ impl StreamPanel {
     }
 
     /// 重画一帧。`above_row` = 面板**底边**所在行 (面板从这里向上生长)。
-    pub fn show(&mut self, text: &str, title: &str, status: &str, cols: usize, above_row: usize) {
+    ///
+    /// `scroll` = 让终端上滚 n 行的回调 (由 `Chrome::scroll_history` 提供)。
+    /// 面板**变高**时先滚, 再从底边向上画 —— 否则它会把刚上屏的历史行(比如用户消息)
+    /// 直接吃掉 (真机现象: 发出去的消息框不见了)。
+    pub fn show(
+        &mut self,
+        text: &str,
+        title: &str,
+        status: &str,
+        cols: usize,
+        above_row: usize,
+        scroll: &mut dyn FnMut(usize),
+    ) {
         let above_row = above_row.max(2);
         let max_rows = above_row - 1; // 顶部留第 1 行, 绝不顶到屏幕外
         let frame = render_stream_frame(text, title, status, cols, max_rows);
         let bottom = above_row - 1;
         // 不越过第 1 行: 小终端 / 首轮 dashboard 紧贴顶部时也安全 (绝不把边框画到行 0)
         let h = frame.len().min(bottom);
+        if h > self.drawn {
+            scroll(h - self.drawn);
+        }
         let top = bottom - h + 1;
 
         let mut out = String::new();

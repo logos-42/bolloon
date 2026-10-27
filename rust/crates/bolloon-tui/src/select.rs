@@ -304,6 +304,12 @@ pub enum Key {
     Down,
     Left,
     Right,
+    /// Home (`\x1b[H` / `\x1b[1~`) —— 光标到行首
+    Home,
+    /// End (`\x1b[F` / `\x1b[4~`) —— 光标到行尾
+    End,
+    /// Delete (`\x1b[3~`) —— 删除光标处字符 (Backspace 删光标前)
+    Delete,
     /// Tab —— 补全接受 (composer 里用; 普通选择器不响应)
     Tab,
     Enter,
@@ -316,6 +322,14 @@ pub enum Key {
     AltEnter,
     /// Ctrl+G (0x07) —— 打开 $VISUAL/$EDITOR 写草稿
     CtrlG,
+    /// Ctrl+D (0x04) —— 结束输入 (raw 模式下它只是一个字节, 不会让 read() 返回 0)
+    Eof,
+    /// Ctrl+A (0x01) —— 光标到行首 (emacs 口径)
+    CtrlA,
+    /// Ctrl+E (0x05) —— 光标到行尾
+    CtrlE,
+    /// Ctrl+U (0x15) —— 删光标到行首
+    CtrlU,
     /// Alt+V (`ESC` + `v`) —— 贴剪贴板图片
     AltV,
     Esc,
@@ -355,6 +369,27 @@ pub fn parse_keys(bytes: &[u8]) -> Vec<Key> {
                             i += 3;
                             continue;
                         }
+                        // `\x1b[H` / `\x1b[F` —— 行首 / 行尾
+                        b'H' => {
+                            out.push(Key::Home);
+                            i += 3;
+                            continue;
+                        }
+                        b'F' => {
+                            out.push(Key::End);
+                            i += 3;
+                            continue;
+                        }
+                        // `\x1b[1~` `\x1b[3~` `\x1b[4~` (xterm 的 Home/Delete/End)
+                        b'1' | b'3' | b'4' if i + 3 < bytes.len() && bytes[i + 3] == b'~' => {
+                            out.push(match bytes[i + 2] {
+                                b'1' => Key::Home,
+                                b'3' => Key::Delete,
+                                _ => Key::End,
+                            });
+                            i += 4;
+                            continue;
+                        }
                         _ => {}
                     }
                 }
@@ -388,6 +423,22 @@ pub fn parse_keys(bytes: &[u8]) -> Vec<Key> {
             }
             0x07 => {
                 out.push(Key::CtrlG);
+                i += 1;
+            }
+            0x04 => {
+                out.push(Key::Eof);
+                i += 1;
+            }
+            0x01 => {
+                out.push(Key::CtrlA);
+                i += 1;
+            }
+            0x05 => {
+                out.push(Key::CtrlE);
+                i += 1;
+            }
+            0x15 => {
+                out.push(Key::CtrlU);
                 i += 1;
             }
             0x03 => {
@@ -591,6 +642,20 @@ pub fn tui_select(title: &str, items: &[TuiChoice], opts: &SelectOptions) -> Opt
 
         match key {
             Key::Tab => {} // 选择器不响应 Tab (composer 专用)
+            // Home/End: 跳到首/末项 (与 ↑↓ 同一套视窗跟随, 不额外加状态)
+            Key::Home => {
+                cursor = 0;
+                num_buf.clear();
+                note.clear();
+            }
+            Key::End => {
+                cursor = lines.len().saturating_sub(1);
+                num_buf.clear();
+                note.clear();
+            }
+            // 选择器没有"光标编辑"这回事: Delete / Ctrl+A / Ctrl+E / Ctrl+U 一律不响应;
+            // Ctrl+D 在选择器里也不算退出 (退出的唯一入口是选 Cancel 行 / Esc)
+            Key::Delete | Key::CtrlA | Key::CtrlE | Key::CtrlU | Key::Eof => {}
             Key::Up => {
                 cursor = if cursor > 0 { cursor - 1 } else { lines.len() - 1 };
                 num_buf.clear();

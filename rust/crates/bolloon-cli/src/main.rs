@@ -17,6 +17,7 @@
 use bolloon_llm::LlmRuntime;
 use bolloon_tui as tui;
 use clap::{Parser, Subcommand};
+use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -142,16 +143,27 @@ enum TaskAction {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // 日志的唯一出口 (`bolloon_tui::logbus`):
+    //   ① **永远先落盘** (<BOLLOON_HOME>/rust/logs/bolloon.log) —— 级别/模块/上下文/时间戳不丢;
+    //   ② TUI 运行中**不写 stderr** (那会和底栏抢同一块终端) —— 改推事件队列, 由 Chrome 展示;
+    //   ③ 非交互/重定向/`bolloon web` 照原样写 stderr (行为不变)。
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info".into()),
         )
-        // 结构化日志走 stderr: 与 CLI/TUI 的 stdout 绘制区域严格分离。
-        // 启动仪表盘 (LoadingTui) 独占 stdout, 日志不会覆盖面板或与之交错;
-        // 非交互/重定向场景下 stdout 与 stderr 也各自成流, 行为可预期。
-        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
+        .with_writer(bolloon_tui::logbus::LogWriter::new)
         .init();
+    bolloon_tui::logbus::install_panic_hook();
+
+    // 双核 Kernel HA: 按 BOLLOON_HA 启用; 两进程各选 A/B 经心跳文件互维互保。
+    // 接管动作 = 真孤儿接管 (reconcileOrphans + prepareResume), 不再接 NoopRecovery。
+    let _ha = bolloon_kernel::dual_core::spawn_kernel_ha_from_env(Arc::new(
+        bolloon_kernel::orphan_recovery::OrphanRecovery::new(
+            bolloon_kernel::orphan_recovery::runs_dir(),
+        ),
+    ));
 
     let cli = Cli::parse();
 
@@ -308,6 +320,8 @@ fn cwd_candidates(q: &str) -> Vec<tui::ComplItem> {
 }
 
 async fn run_chat(channel: &str) -> anyhow::Result<()> {
+    // 从这里起日志不再直写 stderr (退出/panic 展开时自动放开)
+    let _tui_log = tui::logbus::TuiGuard::new();
     let (llm, model) = build_chat_llm();
 
     // 权限模式（对齐 TS `BOLLOON_PERM_MODE`）: bypass = 完全访问 = **所有权限开放**
@@ -337,7 +351,9 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
 
     // 只有真终端才用 chrome; 非 TTY 走纯 println (免得往管道里灌 ANSI)
     let full = tui::select::tui_capable();
+    let session_started = std::time::Instant::now();
     let mut chrome = tui::Chrome::new(tui::width::term_height(), tui::width::term_width());
+    chrome.status.session_started = Some(session_started);
     chrome.hint = tui::help::HINT.to_string();
     refresh_status(&mut chrome, &sess);
 
@@ -359,12 +375,15 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
             chrome.set_flow_top(lines.len() + 2);
             chrome.draw();
         } else {
+            // 非 TTY: 同样一块面板, 但**不带任何颜色/光标控制** (管道里要能直接 grep)
             for l in &lines {
-                println!("{l}");
+                println!("{}", plain(l));
             }
         }
-    } else {
+    } else if full {
         tui::print_banner(Some(env!("CARGO_PKG_VERSION")));
+    } else {
+        println!("BOLLOON {} (rust native)", env!("CARGO_PKG_VERSION"));
     }
 
     // **整段会话持 raw 模式**: 提交后到下一次输入之间也必须是 raw, 否则抢先敲的 `\r` 会被
@@ -373,8 +392,6 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
     // 毫秒时钟: 轮末 agent 循环判 loop 任务是否"到点"
     let now_ms = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u128;
 
-    // Esc / Ctrl+C 双击退出窗口 (TS `timing.ts` ESC_DOUBLE_MS)
-    let mut last_cancel: Option<std::time::Instant> = None;
     // 完全访问 = 所有权限开放 ⇒ **必须让用户看见**（不能开着却没人知道）
     if bypass {
         emit(
@@ -396,6 +413,8 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
         if matches!(chrome.activity, tui::Activity::Thinking { .. }) {
             chrome.activity = tui::Activity::Idle;
         }
+        // 后台日志事件: 空闲时落进历史区 (用户能看见告警), 生成中只走活动行
+        flush_logs(&mut chrome, full, false);
         if full {
             chrome.draw();
         }
@@ -405,15 +424,11 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
         let (text, is_auto) = if let Some(sched) = sess.next_scheduled(now_ms()) {
             (format!("{} {}", sched.marker(), sched.text()), true)
         } else if full {
-            // Hermes 式 Terminal Composer: 自绘「顶/底 ─ + ❯ 多行输入 + 状态栏」,
-            // 支持 `/ @ !` 前缀补全 (不破坏草稿)。输入状态在 `Compose` 里, 刷新不丢。
-            let cols = tui::width::term_width();
-            let status_line = chrome.status.render(cols);
-            let r = tui::input::ask_composer(
-                &status_line,
-                &history,
-                &prefill,
-                &|kind: tui::ComplKind, q: &str| match kind {
+            // 输入区由 `Chrome` 自己画 (固定高度 + 绝对行号)。这里只喂状态源:
+            // `/ @ !` 补全候选来自 slash::specs / 当前目录, 缓冲区/光标在 Chrome 里。
+            let outcome = chrome.read_compose(&history, &prefill, &|kind: tui::ComplKind,
+                                                                      q: &str| {
+                match kind {
                     tui::ComplKind::Slash => slash::specs()
                         .iter()
                         .map(|s| tui::ComplItem {
@@ -423,36 +438,28 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
                         })
                         .collect(),
                     tui::ComplKind::At => cwd_candidates(q),
-                    tui::ComplKind::Bang => Vec::new(), // 无候选: composer 显示 Shell 模式提示
-                },
-            );
-            prefill.clear();
-            if r.eof {
-                break; // Ctrl+D / 管道断了
-            }
-            if r.cancelled {
-                let now = std::time::Instant::now();
-                let twice = last_cancel
-                    .map(|t| now.duration_since(t).as_millis() <= tui::app::DOUBLE_TAP_MS)
-                    .unwrap_or(false);
-                last_cancel = Some(now);
-                if twice {
-                    break;
+                    tui::ComplKind::Bang => Vec::new(), // 无候选: 状态行给 Shell 模式提示
                 }
-                // 第一次 Esc/Ctrl+C 只丢这一行输入 (回填/改稿时太容易误杀)
-                emit(
-                    &mut chrome,
-                    full,
-                    &[format!(
-                        "{}· 已取消当前输入 (再按一次 Esc / Ctrl+C 退出){}",
-                        tui::theme::C_DIM,
-                        tui::theme::RESET
-                    )],
-                );
-                continue;
+            });
+            prefill.clear();
+            match outcome {
+                // Ctrl+D / 管道断了 / **空闲时一次 Ctrl+C** —— 都走退出 (下面统一落盘)
+                tui::InputOutcome::Eof | tui::InputOutcome::Quit => break,
+                tui::InputOutcome::Cancelled => {
+                    // Esc = 只丢这一行, 会话不退 (leo: 退出只认 Ctrl+C / Ctrl+D / /exit)
+                    emit(
+                        &mut chrome,
+                        full,
+                        &[format!(
+                            "{}· 已取消当前输入 (会话继续 · Ctrl+C 退出){}",
+                            tui::theme::C_DIM,
+                            tui::theme::RESET
+                        )],
+                    );
+                    continue;
+                }
+                tui::InputOutcome::Line(v) => (v.trim().to_string(), false),
             }
-            last_cancel = None;
-            (r.value.trim().to_string(), false)
         } else {
             let r = tui::ask_line_with("› ", &history, &prefill, false);
             prefill.clear();
@@ -567,8 +574,20 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
         }
     }
     chrome.clear();
+    // 退出前把会话落盘 (Ctrl+C 二次退出 / Ctrl+D / 正常 /exit 都走这里)
+    let saved = match sess.save() {
+        Ok(()) => format!("已保存 {}", sess.path().display()),
+        Err(e) => format!("⚠ 会话落盘失败: {e} (内容仍在内存)"),
+    };
     drop(raw); // 先还终端, 再打印收尾 (不然输出会粘在输入行上)
-    println!("{}已退出会话{}", tui::theme::C_DIM, tui::theme::RESET);
+    println!(
+        "{}",
+        plain(&format!(
+            "{}已退出会话 · {saved}{}",
+            tui::theme::C_DIM,
+            tui::theme::RESET
+        ))
+    );
     Ok(())
 }
 
@@ -596,7 +615,7 @@ async fn send_one(
         let lines: Vec<String> = user_box.split('\n').map(|s| s.to_string()).collect();
         chrome.print_above(&lines);
     } else {
-        println!("{user_box}");
+        println!("{}", plain(&user_box));
     }
     sess.messages.push(bolloon_llm::ChatMessage {
         role: "user".into(),
@@ -606,6 +625,8 @@ async fn send_one(
         tool_calls: None,
         images: user_msg.images,
     });
+    // 状态栏的会话摘要跟着首条用户消息走 (语义标题, 不是时间戳)
+    sess.refresh_title();
     let _ = sess.save();
 
     // 装配 bolloon 身份 system prompt: 单一真源 = `bolloon_agent::prompt::build_system_prompt`
@@ -628,7 +649,18 @@ async fn send_one(
     let granted: Vec<String> = if bypass {
         registry.list().await.iter().map(|d| d.name.clone()).collect()
     } else {
-        vec!["shell".to_string()]
+        vec![
+            // 高风险 shell + 可逆写入（显式授予，不是默认放行）
+            "shell".to_string(),
+            "write_file".to_string(),
+            "edit_file".to_string(),
+            "mkdir".to_string(),
+            "move_file".to_string(),
+            // delete_file **不在**此列: 不可逆 ⇒ 需显式授权（决策 2 分级）
+            // git: 本地写（add/commit）授予；git_push（不可逆外部）**不默认授予**
+            "git_add".to_string(),
+            "git_commit".to_string(),
+        ]
     };
     let granted_refs: Vec<&str> = granted.iter().map(|s| s.as_str()).collect();
     let harness = std::sync::Arc::new(
@@ -658,12 +690,12 @@ async fn send_one(
 
     let started = std::time::Instant::now();
     let mut panel = tui::StreamPanel::new();
-    let mut final_content = String::new();
+    // 等模型/工具期间的按键监听 (只认 Ctrl+C / Esc ⇒ 中断这一回合)
+    let mut watch = tui::input::watch_interrupts(cancel.clone());
+    let mut interrupted = false;
     let mut tools_used: u32 = 0;
     let mut turn = 0u32;
-    let mut usage = None;
-
-    loop {
+    let (final_content, usage) = loop {
         turn += 1;
         let params = {
             let mut p = bolloon_llm::GenerateParams::new(&sess.model, convo.clone());
@@ -697,9 +729,15 @@ async fn send_one(
                             acc.push_str(&d);
                         }
                     }
+                    // **一次 Ctrl+C = 中断这一回合** (raw 模式下不会有 SIGINT, 只能读键)
+                    _ = watch.recv() => {
+                        interrupted = true;
+                        break Err(bolloon_llm::LlmError::Network("用户中断".into()));
+                    }
                     _ = tick.tick() => {
                         chrome.tick();
                         chrome.refresh_size();
+                        flush_logs(chrome, full, true);
                         chrome.draw();
                     }
                 }
@@ -711,12 +749,14 @@ async fn send_one(
                         chrome.draw();
                     } else {
                         chrome.activity = tui::Activity::Idle;
+                        let (cols, anchor) = (chrome.cols, chrome.panel_anchor());
                         panel.show(
                             &acc,
                             "Bolloon Agent",
                             "◉ Generating · 流式输出中",
-                            chrome.cols,
-                            chrome.panel_anchor(),
+                            cols,
+                            anchor,
+                            &mut |n| chrome.scroll_history(n),
                         );
                     }
                     last_paint = std::time::Instant::now();
@@ -725,21 +765,33 @@ async fn send_one(
             panel.finish(chrome.panel_anchor());
             r
         } else {
-            llm.generate("env", params).await
+            tokio::select! {
+                r = llm.generate("env", params) => r,
+                _ = watch.recv() => {
+                    interrupted = true;
+                    Err(bolloon_llm::LlmError::Network("用户中断".into()))
+                }
+            }
         };
         let res = match res {
             Ok(r) => r,
+            Err(_) if interrupted => {
+                panel.finish(chrome.panel_anchor());
+                chrome.activity = tui::Activity::Idle;
+                flush_logs(chrome, full, false);
+                refresh_status(chrome, sess);
+                return Err("已中断 (Ctrl+C) · 本回合未完成 (用户消息已保留)".to_string());
+            }
             Err(e) => {
                 refresh_status(chrome, sess);
                 return Err(format!("LLM 调用失败: {e}（已记日志, 不冒充成功回复）"));
             }
         };
-        usage = Some(res.usage);
+        let usage = Some(res.usage);
 
         // 模型没要工具 ⇒ 本轮就是最终答复, 收口
         if res.tool_calls.is_empty() {
-            final_content = res.content;
-            break;
+            break (res.content, usage);
         }
 
         // ── 执行工具 (全部走 Harness 门: discover/permission/policy/budget/idempotency/execute/verify/evidence) ──
@@ -800,7 +852,7 @@ async fn send_one(
             chrome.print_above(&tool_lines);
         } else {
             for l in &tool_lines {
-                println!("{l}");
+                println!("{}", plain(l));
             }
         }
 
@@ -827,18 +879,26 @@ async fn send_one(
 
         if turn >= MAX_TOOL_TURNS {
             // 达上限: 用最后产出的正文收口; 没有正文就如实说没完成, 不伪造"已完成"
-            final_content = if res.content.trim().is_empty() {
-                format!("（已连续调用工具 {MAX_TOOL_TURNS} 轮仍未产出最终答复 —— 如实上报, 不冒充完成）")
-            } else {
-                res.content.clone()
-            };
-            break;
+            break (
+                if res.content.trim().is_empty() {
+                    format!("（已连续调用工具 {MAX_TOOL_TURNS} 轮仍未产出最终答复 —— 如实上报, 不冒充完成）")
+                } else {
+                    res.content.clone()
+                },
+                usage,
+            );
         }
-    }
+    };
 
     let elapsed_ms = started.elapsed().as_millis();
     if full {
         chrome.activity = tui::Activity::Idle;
+    }
+
+    // 生成期间攒下的日志行 (WARN/ERROR) 先落进历史 —— 告警不许因为"怕脏界面"被吞
+    let queued = chrome.take_queued_history();
+    if !queued.is_empty() {
+        emit(chrome, full, &queued);
     }
 
     // 空回复**不出空框** —— `render_agent_message` 是唯一收口点
@@ -848,7 +908,7 @@ async fn send_one(
         chrome.print_above(&above);
     } else {
         for l in &above {
-            println!("{l}");
+            println!("{}", plain(l));
         }
     }
 
@@ -876,6 +936,25 @@ async fn send_one(
     Ok(())
 }
 
+/// 非 TTY (管道 / 重定向 / NO_COLOR) ⇒ **剥掉 ANSI**: 别往管道里灌颜色和光标控制。
+///
+/// 颜色常量是编译期的 SGR 串, 各个渲染函数都会带上; 所以闸门只放在**真正写 stdout 的那一层**
+/// (`emit` / 直接 println 的几处), 一处收口 —— 不逐个渲染函数加开关。
+fn plain(line: &str) -> String {
+    if tui::color_enabled() {
+        line.to_string()
+    } else {
+        tui::width::strip_ansi(line)
+    }
+}
+
+/// 按**显示列**截断 (中文 2 列 / Emoji 2 列), 超了用 `…` 收尾。
+///
+/// 会话标题、状态栏摘要都走它 —— 绝不用字符数或字节数冒充列宽。
+pub(crate) fn truncate_display(s: &str, max: usize) -> String {
+    tui::width::truncate_safe(s, max)
+}
+
 /// 状态栏: 模型名去掉 provider 前缀 (TS `index.ts` L1126-1129), 标题跟着会话走
 fn refresh_status(chrome: &mut tui::Chrome, sess: &chat_command::ChatSession) {
     let model = sess
@@ -899,8 +978,69 @@ fn emit(chrome: &mut tui::Chrome, full: bool, lines: &[String]) {
         chrome.print_above(&flat);
     } else {
         for l in lines {
-            println!("{l}");
+            println!("{}", plain(l));
         }
+    }
+}
+
+/// 把日志队列里的事件搬进界面 (**唯一通道**: 后台任务永远不直接往终端写字)。
+///
+/// `streaming = true` 时只更新活动行 (流式面板正在长, 不能插历史行把它顶掉);
+/// 否则作为历史行落下 —— 告警/错误是用户该看见的东西, 不许"为了界面干净"吞掉。
+fn flush_logs(chrome: &mut tui::Chrome, full: bool, streaming: bool) {
+    let evs = tui::logbus::drain();
+    if evs.is_empty() {
+        return;
+    }
+    if streaming {
+        if let Some(last) = evs.last() {
+            chrome.note(last.display());
+        }
+        // 生成中错过的这些照样要在回合收尾时落进历史, 不丢
+        for e in &evs {
+            if e.level != tui::LogLevel::Info {
+                chrome.queue_history_line(e.display());
+            }
+        }
+        return;
+    }
+    let lines: Vec<String> = evs.iter().map(|e| e.display()).collect();
+    emit(chrome, full, &lines);
+}
+
+/// CLI 记忆召回文本 (top-N, 复用 MemoryStore::recall 的 importance×decay 打分; 与 Web 同源 SQLite)
+fn cli_memory_recall_text() -> String {
+    let Ok(db) = memory_db() else { return String::new() };
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    let Ok(rows) = db.recall("local", None, 500, now_ms) else { return String::new() };
+    let store = bolloon_agent::memory::MemoryStore::from_snapshot(
+        rows.into_iter()
+            .map(|r| bolloon_agent::memory::MemoryEntry {
+                id: format!("mem-{:06}", r.id),
+                content: r.content,
+                layer: match r.layer.as_str() {
+                    "lesson" => bolloon_agent::memory::MemoryLayer::Lesson,
+                    "decision" => bolloon_agent::memory::MemoryLayer::Decision,
+                    "temporary" => bolloon_agent::memory::MemoryLayer::Temporary,
+                    _ => bolloon_agent::memory::MemoryLayer::RunFact,
+                },
+                importance: r.importance,
+                created_at: chrono::DateTime::from_timestamp_millis(r.created_at_ms as i64)
+                    .unwrap_or_else(chrono::Utc::now),
+                expires_at: r
+                    .expires_at_ms
+                    .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64)),
+            })
+            .collect(),
+    );
+    let hits = store.recall(None, 6, chrono::Utc::now());
+    if hits.is_empty() {
+        String::new()
+    } else {
+        hits.iter()
+            .map(|e| format!("• {}", e.content))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -917,7 +1057,9 @@ fn build_bolloon_system(channel: &str) -> String {
         role: None,
         tool: None,
     };
-    bolloon_agent::prompt::build_system_prompt(&docs, None, None, None, 0, "", &ctx).text
+    // 记忆召回 (top-N) 接进 system prompt —— 之前这一项恒为空, 记忆从未进 prompt
+    let memory_text = cli_memory_recall_text();
+    bolloon_agent::prompt::build_system_prompt(&docs, None, None, None, 0, "", Some(&memory_text), &ctx).text
 }
 
 /// 组装启动 Dashboard 的数据快照 (全部从运行时读, 不硬编码示例)

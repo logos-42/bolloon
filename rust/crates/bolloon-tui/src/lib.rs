@@ -56,6 +56,7 @@ pub mod help;
 pub mod history;
 pub mod input;
 pub mod loading;
+pub mod logbus;
 pub mod markdown;
 pub mod panel;
 pub mod screen;
@@ -66,12 +67,15 @@ pub mod theme;
 pub mod trace;
 pub mod width;
 
-pub use app::{Activity, Chrome, InputOutcome, StatusBar, TurnStats, RESERVED_LINES};
+pub use app::{
+    Activity, Chrome, ComplSource, InputOutcome, StatusBar, TurnStats, RESERVED_LINES,
+};
 pub use brand::{print_banner, render_startup_dashboard, DashboardData};
 pub use completion::{ComplItem, ComplKind};
 pub use history::{append_input_history, load_input_history};
-pub use input::{ask_composer, ask_line, ask_line_with, ask_masked, ComplSource};
+pub use input::{ask_line, ask_line_with, ask_masked, hold_raw_mode, watch_interrupts};
 pub use loading::{LoadingTui, LOADING_FRAMES};
+pub use logbus::{LogEvent, LogLevel, TuiGuard};
 pub use panel::{render_agent_message, render_dashboard, render_dialog, render_user_message};
 pub use screen::Screen;
 pub use select::{tui_select, TuiChoice};

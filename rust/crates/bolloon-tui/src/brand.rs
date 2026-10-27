@@ -159,6 +159,34 @@ fn dash_top(title: &str, w: usize) -> String {
     )
 }
 
+/// 右列单个分区最多列出几个条目（**压缩显示**）。
+///
+/// 工具族会一路涨到 186 个 —— 全铺进启动面板会把面板撑爆、也读不出重点。
+/// 口径: 只列前 N 个做代表, 其余折叠成一行「…还有 X 个」；
+/// **总数在分区标题行仍然是真实的**（压缩的是名字, 不是事实）。
+const RIGHT_LIST_MAX: usize = 8;
+
+/// 右列一个分区: 标题（真实总数）+ 压缩后的条目行
+fn list_block(title: &str, items: &[String], empty_note: &str) -> Vec<String> {
+    use crate::theme::{C_ACCENT, C_DIM, C_MUTED, RESET};
+    let mut out = vec![format!(
+        "{C_ACCENT}{title}{RESET}  {C_DIM}{}{RESET}",
+        items.len()
+    )];
+    if items.is_empty() {
+        out.push(format!("  {C_MUTED}·{RESET} {C_DIM}{empty_note}{RESET}"));
+    } else {
+        for t in items.iter().take(RIGHT_LIST_MAX) {
+            out.push(format!("  {C_MUTED}·{RESET} {t}"));
+        }
+        let rest = items.len().saturating_sub(RIGHT_LIST_MAX);
+        if rest > 0 {
+            out.push(format!("  {C_DIM}… 还有 {rest} 个{RESET}"));
+        }
+    }
+    out
+}
+
 /// 底栏: `╰──────────────────────────────────────────────╯`
 fn dash_bottom(w: usize) -> String {
     use crate::theme::{C_BORDER_BRIGHT, RESET};
@@ -168,7 +196,7 @@ fn dash_bottom(w: usize) -> String {
 
 /// 渲染启动 Dashboard, 返回逐行字符串 (含圆角边框与分区)
 pub fn render_startup_dashboard(d: &DashboardData) -> Vec<String> {
-    use crate::theme::{BOLD, C_ACCENT, C_BORDER_BRIGHT, C_DIM, C_MUTED, C_OK, RESET};
+    use crate::theme::{BOLD, C_ACCENT, C_BORDER_BRIGHT, C_DIM, C_OK, RESET};
     use crate::width::pad_to_width;
     let w = crate::width::term_width().clamp(64, 120);
     let inner = w.saturating_sub(2);
@@ -188,39 +216,14 @@ pub fn render_startup_dashboard(d: &DashboardData) -> Vec<String> {
 
     // ── 右列: Tools / MCP / Skills 三个分区 ──
     let mut right: Vec<String> = Vec::new();
-    right.push(format!(
-        "{C_ACCENT}Available Tools{RESET}  {C_DIM}{}{RESET}",
-        d.tools.len()
+    // 三个分区统一压缩显示（总数真实, 名字不全铺 —— 工具族会涨到 186）
+    right.extend(list_block("Available Tools", &d.tools, "无"));
+    right.extend(list_block("MCP Servers", &d.mcp, "未配置 (按 mcp.json 加载)"));
+    right.extend(list_block(
+        "Available Skills",
+        &d.skills,
+        "暂无 (对话中自动蒸馏)",
     ));
-    if d.tools.is_empty() {
-        right.push(format!("  {C_MUTED}·{RESET} {C_DIM}无{RESET}"));
-    } else {
-        for t in &d.tools {
-            right.push(format!("  {C_MUTED}·{RESET} {t}"));
-        }
-    }
-    right.push(format!(
-        "{C_ACCENT}MCP Servers{RESET}  {C_DIM}{}{RESET}",
-        d.mcp.len()
-    ));
-    if d.mcp.is_empty() {
-        right.push(format!("  {C_MUTED}·{RESET} {C_DIM}未配置 (按 mcp.json 加载){RESET}"));
-    } else {
-        for m in &d.mcp {
-            right.push(format!("  {C_MUTED}·{RESET} {m}"));
-        }
-    }
-    right.push(format!(
-        "{C_ACCENT}Available Skills{RESET}  {C_DIM}{}{RESET}",
-        d.skills.len()
-    ));
-    if d.skills.is_empty() {
-        right.push(format!("  {C_MUTED}·{RESET} {C_DIM}暂无 (对话中自动蒸馏){RESET}"));
-    } else {
-        for s in &d.skills {
-            right.push(format!("  {C_MUTED}·{RESET} {s}"));
-        }
-    }
 
     // 垂直居中: 较短的一列在上/下各补一半空行, 使两列视觉同轴
     let rows = left.len().max(right.len());
@@ -297,6 +300,49 @@ mod tests {
             if i < lines.len() - 1 {
                 // 倒数第 1 行是框外 Welcome, 不锁宽
                 assert_eq!(w, 64, "row {i} width={w}: {l:?}");
+            }
+        }
+        crate::width::clear_term_size();
+    }
+
+    /// **压缩显示**: 工具多了不全铺 —— 只列前 8 个 + 「…还有 N 个」;
+    /// 但分区标题的**总数仍是真实的**（压缩的是名字, 不是事实），且行宽仍恒定。
+    #[test]
+    fn tools_list_is_compressed_but_count_is_true() {
+        crate::width::set_term_size(64, 40);
+        let tools: Vec<String> = (0..20).map(|i| format!("tool_{i}")).collect();
+        let d = DashboardData {
+            product: "BOLLOON".into(),
+            version: "0.6.10".into(),
+            build: "local".into(),
+            date: "2026-10-27".into(),
+            model: "kimi-k3".into(),
+            dir: "~/chat".into(),
+            session_id: "20261027".into(),
+            tools,
+            mcp: vec![],
+            skills: vec![],
+            update_status: "本地构建".into(),
+        };
+        let lines = render_startup_dashboard(&d);
+
+        // 总数真实（不许把 20 压成 8 来"看起来少"）
+        let head = lines
+            .iter()
+            .find(|l| l.contains("Available Tools"))
+            .expect("应有分区标题行");
+        assert!(head.contains("20"), "总数必须为真: {head:?}");
+
+        // 只列前 8 个代表, 其余折叠
+        let flat = lines.join("\n");
+        assert!(flat.contains("tool_0") && flat.contains("tool_7"), "前 8 个应列出");
+        assert!(flat.contains("还有 12 个"), "应折叠 12 个: {flat}");
+        assert!(!flat.contains("tool_8"), "第 9 个起不该全铺: {flat}");
+
+        // 压缩不该破坏行宽恒定
+        for (i, l) in lines.iter().enumerate() {
+            if i < lines.len() - 1 {
+                assert_eq!(crate::width::disp_width(l), 64, "row {i} width: {l:?}");
             }
         }
         crate::width::clear_term_size();

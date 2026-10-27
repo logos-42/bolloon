@@ -21,13 +21,14 @@ pub const HELP_ITEMS: &[HelpItem] = &[
     HelpItem { keys: "Ctrl+G", what: "用 $VISUAL/$EDITOR 写草稿, 存盘返回即成输入" },
     HelpItem { keys: "Alt+V", what: "贴剪贴板图片: 存成 PNG 并插入 @路径" },
     HelpItem { keys: "↑ / ↓", what: "翻本渠道的输入历史 (落盘, 重启还在)" },
-    HelpItem { keys: "Esc / Ctrl+C", what: "取消当前输入 (不发送)" },
+    HelpItem { keys: "Esc", what: "取消当前输入 (不发送, 会话不退)" },
+    HelpItem { keys: "Ctrl+C", what: "空闲时退出会话 (运行中 = 中断这一回合)" },
     HelpItem { keys: "Ctrl+D", what: "退出会话" },
     HelpItem { keys: "/help", what: "这份帮助 · /exit 或 /quit 退出" },
 ];
 
 /// 输入行下方那条**恒常提示** (`Screen` 的 `rows-1` 固定行, 窄屏会被截断)
-pub const HINT: &str = "Enter 发送 · Ctrl+J 换行 · Ctrl+G 草稿 · Alt+V 贴图 · ↑↓ 历史 · /help";
+pub const HINT: &str = "Enter 发送 · Ctrl+J 换行 · Ctrl+G 草稿 · Alt+V 贴图 · ↑↓ 历史 · Ctrl+C 退出 · /help";
 
 /// 帮助页 (纯文本行, 交给 `Screen::push_many` 或非 TTY 的 `println!`)
 pub fn help_lines() -> Vec<String> {
@@ -64,14 +65,17 @@ mod tests {
         assert_eq!(resolve_action(&Key::Up), EditAction::HistoryPrev);
         assert_eq!(resolve_action(&Key::Down), EditAction::HistoryNext);
         assert_eq!(resolve_action(&Key::Esc), EditAction::Cancel);
-        assert_eq!(resolve_action(&Key::Cancel), EditAction::Cancel);
+        assert_eq!(resolve_action(&Key::Cancel), EditAction::Quit);
+        assert_eq!(resolve_action(&Key::Eof), EditAction::Eof);
     }
 
     /// 帮助页里**必须**出现这四个新快捷键 + 两个命令 (少一个就是文案落后于实现)
     #[test]
     fn help_page_documents_every_new_shortcut() {
         let page = help_page();
-        for k in ["Ctrl+J", "Alt+Enter", "Ctrl+G", "Alt+V", "↑ / ↓", "Ctrl+D", "/help", "/exit"] {
+        for k in [
+            "Ctrl+J", "Alt+Enter", "Ctrl+G", "Alt+V", "↑ / ↓", "Ctrl+C", "Ctrl+D", "/help", "/exit",
+        ] {
             assert!(page.contains(k), "帮助页漏了 {k}: {page}");
         }
     }

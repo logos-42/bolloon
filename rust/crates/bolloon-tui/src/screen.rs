@@ -184,24 +184,38 @@ pub struct FixedLines {
 }
 
 /**
- * 分隔线 —— 满宽实线。
+ * 分隔线的字符 (默认 `─`, 可用 `BOLLOON_RULE_CHAR` 换)。
  *
- * 与 TS 同口径: 默认用 `─` 且**按 1 列算** ⇒ 满宽 ✓ (2026-10-01 用户明确: 「我不要这样的虚线」)。
- * 代价: 某些终端把 `─` (East Asian Width = Ambiguous) 渲染成 2 列 ⇒ 那种机器可以用
- * `BOLLOON_RULE_CHAR_WIDTH=2` 退回半宽 (线短一半, 但不折行)。
+ * 2026-10-01 定案: 默认**满宽实线** `─`; `BOLLOON_RULE_CHAR_WIDTH=2` 是给
+ * "把 `─` 渲染成 2 列的终端"留的**一键对冲** (线短一半, 但不折行)。默认值不改 ——
+ * 用户明确要这个观感 (「我不要这样的虚线」)。
  */
-pub fn rule(width: usize) -> String {
-    let ch = std::env::var("BOLLOON_RULE_CHAR")
+pub fn rule_char() -> char {
+    std::env::var("BOLLOON_RULE_CHAR")
         .ok()
         .and_then(|s| s.chars().next())
-        .unwrap_or('─');
-    let per: usize = std::env::var("BOLLOON_RULE_CHAR_WIDTH")
+        .unwrap_or('─')
+}
+
+/// 该字符在目标终端上算几列 (默认 1; Ambiguous 会渲染成 2 列的机器设成 2)
+pub fn rule_per() -> usize {
+    std::env::var("BOLLOON_RULE_CHAR_WIDTH")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|n| *n > 0)
-        .unwrap_or(1);
-    let cells = (width / per).max(2);
-    std::iter::repeat(ch).take(cells).collect()
+        .unwrap_or(1)
+}
+
+/// 一行能放几个分隔字符 (宽度 `width` 时)。**绝不写满整宽** ⇒ 调用方传 `cols-1`。
+///
+/// 底栏所有区域 (框宽、内容宽) 都从这里派生 —— 只有一处宽度口径, 不会各算各的。
+pub fn rule_cells(width: usize) -> usize {
+    (width / rule_per()).max(8)
+}
+
+/// 分隔线 —— 满宽实线 (见 `rule_char` / `rule_per`)
+pub fn rule(width: usize) -> String {
+    std::iter::repeat(rule_char()).take(rule_cells(width)).collect()
 }
 
 #[cfg(test)]

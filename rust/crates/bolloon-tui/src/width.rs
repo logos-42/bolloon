@@ -33,7 +33,10 @@ pub fn is_wide(ch: char) -> bool {
             || (0xf900..=0xfaff).contains(&c)
             || (0xfe30..=0xfe4f).contains(&c)
             || (0xff00..=0xff60).contains(&c)
-            || (0xffe0..=0xffe6).contains(&c))
+            || (0xffe0..=0xffe6).contains(&c)
+            // Emoji 区 (U+1F000–U+1FAFF): 终端一律按 2 列渲染 ⇒ 必须按 2 列算,
+            // 否则输入框/状态栏会把"看起来 1 列"的字符排成 2 列, 整行溢出折行。
+            || (0x1f000..=0x1faff).contains(&c))
 }
 
 /** 剥掉 SGR 转义 (`\x1b[<n;…>m`) — TS `s.replace(/\x1b\[[0-9;]*m/g, '')` */

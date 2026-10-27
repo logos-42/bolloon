@@ -292,6 +292,9 @@ pub struct ChatCtx<'a> {
 struct Persisted {
     id: String,
     title: String,
+    /// 用户用 `/title` 亲手起的名字 (自动摘要不覆盖它)
+    #[serde(default)]
+    title_custom: bool,
     model: String,
     channel: String,
     created_ms: u128,
@@ -317,6 +320,8 @@ pub struct ChatSession {
     pub dir: PathBuf,
     pub id: String,
     pub title: String,
+    /// `title` 是否由用户 `/title` 指定 (false = 跟着首条用户消息自动改)
+    pub title_custom: bool,
     pub model: String,
     pub channel: String,
     pub messages: Vec<ChatMessage>,
@@ -357,6 +362,7 @@ impl ChatSession {
             dir,
             id: new_id(now),
             title: String::new(),
+            title_custom: false,
             model: model.to_string(),
             channel: channel.to_string(),
             messages: Vec::new(),
@@ -371,7 +377,7 @@ impl ChatSession {
             loop_job: None,
         };
         s.id = s.unique_id();
-        s.title = default_title(&s.id);
+        s.title = default_title();
         s
     }
 
@@ -408,11 +414,26 @@ impl ChatSession {
         self.chars() / 4
     }
 
+    /// 自动标题: 用户没亲手起名时, 用首条用户消息当**语义标题**。
+    ///
+    /// 调用点只有一个 (`main.rs` 每轮发出用户消息之后), 幂等 —— 反复调用不会改出怪东西。
+    pub fn refresh_title(&mut self) {
+        if self.title_custom {
+            return;
+        }
+        if let Some(t) = title_from_messages(&self.messages) {
+            self.title = t;
+        } else if self.title.is_empty() {
+            self.title = default_title();
+        }
+    }
+
     pub fn save(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(self.sessions_dir())?;
         let p = Persisted {
             id: self.id.clone(),
             title: self.title.clone(),
+            title_custom: self.title_custom,
             model: self.model.clone(),
             channel: self.channel.clone(),
             created_ms: self.created_ms,
@@ -448,10 +469,16 @@ impl ChatSession {
         self.loop_job = None;
         self.goal = None;
         self.subgoals.clear();
-        self.title = match name.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(n) => n.to_string(),
-            None => default_title(&self.id),
-        };
+        match name.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(n) => {
+                self.title = n.to_string();
+                self.title_custom = true;
+            }
+            None => {
+                self.title = default_title();
+                self.title_custom = false;
+            }
+        }
     }
 
     /// 载入某个会话 (按 id, 再按标题不区分大小写)
@@ -463,6 +490,7 @@ impl ChatSession {
                 serde_json::from_str(&raw).map_err(|e| format!("{} 不是合法会话文件: {e}", p.display()))?;
             self.id = parsed.id;
             self.title = parsed.title;
+            self.title_custom = parsed.title_custom;
             self.model = parsed.model;
             self.channel = parsed.channel;
             self.created_ms = parsed.created_ms;
@@ -475,6 +503,10 @@ impl ChatSession {
             self.subgoals = parsed.subgoals;
             self.loop_job = parsed.loop_job;
             self.attachments.clear();
+            // 老会话里存的是 `会话 HH:MM:SS` 这种时间戳标题 ⇒ 按现存消息重新摘出语义标题
+            if !self.title_custom && looks_like_clock_title(&self.title) {
+                self.refresh_title();
+            }
             return Ok(());
         }
         Err(format!("找不到会话 “{key}” (用 /sessions 看有哪些)"))
@@ -748,6 +780,7 @@ impl ChatSession {
                     Cmd::Say(vec![format!("当前标题: {}", self.title)])
                 } else {
                     self.title = name.to_string();
+                    self.title_custom = true; // 用户亲手起的名: 自动摘要不再覆盖
                     let _ = self.save();
                     Cmd::Say(vec![format!("✓ 标题已设为 “{name}”")])
                 }
@@ -2254,6 +2287,7 @@ fn clone_of(s: &ChatSession) -> ChatSession {
         dir: s.dir.clone(),
         id: s.id.clone(),
         title: s.title.clone(),
+        title_custom: s.title_custom,
         model: s.model.clone(),
         channel: s.channel.clone(),
         messages: s.messages.clone(),
@@ -2302,20 +2336,36 @@ pub fn image_data_url(path: &Path) -> Result<String, String> {
     Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
-fn default_title(id: &str) -> String {
-    // id 形如 `20261026-031338-628` ⇒ 标题用时间部分, 比截尾巴好认
-    match id.split('-').nth(1) {
-        Some(t) if t.len() == 6 => {
-            let b: Vec<char> = t.chars().collect();
-            format!(
-                "会话 {}:{}:{}",
-                b[0..2].iter().collect::<String>(),
-                b[2..4].iter().collect::<String>(),
-                b[4..6].iter().collect::<String>()
-            )
-        }
-        _ => format!("会话 {id}"),
+/// 默认标题 = **语义占位**, 不是时间戳。
+///
+/// 真机上 `▸ 会话 06:58:3` 那种标题对用户毫无信息量 (任务书明确: 状态栏的会话摘要
+/// "不能显示时间戳代替语义"); 首条用户消息一进来 `refresh_title()` 就会把它换成摘要。
+fn default_title() -> String {
+    "新会话".to_string()
+}
+
+/// 旧会话存档里的时间戳标题 (`会话 06:58:38`) —— 认出来才允许重新摘要
+fn looks_like_clock_title(t: &str) -> bool {
+    let rest = t.strip_prefix("会话 ").unwrap_or("");
+    let digits = rest.chars().filter(|c| c.is_ascii_digit()).count();
+    rest.chars().all(|c| c.is_ascii_digit() || c == ':') && digits >= 4
+}
+
+/// 会话语义标题: 取**首条用户消息**的首行, 截到 24 显示列 (`…` 收尾)。
+///
+/// 这就是任务书要的"会话语义摘要": 复用已有的会话/消息机制, 不新建另一套摘要系统。
+fn title_from_messages(messages: &[ChatMessage]) -> Option<String> {
+    let first = messages
+        .iter()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.as_str())?;
+    let line = first.lines().find(|l| !l.trim().is_empty())?.trim();
+    // 命令 (`/help` 之类) 不当标题: 它们不代表会话在谈什么
+    let line = line.strip_prefix('/').map(|_| "").unwrap_or(line);
+    if line.is_empty() {
+        return None;
     }
+    Some(crate::truncate_display(line, 24))
 }
 
 fn new_id(now_ms: u128) -> String {
