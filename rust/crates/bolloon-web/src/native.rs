@@ -128,6 +128,12 @@ pub struct NativeState {
     pub auth: Vec<AuthRequest>,
     /// room 运行态 (group_id → running)
     pub room_running: std::collections::HashMap<String, bool>,
+    /// 已关闭的群组 (从商议面板移除; OrbitDB 数据保留, 可重新加入)
+    #[serde(default)]
+    pub room_closed: Vec<String>,
+    /// 上次推举的接话人 (group_id → 名字), 让"推举"在面板上留痕
+    #[serde(default)]
+    pub room_last_speaker: std::collections::HashMap<String, String>,
     // ── 世界模式 (对齐 TS routes-world: 意图 / 机会流 / 校准环 / 信箱) ──
     /// 意图标签 (世界按意图重打分)
     pub intents: Vec<String>,
@@ -929,16 +935,27 @@ const WEB_SYSTEM_PROMPT: &str = "你是 Bolloon 智能体，运行在去中心�
 /// web 对话 system prompt —— 与 CLI/App 同一真源 `bolloon_agent::prompt::build_system_prompt`
 /// (原来 `WEB_SYSTEM_PROMPT` 是 2 行硬编码常量, persona/soul/memory/文档快照一个都没注入)。
 /// 装配失败 → 降级为 `WEB_SYSTEM_PROMPT`, 绝不因此打断对话。
-async fn build_web_system(st: &AppState, query: &str) -> String {
+/// web 会话的 system prompt 装配 (与 CLI 同一真源) —— **按智能体的私有身份覆盖**。
+///
+/// 之前的实现把 agent 键写死成 "bolloon"、且只认全局文档 ⇒ 用户自己造的名字/人格根本进不了 prompt,
+/// 回复永远自称 "Bolloon 智能体" (leo: 用户设计的私有身份应该覆盖)。
+/// 现在: agent 选了谁就用谁 (agent.id 决定 persona 目录), 名字/persona 作为**最高优先级**的
+/// 私有身份块放在最前面, 压过默认身份描述。
+pub async fn build_web_system(
+    st: &AppState,
+    query: &str,
+    agent: Option<&AgentView>,
+    extra: &str,
+) -> String {
     let home = bolloon_agent::home::BolloonHome::resolve();
-    // web channel: soul/agent 取全局(home), persona 按 agentId 三级回落 (freeze_with 内部处理)
-    let docs = bolloon_agent::home::AgentDocs::freeze_with(
-        &home, "bolloon", "web", &std::env::current_dir().unwrap_or_default(),
-    )
-    .or_else(|_| bolloon_agent::home::AgentDocs::freeze(&home, "bolloon"));
-    let Ok(docs) = docs else {
-        return WEB_SYSTEM_PROMPT.to_string();
-    };
+    let agent_key = agent.map(|a| a.id.clone()).unwrap_or_else(|| "bolloon".to_string());
+    let project_root = agent
+        .map(|a| a.workspace.trim().to_string())
+        .filter(|w| !w.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let docs = bolloon_agent::home::AgentDocs::freeze_with(&home, &agent_key, "web", &project_root)
+        .or_else(|_| bolloon_agent::home::AgentDocs::freeze(&home, "bolloon"));
 
     // 记忆召回 (top-N, 不是全量): 复用 MemoryStore::recall 的 importance×decay 打分
     let memory_text = {
@@ -954,13 +971,58 @@ async fn build_web_system(st: &AppState, query: &str) -> String {
         }
     };
 
-    let ctx = bolloon_agent::prompt::AssembleContext { channel: "web", role: None, tool: None };
-    bolloon_agent::prompt::build_system_prompt(&docs, None, None, None, 0, "", Some(&memory_text), &ctx).text
+    let base = match docs {
+        Ok(docs) => {
+            let ctx = bolloon_agent::prompt::AssembleContext { channel: "web", role: None, tool: None };
+            bolloon_agent::prompt::build_system_prompt(&docs, None, None, None, 0, "", Some(&memory_text), &ctx).text
+        }
+        Err(_) => WEB_SYSTEM_PROMPT.to_string(),
+    };
+    format!("{}{}{}", private_identity_block(agent), base, extra)
 }
 
-/// **真模型调用**（web 对话唯一出口）
-/// provider 选取顺序: UI 选中 → 配置 activeProvider → runtime 里第一家可用
-pub async fn reply_with_model(st: &AppState, text: &str) -> Result<String, String> {
+/// 用户给这个智能体设定的名字 / 人格 —— 必须压过默认身份。
+/// 放在 system prompt 最前面 (模型对开头最敏感), 并明说"不要自称 Bolloon 智能体"。
+fn private_identity_block(agent: Option<&AgentView>) -> String {
+    let Some(a) = agent else { return String::new() };
+    let name = a.name.trim();
+    let persona = a.persona.trim();
+    if name.is_empty() && persona.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("# 私有身份（用户设定，优先于下面所有默认身份描述）\n");
+    if !name.is_empty() {
+        out.push_str(&format!(
+            "你的名字是「{name}」。被称呼、自我介绍、汇报落款都用这个名字；\
+             不要自称 \"Bolloon 智能体\" 或 \"助手\"，除非这就是用户给你的名字。\n"
+        ));
+    }
+    if !persona.is_empty() {
+        out.push_str(&format!("你的人格 / 职责（用户写的，按它说话）：\n{persona}\n"));
+    }
+    out.push('\n');
+    out
+}
+
+/// 取当前会话的智能体: 请求里带的 agent_id 优先, 找不到就第一个 (不猜别的)。
+pub async fn agent_by_id(st: &AppState, id: Option<&str>) -> Option<AgentView> {
+    let fs = st.forge.lock().await;
+    if let Some(a) = id
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|id| fs.agents.iter().find(|a| a.id == id))
+    {
+        return Some(a.clone());
+    }
+    fs.agents.first().cloned()
+}
+
+/// **全仓唯一的模型调用入口** (web 侧): 解析 provider/model, 带上 system 与消息真发一次。
+/// 拆出来是为了让群聊后台汇报与普通对话走同一条通路 (配置/错误口径一字不差)。
+pub async fn call_model(
+    st: &AppState,
+    system: &str,
+    messages: Vec<ChatMessage>,
+) -> Result<String, String> {
     let (ui_provider, ui_model) = {
         let fs = st.forge.lock().await;
         (
@@ -978,7 +1040,6 @@ pub async fn reply_with_model(st: &AppState, text: &str) -> Result<String, Strin
     };
 
     let mut llm = st.llm_snapshot();
-    // UI 选的家可能还没进 runtime（刚填的 key/模型）→ 重建一次再取
     if !wanted.is_empty() && llm.provider(&wanted).is_none() {
         st.reload_llm().await;
         llm = st.llm_snapshot();
@@ -992,14 +1053,11 @@ pub async fn reply_with_model(st: &AppState, text: &str) -> Result<String, Strin
     } else {
         wanted
     };
-
     if llm.provider(&provider_id).is_none() {
-        // 解析一次，给出**准确原因**（缺 key / 缺模型 / 缺基址）
         return Err(bolloon_llm::config_store::resolve(&cfg, &provider_id)
             .err()
             .unwrap_or_else(|| format!("{provider_id} 没装进模型通路 — 检查 provider 名称")));
     }
-
     let model = if !ui_model.is_empty() {
         ui_model
     } else {
@@ -1011,16 +1069,34 @@ pub async fn reply_with_model(st: &AppState, text: &str) -> Result<String, Strin
         return Err(format!("{provider_id} 还没选模型 — 在「选择模型」里填一个模型名"));
     }
 
-    // 上下文: 最近 12 条 + 当前这句 (system prompt 走与 CLI 同真源的装配器, 注入 persona/soul/memory/文档快照)
-    let system_prompt = build_web_system(st, text).await;
-    let mut messages = vec![ChatMessage {
+    let mut full = Vec::with_capacity(messages.len() + 1);
+    full.push(ChatMessage {
         role: "system".into(),
-        content: system_prompt,
+        content: system.to_string(),
         name: None,
         tool_call_id: None,
         tool_calls: None,
         images: vec![],
-    }];
+    });
+    full.extend(messages);
+
+    let mut params = GenerateParams::new(model, full);
+    params.temperature = 0.7;
+    params.max_tokens = 4096;
+    llm.generate(&provider_id, params)
+        .await
+        .map(|g| g.content)
+        .map_err(|e| format!("模型调用失败（{provider_id}）: {e}"))
+}
+
+/// 普通对话: 取历史 + 当前这句, 交给 call_model (身份走 agent)。
+pub async fn reply_with_model(
+    st: &AppState,
+    text: &str,
+    agent: Option<&AgentView>,
+) -> Result<String, String> {
+    let system_prompt = build_web_system(st, text, agent, "").await;
+    let mut messages: Vec<ChatMessage> = Vec::new();
     {
         let msgs = st.messages.lock().await;
         let start = msgs.len().saturating_sub(12);
@@ -1028,7 +1104,7 @@ pub async fn reply_with_model(st: &AppState, text: &str) -> Result<String, Strin
         for (i, m) in msgs[start..].iter().enumerate() {
             let idx = start + i;
             let role = if m.role == "assistant" { "assistant" } else { "user" };
-            // 调用方（/api/send）可能已经把本轮用户输入写进历史 → 去重，避免同一句发两遍
+            // 调用方可能已经把本轮用户输入写进历史 → 去重，避免同一句发两遍
             if idx == last && role == "user" && m.content == text {
                 continue;
             }
@@ -1050,14 +1126,7 @@ pub async fn reply_with_model(st: &AppState, text: &str) -> Result<String, Strin
         tool_calls: None,
         images: vec![],
     });
-
-    let mut params = GenerateParams::new(model, messages);
-    params.temperature = 0.7;
-    params.max_tokens = 4096;
-    llm.generate(&provider_id, params)
-        .await
-        .map(|g| g.content)
-        .map_err(|e| format!("模型调用失败（{provider_id}）: {e}"))
+    call_model(st, &system_prompt, messages).await
 }
 
 /// 记一轮对话（历史要能被下一轮读到）
@@ -1079,7 +1148,8 @@ pub async fn chat(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let text = req["message"].as_str().unwrap_or_default().to_string();
-    let reply = match reply_with_model(&st, &text).await {
+    let agent = agent_by_id(&st, req["agent_id"].as_str()).await;
+    let reply = match reply_with_model(&st, &text, agent.as_ref()).await {
         Ok(r) => r,
         Err(e) => e, // 错误也是"回答"：界面要能看到到底缺什么
     };
@@ -1095,7 +1165,8 @@ pub async fn chat_stream(
     Json(req): Json<serde_json::Value>,
 ) -> impl axum::response::IntoResponse {
     let text = req["message"].as_str().unwrap_or_default().to_string();
-    let reply = match reply_with_model(&st, &text).await {
+    let agent = agent_by_id(&st, req["agent_id"].as_str()).await;
+    let reply = match reply_with_model(&st, &text, agent.as_ref()).await {
         Ok(r) => r,
         Err(e) => e,
     };
@@ -1139,14 +1210,21 @@ pub async fn chat_stop() -> Json<serde_json::Value> {
 
 /// GET /api/room → {messages, members, groups, state, active_group_id}
 pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
-    let groups = st.groups.list_groups();
-    let active = {
+    // 关闭 = 从面板移除 (以前 close 只清 active_group, 列表还在 ⇒ 点 × 像没反应)
+    let (closed, active_pref) = {
         let fs = st.forge.lock().await;
-        if fs.active_group.is_empty() {
-            groups.first().map(|g| g.id.clone()).unwrap_or_default()
-        } else {
-            fs.active_group.clone()
-        }
+        (fs.room_closed.clone(), fs.active_group.clone())
+    };
+    let groups: Vec<_> = st
+        .groups
+        .list_groups()
+        .into_iter()
+        .filter(|g| !closed.contains(&g.id))
+        .collect();
+    let active = if !active_pref.is_empty() && !closed.contains(&active_pref) {
+        active_pref
+    } else {
+        groups.first().map(|g| g.id.clone()).unwrap_or_default()
     };
     let entries = st.groups.history(&active, 200).unwrap_or_default();
     let running = st
@@ -1157,12 +1235,17 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
         .get(&active)
         .copied()
         .unwrap_or(false);
+    let agent_names: HashMap<String, String> = {
+        let fs = st.forge.lock().await;
+        fs.agents.iter().map(|a| (a.id.clone(), a.name.clone())).collect()
+    };
     let msgs: Vec<serde_json::Value> = entries
         .iter()
         .map(|m| {
+            let who = agent_names.get(&m.from).cloned().unwrap_or_else(|| m.from.clone());
             serde_json::json!({
-                "agent_id": m.signer,
-                "agent_name": m.from,
+                "agent_id": m.from,
+                "agent_name": who,
                 "kind": m.kind,
                 "text": m.text,
                 "created_at": chrono::DateTime::from_timestamp_millis(m.ts as i64)
@@ -1172,6 +1255,7 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
             })
         })
         .collect();
+    let thinking = st.room_bus.thinking(&active);
     let members: Vec<serde_json::Value> = st
         .forge
         .lock()
@@ -1181,7 +1265,7 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
         .map(|a| {
             serde_json::json!({
                 "agent_id": a.id, "agent_name": a.name,
-                "status": if running { "thinking" } else { "idle" },
+                "status": if thinking.contains(&a.id) { "thinking" } else { "idle" },
             })
         })
         .collect();
@@ -1201,11 +1285,20 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
             None => std::collections::HashMap::new(),
         }
     };
+    let elected = {
+        let fs = st.forge.lock().await;
+        fs.room_last_speaker.get(&active).cloned().unwrap_or_default()
+    };
     Json(serde_json::json!({
         "messages": msgs,
         "members": members,
         "groups": group_views,
-        "state": { "running": running, "turn": 0, "max_turns": 0, "topic": "", "participants": [] },
+        "state": {
+            "running": running || !thinking.is_empty(),
+            "turn": 0, "max_turns": 0, "topic": "",
+            "participants": thinking,
+            "elected": elected,
+        },
         "active_group_id": active,
         "deliberation_roles": roles,
         "orbit_status": "oplog-persisted",
@@ -1226,7 +1319,12 @@ pub async fn room_new(State(st): State<AppState>) -> Json<serde_json::Value> {
         bolloon_p2p::GroupAcl::Open,
         now_ms_local,
     );
-    st.forge.lock().await.active_group = info.id.clone();
+    {
+        let mut fs = st.forge.lock().await;
+        fs.active_group = info.id.clone();
+        fs.room_closed.retain(|x| x != &info.id);
+        fs.save(&data_dir());
+    }
     Json(serde_json::json!({ "id": info.id, "address": info.address }))
 }
 
@@ -1256,10 +1354,28 @@ pub async fn room_close(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let gid = req["group_id"].as_str().unwrap_or_default().to_string();
-    let mut fs = st.forge.lock().await;
-    fs.room_running.remove(&gid);
-    fs.active_group = String::new();
-    Json(serde_json::json!({ "active_group_id": "" }))
+    if gid.is_empty() {
+        return Json(serde_json::json!({ "error": "缺少 group_id" }));
+    }
+    let closed: Vec<String> = {
+        let mut fs = st.forge.lock().await;
+        fs.room_running.remove(&gid);
+        if !fs.room_closed.contains(&gid) {
+            fs.room_closed.push(gid.clone());
+        }
+        fs.active_group = String::new();
+        fs.save(&data_dir());
+        fs.room_closed.clone()
+    };
+    let next = st
+        .groups
+        .list_groups()
+        .into_iter()
+        .find(|g| !closed.contains(&g.id))
+        .map(|g| g.id)
+        .unwrap_or_default();
+    st.forge.lock().await.active_group = next.clone();
+    Json(serde_json::json!({ "closed": gid, "active_group_id": next }))
 }
 
 /// 取（或创建）某群的商议中枢：播种本机人类 + 内部智能体，外部参与者首条消息时再按需注册。
@@ -1271,8 +1387,9 @@ pub async fn room_hub(st: &AppState, gid: &str) -> Arc<DeliberationHub> {
     let h = Arc::new(DeliberationHub::new(1500));
     h.add_member(st.identity.did.as_str(), MemberRole::Human);
     {
+        // 全部内部智能体都登记: 只登记第一个时, 推举永远只能在"人类 + 那一个"里选
         let fs = st.forge.lock().await;
-        if let Some(a) = fs.agents.first() {
+        for a in fs.agents.iter() {
             h.add_member(&a.id, MemberRole::Internal);
         }
     }
@@ -1294,7 +1411,7 @@ pub async fn resolve_role(st: &AppState, author: &str) -> MemberRole {
 }
 
 /// 解析文本里的 @提及（被点名者），作为推选候选的 addressed 标记。
-fn parse_addressed(text: &str) -> Vec<String> {
+pub(crate) fn parse_addressed(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for tok in text.split(|c: char| {
         c.is_whitespace() || matches!(c, ':' | ',' | '。' | '，' | '.' | '!' | '？' | '?')
@@ -1400,9 +1517,29 @@ pub async fn room_guide(
         None,
         now_ms_local,
     ) {
-        Ok(entry) => Json(serde_json::json!({
+        Ok(entry) => {
+            // 同一条消息也驱动后台汇报: 群聊/商议共用一套 (推举 → 并发 → 只落汇报)
+            let targets = {
+                let agents = st.forge.lock().await.agents.clone();
+                let cursor = st.groups.history(&gid, 0).map(|h| h.len()).unwrap_or(0);
+                crate::room_bus::elect(
+                    &agents,
+                    &parse_addressed(&text),
+                    decision.speaker_id.as_deref(),
+                    cursor,
+                )
+            };
+            let queued: Vec<String> = targets.iter().map(|a| a.name.clone()).collect();
+            if let Some(first) = queued.first() {
+                let mut fs = st.forge.lock().await;
+                fs.room_last_speaker.insert(gid.clone(), first.clone());
+                fs.save(&data_dir());
+            }
+            crate::room_bus::spawn_reports(st.clone(), gid.clone(), text.clone(), targets);
+            Json(serde_json::json!({
             "hash": entry.hash,
             "kind": kind,
+            "queued": queued,
             "deliberation": {
                 "seq": decision.seq,
                 "duplicate": decision.duplicate,
@@ -1413,7 +1550,8 @@ pub async fn room_guide(
                 "cooldown_blocked": decision.cooldown_blocked,
                 "author_role": format!("{:?}", role),
             },
-        })),
+            }))
+        }
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
 }

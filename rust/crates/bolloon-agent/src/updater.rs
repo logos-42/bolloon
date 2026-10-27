@@ -11,8 +11,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// 当前版本 (与 workspace 0.6.10 一致)
-pub const CURRENT_VERSION: &str = "0.6.10";
+/// 当前版本 (与 workspace 0.6.11 一致)
+pub const CURRENT_VERSION: &str = "0.6.11";
 
 /// 更新错误
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -203,11 +203,21 @@ mod tests {
     #[test]
     fn check_no_update_means_hidden() {
         // 同版本 → update_available=false ⇒ **UI/CLI 不显示提示的前置**
-        let src = FakeSource { version: Ok("0.6.10".into()), payload: vec![] };
+        let src = FakeSource { version: Ok(CURRENT_VERSION.into()), payload: vec![] };
         let info = check(&src);
         assert!(!info.update_available);
         assert_eq!(info.status, "ok");
-        assert_eq!(info.current, "0.6.10");
+        assert_eq!(info.current, CURRENT_VERSION);
+    }
+
+    /// CURRENT_VERSION 的 patch + 1 (测试里"比当前新一版")
+    fn next_patch() -> String {
+        let mut p: Vec<u32> = CURRENT_VERSION.split('.').filter_map(|x| x.parse().ok()).collect();
+        while p.len() < 3 {
+            p.push(0);
+        }
+        p[2] += 1;
+        format!("{}.{}.{}", p[0], p[1], p[2])
     }
 
     #[test]
@@ -240,10 +250,12 @@ mod tests {
 
     #[test]
     fn check_update_available_with_notes() {
-        let src = FakeSource { version: Ok("0.6.11".into()), payload: vec![] };
+        // 不写死版本号: 拿 CURRENT_VERSION 的 patch+1 当"新版本" (写死会在每次发版时假红)
+        let newer = next_patch();
+        let src = FakeSource { version: Ok(newer.clone()), payload: vec![] };
         let info = check(&src);
         assert!(info.update_available);
-        assert_eq!(info.latest, "0.6.11");
+        assert_eq!(info.latest, newer);
         assert_eq!(info.notes.as_deref(), Some("修复群聊邀请"));
     }
 

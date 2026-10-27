@@ -58,6 +58,8 @@ pub struct AppState {
     pub memory_db: Arc<Mutex<MemoryDb>>,
     /// 完全访问权限开关 (UI 可随时开/取消; 默认关 = 走 permission 门)
     pub full_access: Arc<std::sync::atomic::AtomicBool>,
+    /// 群聊/商议的"谁正在想"运行时 (内存态; 见 room_bus)
+    pub room_bus: Arc<crate::room_bus::RoomBus>,
     /// 更新安装互斥 (两个请求同时替换同一二进制会把自己装残)
     pub updating: Arc<std::sync::atomic::AtomicBool>,
     /// Forge 兼容层状态 (agents/sessions/profile/settings/auth 队列)
@@ -111,6 +113,7 @@ impl AppState {
                     .unwrap_or_else(|_| MemoryDb::open(":memory:").expect("内存库")),
             )),
             full_access: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            room_bus: Arc::new(crate::room_bus::RoomBus::default()),
             updating: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             forge: Arc::new(Mutex::new(crate::native::NativeState::load(&dir))),
             deliberation: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -481,7 +484,7 @@ async fn avatar_families() -> Json<serde_json::Value> {
 }
 
 async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": true, "version": "0.6.10" }))
+    Json(serde_json::json!({ "ok": true, "version": "0.6.11" }))
 }
 
 async fn sessions(State(st): State<AppState>) -> Json<Vec<SessionMeta>> {
@@ -501,7 +504,8 @@ async fn send(State(st): State<AppState>, Json(req): Json<SendRequest>) -> Json<
     }
 
     // 真实模型调用（唯一咽喉 generate；provider/model 由 UI 选择与配置决定）
-    let reply = match crate::native::reply_with_model(&st, &req.text).await {
+    let agent = crate::native::agent_by_id(&st, None).await;
+    let reply = match crate::native::reply_with_model(&st, &req.text, agent.as_ref()).await {
         Ok(r) => r,
         Err(e) => format!("[AI 服务调用失败] {e}"),
     };
@@ -608,6 +612,7 @@ async fn group_messages(
         .map(|(i, m)| {
             serde_json::json!({
                 "seq": i as u64 + 1,
+                "from": m.from,
                 "sender": m.signer,
                 "kind": m.kind,
                 "content": m.text,
@@ -617,7 +622,16 @@ async fn group_messages(
             })
         })
         .collect();
-    Json(serde_json::json!({ "messages": out }))
+    // 谁正在想 (前端据此显示"X 正在想…", 不让用户以为没人理)
+    let thinking: Vec<String> = {
+        let names = st.forge.lock().await.agents.clone();
+        st.room_bus
+            .thinking(&id)
+            .into_iter()
+            .map(|aid| names.iter().find(|a| a.id == aid).map(|a| a.name.clone()).unwrap_or(aid))
+            .collect()
+    };
+    Json(serde_json::json!({ "messages": out, "thinking": thinking }))
 }
 
 #[derive(Deserialize)]
@@ -649,12 +663,32 @@ async fn group_say(
     .expect("本地人类发言永不被命令门禁");
     // 签名 + 写门 + 落块 全部在 OrbitStore 内完成 (Ed25519 + hash 链)
     match st.groups.say(&id, kp, kp.did.as_str(), &req.text, now_ms) {
-        Ok(entry) => Json(serde_json::json!({
+        Ok(entry) => {
+            // 后台执行 (这次请求立刻返回): 推举 → 并发跑 → 只把汇报落回群
+            let targets = {
+                let agents = st.forge.lock().await.agents.clone();
+                let cursor = st.groups.history(&id, 0).map(|h| h.len()).unwrap_or(0);
+                crate::room_bus::elect(
+                    &agents,
+                    &crate::native::parse_addressed(&req.text),
+                    decision.speaker_id.as_deref(),
+                    cursor,
+                )
+            };
+            let queued: Vec<String> = targets.iter().map(|a| a.name.clone()).collect();
+            if let Some(first) = queued.first() {
+                let mut fs = st.forge.lock().await;
+                fs.room_last_speaker.insert(id.clone(), first.clone());
+                fs.save(&data_dir());
+            }
+            crate::room_bus::spawn_reports(st.clone(), id.clone(), req.text.clone(), targets);
+            Json(serde_json::json!({
             "hash": entry.hash,
             "clock": entry.clock,
             "signer": entry.signer,
             "signature": entry.signature,
             "timestamp_ms": entry.timestamp_ms,
+            "queued": queued,
             "deliberation": {
                 "seq": decision.seq,
                 "duplicate": decision.duplicate,
@@ -664,7 +698,8 @@ async fn group_say(
                 "can_command": decision.can_command,
                 "cooldown_blocked": decision.cooldown_blocked,
             },
-        })),
+            }))
+        }
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
 }

@@ -311,7 +311,7 @@ fn default_soul(agent_id: &str) -> String {
 }
 
 fn default_agent_doc(agent_id: &str) -> String {
-    format!("# Agent · {agent_id}\n\n角色: Bolloon 智能体 (rust native 0.6.10)。\n能力: 工具循环 / 群聊 / 长目标执行。\n")
+    format!("# Agent · {agent_id}\n\n角色: Bolloon 智能体 (rust native 0.6.11)。\n能力: 工具循环 / 群聊 / 长目标执行。\n")
 }
 
 #[cfg(test)]
@@ -382,7 +382,7 @@ mod tests {
         let h = tmp_home("defaults");
         let docs = AgentDocs::freeze(&h, "fresh").unwrap();
         assert!(docs.soul.content.contains("Soul · fresh"), "缺省 soul 有内置文案");
-        assert!(docs.agent.content.contains("rust native 0.6.10"));
+        assert!(docs.agent.content.contains("rust native 0.6.11"));
     }
 
     #[test]

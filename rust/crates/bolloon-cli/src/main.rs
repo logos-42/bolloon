@@ -1,4 +1,4 @@
-//! Bolloon CLI — 命令入口（rust 原生版, 版本 0.6.10）
+//! Bolloon CLI — 命令入口（rust 原生版, 版本取 Cargo 包版本）
 //!
 //! 命令面（与 TS 版对齐的核心部分）:
 //!   bolloon                        → 启动 web (默认 54188)
@@ -26,7 +26,13 @@ mod learning;
 mod slash;
 
 #[derive(Parser)]
-#[command(name = "bolloon", version = "0.6.10", about = "Bolloon — 去中心化智能体资源交流网络 (Rust 原生版)")]
+#[command(
+    name = "bolloon",
+    // npm 包里可执行文件叫 bolloon-native-<平台>-<架构>, 但帮助里必须仍显示 bolloon
+    bin_name = "bolloon",
+    version = env!("CARGO_PKG_VERSION"),
+    about = "Bolloon — 去中心化智能体资源交流网络 (Rust 原生版)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

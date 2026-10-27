@@ -56,7 +56,9 @@
   .room-messages{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:12px;display:flex;flex-direction:column;gap:9px}
   .room-msg{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
   .room-msg .meta{display:flex;gap:6px;align-items:center;font-size:11px;color:var(--muted);margin-bottom:4px}
-  .room-msg .meta b{color:var(--text);font-size:12px}
+  .room-msg .meta b{color:var(--text);font-size:12px;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:none}
+  .room-msg .meta > span{flex:none}
+  .room-msg .meta{min-width:0}
   .room-msg .body{font-size:12px;line-height:1.55;color:var(--text);word-break:break-word}
   .room-msg .body p{margin:0 0 6px}
   .room-msg .body p:last-child{margin-bottom:0}
@@ -104,7 +106,10 @@
   aside{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0;overflow:hidden}
   .brand{display:flex;align-items:center;gap:8px;padding:14px 12px 10px;font-weight:600;white-space:nowrap}
   #collapseBtn{display:grid;place-items:center;width:32px;height:28px;padding:0;border-radius:8px;margin-left:auto;flex:none}
-  #app.collapsed .brand{justify-content:center;padding:14px 0 10px}
+  #app.collapsed .brand{justify-content:center;padding:14px 0 10px;gap:0}
+  /* 折叠后 66px 放不下 "Bolloon": 字标整个隐藏 (不裁半截), 只留图标 (title 仍显示 Bolloon) */
+  /* 只藏文字, 别把 logo 一起藏了 —— logo 也是 span (.brand-icon) */
+  #app.collapsed .brand > span:not(.brand-icon){display:none}
   #app.collapsed #collapseBtn{display:none}
   #app.collapsed .brand-icon{cursor:pointer}
   #app.collapsed .sec,#app.collapsed .item .txt,#app.collapsed .item .dots,#app.collapsed .account .who{display:none}
@@ -321,7 +326,7 @@
   /* 第二栏折叠态: **Bolloon 图标留在原位** (不居中漂移), 文字与收缩按钮隐去, 点图标恢复展开。
      覆盖全局 #app.collapsed .brand{justify-content:center} — 那条会把图标挪到栏中央, 与"保留位置"相反。 */
   body.desktop3col #app.collapsed .brand{justify-content:flex-start;padding:14px 12px 10px}
-  body.desktop3col #app.collapsed .brand > span{display:none}
+  body.desktop3col #app.collapsed .brand > span:not(.brand-icon){display:none}
   body.desktop3col #app.collapsed #collapseBtn{display:none}
   body.desktop3col #app.collapsed .brand-icon{cursor:pointer}
   /* ── 通讯录模块 (第一栏 📒) ──
@@ -830,7 +835,17 @@ function toggleRoomAgent(id){
 function renderRoomMeta(st,members,orbit,channel){
   const s=$('roomState'),m=$('roomMembers');
   if(s){
-    let base=st&&st.running?(st.max_turns>0?`交流中 · 第 ${st.turn||0}/${st.max_turns} 轮 · ${st.topic||''}`:`交流中 · 第 ${st.turn||0} 轮 · 不限轮次 · ${st.topic||''}`):(st&&st.id?'本群组已结束 · 点「发起交流」在原群组重新开始':'未在主动交流（点 ＋ 新建群组）');
+    const think=(st&&st.participants)||[];
+    let base;
+    if(think.length){
+      const names=think.map(id=>{const a=(state.agents||[]).find(x=>x.id===id);return (a&&a.name)||id;});
+      base=`${names.join('、')} 正在想…（后台执行，出来会汇报）`;
+    }else if(st&&st.running){
+      base='交流中 · 等待下一条消息';
+    }else{
+      base=(st&&st.id?'本群组已结束 · 点「发起交流」在原群组重新开始':'未在主动交流（点 ＋ 新建群组）');
+      if(st&&st.elected)base+=` · 上次推举：${st.elected} 接话`;
+    }
     if(channel)base+=` · orbitdb: ${orbit||'checking'}`;
     s.textContent=base;
   }
@@ -846,9 +861,13 @@ function renderRoom(msgs,members){
   const labels={report:'汇报',discuss:'商议',invite:'邀请',guide:'指导'};
   const think=(members||[]).filter(x=>x.status==='thinking');
   box.innerHTML=rows.map(m=>{
-    const who=m.agent_name||m.agent_id||'系统';
+    const me=(state&&state.profile&&state.profile.did)||'';
+    const isMe=m.agent_id===me;
     const a=amap[m.agent_id];
-    const ava=(a&&a.avatar?`<img class="ravatar" src="${a.avatar}" alt="">`:'<span class="ravatar sys">✦</span>')+(lastRoomLeader&&m.agent_id===lastRoomLeader?'<span title="警长（群组管理者）">🎖️</span>':'');
+    const who=isMe?((state.profile&&state.profile.name)||'我'):(a&&a.name)||m.agent_name||shortDid(m.agent_id)||'系统';
+    const ava=isMe?`<img class="ravatar" src="${avatarURL(me,state.profile&&state.profile.avatar)}" alt="">`
+      :(a?`<img class="ravatar" src="${avatarURL(a.id,a.avatar)}" alt="">`:'<span class="ravatar sys">✦</span>')
+      +(lastRoomLeader&&m.agent_id===lastRoomLeader?'<span title="警长（群组管理者）">🎖️</span>':'');
     const kind=labels[m.kind]||m.kind||'消息';
     const time=m.created_at?new Date(m.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
     const title=m.title?` · ${escapeHTML(m.title)}`:'';
@@ -866,8 +885,9 @@ let activeRoomGroup='', lastRoomLeader='';
 async function loadRoom(){
   try{
     const j=await api('/api/room'+(activeRoomGroup?('?group='+encodeURIComponent(activeRoomGroup)):''));
-    renderRoom(j.messages||[],j.members);renderRoomMeta(j.state,j.members,j.orbit_status,j.channel);renderRoomTabs(j.groups||[]);
+    // 先对齐 active 再渲染 tabs —— 否则"当前群组"那一格永远不高亮 (比较的是上一轮的 id)
     if(j.active_group_id)activeRoomGroup=j.active_group_id;
+    renderRoom(j.messages||[],j.members);renderRoomMeta(j.state,j.members,j.orbit_status,j.channel);renderRoomTabs(j.groups||[]);
     lastRoomLeader=(j.state&&j.state.leader_agent_id)||'';
     // 芯片点亮与当前群组实际参与者保持一致（用户手动改过则不覆盖）
     if(!roomPickedDirty||roomPickedFor!==activeRoomGroup){
@@ -916,7 +936,12 @@ function sendRoomGuide(){
   if(text.startsWith('/guide')){kind='guide';text=text.replace(/^\/guide\s*/,'').trim();}
   if(!text){ta.value='';return;}
   api('/api/room/guide',{method:'POST',body:JSON.stringify({group_id:activeRoomGroup,text,kind})})
-    .then(()=>{ta.value='';loadRoom();}).catch(e=>alert(e.message));
+    .then(r=>{
+      ta.value='';loadRoom();
+      if(r&&r.error)toast('发送失败: '+r.error);
+      else if(r&&r.queued&&r.queued.length)toast('推举结果：'+r.queued.join('、')+' 接话（后台思考中）');
+      else toast('已发送（本群还没有智能体可回应）');
+    }).catch(e=>toast('发送失败: '+e.message));
 }
 $('roomGuideBtn').onclick=sendRoomGuide;
 $('roomInput').addEventListener('keydown',e=>{
@@ -2034,7 +2059,7 @@ async function openGroup(id){
   $('groupMeta').textContent=[shortDid(g.owner),g.address?('orbit '+String(g.address).slice(0,12)):''].filter(Boolean).join(' · ');
   await loadGroupMessages();
   if(groupTimer)clearInterval(groupTimer);
-  groupTimer=setInterval(loadGroupMessages,4000);
+  groupTimer=setInterval(loadGroupMessages,2500);
   renderContacts();
 }
 function closeGroup(){
@@ -2046,19 +2071,38 @@ async function loadGroupMessages(){
   if(!activeGroupId)return;
   try{
     const j=await api('/api/groups/'+encodeURIComponent(activeGroupId)+'/messages');
-    renderGroupMessages(j.messages||[]);
+    renderGroupMessages(j.messages||[], j.thinking||[]);
+    if(j.thinking&&j.thinking.length){
+      const base=$('groupMeta').dataset.base||$('groupMeta').textContent;
+      $('groupMeta').dataset.base=base;
+      $('groupMeta').textContent=base+' · '+j.thinking.join('、')+' 正在想…';
+    }else{
+      const base=$('groupMeta').dataset.base;
+      if(base){$('groupMeta').textContent=base;delete $('groupMeta').dataset.base;}
+    }
   }catch(_){ /* 轮询失败静默, 下轮再试 */ }
 }
-function renderGroupMessages(msgs){
+function renderGroupMessages(msgs,thinking){
   const box=$('groupMessages');
   if(!box)return;
   const stick=box.scrollHeight-box.scrollTop-box.clientHeight<140;
   const me=(state&&state.profile&&state.profile.did)||'';
-  box.innerHTML=msgs.length?msgs.map(m=>`
-    <div class="gmsg${m.sender===me?' mine':''}">
-      <div class="gmeta">${escapeHTML(shortDid(m.sender))}${m.signature?' · ✓已签名':''}</div>
-      <div class="gbody">${escapeHTML(String(m.content||''))}</div>
-    </div>`).join(''):'<div class="hint">(还没有消息 — 说第一句)</div>';
+  const amap={};((state&&state.agents)||[]).forEach(a=>amap[a.id]=a);
+  const labels={report:'汇报',message:'消息',guide:'指导','member-join':'入群'};
+  box.innerHTML=msgs.length?msgs.map(m=>{
+    const a=amap[m.from];
+    const who=(a&&a.name)||shortDid(m.from||m.sender);
+    const ava=a?`<img class="ravatar" src="${avatarURL(a.id,a.avatar)}" alt="">`:'<span class="ravatar sys">✦</span>';
+    const kind=m.kind&&m.kind!=='message'?` · ${labels[m.kind]||m.kind}`:'';
+    const mine=(m.sender===me||m.from===me);
+    return `<div class="gmsg${mine?' mine':''}">
+      <div class="gmeta">${ava}<b>${escapeHTML(who)}</b>${kind}${m.signature?' · ✓':''}</div>
+      <div class="gbody">${mdToHTML(String(m.content||''))}</div>
+    </div>`;
+  }).join(''):'<div class="hint">(还没有消息 — 说第一句)</div>';
+  if(thinking&&thinking.length){
+    box.innerHTML+=`<div class="gmsg typing shimmer"><div class="gbody"><b>${thinking.map(escapeHTML).join('、')}</b> 正在想<span class="tdots">…</span></div></div>`;
+  }
   if(stick)box.scrollTop=box.scrollHeight;
 }
 async function sendGroup(){
@@ -2067,8 +2111,12 @@ async function sendGroup(){
   if(!text||!activeGroupId)return;
   inp.value='';
   try{
-    await api('/api/groups/'+encodeURIComponent(activeGroupId)+'/say',{method:'POST',body:JSON.stringify({text})});
+    const r=await api('/api/groups/'+encodeURIComponent(activeGroupId)+'/say',{method:'POST',body:JSON.stringify({text})});
+    if(r.error)throw new Error(r.error);
     await loadGroupMessages();
+    // 后台执行: 请求已返回, 智能体在自己的任务里跑; 这里立刻告诉用户叫到了谁
+    if(r.queued&&r.queued.length){toast('已交给 '+r.queued.join('、')+' 在后台思考，出来会汇报到群里');}
+    else{toast('已发送（本群还没有智能体可回应，先建一个）');}
   }catch(e){ $('groupMeta').textContent='发送失败: '+e.message; }
 }
 $('groupSend').onclick=sendGroup;

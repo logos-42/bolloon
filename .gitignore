@@ -89,3 +89,7 @@ minitools/dist/
 src/test/tmp/
 __pycache__/
 *.pyc
+
+# 发布产物 (npm 包里带, 不进 git)
+bin/bolloon-native-*-*
+*.tgz

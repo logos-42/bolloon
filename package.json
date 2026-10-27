@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.6.10",
+  "version": "0.6.11",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
   "main": "dist/cli-entry.js",
@@ -19,10 +19,12 @@
     "bin/bolloon-daemon.sh",
     "scripts/postinstall.js",
     "scripts/build-cli.js",
-    "scripts/build-web.ts"
+    "scripts/build-web.ts",
+    "bin/bolloon-native.js",
+    "bin/bolloon-native-*"
   ],
   "bin": {
-    "bolloon": "./dist/cli-entry.js"
+    "bolloon": "./bin/bolloon-native.js"
   },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
