@@ -94,8 +94,10 @@ pub struct TurnStats {
 pub enum Activity {
     /// 空闲: 显示键位提示
     Idle,
-    /// 模型在跑: 颜文字 + 秒表
-    Thinking { started: Instant },
+    /// 模型在跑: 颜文字 + 秒表 (+ 已收到的字数, 0 = 还没开始吐字)
+    Thinking { started: Instant, chars: usize },
+    /// 工具在跑: 名字 + 秒表 (工具是**阻塞**的, 必须自己有 tick 驱动动画, 否则整个底栏冻住)
+    Tool { name: String, started: Instant },
     /// 一次性提示 (中断/贴图/草稿/日志事件)
     Note(String),
 }
@@ -302,6 +304,9 @@ pub struct Chrome {
     /// 生成期间收到、但当时不能插历史区的行 (流式面板在那儿长) —— 收尾统一上屏
     queued_history: Vec<String>,
     drawn: bool,
+    /// 底栏上方**归我们所有的空白行** (流式预览块结束/收尾后留下的), 历史区可先复用它们,
+    /// 不必滚屏 —— 不记这个数, 每帧要么借行要么擦白, 框与框之间就会留洞。
+    tail_free: usize,
     /// 是否真的把硬件光标藏起来了 (非 TTY 路径从不藏 ⇒ 退出时也不许乱发 `\x1b[?25h`)
     cursor_hidden: bool,
     anim: usize,
@@ -327,6 +332,7 @@ impl Chrome {
             dismissed: false,
             queued_history: Vec::new(),
             drawn: false,
+            tail_free: 0,
             cursor_hidden: false,
             anim: 0,
             paste_seq: 0,
@@ -469,14 +475,24 @@ impl Chrome {
                     };
                     format!("{C_DIM}{text}{RESET}")
                 }
-                Activity::Thinking { started } => {
+                Activity::Thinking { started, chars } => {
                     let frames = crate::loading::LOADING_FRAMES;
                     let kaomoji = frames[self.anim % frames.len()];
                     let secs = started.elapsed().as_millis() as f64 / 1000.0;
                     let label = crate::loading::shimmer("Thinking · 正在生成", self.anim);
-                    format!(
-                        "{C_WARN}{kaomoji}{RESET} {label} {C_DIM}· {secs:.1}s · 流式输出中{RESET}"
-                    )
+                    // 已吐字就给字数 (比"流式输出中"这句套话有用): 用户能看出模型在动
+                    let tail = if *chars > 0 {
+                        format!("· {secs:.1}s · {chars} 字")
+                    } else {
+                        format!("· {secs:.1}s · 等待首字")
+                    };
+                    format!("{C_WARN}{kaomoji}{RESET} {label} {C_DIM}{tail}{RESET}")
+                }
+                Activity::Tool { name, started } => {
+                    let frames = crate::loading::LOADING_FRAMES;
+                    let kaomoji = frames[self.anim % frames.len()];
+                    let secs = started.elapsed().as_millis() as f64 / 1000.0;
+                    format!("{C_WARN}{kaomoji}{RESET} {name} {C_DIM}· {secs:.1}s · 执行中{RESET}")
                 }
                 Activity::Note(n) => format!("{C_DIM}{n}{RESET}"),
             },
@@ -547,6 +563,20 @@ impl Chrome {
     }
 
     /// 擦掉底部区域 (要往历史里打印东西之前必须调, 否则文字会插进底栏)
+    /// 擦掉从 `top` 起的整块底栏 (RESERVED_LINES 行)。
+    ///
+    /// 布局切换 (flow → 钉底) 时必须用它擦**老位置**: `clear()` 只认当前 `chrome_top()`,
+    /// 一旦先把 `flow_top` 置 None, 擦的就是新位置, 老位置的底栏会留在屏上变成残影/洞
+    /// (真机: "发消息后输入框和加载页面重复")。
+    fn erase_block_at(&mut self, top: usize) {
+        let mut out = String::new();
+        for i in 0..RESERVED_LINES {
+            out.push_str(&format!("\x1b[{}H\x1b[2K", top + i));
+        }
+        print!("{out}");
+        let _ = std::io::stdout().flush();
+    }
+
     pub fn clear(&mut self) {
         if self.drawn {
             let top = self.chrome_top();
@@ -591,12 +621,30 @@ impl Chrome {
             self.draw();
             return;
         }
-        self.flow_top = None; // 装不下 ⇒ 钉底 (本会话剩余时间都用滚动路径)
+        // 装不下 ⇒ 钉底 (本会话剩余时间都用滚动路径)。
+        // **先擦老位置**, 再切布局: 否则老底栏留在屏上, 新底栏画在下面 ⇒ 两套并存。
+        let old_top = self.chrome_top();
+        self.flow_top = None;
+        if self.drawn {
+            self.erase_block_at(old_top);
+            self.drawn = false;
+        }
         self.clear();
-        // 历史区底行 = 底栏顶行的上一行; 先滚 n 行腾位置, 再打在 [底-n+1 .. 底]
+        // 历史区底行 = 底栏顶行的上一行。
+        // **先复用归我们自己的空白行** (流式预览块收尾留下的), 不够的部分才滚屏 ——
+        // 无脑滚 n 行会把那几行空白顶上去变成洞 (真机"框里有大量空白")。
         let bottom = self.chrome_top().saturating_sub(1).max(1);
-        self.scroll_history(flat.len());
-        let top = (bottom + 1).saturating_sub(flat.len()).max(1);
+        let reuse = self.tail_free.min(flat.len());
+        self.tail_free -= reuse;
+        self.scroll_history(flat.len() - reuse);
+        // 打印起点: 优先**接着刚擦掉的老底栏位置**往下排 (老位置就在历史区里),
+        // 只有内容比这块空间更高时才退回"贴着历史区底部"排 —— 否则框与框之间留白洞。
+        let pinned_top = (bottom + 1).saturating_sub(flat.len()).max(1);
+        let top = if old_top + flat.len() <= bottom + 1 {
+            old_top.max(1)
+        } else {
+            pinned_top
+        };
         print!("\x1b[{};1H", top);
         let _ = std::io::stdout().flush();
         for l in &flat {
@@ -621,6 +669,48 @@ impl Chrome {
         }
         print!("{out}");
         let _ = std::io::stdout().flush();
+    }
+
+    /// 给流式预览**预留** `h` 行: 先把终端滚 h 行腾出来, 这 h 行从此归预览块所有。
+    ///
+    /// 这是"修洞"的关键: 预览块**不再向上借历史行** (借来的行收尾时只能擦白),
+    /// 而是自己占一段固定行数; 结束后整段交给历史区复用 (`tail_free`)。
+    /// 返回 false = 这次**没用**预览块 (还在 flow 布局: 上方就是刚打印的用户框,
+    /// 借行会把它盖住) —— 调用方改在状态行报进度即可。
+    pub fn reserve_stream(&mut self, h: usize) -> bool {
+        if h == 0 || self.flow_top.is_some() {
+            return false;
+        }
+        self.scroll_history(h);
+        self.tail_free = self.tail_free.max(h);
+        true
+    }
+
+    /// 就地重画流式预览块 (行数 = 传进来的行数, 底边贴着底栏)
+    pub fn draw_stream(&mut self, frame: &[String]) {
+        if frame.is_empty() {
+            return;
+        }
+        let top = self.chrome_top().saturating_sub(frame.len()).max(1);
+        let mut out = String::new();
+        for (i, line) in frame.iter().enumerate() {
+            out.push_str(&format!("\x1b[{}H\x1b[2K{}", top + i, line));
+        }
+        print!("{out}");
+        let _ = std::io::stdout().flush();
+    }
+
+    /// 预览块收尾: 擦成空白并把这几行**记成可复用** (不还回去就会变成洞)
+    pub fn end_stream(&mut self) {
+        let h = crate::stream::STREAM_ROWS;
+        let top = self.chrome_top().saturating_sub(h).max(1);
+        let mut out = String::new();
+        for i in 0..h {
+            out.push_str(&format!("\x1b[{}H\x1b[2K", top + i));
+        }
+        print!("{out}");
+        let _ = std::io::stdout().flush();
+        self.tail_free = self.tail_free.max(h);
     }
 
     /// 硬清屏 (对齐 `/clear` `/redraw`); 清完回到 flow 布局
@@ -666,6 +756,12 @@ impl Chrome {
                     }
                 }
             };
+            if bytes.is_empty() {
+                // 只被缩放了 (没有按键): 按新尺寸重算底栏并重绘
+                self.refresh_size();
+                self.draw();
+                continue;
+            }
             for key in parse_keys(&bytes) {
                 let mut repaint = true;
                 match resolve_action(&key) {
@@ -1134,11 +1230,19 @@ mod tests {
         let mut c = Chrome::new(30, 80);
         c.activity = Activity::Thinking {
             started: Instant::now(),
+            chars: 0,
         };
         let line = crate::width::strip_ansi(&c.status_line());
         assert!(line.contains("Thinking"), "{line}");
         assert!(line.contains('s'), "要有秒表: {line}");
-        assert!(line.contains("流式输出"), "流式语义要如实: {line}");
+        assert!(line.contains("等待首字"), "还没吐字时如实说: {line}");
+
+        c.activity = Activity::Thinking {
+            started: Instant::now(),
+            chars: 42,
+        };
+        let line = crate::width::strip_ansi(&c.status_line());
+        assert!(line.contains("42 字"), "有字数就报字数: {line}");
         assert!(line.starts_with("──"), "状态行要有 Hermes 那种起头线: {line}");
     }
 

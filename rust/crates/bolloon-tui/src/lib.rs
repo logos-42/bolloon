@@ -14,6 +14,7 @@
 //! | `loading` | `loading-tui.ts` | `LoadingTUI` 原地刷新仪表盘 + `LOADING_FRAMES` |
 //! | `select` | `src/cli/tui-select.ts` | 全屏可滚动光标选择器 (固定高度视窗 + 六种一等选择方式) |
 //! | `scroll` | `src/cli/keymap.ts` | 滚动键位表 + 位移纯函数 (跟随/暂停) |
+//! | `stream` | `stream.rs` | 流式预览的固定 4 行一帧 (不借历史行) |
 //! | `screen` | `src/cli/ink-app.tsx` 的**几何纪律** | 面板壳: 帧高恒定 / 输入行号恒定 / 四个固定行 / 跟随可暂停 |
 //! | `app` | `src/cli/ink-app.tsx` 的**分区账本** | 历史进 scrollback + 底部 6 行 chrome (活动行/rule/状态栏/rule/单行输入/rule) |
 //! | `history` | `src/cli/input-history.ts` | 输入历史落盘 (0600 · 一渠道一文件 · **秘密不写盘**) |
@@ -60,9 +61,9 @@ pub mod logbus;
 pub mod markdown;
 pub mod panel;
 pub mod screen;
+pub mod stream;
 pub mod scroll;
 pub mod select;
-pub mod stream;
 pub mod theme;
 pub mod trace;
 pub mod width;
@@ -78,6 +79,6 @@ pub use loading::{LoadingTui, LOADING_FRAMES};
 pub use logbus::{LogEvent, LogLevel, TuiGuard};
 pub use panel::{render_agent_message, render_dashboard, render_dialog, render_user_message};
 pub use screen::Screen;
-pub use select::{tui_select, TuiChoice};
-pub use stream::{render_stream_frame, StreamPanel};
+pub use stream::{render_preview_frame, STREAM_ROWS};
+pub use select::{tui_select, SelectOptions, TuiChoice};
 pub use theme::color_enabled;

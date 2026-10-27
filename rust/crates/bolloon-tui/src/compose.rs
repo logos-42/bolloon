@@ -54,6 +54,8 @@ pub enum EditAction {
 /// 键 → 意图 (**唯一映射**; `help.rs` 的文案按这个表逐条钉)
 pub fn resolve_action(key: &Key) -> EditAction {
     match key {
+        Key::WheelUp | Key::WheelDown => EditAction::Ignore,
+
         Key::Enter => EditAction::Submit,
         Key::Tab => EditAction::Accept,
         Key::Newline | Key::AltEnter => EditAction::Newline,

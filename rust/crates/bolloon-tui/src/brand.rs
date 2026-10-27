@@ -205,6 +205,23 @@ pub fn render_startup_dashboard(d: &DashboardData) -> Vec<String> {
     let right_w = inner.saturating_sub(sep).saturating_sub(left_w);
 
     let mut out: Vec<String> = Vec::new();
+
+    // ── 框**上面**先放品牌艺术字 (leo 2026-10-27: 「bolloon 艺术字没在终端出现, 放在框上面」) ──
+    // 宽度不够时 `pick_banner` 自动降档 (大 → 小 → 文字), 绝不折行。
+    for art in pick_banner(w) {
+        let lw = crate::width::disp_width(&art);
+        let left = w.saturating_sub(lw) / 2;
+        // 左右都补到**正好 w 列**: 只补左边会让艺术字行比框窄 2 列 (面板右边缘参差)
+        out.push(format!(
+            "{}{}{}",
+            " ".repeat(left),
+            art,
+            " ".repeat(w.saturating_sub(lw).saturating_sub(left))
+        ));
+    }
+    // 空行也按 w 列占位: 面板是"宽度恒定"的矩形, 空行窄了右边就参差
+    out.push(" ".repeat(w));
+
     let title = format!("{} v{} · {} · {}", d.product, d.version, d.date, d.build);
     out.push(dash_top(&title, w));
 

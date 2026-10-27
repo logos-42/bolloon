@@ -42,6 +42,131 @@ pub enum Cmd {
     Update { install: bool },
     /// 退出 (delete = 连会话文件一起删)
     Quit { delete: bool },
+    /// 打开**选择窗口** (表格 + 滚轮); 由终端层负责画, 本层只管给出数据和落地
+    Pick(PickKind),
+}
+
+/// 选择窗口的三类数据源 (`/model` `/channel` `/sessions`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickKind {
+    Model,
+    Channel,
+    Sessions,
+}
+
+/// 选择窗口的一行 (**已经是给人看的对齐文本**, 终端层原样渲染)
+#[derive(Debug, Clone)]
+pub struct PickRow {
+    pub value: String,
+    pub label: String,
+    pub hint: Option<String>,
+}
+
+impl ChatSession {
+    pub fn pick_title(&self, kind: PickKind) -> String {
+        match kind {
+            PickKind::Model => "选择模型 (↑↓ / 滚轮 / 直接打序号 / Enter 确认 · Esc 取消)".to_string(),
+            PickKind::Channel => "选择渠道 (一渠道一历史, 互不串)".to_string(),
+            PickKind::Sessions => "选择会话 (序号 / 标题 / 条数 · Enter 接上)".to_string(),
+        }
+    }
+
+    /// 表格行: 列按**显示宽度**对齐 (CJK 标题也不会错列)
+    pub fn pick_rows(&self, kind: PickKind) -> Vec<PickRow> {
+        match kind {
+            PickKind::Model => {
+                let cfg = bolloon_llm::config_store::load();
+                let mut rows: Vec<PickRow> = Vec::new();
+                for r in bolloon_llm::config_store::usable(&cfg) {
+                    let mark = if r.model == self.model { "●" } else { "○" };
+                    rows.push(PickRow {
+                        value: r.model.clone(),
+                        label: format!("{mark} {:<18} {}", r.model, r.id),
+                        hint: Some(format!("{} · 密钥 {}", r.base_url, r.auth_ref())),
+                    });
+                }
+                // 当前模型即使不在可用列表里也要能看见 (否则用户以为丢了)
+                if !rows.iter().any(|x| x.value == self.model) {
+                    rows.insert(
+                        0,
+                        PickRow {
+                            value: self.model.clone(),
+                            label: format!("● {:<18} (当前, 未在配置里)", self.model),
+                            hint: Some("这个模型名当前配置解析不到密钥/地址".to_string()),
+                        },
+                    );
+                }
+                rows
+            }
+            PickKind::Channel => {
+                let mut names = vec![self.channel.clone()];
+                let dir = bolloon_tui::history::history_dir();
+                if let Ok(rd) = std::fs::read_dir(&dir) {
+                    for e in rd.flatten() {
+                        let p = e.path();
+                        if p.extension().and_then(|x| x.to_str()) == Some("json") {
+                            if let Some(stem) = p.file_stem().and_then(|x| x.to_str()) {
+                                let n = stem.replace("__", ":");
+                                if !names.contains(&n) {
+                                    names.push(n);
+                                }
+                            }
+                        }
+                    }
+                }
+                names.sort();
+                names
+                    .into_iter()
+                    .map(|n| PickRow {
+                        value: n.clone(),
+                        label: format!("{} {}", if n == self.channel { "●" } else { "○" }, n),
+                        hint: None,
+                    })
+                    .collect()
+            }
+            PickKind::Sessions => self
+                .list()
+                .into_iter()
+                .enumerate()
+                .map(|(i, (id, title, n))| PickRow {
+                    value: i.to_string(), // 用**序号**落地: 与列表同序, 不会选错
+                    label: format!(
+                        "{:>2}. {}{}  ({n} 条)",
+                        i + 1,
+                        title,
+                        if id == self.id { "  ← 当前" } else { "" }
+                    ),
+                    hint: Some(id),
+                })
+                .collect(),
+        }
+    }
+
+    /// 落地选择结果 (`value` 来自 `pick_rows`)
+    pub fn apply_pick(&mut self, kind: PickKind, value: &str) -> Result<Vec<String>, String> {
+        match kind {
+            PickKind::Model => {
+                self.model = value.to_string();
+                let _ = self.save();
+                Ok(vec![format!("模型已切换到 {}", self.model)])
+            }
+            PickKind::Channel => {
+                if value == self.channel {
+                    return Ok(vec![format!("渠道没变 ({})", value)]);
+                }
+                self.channel = value.to_string();
+                let _ = self.save();
+                Ok(vec![format!("渠道已切换到 {}", value)])
+            }
+            PickKind::Sessions => match self.load_into(value) {
+                Ok(()) => Ok(vec![
+                    format!("已恢复会话「{}」 ({} 条消息)", self.title, self.messages.len()),
+                    format!("继续聊即可 —— 之前的上下文都在 (id {})", self.id),
+                ]),
+                Err(e) => Err(e),
+            },
+        }
+    }
 }
 
 /// 忙时调度模式 (`/busy`)
@@ -414,6 +539,32 @@ impl ChatSession {
         self.chars() / 4
     }
 
+    /// 退出摘要 —— 用户回来时**一眼能接上** (标题/时长/消息数/怎么恢复/存哪了)。
+    ///
+    /// 与 Hermes 的收尾同口径: 给的是"可执行的下一条命令", 不是一句"再见"。
+    pub fn exit_summary(&self, elapsed: std::time::Duration) -> Vec<String> {
+        let secs = elapsed.as_secs();
+        let dur = if secs >= 3600 {
+            format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60)
+        } else if secs >= 60 {
+            format!("{}m {}s", secs / 60, secs % 60)
+        } else {
+            format!("{secs}s")
+        };
+        vec![
+            format!("会话    {}  ({})", self.title, self.id),
+            format!(
+                "时长    {dur} · {} 条消息 / {} 轮 · 渠道 {}",
+                self.messages.len(),
+                self.turns(),
+                self.channel
+            ),
+            format!("继续    bolloon chat --resume {}", self.id),
+            format!("        (或进来后 /resume {} / /resume <序号> / /sessions 看全部)", self.id),
+            format!("落盘    {}", self.path().display()),
+        ]
+    }
+
     /// 自动标题: 用户没亲手起名时, 用首条用户消息当**语义标题**。
     ///
     /// 调用点只有一个 (`main.rs` 每轮发出用户消息之后), 幂等 —— 反复调用不会改出怪东西。
@@ -509,21 +660,50 @@ impl ChatSession {
             }
             return Ok(());
         }
-        Err(format!("找不到会话 “{key}” (用 /sessions 看有哪些)"))
+        Err(format!(
+            "找不到会话 “{key}” —— /sessions 列出的序号 / id / 标题都能直接用"
+        ))
     }
 
+    /// 按 **序号 (1-based, 新的在前) → id → id 前缀 → 标题(精确→子串)** 逐级回落定位会话。
+    ///
+    /// 序号与 `/sessions` 列表**同一份数据、同一顺序** (都来自 `list()`), 否则"按 3 选"
+    /// 会选到别的东西 —— 这条是本仓列表类命令的既有口径 (`/channel` 同款)。
     fn find(&self, key: &str) -> Option<PathBuf> {
+        let key = key.trim();
+        let all = self.list();
+
+        // ① 序号
+        if let Ok(n) = key.parse::<usize>() {
+            if n >= 1 {
+                if let Some((id, _, _)) = all.get(n - 1) {
+                    return Some(self.sessions_dir().join(format!("{id}.json")));
+                }
+            }
+        }
+        // ② 直接就是 id (文件名)
         let direct = self.sessions_dir().join(format!("{key}.json"));
         if direct.exists() {
             return Some(direct);
         }
         let want = key.to_lowercase();
-        for (id, title, _) in self.list() {
-            if id.to_lowercase() == want || title.to_lowercase() == want {
+        // ③ id 全等
+        if let Some((id, _, _)) = all.iter().find(|(id, _, _)| id.to_lowercase() == want) {
+            return Some(self.sessions_dir().join(format!("{id}.json")));
+        }
+        // ④ id 前缀 (会话 id 很长, 手打不方便)
+        if key.len() >= 6 {
+            if let Some((id, _, _)) = all.iter().find(|(id, _, _)| id.to_lowercase().starts_with(&want)) {
                 return Some(self.sessions_dir().join(format!("{id}.json")));
             }
         }
-        None
+        // ⑤ 标题: 精确 → 子串
+        if let Some((id, _, _)) = all.iter().find(|(_, t, _)| t.to_lowercase() == want) {
+            return Some(self.sessions_dir().join(format!("{id}.json")));
+        }
+        all.iter()
+            .find(|(_, t, _)| t.to_lowercase().contains(&want))
+            .map(|(id, _, _)| self.sessions_dir().join(format!("{id}.json")))
     }
 
     /// 会话清单 (新的在前): (id, title, 消息数)
@@ -790,7 +970,7 @@ impl ChatSession {
             "/resume" => {
                 let key = args.trim();
                 if key.is_empty() {
-                    Cmd::Say(self.list_lines("用 /resume <name|id> 恢复"))
+                    Cmd::Say(self.list_lines("用 /resume <序号|id|标题> 恢复 (序号见左列)"))
                 } else {
                     match self.load_into(key) {
                         Ok(()) => Cmd::Say(vec![
@@ -801,7 +981,20 @@ impl ChatSession {
                     }
                 }
             }
-            "/sessions" => Cmd::Say(self.list_lines("用 /resume <name|id> 恢复")),
+            // 空参数 = 开**选择窗口** (表格 + 滚轮); 带参数才走文本路径 (脚本/管道友好)
+            "/sessions" if args.trim().is_empty() => Cmd::Pick(PickKind::Sessions),
+            "/sessions" => Cmd::Say(self.list_lines("用 /resume <序号|id|标题> 恢复 (序号见左列)")),
+            // 渠道: 空参数 = 选择窗口; 带参数 = 直接切 (一渠道一输入历史)
+            "/channel" => {
+                let c = args.trim();
+                if c.is_empty() {
+                    Cmd::Pick(PickKind::Channel)
+                } else {
+                    self.channel = c.to_string();
+                    let _ = self.save();
+                    Cmd::Say(vec![format!("渠道已切换到 {} (输入历史按渠道隔离)", self.channel)])
+                }
+            }
             "/compress" => Cmd::Say(self.compress_cmd(ctx, args).await),
             "/status" => Cmd::Say(self.status_lines()),
             "/context" => Cmd::Say(self.context_lines(args)),
@@ -809,7 +1002,7 @@ impl ChatSession {
             "/model" => {
                 let m = args.trim();
                 if m.is_empty() {
-                    Cmd::Say(vec![format!("当前模型: {} (只影响本会话, 用 /model <名字> 切)", self.model)])
+                    Cmd::Pick(PickKind::Model)
                 } else {
                     self.model = m.to_string();
                     let _ = self.save();
@@ -1735,9 +1928,10 @@ impl ChatSession {
             return vec!["(本机还没有落过盘的会话)".to_string()];
         }
         let mut out = vec![format!("本机会话 {} 个 (新的在前):", all.len())];
-        for (id, title, n) in all.iter().take(20) {
+        for (i, (id, title, n)) in all.iter().take(20).enumerate() {
             let mark = if *id == self.id { "← 当前" } else { "" };
-            out.push(format!("  {id}  {title}  ({n} 条) {mark}"));
+            // 序号在最前: 用户能直接 `/resume 2`; id 与标题也照旧可用
+            out.push(format!("  {:>2}. {title}  ({n} 条)  {id} {mark}", i + 1));
         }
         if all.len() > 20 {
             out.push(format!("  … 还有 {} 个 (只列最近 20)", all.len() - 20));
@@ -2626,8 +2820,14 @@ mod tests {
         push(&mut b, "user", "乙的消息");
         b.save().unwrap();
 
-        let listed = format!("{:?}", run(&mut b, "/sessions", "").await);
+        // 空参数 = 开选择窗口 (终端层画); 文本清单走带参数的形式 (脚本/管道友好)
+        let picked = format!("{:?}", run(&mut b, "/sessions", "").await);
+        assert!(picked.contains("Pick(Sessions)"), "{picked}");
+        let listed = format!("{:?}", run(&mut b, "/sessions", "list").await);
         assert!(listed.contains(&a.id), "{listed}");
+        // 序号能定位 (与列表同序): 1 号就是最近的那个
+        let by_num = format!("{:?}", run(&mut b, "/resume", "1").await);
+        assert!(by_num.contains("已恢复"), "{by_num}");
 
         let resumed = format!("{:?}", run(&mut b, "/resume", "甲").await);
         assert!(resumed.contains("已恢复"), "{resumed}");

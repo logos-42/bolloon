@@ -73,7 +73,9 @@ class Screen:
         self.grid.append([" "] * self.w)
 
     def _newline(self):
-        self.c = 0
+        # 忠实的 VT: LF 只下移一行, **不动列** (CR 才回列首)。
+        # 曾在这里顺手写 `self.c = 0`, 于是把"raw 模式里 \n 不回列首 ⇒ 阶梯状"这个
+        # 真 bug 整块掩盖了 (真机消息框边框一路右移, 门却全绿)。
         if self.r + 1 >= self.h:
             self._scroll()
         else:
@@ -91,6 +93,10 @@ class Screen:
             return
         if self.c + width > self.w:
             self._newline()
+            self.c = 0
+        if self.c >= self.w:      # 上一行正好写满 (pending wrap): 先换行再落字
+            self._newline()
+            self.c = 0
         if self.r >= self.h:
             self._scroll()
         self.grid[self.r][self.c] = ch
@@ -345,11 +351,39 @@ class StubLlm:
                     b"Retry-After: 0\r\n\r\n" + payload
                 )
                 return
-            # 第 3 次: 正常 SSE 流
+            # 第 3 次: 200 + SSE, **先要一次工具调用** (验工具记录真的上屏)
             conn.sendall(
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
                 b"Cache-Control: no-cache\r\nConnection: close\r\n\r\n"
             )
+            streaming = b'"stream":true' in body.replace(b' ', b'')
+            if self.hits >= 4 and not streaming:
+                final = json.dumps({
+                    "choices": [{"message": {"content": "工具跑完了：probe-tool-ok"}, "index": 0}],
+                    "usage": {"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50},
+                }, ensure_ascii=False).encode()
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                             b"Content-Length: " + str(len(final)).encode() + b"\r\nConnection: close\r\n\r\n" + final)
+                return
+            if self.hits == 3:
+                tc = json.dumps({
+                    "choices": [{
+                        "delta": {"tool_calls": [{
+                            "index": 0, "id": "call_probe_1", "type": "function",
+                            "function": {"name": "shell", "arguments": "{\"command\":\"echo probe-tool-ok\"}"},
+                        }]},
+                        "finish_reason": "tool_calls",
+                    }],
+                }, ensure_ascii=False)
+                conn.sendall(b"data: " + tc.encode() + b"\n\ndata: [DONE]\n\n")
+                return
+            if self.hits >= 4:
+                final = json.dumps({
+                    "choices": [{"delta": {"content": "工具跑完了：probe-tool-ok"}, "index": 0}],
+                    "usage": {"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50},
+                }, ensure_ascii=False)
+                conn.sendall(b"data: " + final.encode() + b"\n\ndata: [DONE]\n\n")
+                return
             for piece in ["你好", "，", "我是桩模型。"]:
                 ev = json.dumps({
                     "choices": [{"delta": {"content": piece}, "index": 0}],
@@ -580,7 +614,8 @@ def main():
             appears = [l for l in s.lines() if "你好，给我一句话" in l]
             R.check("T5.2 消息区里用户消息只出现一次", n_user == 1,
                     f"消息区命中 {n_user} 次; 含该串的行={len(appears)}")
-            R.check("T5.3 助手回复进了历史区", "桩模型" in joined,
+            R.check("T5.3 助手回复进了历史区",
+                    ("桩模型" in joined) or ("工具跑完了" in joined),
                     "屏上没看到回复正文; 画面=" + " | ".join(l for l in s.lines() if l.strip())[-300:])
             R.check("T5.4 发送后底部固定区形状不变 (1 分隔线 + 1 状态行)",
                     len(rule_rows(s)) == 1 and len(status_line_rows(s)) == 1,
@@ -621,6 +656,107 @@ def main():
                         if l.strip() and not l.strip().startswith(("⚠", "✗"))),
                     f"渲染成事件的日志行 {len(rendered)} 条")
 
+        # ── T10 消息框: 边框闭合 + 正文与边框对齐 (raw 模式 \n 不能阶梯) ──
+        if want("T10"):
+            for _ in range(40):
+                t.send("\x7f", settle=0.01)
+            t.send("你好框", settle=0.2)
+            t.send("\r", settle=1.2)
+            t.pump(3.0)
+            s = t.screen()
+            lines = s.lines()
+            # 找出所有框: 顶行含 ╭, 之后连续的 │ 行, 收尾 ╰
+            boxes = []
+            for i, l in enumerate(lines):
+                col = l.find("╭")
+                if col < 0:
+                    continue
+                rows = []
+                for j in range(i, min(i + 12, len(lines))):
+                    lj = lines[j]
+                    if lj[:col + 1].endswith(("│", "╰")):
+                        rows.append((j, lj[col:col + 1]))
+                if rows:
+                    boxes.append((i, col, rows))
+            R.check("T10.1 屏上有完整的消息框 (顶/侧/底都从同一列起)", bool(boxes),
+                    f"找到 {len(boxes)} 个框")
+            misaligned = []
+            for i, col, rows in boxes:
+                for j, lead in rows:
+                    if lines[j][:col].strip():
+                        misaligned.append((j, lines[j][:col + 1]))
+            R.check("T10.2 框的每一行都在同一列 (没有阶梯/右移)", not misaligned,
+                    f"错位行: {misaligned[:3]}")
+            R.check("T10.3 用户消息正文在框内",
+                    any("你好框" in l for l in lines), "屏上找不到消息正文")
+
+        # ── T12 框与框之间没有大段空白 (流式预览块不许擦成洞) ──
+        if want("T12"):
+            s = t.screen()
+            lines = s.lines()
+            runs, cur = [], 0
+            for l in lines:
+                if l.strip():
+                    if cur >= 3:
+                        runs.append(cur)
+                    cur = 0
+                else:
+                    cur += 1
+            R.check("T12.1 框之间没有 ≥3 行的空洞", not runs,
+                    f"找到连续空行: {runs}")
+            # 回复框必须紧跟在发送框后面 (中间最多 1 行空)
+            send_row = next((i for i, l in enumerate(lines) if "已发送" in l), None)
+            reply_row = next((i for i, l in enumerate(lines) if "Bolloon Agent" in l), None)
+            gap = (reply_row - send_row) if (send_row is not None and reply_row is not None) else -1
+            # 底栏**只能有一套**: 输入框提示行 / 占位行 / 状态行各出现一次
+            R.check("T12.3 键位提示行只有一条", s.text().count("Enter 发送") == 1,
+                    f"提示行出现 {s.text().count('Enter 发送')} 次 (底栏重复绘制)")
+            R.check("T12.4 输入行只有一条", sum(1 for l in lines if l.strip().startswith("❯")) == 1,
+                    "❯ 行: " + str([l for l in lines if l.strip().startswith("❯")]))
+            R.check("T12.5 模型状态行只有一条", sum(1 for l in lines if "@default" in l) == 1,
+                    f"状态行出现 {sum(1 for l in lines if '@default' in l)} 次")
+            R.check("T12.2 发送框到回复框之间 ≤2 行", 0 < gap <= 2,
+                    f"send_row={send_row} reply_row={reply_row} gap={gap}")
+
+        # ── T13 工具调用记录上屏 (桩模型第 3 次请求返回 shell 工具调用) ──
+        if want("T13"):
+            for _ in range(60):
+                t.send("\x7f", settle=0.01)
+            t.send("用一下工具", settle=0.2)
+            t.send("\r", settle=1.0)
+            t.pump(6.0)
+            s = t.screen()
+            txt = s.text()
+            R.check("T13.1 工具记录出现了 (🔧 行)", "🔧" in txt,
+                    "屏上没有工具行; 画面=" + " | ".join(l for l in s.lines() if l.strip())[-260:])
+            R.check("T13.2 工具名与参数摘要都在", "shell" in txt and "echo probe-tool-ok" in txt,
+                    "工具行缺名字或参数")
+            R.check("T13.3 工具结果回灌后仍有最终答复", "工具跑完了" in txt,
+                    "没看到续轮后的回复")
+            R.check("T13.4 工具行只出现一次 (不重复打印)", txt.count("🔧") == 1,
+                    f"🔧 出现 {txt.count('🔧')} 次")
+
+        # ── T11 粘贴折叠: 长文本落成一行引用, 不把原文灌进对话 ──
+        if want("T11"):
+            for _ in range(80):
+                t.send("\x7f", settle=0.01)
+            long_text = "这是一段很长的粘贴内容用来验证折叠。" * 20   # >300 字符
+            t.send(long_text, settle=0.5)
+            s_in = t.screen()
+            R.check("T11.1 长粘贴先按原样进输入框 (未折叠前可编辑)",
+                    long_text[:8] in s_in.text(), "输入框里看不到粘贴内容")
+            t.send("\r", settle=1.2)
+            t.pump(2.5)
+            s = s_in = t.screen()
+            txt = s.text()
+            R.check("T11.2 提交后折叠成一行引用 ([粘贴 #N: … 行 → 路径])",
+                    "[粘贴 #" in txt, "屏上没看到折叠摘要")
+            tail_in_history = txt.count("用来验证折叠")
+            R.check("T11.3 原文没有整段灌进对话", tail_in_history <= 1,
+                    f"屏上出现 {tail_in_history} 次原文片段")
+            R.check("T11.4 折叠摘要里给了可读的落盘路径",
+                    "read_file" in txt or "/pastes/" in txt, "摘要里没有路径/提示")
+
         # ── T8 退出: 空闲时**一次** Ctrl+C ───────────────────
         if want("T8"):
             for _ in range(20):
@@ -633,9 +769,13 @@ def main():
                     "没找到 ESC[?25h")
             scr = Screen(COLS, ROWS)
             scr.feed(all_bytes)
-            R.check("T8.3 屏上留下会话已保存的收尾行",
+            R.check("T8.3a 退出摘要有标题/时长/恢复命令/落盘路径",
+                    all(k in scr.text() for k in ("会话结束", "会话    ", "时长    ", "--resume", "落盘    ")),
+                    "缺字段; 尾行=" + " | ".join(scr.text().splitlines()[-6:]))
+            R.check("T8.3 屏上留下会话收尾行", "会话结束" in scr.text(),
                     "已退出会话" in scr.text(), scr.text().splitlines()[-3:])
             t = None
+
 
         # ── T9 非交互 / 重定向: 输出行为不变 ─────────────────
         if want("T9"):

@@ -125,6 +125,32 @@ composer 自己在 `cols` 上算线宽、`Chrome` 用 `cols-1`; 两边的"输入
 100 次 set_input 横线数不变 · 无行写满整宽 · 状态行/指标行字段语义 · 容量未知不画分母 ·
 占位文案有内容即消失 · 多行折叠 · logbus 有界队列/级别路由/守卫恢复/多行压平。
 
+## 第二轮修复 (2026-10-27 晚)
+
+真机又报四类问题, 根因都在**几何记账**, 不是样式:
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| 发消息后输入框/加载区**重复一套** | `print_above` 先把 `flow_top` 置 `None` 再 `clear()` ⇒ 擦的是**新位置**, 老 flow 位置的底栏留在屏上, 新底栏画下面 | 新增 `erase_block_at(top)`: 切布局前**先擦老位置**, 再切; 之后按老位置续排 |
+| 框与框之间出现**大段空白洞** | 流式预览块"向上借历史行", 收尾 `finish()` 把借来的行擦白 | 预览块改成**固定 `STREAM_ROWS=4` 行** (`reserve_stream` 先滚出占住), 收尾 `end_stream` 只清自己那 4 行并记进 `tail_free`; `print_above` **先复用 `tail_free`** 再滚屏 |
+| 打一个字多一条横线 (旧) | 见上文 | 同上文 |
+| 工具执行时输入框**动画冻住** | 工具 `harness.gate()` 是阻塞 await, 期间无人重绘 | `tokio::select!` 里把 `gate()` 与 **100ms tick** 并跑, 新增 `Activity::Tool{name,started}` (`⚙ shell · 1.4s · 执行中`) |
+
+其它同时落地:
+
+- **diff 要看得见**: `file_tools::bounded_diff()` 生成有界 unified diff (24 行封顶, 超出如实写"省略 N 行"),
+  `edit_file` 成功输出 = `已编辑 + diff + 读回自证`; TUI 侧 `panel::render_diff_excerpt()` 着色 `+/-/@@` 并限宽。
+- **选择窗口**: `/model` `/channel` `/sessions` 空参数打开 `tui_select` (表格 + 序号直达 + **滚轮**);
+  `parse_keys` 认 SGR 鼠标 `ESC[<64/65;x;yM`, 选择器进入时开 `?1000h?1006h`、退出必关。
+  `/sessions` 用**序号**落地 (`apply_pick`), 与列表同序不选错; `/resume` 也认序号 / id 前缀 / 标题。
+- **退出摘要**: `ChatSession::exit_summary()` 打标题 / 时长 / 消息数 / `bolloon chat --resume <id>` / 落盘路径,
+  `chat --resume <序号|id|标题>` 启动即接上旧会话。
+- **启动面板**: 艺术字移到**框上方** (`pick_banner` 自适应宽度 + 左右补齐到正好 `w` 列),
+  `Available Skills` 改为**扫全机技能库** (`~/.hermes/skills` `~/.claude/skills` `~/.codex/skills` + 项目内), 目录名即技能名,
+  面板只列前 8 个 + `… 还有 N 个` (实测 1374 个)。
+- **缩放即时生效**: `install_resize_watch()` 装 SIGWINCH, `read_key_raw` 每 250ms 回来看一眼,
+  空批次 = 只有缩放没有按键 ⇒ `refresh_size() + draw()`。
+
 ## 踩过的坑 (给下一次)
 
 1. **相对位移 + 尾随换行**必然少上移一行; 修法是取消相对位移, 不是调 `-1`。
@@ -134,7 +160,10 @@ composer 自己在 `cols` 上算线宽、`Chrome` 用 `cols-1`; 两边的"输入
 4. 固定 sleep 会给出假红: 首帧要 `wait_for(pred)` (冷启动可能 >2.5s)。
 5. `print_above` 在钉底态必须**先滚**; "打印完再画底栏"会把新行盖掉。
 6. raw 模式里 `Ctrl+C` / `Ctrl+D` 都只是字节: 退出/中断只能靠读键, `tokio::signal::ctrl_c` 收不到。
-7. 日志文件必须剥 SGR: `.with_ansi(tty)` 写进文件后 `grep status=429` 会漏 (实测被 `\x1b[3m` 打断)。
+7. **切布局必须先擦老位置**: `clear()` 只认当前 `chrome_top()`; 先改状态再擦 = 擦错行, 老底栏变残影/洞。
+8. **预览块不能"借行"**: 借来的行收尾只能擦白 ⇒ 洞。固定的行数 + `tail_free` 复用才有干净几何。
+9. **阻塞的 await 会让 TUI 假死**: 工具/网络调用一律与 tick 赛跑 (`select!`), 否则动画冻住。
+10. 日志文件必须剥 SGR: `.with_ansi(tty)` 写进文件后 `grep status=429` 会漏 (实测被 `\x1b[3m` 打断)。
 
 ## 关联
 

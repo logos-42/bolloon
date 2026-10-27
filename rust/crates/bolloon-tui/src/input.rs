@@ -82,6 +82,11 @@ fn apply_raw(on: bool, orig: &Option<libc::termios>) -> bool {
             (true, Some(base)) => {
                 let mut t = *base;
                 libc::cfmakeraw(&mut t);
+                // **输出 post-processing 必须留回来**: cfmakeraw 把 OPOST|ONLCR 也清了,
+                // 于是 `\n` 只下移不回第 0 列 ⇒ 所有 println! 打出来是阶梯状
+                // (真机: 用户消息框 `╭─ ✓ 已发送 ─╮` 的边框和正文一路右移)。
+                // 这是 eprintln 与「绝对行号绘制」都依赖的前提, 拆掉它就全歪。
+                t.c_oflag |= libc::OPOST | libc::ONLCR;
                 libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t) == 0
             }
             (false, Some(base)) => {
@@ -315,6 +320,11 @@ pub fn ask_line_with(
             clear_block(drawn);
             return LineResult { value: String::new(), eof: true, cancelled: false };
         };
+        if bytes.is_empty() {
+            drawn = 0;
+            repaint(&mut drawn, prompt, &cx, masked, cols, max_in, &notes);
+            continue;
+        }
         for key in parse_keys(&bytes) {
             match resolve_action(&key) {
                 EditAction::Submit => {

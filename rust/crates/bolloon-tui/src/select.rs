@@ -334,6 +334,10 @@ pub enum Key {
     AltV,
     Esc,
     Cancel, // Ctrl-C
+    /// 鼠标滚轮上 (SGR: `ESC [ < 64 ; x ; y M`)
+    WheelUp,
+    /// 鼠标滚轮下
+    WheelDown,
     Backspace,
     Space,
     Char(char),
@@ -379,6 +383,27 @@ pub fn parse_keys(bytes: &[u8]) -> Vec<Key> {
                             out.push(Key::End);
                             i += 3;
                             continue;
+                        }
+                        // `\x1b[<b;x;yM` —— SGR 鼠标 (滚轮 = b 64/65)。**不认它滚轮就没反应**
+                        b'<' => {
+                            if let Some(end) = bytes[i..]
+                                .iter()
+                                .position(|&c| c == b'M' || c == b'm')
+                            {
+                                let body = &bytes[i + 3..i + end];
+                                let bnum = std::str::from_utf8(body)
+                                    .ok()
+                                    .and_then(|t| t.split(';').next())
+                                    .and_then(|t| t.parse::<u16>().ok())
+                                    .unwrap_or(0);
+                                match bnum & 0xff {
+                                    64 => out.push(Key::WheelUp),
+                                    65 => out.push(Key::WheelDown),
+                                    _ => {}
+                                }
+                                i += end + 1;
+                                continue;
+                            }
                         }
                         // `\x1b[1~` `\x1b[3~` `\x1b[4~` (xterm 的 Home/Delete/End)
                         b'1' | b'3' | b'4' if i + 3 < bytes.len() && bytes[i + 3] == b'~' => {
@@ -501,6 +526,8 @@ impl RawGuard {
             }
             let orig = t;
             libc::cfmakeraw(&mut t);
+            // 同 input.rs: 保留输出的 OPOST|ONLCR, 否则 `\n` 不回列首 (阶梯状)
+            t.c_oflag |= libc::OPOST | libc::ONLCR;
             if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t) != 0 {
                 return Self { orig: None };
             }
@@ -589,6 +616,23 @@ pub fn tui_select(title: &str, items: &[TuiChoice], opts: &SelectOptions) -> Opt
     let cols = opts.cols.unwrap_or_else(term_width);
     let rows = opts.rows.unwrap_or_else(term_height);
 
+    // 开鼠标上报 (滚轮靠它); 退出时**必须**关, 否则 shell 里鼠标行为会变怪
+    let mouse = opts.color;
+    if mouse {
+        print!("\x1b[?1000h\x1b[?1006h");
+        let _ = std::io::stdout().flush();
+    }
+    struct MouseOff(bool);
+    impl Drop for MouseOff {
+        fn drop(&mut self) {
+            if self.0 {
+                print!("\x1b[?1000l\x1b[?1006l");
+                let _ = std::io::stdout().flush();
+            }
+        }
+    }
+    let _mouse_off = MouseOff(mouse);
+
     let mut query = String::new();
     let mut note = String::new();
     let mut collapsed: Vec<String> = Vec::new();
@@ -656,6 +700,21 @@ pub fn tui_select(title: &str, items: &[TuiChoice], opts: &SelectOptions) -> Opt
             // 选择器没有"光标编辑"这回事: Delete / Ctrl+A / Ctrl+E / Ctrl+U 一律不响应;
             // Ctrl+D 在选择器里也不算退出 (退出的唯一入口是选 Cancel 行 / Esc)
             Key::Delete | Key::CtrlA | Key::CtrlE | Key::CtrlU | Key::Eof => {}
+            // 滚轮: 一次滚 3 行 (光标跟着走 → 顺手就能 Enter)
+            Key::WheelUp => {
+                for _ in 0..3 {
+                    cursor = if cursor > 0 { cursor - 1 } else { lines.len() - 1 };
+                }
+                num_buf.clear();
+                note.clear();
+            }
+            Key::WheelDown => {
+                for _ in 0..3 {
+                    cursor = if cursor + 1 < lines.len() { cursor + 1 } else { 0 };
+                }
+                num_buf.clear();
+                note.clear();
+            }
             Key::Up => {
                 cursor = if cursor > 0 { cursor - 1 } else { lines.len() - 1 };
                 num_buf.clear();
@@ -832,8 +891,42 @@ fn poll_read(timeout_ms: i32) -> Option<u8> {
  *   · **UTF-8 必须读全** —— 只读 1 字节时 `中` 的 3 个字节各自解析失败 ⇒ 中文打不进去。
  *   · **Alt+<键> 靠宽限窗口识别** —— `ESC` + `\r`/`v` 分别是 Alt+Enter / Alt+V。
  */
+/// 终端被缩放过的标志 (SIGWINCH 置位; 读键循环顺手消费它 → 触发一次重绘)
+static RESIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static WINCH_INSTALLED: std::sync::Once = std::sync::Once::new();
+
+extern "C" fn on_winch(_sig: libc::c_int) {
+    RESIZED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 装 SIGWINCH 监听 (幂等)。**必须装**: 缩放后若没人重绘, 底栏就停在对不上的行列上
+/// (真机: 缩小窗口后整个 composer 消失/错位)。
+pub fn install_resize_watch() {
+    WINCH_INSTALLED.call_once(|| unsafe {
+        // 函数项不能直接 cast 成整数: 先转裸指针再转 sighandler_t
+        libc::signal(libc::SIGWINCH, on_winch as *const () as libc::sighandler_t);
+    });
+}
+
+/// 取走"刚缩放过"的标志
+pub fn take_resize_flag() -> bool {
+    RESIZED.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 读一次按键。**空 Vec = 只是被缩放了, 没有按键** (调用方据此重绘, 不要当成输入)
 pub fn read_key_raw() -> Option<Vec<u8>> {
-    let first = poll_read(-1)?;
+    install_resize_watch();
+    // 分片等: 每 250ms 回来看看有没有缩放信号, 不然缩放了也得等用户随便敲一下才重绘
+    let first = loop {
+        match poll_read(250) {
+            Some(b) => break b,
+            None => {
+                if take_resize_flag() {
+                    return Some(Vec::new()); // 空批次 = tick
+                }
+            }
+        }
+    };
     let mut v = vec![first];
     if first == 0x1b {
         match poll_read(ESC_GRACE_MS) {

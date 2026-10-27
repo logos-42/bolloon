@@ -55,6 +55,9 @@ enum Commands {
         /// 渠道名 (输入历史**一渠道一文件**, 隔离不串)
         #[arg(long, default_value = "default")]
         channel: String,
+        /// 直接接着某个会话聊 (序号 / id / id 前缀 / 标题 都认; 见 /sessions)
+        #[arg(long)]
+        resume: Option<String>,
     },
     /// 选模型供应商 (全量 200+ 家: 内置 13 + 目录 + 自定义; 密钥掩码输入, 落盘 0600)
     Model {
@@ -173,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Status) => run_status(),
         Some(Commands::Memory { action }) => run_memory(action),
         Some(Commands::Task { action }) => run_task(action),
-        Some(Commands::Chat { channel }) => run_chat(&channel).await,
+        Some(Commands::Chat { channel, resume }) => run_chat(&channel, resume.as_deref()).await,
         Some(Commands::Model { provider, usable, filter, model, base_url, api_key_stdin }) => {
             run_model(provider, usable, filter, model, base_url, api_key_stdin)
         }
@@ -319,7 +322,7 @@ fn cwd_candidates(q: &str) -> Vec<tui::ComplItem> {
     out
 }
 
-async fn run_chat(channel: &str) -> anyhow::Result<()> {
+async fn run_chat(channel: &str, resume: Option<&str>) -> anyhow::Result<()> {
     // 从这里起日志不再直写 stderr (退出/panic 展开时自动放开)
     let _tui_log = tui::logbus::TuiGuard::new();
     let (llm, model) = build_chat_llm();
@@ -343,6 +346,16 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
     let mut history = tui::load_input_history(Some(channel));
     // 会话本体 (消息/标题/模型/附件 + 落盘): 命令逻辑全在 `chat_command`, 这里只做接线
     let mut sess = chat_command::ChatSession::new(&model, channel);
+    // `--resume <序号|id|标题>`: 启动就接上旧会话 (面板上的标题/模型/消息数都是它的)
+    if let Some(key) = resume {
+        match sess.load_into(key) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("{e}");
+                eprintln!("(从新会话开始; 进会话后 /sessions 看可恢复的列表)");
+            }
+        }
+    }
     let jobs = chat_command::Jobs::new();
     let ctx = chat_command::ChatCtx {
         llm: Arc::clone(&llm),
@@ -511,6 +524,37 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
                     emit(&mut chrome, full, &lines);
                     continue;
                 }
+                chat_command::Cmd::Pick(kind) => {
+                    let rows = sess.pick_rows(kind);
+                    if rows.is_empty() {
+                        emit(&mut chrome, full, &["没有可选项".to_string()]);
+                        continue;
+                    }
+                    let items: Vec<tui::TuiChoice> = rows
+                        .iter()
+                        .map(|r| tui::TuiChoice {
+                            value: r.value.clone(),
+                            label: r.label.clone(),
+                            hint: r.hint.clone(),
+                            group: None,
+                            cancel: false,
+                        })
+                        .collect();
+                    // 全屏选择器要独占终端: 先把底栏让出来, 退出后再整屏重算
+                    chrome.clear();
+                    let opts = tui::SelectOptions::default();
+                    let picked = tui::tui_select(&sess.pick_title(kind), &items, &opts);
+                    chrome.reset_screen();
+                    if let Some(v) = picked {
+                        let lines = match sess.apply_pick(kind, &v) {
+                            Ok(l) => l,
+                            Err(e) => vec![format!("✗ {e}")],
+                        };
+                        emit(&mut chrome, full, &lines);
+                        refresh_status(&mut chrome, &sess);
+                    }
+                    continue;
+                }
                 chat_command::Cmd::Quit { .. } => break,
                 chat_command::Cmd::Send(p) => {
                     // `/retry` `/prompt` 走这里: 用这条内容代替用户输入
@@ -574,20 +618,17 @@ async fn run_chat(channel: &str) -> anyhow::Result<()> {
         }
     }
     chrome.clear();
-    // 退出前把会话落盘 (Ctrl+C 二次退出 / Ctrl+D / 正常 /exit 都走这里)
-    let saved = match sess.save() {
-        Ok(()) => format!("已保存 {}", sess.path().display()),
-        Err(e) => format!("⚠ 会话落盘失败: {e} (内容仍在内存)"),
-    };
+    // 退出前把会话落盘 (空闲 Ctrl+C / Ctrl+D / 正常 /exit 都走这里)
+    let saved_ok = sess.save().is_ok();
+    let summary = sess.exit_summary(session_started.elapsed());
     drop(raw); // 先还终端, 再打印收尾 (不然输出会粘在输入行上)
-    println!(
-        "{}",
-        plain(&format!(
-            "{}已退出会话 · {saved}{}",
-            tui::theme::C_DIM,
-            tui::theme::RESET
-        ))
-    );
+    println!("{}", plain(&format!("{}── 会话结束 ──{}", tui::theme::C_DIM, tui::theme::RESET)));
+    for l in &summary {
+        println!("{}", plain(l));
+    }
+    if !saved_ok {
+        println!("{}", plain("⚠ 会话落盘失败 —— 内容仍在内存, 别急着关终端"));
+    }
     Ok(())
 }
 
@@ -689,7 +730,9 @@ async fn send_one(
     convo.extend(sess.messages.clone());
 
     let started = std::time::Instant::now();
-    let mut panel = tui::StreamPanel::new();
+    // 流式预览块: **先预留固定 4 行** (滚出来占住), 每帧就地重画, 收尾整段交还历史区。
+    // 旧做法是"向上借历史行 + 收尾擦白" ⇒ 发送框与回复框之间出现大洞。
+    let stream_block = full && chrome.reserve_stream(tui::STREAM_ROWS);
     // 等模型/工具期间的按键监听 (只认 Ctrl+C / Esc ⇒ 中断这一回合)
     let mut watch = tui::input::watch_interrupts(cancel.clone());
     let mut interrupted = false;
@@ -703,14 +746,13 @@ async fn send_one(
             p
         };
         if full {
-            chrome.activity = tui::Activity::Thinking { started };
+            chrome.activity = tui::Activity::Thinking { started, chars: 0 };
             chrome.draw();
         }
         // 首轮走流式 (面板生长); 续轮 (工具结果整理) 非流式, 活动行照常显示 Thinking
         let res = if full && turn == 1 {
             // 统一事件循环: 模型流 + 增量通道 + 100ms tick 三路 select。
-            // 面板重绘(开底面板就地生长)的**唯一写入者** —— deltas 与 tick 都进这里,
-            // 不存在第二条并发打印路径, 因此不会和完整回复框抢光标。
+            // 流式预览画在**预留的固定 4 行**里 (行号恒定, 不借历史行), 见 reserve_stream。
             let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
             let mut fut = std::pin::pin!(llm.generate_streaming("env", params, move |d| {
                 // 非阻塞投递: 缓冲满就丢增量 (最终完整文本来自 `res`, 不靠逐帧)
@@ -743,26 +785,27 @@ async fn send_one(
                 }
                 // 节流 ~11 FPS 重绘: 增量到达或 tick 都走这里
                 if last_paint.elapsed() >= std::time::Duration::from_millis(90) {
-                    if acc.is_empty() {
-                        // 纯思考阶段: 只用底部活动行显示 Thinking, **不画回复框** (干净)
-                        chrome.activity = tui::Activity::Thinking { started };
-                        chrome.draw();
-                    } else {
-                        chrome.activity = tui::Activity::Idle;
-                        let (cols, anchor) = (chrome.cols, chrome.panel_anchor());
-                        panel.show(
+                    let chars = acc.chars().count();
+                    chrome.activity = tui::Activity::Thinking { started, chars };
+                    if stream_block && chars > 0 {
+                        let secs = started.elapsed().as_millis() as f64 / 1000.0;
+                        let status = format!("◉ Generating · {secs:.1}s · {chars} 字 (Enter 后落成消息)");
+                        let frame = tui::render_preview_frame(
                             &acc,
                             "Bolloon Agent",
-                            "◉ Generating · 流式输出中",
-                            cols,
-                            anchor,
-                            &mut |n| chrome.scroll_history(n),
+                            &status,
+                            chrome.cols,
+                            tui::STREAM_ROWS,
                         );
+                        chrome.draw_stream(&frame);
                     }
+                    chrome.draw();
                     last_paint = std::time::Instant::now();
                 }
             };
-            panel.finish(chrome.panel_anchor());
+            if stream_block {
+                chrome.end_stream();
+            }
             r
         } else {
             tokio::select! {
@@ -776,7 +819,6 @@ async fn send_one(
         let res = match res {
             Ok(r) => r,
             Err(_) if interrupted => {
-                panel.finish(chrome.panel_anchor());
                 chrome.activity = tui::Activity::Idle;
                 flush_logs(chrome, full, false);
                 refresh_status(chrome, sess);
@@ -805,7 +847,33 @@ async fn send_one(
                 arguments: serde_json::from_str(&tc.function.arguments)
                     .unwrap_or_else(|_| serde_json::json!({})),
             };
-            let outcome = harness.gate(call).await;
+            // 工具是阻塞的: 把 `gate()` 和 100ms tick 放进同一个 select,
+            // 谁先到都重绘一次底栏 —— 否则工具跑 8 秒, 输入框动画就冻 8 秒。
+            let outcome = {
+                let label = tui::trace::trace_label(&tc.function.name).to_string();
+                let tool_started = std::time::Instant::now();
+                let fut = harness.gate(call);
+                tokio::pin!(fut);
+                let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        r = &mut fut => break r,
+                        _ = tick.tick() => {
+                            if full {
+                                chrome.activity = tui::Activity::Tool {
+                                    name: label.clone(),
+                                    started: tool_started,
+                                };
+                                chrome.draw();
+                            }
+                        }
+                    }
+                }
+            };
+            if full {
+                chrome.activity = tui::Activity::Thinking { started, chars: 0 };
+            }
             let (out_txt, ok) = if let Some(d) = &outcome.denied {
                 (format!("DENIED: {}", d.reason), false)
             } else {
@@ -839,6 +907,10 @@ async fn send_one(
                 0,
                 res.tool_calls.len(),
             ));
+            // 编辑类工具: 把 diff **节选**直接打在工具行下面 (改动看得见, 不靠"已替换"三个字)
+            if ok {
+                tool_lines.extend(tui::panel::render_diff_excerpt(&out_txt, chrome.cols, 24));
+            }
             tool_msgs.push(bolloon_llm::ChatMessage {
                 role: "tool".into(),
                 content: out_txt,
@@ -1101,6 +1173,16 @@ fn build_dashboard(sess: &chat_command::ChatSession) -> tui::DashboardData {
             }
         }
     }
+    // 技能: 除了会话内注册表 (~/.bolloon/skills.json), **还要扫全机已有的 skill 库**。
+    // leo 2026-10-27: 「skills 也是全局配置的, 不只是会话内获取, 要在电脑搜集其他已有的 skills,
+    // 可以折叠压缩, 不全部显示」。做法 = 目录名即技能名 (不读文件, 1297 个也只要几毫秒),
+    // 上限封顶; 面板只列前 8 个 + `… 还有 N 个` (list_block 已有这套折叠)。
+    for n in scan_skill_dirs(&home_path, 2000) {
+        if !skills.contains(&n) {
+            skills.push(n);
+        }
+    }
+
     // MCP: 全局 (~/.bolloon/mcp.json) + 项目 (mcp.json, 含父目录) 合并 server 名
     let mcp = load_mcp_server_names(&home_path, &sess.dir);
     tui::DashboardData {
@@ -1120,6 +1202,65 @@ fn build_dashboard(sess: &chat_command::ChatSession) -> tui::DashboardData {
         skills,
         update_status: "⚙ 本地构建".into(),
     }
+}
+
+/// 扫本机已有的技能库 (`<dir>/SKILL.md` 的**目录名**就是技能名)。
+///
+/// 为什么要扫: 技能是**全局资产**, 不只活在某个会话的注册表里。用户机器上已经有
+/// Hermes / Claude / Codex 各自的 skill 库, 面板要如实把它们算进去 (多少个, 前几个是谁),
+/// 否则永远显示 "0 · 暂无" —— 那是不知道, 不是没有。
+///
+/// 成本控制: 只看目录 (不读 SKILL.md 内容), 深度 ≤ 4, 跳过隐藏目录与 node_modules,
+/// 上限 `cap` 条。1297 个目录实测 < 30ms。
+fn scan_skill_dirs(home: &std::path::Path, cap: usize) -> Vec<String> {
+    let user_home = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    let mut roots: Vec<std::path::PathBuf> = vec![
+        home.join("skills"),                  // ~/.bolloon/skills (本仓自己的)
+        user_home.join(".hermes/skills"),     // Hermes 技能库
+        user_home.join(".claude/skills"),     // Claude Code
+        user_home.join(".codex/skills"),      // Codex
+    ];
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd.join(".hermes/skills")); // 项目内的
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    for root in roots {
+        if !root.is_dir() {
+            continue;
+        }
+        // 迭代式遍历 (不递归调栈), 深度上限 4
+        let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(root, 0)];
+        while let Some((dir, depth)) = stack.pop() {
+            if out.len() >= cap {
+                break;
+            }
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                if !p.is_dir() {
+                    continue;
+                }
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') || name == "node_modules" || name == "target" {
+                    continue;
+                }
+                if p.join("SKILL.md").is_file() && !out.contains(&name) {
+                    out.push(name.clone());
+                    if out.len() >= cap {
+                        break;
+                    }
+                }
+                if depth < 3 {
+                    stack.push((p, depth + 1));
+                }
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 /// 全局 (~/.bolloon/mcp.json) + 项目 (mcp.json, 含父目录) 合并 MCP server 名 (跨文件夹复用)
