@@ -238,13 +238,158 @@ impl FriendBook {
     pub fn friend_count(&self) -> usize {
         self.friends.len()
     }
-}
+    }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    // ────────────────────────── 通讯录名片本 (2026-10-28) ──────────────────────────
+    //
+    // 需求: 「通讯录 —— 顶部搜索框, 搜手机号或名称找出特定的人」。
+    //
+    // 手机号/邮箱那条路本身就是**跨机**的 (真 HTTP 打到已登记对端的 /api/directory/rpc,
+    // 对端用自己的 pepper 查自己的目录), 不需要本结构体参与。
+    //
+    // 但「**按名称搜**」此前没有任何数据可搜: `FriendBook.friends` 只存裸 DID 字符串。
+    // 名称不像联系方式那样能做盲化索引 —— 所以这里新增一张**本机名片本**:
+    // DID → 名字的映射, 它就是「这个名字叫什么」的唯一真源 (不是再开的全局 Map /
+    // 不是 session singleton)。名字**只在本地**, 不随任何对外协议同步出去。
 
-    const PEPPER: &str = "本机随机pepper";
+    /// 通讯录里的一张名片
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct ContactCard {
+        /// 好友 DID (身份唯一锚; 名字可变, DID 不变)
+        pub did: String,
+        /// 备注名 / 昵称 (用户可控)
+        pub name: String,
+        /// 名字来源: `user` 手填 · `directory` 目录命中带来的自报名
+        #[serde(default = "default_card_source")]
+        pub source: String,
+        #[serde(default)]
+        pub added_at_ms: u64,
+    }
+
+    fn default_card_source() -> String {
+        "user".into()
+    }
+
+    #[derive(Debug, thiserror::Error, PartialEq)]
+    pub enum ContactError {
+        #[error("DID 与名字都不能为空 (空名字不算搜索结果)")]
+        Empty,
+    }
+
+    /// 本机名片本 (持久化; 名字的唯一出处)
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct ContactBook {
+        #[serde(default)]
+        entries: Vec<ContactCard>,
+    }
+
+    /// 名称命中判定 (纯函数): 名字或 DID 的子串, 大小写不敏感; 空查询命中全部。
+    pub fn card_matches(card: &ContactCard, query: &str) -> bool {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return true;
+        }
+        card.name.to_lowercase().contains(&q) || card.did.to_lowercase().contains(&q)
+    }
+
+    impl ContactBook {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn all(&self) -> &[ContactCard] {
+            &self.entries
+        }
+
+        pub fn len(&self) -> usize {
+            self.entries.len()
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.entries.is_empty()
+        }
+
+        /// 这个 DID 叫啥 (没备注 = None, UI 回退显示短 DID)
+        pub fn name_of(&self, did: &str) -> Option<&str> {
+            self.entries.iter().find(|c| c.did == did).map(|c| c.name.as_str())
+        }
+
+        /// 新增或改名 —— 同一 DID 只留一条 (改名不产生重影)
+        pub fn upsert(
+            &mut self,
+            did: &str,
+            name: &str,
+            source: &str,
+            now_ms: u64,
+        ) -> Result<ContactCard, ContactError> {
+            let name = name.trim();
+            if did.trim().is_empty() || name.is_empty() {
+                return Err(ContactError::Empty);
+            }
+            if let Some(c) = self.entries.iter_mut().find(|c| c.did == did) {
+                c.name = name.to_string();
+                c.source = source.to_string();
+                return Ok(c.clone());
+            }
+            let card = ContactCard {
+                did: did.to_string(),
+                name: name.to_string(),
+                source: source.to_string(),
+                added_at_ms: now_ms,
+            };
+            self.entries.push(card.clone());
+            Ok(card)
+        }
+
+        pub fn remove(&mut self, did: &str) -> bool {
+            let before = self.entries.len();
+            self.entries.retain(|c| c.did != did);
+            before != self.entries.len()
+        }
+
+        /// 名称/DID 子串搜索 (大小写不敏感; 空串 = 全量)
+        pub fn search(&self, query: &str) -> Vec<ContactCard> {
+            self.entries
+                .iter()
+                .filter(|c| card_matches(c, query))
+                .cloned()
+                .collect()
+        }
+    }
+
+    /// 合并视图: 好友 (裸 DID) ∪ 名片本 ⇒ 每个 DID 一条, 名字以名片本为准。
+    ///
+    /// 好友不一定有备注; 没备注的名片 `name` 为空串, 由展示层回退显示短 DID
+    /// (**不在这里伪造一个名字**)。
+    pub fn merge_directory_view(book: &ContactBook, friends: &[String]) -> Vec<ContactCard> {
+        let mut out: Vec<ContactCard> = vec![];
+        for did in friends {
+            if out.iter().any(|c| c.did == *did) {
+                continue;
+            }
+            let known = book.name_of(did);
+            out.push(ContactCard {
+                did: did.clone(),
+                name: known.unwrap_or("").to_string(),
+                source: if known.is_some() { "friend".into() } else { "".into() },
+                added_at_ms: 0,
+            });
+        }
+        // 名片本里有、但还不是好友的 (搜之前先"存个名字"或目录命中过)
+        for c in book.all() {
+            if out.iter().any(|x| x.did == c.did) {
+                continue;
+            }
+            out.push(c.clone());
+        }
+        out
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const PEPPER: &str = "本机随机pepper";
 
     #[test]
     fn normalize_phone_cn() {
@@ -317,5 +462,86 @@ mod tests {
     async fn unknown_request_id_rejected() {
         let mut book = FriendBook::new();
         assert_eq!(book.accept("nope", 1).unwrap_err(), FriendRequestError::NotFound);
+    }
+
+    // ── 通讯录名片本 (2026-10-28) ──
+
+    #[test]
+    fn contact_upsert_is_one_card_per_did() {
+        let mut b = ContactBook::new();
+        b.upsert("did:pi:a", "Leo", "user", 1).unwrap();
+        b.upsert("did:pi:a", "老李", "user", 2).unwrap();
+        assert_eq!(b.len(), 1, "改名不产生重影");
+        assert_eq!(b.name_of("did:pi:a"), Some("老李"), "后写的名字生效");
+    }
+
+    #[test]
+    fn contact_search_by_name_is_case_insensitive() {
+        let mut b = ContactBook::new();
+        b.upsert("did:pi:a", "Leo", "user", 1).unwrap();
+        b.upsert("did:pi:b", "张三", "user", 2).unwrap();
+        assert_eq!(b.search("leo").len(), 1, "大小写不敏感");
+        assert_eq!(b.search("张").len(), 1);
+        assert!(b.search("不存在的人").is_empty());
+    }
+
+    #[test]
+    fn contact_search_by_did_substring() {
+        let mut b = ContactBook::new();
+        b.upsert("did:pi:FRFhRUCx", "Leo", "user", 1).unwrap();
+        assert_eq!(b.search("FRFh").len(), 1, "拿 DID 片段也能搜到");
+    }
+
+    #[test]
+    fn empty_query_matches_everything_and_bad_input_refused() {
+        let mut b = ContactBook::new();
+        b.upsert("did:pi:a", "Leo", "user", 1).unwrap();
+        b.upsert("did:pi:b", "张三", "user", 2).unwrap();
+        assert_eq!(b.search("").len(), 2, "空查询 = 全量");
+        assert!(card_matches(&ContactCard { did: "d".into(), name: "n".into(), source: "u".into(), added_at_ms: 0 }, ""));
+
+        assert_eq!(b.upsert("", "Leo", "user", 3).unwrap_err(), ContactError::Empty);
+        assert_eq!(b.upsert("did:pi:c", "  ", "user", 4).unwrap_err(), ContactError::Empty, "空名字不算结果");
+        assert_eq!(b.len(), 2, "拒绝时不落库");
+    }
+
+    #[test]
+    fn contact_remove_and_name_of_unknown() {
+        let mut b = ContactBook::new();
+        b.upsert("did:pi:a", "Leo", "user", 1).unwrap();
+        assert!(b.remove("did:pi:a"));
+        assert!(!b.remove("did:pi:a"), "第二次不存在的删除如实 false");
+        assert!(b.is_empty());
+        assert_eq!(b.name_of("did:pi:zzz"), None);
+    }
+
+    #[test]
+    fn merge_view_does_not_invent_names() {
+        let mut b = ContactBook::new();
+        b.upsert("did:pi:named", "Leo", "user", 1).unwrap();
+        let friends = vec!["did:pi:named".to_string(), "did:pi:bare".to_string()];
+        let view = merge_directory_view(&b, &friends);
+        assert_eq!(view.len(), 2, "好友去重后 2 条");
+        let named = view.iter().find(|c| c.did == "did:pi:named").unwrap();
+        assert_eq!(named.name, "Leo");
+        let bare = view.iter().find(|c| c.did == "did:pi:bare").unwrap();
+        assert_eq!(bare.name, "", "没备注的好友名字为空串, 由展示层回退短 DID — 不在这里编名字");
+        // 名片本里不是好友的人也要在通讯录里可见
+        b.upsert("did:pi:stranger", "阿强", "directory", 5).unwrap();
+        let view2 = merge_directory_view(&b, &friends);
+        assert_eq!(view2.len(), 3);
+        assert_eq!(view2.iter().find(|c| c.did == "did:pi:stranger").unwrap().name, "阿强");
+    }
+
+    #[test]
+    fn contact_book_survives_json_roundtrip() {
+        let mut b = ContactBook::new();
+        b.upsert("did:pi:a", "Leo", "user", 7).unwrap();
+        let raw = serde_json::to_string(&b).unwrap();
+        let back: ContactBook = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.name_of("did:pi:a"), Some("Leo"));
+        // 旧状态文件没有 contacts 字段也能读进来 (NativeState 用 #[serde(default)])
+        let back2: ContactBook = serde_json::from_str("{}").unwrap();
+        assert!(back2.is_empty());
     }
 }

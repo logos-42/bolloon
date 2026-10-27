@@ -43,6 +43,8 @@ pub enum EntryKind {
     Guide,
     MemberJoin,
     Rotation,
+    /// 子讨论 (小组讨论 / 组织内部) 的**创建记录**: payload 里带子讨论 id/address/成员
+    Topic,
 }
 
 impl EntryKind {
@@ -53,6 +55,7 @@ impl EntryKind {
             EntryKind::Guide => "guide",
             EntryKind::MemberJoin => "member-join",
             EntryKind::Rotation => "rotation",
+            EntryKind::Topic => "topic",
         }
     }
 
@@ -62,6 +65,7 @@ impl EntryKind {
             "guide" => EntryKind::Guide,
             "member-join" => EntryKind::MemberJoin,
             "rotation" => EntryKind::Rotation,
+            "topic" => EntryKind::Topic,
             _ => EntryKind::Message,
         }
     }
@@ -82,6 +86,11 @@ pub struct GroupMeta {
     pub owner: String,
     pub acl: GroupAcl,
     pub created_at_ms: u64,
+    /// 父群 id (**子讨论 / 小组**; None = 顶层群)。
+    ///
+    /// 既有 `groups.json` 落盘索引没有这个字段 ⇒ 必须 `serde(default)`, 否则老索引反序列化会炸。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 /// 群消息载荷 (写进 oplog entry 的 payload)
@@ -334,11 +343,79 @@ impl GroupOrbitHub {
             owner: owner_did.to_string(),
             acl,
             created_at_ms: now_ms,
+            parent: None,
         };
         inner.stores.insert(id.to_string(), store);
         inner.metas.insert(id.to_string(), meta.clone());
         self.save_index(&inner);
         meta
+    }
+
+    /// 在群内开一个**子讨论** (小组讨论 / 组织内部 —— 只有 `members` 能发言)
+    ///
+    /// 设计取舍: 子讨论 = **独立的 OrbitDB store** (自带 manifest ⇒ 自带 ACL), 而不是给每条消息加 topic 字段。
+    /// ① "内部才可写"由既有 manifest `Whitelist` **强制** (本地 append 也拦 —— 已由既有单测钉死, 不是只拦复制);
+    /// ② 「分享 / 邀请加入」与整群**同源** (同一套 `make_invite_link` + manifest), 不用另造一套;
+    /// ③ 不迁移既有 entry 结构。父群落一条**签名** `topic` entry ⇒ 可发现、可复制、不可抵赖。
+    pub fn create_topic(
+        &self,
+        parent_id: &str,
+        topic_id: &str,
+        name: &str,
+        members: Vec<String>,
+        kp: &KeyPair,
+        now_ms: u64,
+    ) -> Result<GroupMeta, GroupOrbitError> {
+        let parent_owner = {
+            let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let meta = inner
+                .metas
+                .get(parent_id)
+                .ok_or_else(|| GroupOrbitError::NoSuchGroup(parent_id.to_string()))?;
+            meta.owner.clone()
+        };
+        let acl = GroupAcl::Whitelist(members.clone());
+        let manifest = StoreManifest::group(name, &parent_owner, &acl, now_ms);
+        let meta = GroupMeta {
+            id: topic_id.to_string(),
+            address: manifest.address(),
+            name: name.to_string(),
+            owner: parent_owner.clone(),
+            acl,
+            created_at_ms: now_ms,
+            parent: Some(parent_id.to_string()),
+        };
+        // 顺序即原子性: 先向父群留痕 —— 写不进父群就失败, 不会留下孤儿子 store
+        let body = serde_json::json!({
+            "id": topic_id,
+            "name": name,
+            "address": meta.address,
+            "members": members,
+        })
+        .to_string();
+        self.append(parent_id, kp, "topic", &parent_owner, &body, None, now_ms)?;
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let store = OrbitStore::open_or_create(&self.root, manifest.clone())
+                .expect("create topic: open_or_create store");
+            inner.stores.insert(topic_id.to_string(), store);
+            inner.metas.insert(topic_id.to_string(), meta.clone());
+            self.save_index(&inner);
+        }
+        Ok(meta)
+    }
+
+    /// 某群的子讨论列表 (按 `parent` 指针; 按创建时间排)
+    pub fn topics(&self, parent_id: &str) -> Vec<GroupMeta> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<GroupMeta> = inner
+            .metas
+            .values()
+            .filter(|m| m.parent.as_deref() == Some(parent_id))
+            .cloned()
+            .collect();
+        out.sort_by_key(|m| m.created_at_ms);
+        out
     }
 
     /// 加入群 (按 manifest 开**同一个** store; 幂等: 已在本地则直接返回)
@@ -371,6 +448,46 @@ impl GroupOrbitHub {
                 }
             },
             created_at_ms: now_ms,
+            parent: None,
+        };
+        inner.stores.insert(id.to_string(), store);
+        inner.metas.insert(id.to_string(), meta.clone());
+        self.save_index(&inner);
+        meta
+    }
+
+    /// 加入**子讨论** (调用方已知 parent 时用): 其余语义与 [`GroupOrbitHub::import_group`] 一致
+    pub fn import_group_as(
+        &self,
+        id: &str,
+        manifest: StoreManifest,
+        parent: Option<String>,
+        now_ms: u64,
+    ) -> GroupMeta {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let address = manifest.address();
+        if let Some(existing) = inner.metas.get(id).cloned() {
+            if existing.address == address {
+                return existing;
+            }
+        }
+        let store = OrbitStore::open_or_create(&self.root, manifest.clone())
+            .expect("import group: open_or_create store");
+        let meta = GroupMeta {
+            id: id.to_string(),
+            address: address.clone(),
+            name: manifest.name.clone(),
+            owner: manifest.owner.clone(),
+            acl: if manifest.open {
+                GroupAcl::Open
+            } else {
+                match &manifest.write_list {
+                    Some(l) => GroupAcl::Whitelist(l.clone()),
+                    None => GroupAcl::OwnerOnly,
+                }
+            },
+            created_at_ms: now_ms,
+            parent,
         };
         inner.stores.insert(id.to_string(), store);
         inner.metas.insert(id.to_string(), meta.clone());
@@ -477,6 +594,12 @@ impl GroupOrbitHub {
         inner.metas.get(group_id).cloned()
     }
 
+    /// 群的 manifest (邀请/分享必须带它 ⇒ 对方开的是**同一个** store, 不是长得一样的群)
+    pub fn manifest_of(&self, group_id: &str) -> Option<StoreManifest> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.stores.get(group_id).map(|s| s.manifest().clone())
+    }
+
     /// store address (内容寻址)
     pub fn address_of(&self, group_id: &str) -> Option<String> {
         self.meta(group_id).map(|m| m.address)
@@ -532,6 +655,113 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    // ── 子讨论 (小组讨论 / 组织内部) ──
+
+    /// 内部成员可写; **不在成员名单的外人被拒** ⇒ "组织内部讨论"是硬约束, 不是口号
+    #[test]
+    fn topic_internal_write_outsider_refused() {
+        let root = tmp_root("topic-acl");
+        let owner = kp(1);
+        let member = kp(2);
+        let outsider = kp(9);
+        let hub = GroupOrbitHub::new(root.clone());
+        let owner_did = owner.did.as_str().to_string();
+        let member_did = member.did.as_str().to_string();
+        hub.create_group(
+            "g1",
+            "研发群",
+            &owner_did,
+            GroupAcl::Whitelist(vec![owner_did.clone(), member_did.clone()]),
+            1000,
+        );
+        let topic = hub
+            .create_topic(
+                "g1",
+                "t1",
+                "上线评审",
+                vec![owner_did.clone(), member_did.clone()],
+                &owner,
+                1001,
+            )
+            .expect("owner 可在自己群里开子讨论");
+        assert_eq!(topic.parent.as_deref(), Some("g1"));
+
+        // 内部成员可写
+        let r = hub
+            .say("t1", &member, &member_did, "我的评审意见", 1002)
+            .map(|_| ());
+        assert!(r.is_ok(), "内部成员应能在子讨论发言: {r:?}");
+
+        // 外人不在这个小组 ⇒ 被拒
+        let denied = hub
+            .say("t1", &outsider, outsider.did.as_str(), "我也说两句", 1003)
+            .map(|_| ());
+        assert!(denied.is_err(), "不在成员名单里的人不能进子讨论发言");
+
+        // 子讨论里只有内部那条
+        let msgs = hub.history("t1", 10).unwrap();
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert_eq!(msgs[0].signer, member_did);
+    }
+
+    /// 分开讨论: 子讨论消息不混进父群; 但父群留有签名的 topic 记录 (可发现 · 可复制 · 不可抵赖)
+    #[test]
+    fn topic_is_separate_from_parent_but_recorded_in_it() {
+        let root = tmp_root("topic-split");
+        let owner = kp(1);
+        let hub = GroupOrbitHub::new(root.clone());
+        let did = owner.did.as_str().to_string();
+        hub.create_group("g1", "研发群", &did, GroupAcl::OwnerOnly, 1000);
+        hub.create_topic("g1", "t1", "上线评审", vec![did.clone()], &owner, 1001)
+            .unwrap();
+        hub.say("t1", &owner, &did, "小组内部意见", 1002).unwrap();
+        hub.say("g1", &owner, &did, "群里公开说", 1003).unwrap();
+
+        // 父群: 有 topic 创建记录, 但**没有**子讨论的消息
+        let parent = hub.history("g1", 20).unwrap();
+        assert!(parent.iter().any(|m| m.kind == "topic"), "父群应有 topic 记录");
+        assert!(
+            !parent.iter().any(|m| m.text == "小组内部意见"),
+            "子讨论消息不混进父群: {parent:?}"
+        );
+        assert!(parent.iter().any(|m| m.text == "群里公开说"));
+
+        // 子群: 只有小组那条
+        let sub = hub.history("t1", 20).unwrap();
+        assert_eq!(sub.len(), 1, "{sub:?}");
+        assert_eq!(sub[0].text, "小组内部意见");
+
+        // 父群列得出子讨论
+        let topics = hub.topics("g1");
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0].id, "t1");
+        assert_eq!(topics[0].name, "上线评审");
+    }
+
+    /// 父群写不进 ⇒ 不能在其中开子讨论, 且**失败不留孤儿子 store**
+    #[test]
+    fn topic_requires_parent_write_permission() {
+        let root = tmp_root("topic-perm");
+        let owner = kp(1);
+        let outsider = kp(9);
+        let hub = GroupOrbitHub::new(root.clone());
+        hub.create_group("g1", "内部群", owner.did.as_str(), GroupAcl::OwnerOnly, 1000);
+        let denied = hub.create_topic(
+            "g1",
+            "t-x",
+            "抢建子讨论",
+            vec![outsider.did.as_str().to_string()],
+            &outsider,
+            1001,
+        );
+        assert!(denied.is_err(), "父群写不进 ⇒ 不能开子讨论");
+        assert!(hub.topics("g1").is_empty(), "失败不能留下孤儿子讨论");
+        assert!(
+            !hub.history("g1", 20).unwrap().iter().any(|m| m.kind == "topic"),
+            "父群不该被写进 topic 记录"
+        );
     }
 
     #[test]

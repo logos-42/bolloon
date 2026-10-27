@@ -354,6 +354,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/friends/accept", post(crate::native::friend_accept))
         .route("/api/friends/reject", post(crate::native::friend_reject))
         .route("/api/friends", get(crate::native::friend_list))
+        // 通讯录 (2026-10-28): 网页端/APP 端统一的联系人搜索面 — 手机号走跨机目录, 名称走本机名片本
+        .route("/api/contacts", get(crate::native::contact_list))
+        .route("/api/contacts/set", post(crate::native::contact_set))
+        .route("/api/contacts/search", post(crate::native::contact_search))
         // 做梦机制 (整理记忆与经验 → 升级项目 skills)
         .route("/api/dream", post(crate::native::dream_run))
         .route("/api/dream/last", get(crate::native::dream_last))
@@ -484,7 +488,7 @@ async fn avatar_families() -> Json<serde_json::Value> {
 }
 
 async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": true, "version": "0.6.11" }))
+    Json(serde_json::json!({ "ok": true, "version": "0.6.12" }))
 }
 
 async fn sessions(State(st): State<AppState>) -> Json<Vec<SessionMeta>> {

@@ -265,6 +265,26 @@
   main.world-mode .composer-wrap{display:none}
   main.world-mode #worldView{display:flex}
   main.world-mode .hero{display:none}
+  /* ── 通讯录 (2026-10-28): 网页端与桌面 App **同一个面板同一份代码** ──
+     顶部搜索框找人: 手机号/邮箱 ⇒ 跨机目录; 名称 ⇒ 本机名片本。
+     注意: 不像 #worldTabBtn/#roomBtn 那样在桌面三栏隐藏 —— 那两个是与第一栏 rail 重复,
+     而 rail 的 📒 只切第二栏列表, **不给搜索屏**, 所以这个入口两端都保留。 */
+  #contactsView{display:none;flex:1;min-height:0;overflow-y:auto;padding:18px 22px;flex-direction:column;gap:10px}
+  main.contacts-mode #chat{display:none}
+  main.contacts-mode .composer-wrap{display:none}
+  main.contacts-mode .hero{display:none}
+  main.contacts-mode #worldView{display:none}
+  main.contacts-mode #contactsView{display:flex}
+  main.group-mode #contactsView{display:none}
+  .ct-head{font-size:12px;color:var(--muted)}
+  .ct-search{display:flex;gap:8px;align-items:center;margin-bottom:4px}
+  .ct-search input{flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:14px}
+  .ct-row{display:flex;align-items:center;gap:10px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+  .ct-ava{width:38px;height:38px;border-radius:50%;background:var(--panel);display:flex;align-items:center;justify-content:center;font-weight:600;flex:none}
+  .ct-who{flex:1;min-width:0}
+  .ct-name{font-size:14px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ct-sub{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ct-acts{display:flex;gap:6px;flex:none;align-items:center}
   .world-main{flex:1;min-width:0;overflow-y:auto;padding:18px 22px;display:flex;flex-direction:column;gap:10px}
   .opp-card{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
   .opp-card .oh{display:flex;align-items:center;gap:8px;margin-bottom:4px}
@@ -1971,14 +1991,19 @@ function initDesktopThreeCol() {
   // 第一栏底部全局入口 → relay 到现有按钮, 不重复绑定逻辑
   // 更新: 走与 #updateBtn 同一个 runUpdateFlow (下载→校验→原子替换→重启→reload), 不另写一份
   $('railUpdateBtn').onclick = () => runUpdateFlow();
-  $('railThemeBtn').onclick = () => $('themeBtn').click();
+  $('railThemeBtn').onclick = (e) => { e.stopPropagation(); $('themeBtn').click(); }; // 黑白切换放进头像: 点角落图标切主题 (不触发打开设置)
   $('railRoomBtn').onclick = () => $('roomBtn').click();
-  $('railAva').onclick = () => openSettings();
-  const syncRailAva = () => { $('railAva').innerHTML = $('accountAva').innerHTML; };
+  $('railAva').onclick = (e) => { if (e.target.closest('#railThemeBtn')) return; openSettings(); }; // 点头像=设置, 主题小圆点已单独处理
+  const syncRailAva = () => { const img=$('railAvaImg'), src=$('accountAva'); if(img&&src)img.innerHTML=src.innerHTML; };
   new MutationObserver(syncRailAva).observe($('accountAva'), { childList: true, subtree: true });
   syncRailAva();
-  // rail logo 与原 brand icon 同行为: 折叠态点击恢复第二栏 (点 Bolloon 图标 = 展开)
-  $('railLogo').onclick = () => $('brandLogo').click();
+  // APP 第一栏即完整侧边栏: 点 Bolloon 图标 = 折叠/展开第二栏 (收缩后第二栏完全消失, 只留第一栏)
+  $('railLogo').onclick = () => {
+    const app=$('app');
+    if(app.classList.contains('collapsed'))app.classList.remove('collapsed');
+    else app.classList.add('collapsed');
+    syncCollapseHint();
+  };
   syncCollapseHint();
   setDesktopModule('chat');
 }
@@ -2066,6 +2091,18 @@ async function decideFriend(rid,act){
   }catch(e){ const m=$('groupMeta'); if(m)m.textContent='处理好友请求失败: '+e.message; }
 }
 $('friendBack').onclick=backToContacts;
+// 新建群聊: 复用页内 askText (Tauri 下 window.prompt 被禁, 不能用), 建完直接打开主区群聊面板
+async function createGroup(){
+  const name=await askText('新建群聊','新群聊','给群起个名字（后续可在群内邀请成员）');
+  if(name===null)return;
+  try{
+    const g=await api('/api/groups',{method:'POST',body:JSON.stringify({name:(name||'').trim()||'新群聊'})});
+    if(g.error)throw new Error(g.error);
+    await loadContacts();
+    if(g.id)openGroup(g.id);
+  }catch(e){ toast('创建群聊失败: '+e.message); }
+}
+$('newGroupBtn').onclick=createGroup;
 
 // ── 群聊 (主区): 真收发 (/api/groups/{id}/messages · /say, Ed25519 签名) + 4s 轮询 ──
 async function openGroup(id){

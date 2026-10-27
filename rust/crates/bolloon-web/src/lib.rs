@@ -5,7 +5,7 @@
 //! - 三栏 grid: 284px 侧栏（品牌/新智能体/列表/账号）| 主聊天区 | 360px room 面板（内部商议）
 //! - API: /api/bootstrap /api/models /api/agents /api/groups /api/send
 //!
-//! 版本 0.6.11（与 TS 版保持一致）。
+//! 版本 0.6.12（与 TS 版保持一致）。
 
 pub mod avatar;
 pub mod native;

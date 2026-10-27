@@ -223,7 +223,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-agent"
-version = "0.6.11"
+version = "0.6.12"
 dependencies = [
  "async-trait",
  "bolloon-harness",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-cli"
-version = "0.6.11"
+version = "0.6.12"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -275,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-harness"
-version = "0.6.11"
+version = "0.6.12"
 dependencies = [
  "async-trait",
  "bolloon-kernel",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-kernel"
-version = "0.6.11"
+version = "0.6.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -308,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-llm"
-version = "0.6.11"
+version = "0.6.12"
 dependencies = [
  "async-trait",
  "chrono",
@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-p2p"
-version = "0.6.11"
+version = "0.6.12"
 dependencies = [
  "async-trait",
  "bolloon-kernel",
@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-tui"
-version = "0.6.11"
+version = "0.6.12"
 dependencies = [
  "bolloon-agent",
  "chrono",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-web"
-version = "0.6.11"
+version = "0.6.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-x402"
-version = "0.6.11"
+version = "0.6.12"
 dependencies = [
  "bolloon-p2p",
  "hex",

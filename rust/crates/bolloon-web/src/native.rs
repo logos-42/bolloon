@@ -152,6 +152,11 @@ pub struct NativeState {
     pub directory_peers: Vec<String>,
     /// 好友请求簿 (consent 状态机)
     pub friends: bolloon_agent::contacts::FriendBook,
+    /// 通讯录名片本 (DID → 名字; 「按名称搜索」的唯一真源)
+    ///
+    /// 注意它不是第二份好友列表: 好友关系仍在 `friends`, 这里只回答「这个人叫什么」。
+    #[serde(default)]
+    pub contacts: bolloon_agent::contacts::ContactBook,
     // ── 做梦机制 (整理记忆与经验 → 升级 skills) ──
     /// 上一次做梦报告 (None = 从没做过)
     pub last_dream: Option<serde_json::Value>,
@@ -2339,12 +2344,134 @@ pub async fn friend_reject(
     }
 }
 
-/// GET /api/friends → 好友 + 待处理请求
+/// GET /api/friends → 好友 + 待处理请求 (+ 带名字的视图 `items`)
 pub async fn friend_list(State(st): State<AppState>) -> Json<serde_json::Value> {
     let fs = st.forge.lock().await;
     Json(serde_json::json!({
         "friends": fs.friends.friends(),
         "requests": fs.friends.requests(),
+        // 2026-10-28: 名字来自名片本; 没备注的 name 为空串, 展示层回退显示短 DID (不编名字)
+        "items": bolloon_agent::contacts::merge_directory_view(&fs.contacts, fs.friends.friends()),
+    }))
+}
+
+// ────────────────────────── 通讯录 (2026-10-28) ──────────────────────────
+//
+// 需求: 网页端与 APP 端都能点「通讯录」进搜索界面, 顶部搜索框**按手机号或名称**找出特定的人。
+//
+// 两条路分工明确, 各自的语义都写在返回体里 (UI 不需要猜):
+//   手机号 / 邮箱 → **跨机**目录查询 = 真 HTTP 打到已登记对端的 /api/directory/rpc,
+//                    对端用**他自己的 pepper** 查他自己的目录 (本机目录只是兜底, 不冒充对端)
+//   名称 / DID片段 → 本机名片本 (`ContactBook`) —— 名字没有盲化索引, 不假装自己是全网搜索
+
+/// GET /api/contacts → 通讯录全量 (好友 + 只登记过名字的人)
+pub async fn contact_list(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    Json(serde_json::json!({
+        "items": bolloon_agent::contacts::merge_directory_view(&fs.contacts, fs.friends.friends()),
+        "friends": fs.friends.friends(),
+        "requests": fs.friends.pending(),
+    }))
+}
+
+/// POST /api/contacts/set { did, name } → 写/改备注名
+pub async fn contact_set(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or_default().to_string();
+    let name = req["name"].as_str().unwrap_or_default().to_string();
+    let mut fs = st.forge.lock().await;
+    match fs.contacts.upsert(&did, &name, "user", now_ms()) {
+        Ok(card) => {
+            fs.save(&data_dir());
+            Json(serde_json::json!({ "ok": true, "item": card }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// POST /api/contacts/search { query } → 统一搜索 (**手机号走跨机, 名称走本机名片本**)
+///
+/// 返回体里 `cross_machine_tried` / `directory.cross_machine` 明确标注这条命中是不是真的去了对端,
+/// `notes` 承载「对端不可达」一类原因 —— **不把网络失败伪装成「查无此人」**。
+pub async fn contact_search(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let query = req["query"].as_str().unwrap_or_default().trim().to_string();
+    let kind = req["kind"].as_str().and_then(|k| match k {
+        "email" => Some(bolloon_agent::directory::ContactKind::Email),
+        "phone" => Some(bolloon_agent::directory::ContactKind::Phone),
+        _ => None,
+    });
+
+    // ① 名称 / DID 片段 → 本机通讯录 (空查询 = 全量, 等价于「打开通讯录」)
+    let locals: Vec<serde_json::Value> = {
+        let fs = st.forge.lock().await;
+        bolloon_agent::contacts::merge_directory_view(&fs.contacts, fs.friends.friends())
+            .into_iter()
+            .filter(|c| bolloon_agent::contacts::card_matches(c, &query))
+            .map(|c| {
+                serde_json::json!({
+                    "kind": "contact",
+                    "did": c.did,
+                    "name": c.name,
+                    "source": c.source,
+                    "is_friend": fs.friends.is_friend(&c.did),
+                })
+            })
+            .collect()
+    };
+
+    // ② 手机号 / 邮箱形状 ⇒ 先本机目录, 再**跨机**问已登记对端
+    let plausible = {
+        use bolloon_agent::directory::{is_plausible_contact, sniff_kind};
+        !query.is_empty() && is_plausible_contact(&query, kind.unwrap_or_else(|| sniff_kind(&query)))
+    };
+    let mut directory = serde_json::Value::Null;
+    let mut notes: Vec<String> = vec![];
+    if plausible {
+        let local_hit = {
+            let fs = st.forge.lock().await;
+            let d = dir_view(&fs);
+            d.lookup(&query, &load_pepper())
+        };
+        if local_hit.found {
+            directory = serde_json::json!({
+                "kind": "directory",
+                "did": local_hit.did,
+                "name": local_hit.display_name,
+                "public_key_hex": local_hit.public_key_hex,
+                "verified": local_hit.verified,
+                "cross_machine": false,
+                "via": "本机目录",
+            });
+        } else {
+            let (hit, got_notes) = peers_lookup(&st, &query, kind).await;
+            notes = got_notes;
+            if hit.found {
+                directory = serde_json::json!({
+                    "kind": "directory",
+                    "did": hit.did,
+                    "name": hit.display_name,
+                    "public_key_hex": hit.public_key_hex,
+                    "verified": hit.verified,
+                    "cross_machine": true,
+                    "via": "跨机查询",
+                });
+            }
+        }
+    }
+
+    let dir_count = if directory.is_null() { 0 } else { 1 };
+    Json(serde_json::json!({
+        "query": query,
+        "count": locals.len() + dir_count,
+        "locals": locals,
+        "directory": directory,
+        "notes": notes,
+        "cross_machine_tried": plausible,
     }))
 }
 
