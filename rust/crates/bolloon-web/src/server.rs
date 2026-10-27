@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use bolloon_agent::{MemoryLayer, MemoryStore, TaskBoard};
+use bolloon_agent::deliberation::{ElectionMode, MemberRole};
 use bolloon_agent::judgment::JudgmentStore;
 use bolloon_agent::world::{Opportunity, OpportunityStream};
 use bolloon_agent::memory_db::MemoryDb;
@@ -61,6 +62,9 @@ pub struct AppState {
     pub updating: Arc<std::sync::atomic::AtomicBool>,
     /// Forge 兼容层状态 (agents/sessions/profile/settings/auth 队列)
     pub forge: Arc<Mutex<crate::native::NativeState>>,
+    /// 群内商议中枢 (按 group_id 分群; 运行态, 不持久化): 推选 / 控麦 / 并发去重 / 命令门禁
+    pub deliberation:
+        Arc<Mutex<std::collections::HashMap<String, Arc<bolloon_agent::deliberation::DeliberationHub>>>>,
     /// 项目 skills 注册表 (经验提炼后升级到这里; 做梦机制用)
     pub skills: Arc<Mutex<bolloon_agent::skills_runtime::SkillEvolver>>,
     pub session_store: Arc<bolloon_agent::SessionStore>,
@@ -109,6 +113,7 @@ impl AppState {
             full_access: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             updating: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             forge: Arc::new(Mutex::new(crate::native::NativeState::load(&dir))),
+            deliberation: Arc::new(Mutex::new(std::collections::HashMap::new())),
             skills: Arc::new(Mutex::new(bolloon_agent::skills_runtime::SkillEvolver::new())),
             session_store,
             version: "0.6.10",
@@ -270,6 +275,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/sessions", get(sessions).post(crate::native::create_session))
         .route("/api/sessions/branch", post(crate::native::branch_session))
         .route("/api/sessions/update", post(crate::native::update_session))
+        // 图标: 以前**没有任何 /icons 路由** ⇒ `<img src="/icons/icon.png">` 一律 404,
+        // 左上角 logo / 头像兜底图全都不显示。内嵌字节 (Tauri 壳只带二进制, 不能靠磁盘路径)。
+        .route("/icons/{name}", get(icon_file))
+        .route("/favicon.ico", get(favicon))
         .route("/api/sessions/delete", post(crate::native::delete_session))
         .route("/api/sessions/truncate", post(crate::native::truncate_session))
         .route("/api/sessions/share", post(crate::native::share_session))
@@ -366,6 +375,13 @@ pub fn app(state: AppState) -> Router {
 }
 
 pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
+    // 双核 Kernel HA: 按 BOLLOON_HA 启用; 两进程各选 A/B 经心跳文件互维互保。
+    // 接管动作 = 真孤儿接管 (reconcileOrphans + prepareResume), 不再接 NoopRecovery。
+    let _ha = bolloon_kernel::dual_core::spawn_kernel_ha_from_env(std::sync::Arc::new(
+        bolloon_kernel::orphan_recovery::OrphanRecovery::new(
+            bolloon_kernel::orphan_recovery::runs_dir(),
+        ),
+    ));
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     tracing::info!("bolloon web listening on http://127.0.0.1:{port}");
     serve_on(state, listener).await
@@ -383,6 +399,48 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
 /// 主页面（内嵌 HTML）
 async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
+}
+
+// ── 内嵌图标 (index.html 里写的是 `/icons/<file>`, 必须真能取到) ──
+const ICON_PNG: &[u8] = include_bytes!("../assets/icons/icon.png");
+const TOUCH_PNG: &[u8] = include_bytes!("../assets/icons/apple-touch-icon.png");
+const FAVICON_32: &[u8] = include_bytes!("../assets/icons/favicon-32.png");
+
+/// `/icons/<name>`: 只认白名单三张图 (不做出目录遍历, 也不偷偷 404)
+async fn icon_file(axum::extract::Path(name): axum::extract::Path<String>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let (body, ctype): (&'static [u8], &'static str) = match name.as_str() {
+        "icon.png" => (ICON_PNG, "image/png"),
+        "apple-touch-icon.png" => (TOUCH_PNG, "image/png"),
+        "favicon-32.png" => (FAVICON_32, "image/png"),
+        _ => {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                "no such icon".to_string(),
+            )
+                .into_response()
+        }
+    };
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, ctype),
+            // 图标几乎不变: 给长缓存, 省得每次开面板都重下 900KB
+            (axum::http::header::CACHE_CONTROL, "public, max-age=604800"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// `/favicon.ico` (浏览器自动请求, 不给就是控制台一条 404 噪音)
+async fn favicon() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/png")],
+        FAVICON_32,
+    )
+        .into_response()
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -537,6 +595,21 @@ async fn group_say(
 ) -> Json<serde_json::Value> {
     let kp = &st.identity;
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    // 商议决策：推选谁回应 + 控麦 + 并发去重（落块前先决策，便于运行时接线真正驱动多 agent 讨论）。
+    // 本地人类发言永不被命令门禁；外部顾问走 room_guide 的 from/command 入口判据。
+    let hub = crate::native::room_hub(&st, &id).await;
+    let decision = crate::native::decide_room_message(
+        &hub,
+        &id,
+        kp.did.as_str(),
+        MemberRole::Human,
+        &req.text,
+        req.text.starts_with('/'),
+        now_ms,
+        ElectionMode::AddressedFirst,
+        0,
+    )
+    .expect("本地人类发言永不被命令门禁");
     // 签名 + 写门 + 落块 全部在 OrbitStore 内完成 (Ed25519 + hash 链)
     match st.groups.say(&id, kp, kp.did.as_str(), &req.text, now_ms) {
         Ok(entry) => Json(serde_json::json!({
@@ -545,6 +618,15 @@ async fn group_say(
             "signer": entry.signer,
             "signature": entry.signature,
             "timestamp_ms": entry.timestamp_ms,
+            "deliberation": {
+                "seq": decision.seq,
+                "duplicate": decision.duplicate,
+                "speaker_id": decision.speaker_id,
+                "reason": format!("{:?}", decision.reason),
+                "floor_granted": decision.floor_granted,
+                "can_command": decision.can_command,
+                "cooldown_blocked": decision.cooldown_blocked,
+            },
         })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }

@@ -190,7 +190,9 @@
   .composer .edit-btn{display:grid;place-items:center;width:36px;height:38px;padding:0;border-radius:11px;flex:none}
   .composer .edit-btn svg{width:17px;height:17px}
   .composer #send{min-width:58px;display:grid;place-items:center}
-  .composer #send.stop{background:#b42318;border-color:#b42318;color:#fff}
+  /* 终止态: bolloon 色系 (暖琥珀→珊瑚), 不再用外部品牌的写死红 */
+  .composer #send.stop{background:linear-gradient(135deg,#f0a14a,#e4663a);border-color:#e4663a;color:#1b1206}
+  .composer #send.stop:hover{filter:brightness(1.08)}
   .composer #send svg{width:17px;height:17px}
   .chat-new{display:grid;place-items:center;width:32px;height:32px;padding:0;border-radius:9px;flex:none}
   .chat-new svg{width:17px;height:17px}
@@ -306,6 +308,34 @@
   body.desktop3col #app.collapsed .brand > span{display:none}
   body.desktop3col #app.collapsed #collapseBtn{display:none}
   body.desktop3col #app.collapsed .brand-icon{cursor:pointer}
+  /* ── 通讯录模块 (第一栏 📒) ──
+     第二栏 = 好友 / 好友请求 / 群聊; 点好友钻取「外部智能体」(布局与默认第二栏同款 .sec + .item) */
+  #contactsSlot{display:none}
+  body.desktop3col.dmod-contacts .side-actions,
+  body.desktop3col.dmod-contacts #secAgents,
+  body.desktop3col.dmod-contacts #agents,
+  body.desktop3col.dmod-contacts #secSessions,
+  body.desktop3col.dmod-contacts #sessions{display:none}
+  body.desktop3col.dmod-contacts #contactsSlot{display:block}
+  body.desktop3col #contactsSlot .hint{padding:6px 8px;font-size:11px;margin:0}
+  /* ── 群聊面板 (主区): 真收发 /api/groups/{id}/messages · /say ── */
+  #groupView{display:none;flex:1;min-height:0;flex-direction:column;overflow:hidden;background:var(--bg)}
+  main.group-mode #chat,
+  main.group-mode .composer,
+  main.group-mode .composer-footer,
+  main.group-mode #imgPreview,
+  main.group-mode #worldView{display:none}
+  main.group-mode #groupView{display:flex}
+  .group-head{height:54px;flex:none;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid var(--line);font-size:13px}
+  .group-head b{color:var(--text)}
+  .group-head .grow{flex:1}
+  #groupMessages{flex:1;min-height:0;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:9px}
+  .gmsg{max-width:min(760px,78%);align-self:flex-start;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:7px 10px}
+  .gmsg.mine{align-self:flex-end;background:var(--active)}
+  .gmsg .gmeta{font-size:11px;color:var(--muted);margin-bottom:3px}
+  .gmsg .gbody{font-size:13px;line-height:1.55;word-break:break-word}
+  .group-composer{flex:none;display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--line)}
+  .group-composer input{flex:1;font-size:13px;padding:9px 12px;border-radius:10px;background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn-border)}
   body.desktop3col #railUpdateBtn.available{color:#1a1300;background:var(--glow);border-color:var(--glow);animation:pulse 1.6s infinite}
   body.desktop3col .rail-gap{flex:1}
   body.desktop3col .rail-ava{width:32px;height:32px;border-radius:50%;overflow:hidden;cursor:pointer;background:var(--panel2);display:grid;place-items:center;flex:none}
@@ -339,6 +369,7 @@
     <img class="rail-logo" id="railLogo" src="/icons/icon.png" alt="Bolloon" />
     <button class="rail-btn on" data-module="chat" title="智能体 / 会话">💬</button>
     <button class="rail-btn" data-module="world" title="世界（机会流）">🌍</button>
+    <button class="rail-btn" data-module="contacts" title="通讯录（好友 / 群聊）">📒</button>
     <button class="rail-btn" id="railRoomBtn" title="内部商议">🗨</button>
     <div class="rail-gap"></div>
     <!-- 更新入口: 与侧栏 #updateBtn 同源 — 默认 display:none, 有更新才由 renderUpdate() 显形 (点击 relay 到同一套安装流) -->
@@ -369,6 +400,30 @@
       <div class="sec" id="secSessions">会话</div>
       <div id="sessions"></div>
       <div id="worldSideSlot"></div>
+      <!-- 2026-10-27: 通讯录模块 (第一栏 📒) — 好友 / 好友请求 / 群聊; 点好友钻取外部智能体
+           布局与默认第二栏同款 (.sec + .item), 逻辑关系是「外部好友 × 外部智能体」 -->
+      <div id="contactsSlot">
+        <div id="contactsList">
+          <div class="sec">好友</div>
+          <div id="friendList"></div>
+          <div class="sec" id="secFriendReq" style="display:none">好友请求</div>
+          <div id="friendRequests"></div>
+          <div class="sec">群聊</div>
+          <div id="groupList"></div>
+        </div>
+        <div id="contactsFriend" style="display:none">
+          <div class="item" id="friendBack" title="返回通讯录列表">
+            <div class="ava">←</div>
+            <div class="txt"><b id="friendDidShort">好友</b><small>返回通讯录</small></div>
+          </div>
+          <div class="sec">智能体（对方分享）</div>
+          <div id="friendAgents"></div>
+          <div class="sec">会话</div>
+          <div id="friendSessions"></div>
+          <div class="sec">共同群聊</div>
+          <div id="friendGroups"></div>
+        </div>
+      </div>
     </div>
     <div class="side-update"><button id="updateBtn" title="安装更新" style="display:none">⟳ 更新</button></div>
     <div class="account" id="account">
@@ -409,6 +464,20 @@
         </div>
         <div class="world-stat" id="worldStats"></div>
       </aside>
+    </div>
+    <!-- 2026-10-27: 群聊面板 (通讯录 → 群聊) — 真收发: GET /api/groups/{id}/messages · POST /api/groups/{id}/say (Ed25519 签名) -->
+    <div id="groupView">
+      <div class="group-head">
+        <b id="groupName">群聊</b>
+        <span id="groupMeta" style="color:var(--muted);font-size:11px"></span>
+        <span class="grow"></span>
+        <button id="groupClose" class="mini" title="关闭群聊">✕</button>
+      </div>
+      <div id="groupMessages"></div>
+      <div class="group-composer">
+        <input id="groupInput" placeholder="输入消息，Enter 发送（本地 DID 签名后上 oplog）" />
+        <button class="primary" id="groupSend">发送</button>
+      </div>
     </div>
     <div id="imgPreview"></div>
     <div class="composer">
@@ -590,7 +659,14 @@ async function initPermission(){
     if(clarityToggle) clarityToggle.set(!!(p&&p.full_access));
   }catch(e){ /* 忽略: 后端未就绪 */ }
 }
-const avaHTML=(a)=>(a&&a.startsWith('data:image/'))?`<img src="${a}" alt="">`:'';
+// 头像渲染: ① 有真图 (data URL) 就用; ② 否则用**确定性 SVG** (按 seed 生成, 本地零依赖);
+// 以前没有 ② 时直接返回空串 ⇒ 左下角用户栏 / 智能体默认头像全空白 (leo 2026-10-27)。
+const avaHTML=(a,seed)=>{
+  if(a&&a.startsWith('data:image/'))return `<img src="${a}" alt="">`;
+  const key=String(a||seed||'bolloon');
+  const svg=svgAvatar(key,key[0]||'B');
+  return `<img src="data:image/svg+xml;utf8,${encodeURIComponent(svg)}" alt="">`;
+};
 
 function svgAvatar(seed,_label){
   let h=0; for(const ch of String(seed||'x')) h=(h*31+ch.charCodeAt(0))%360;
@@ -860,7 +936,7 @@ const iconRetry=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 function renderSidebar(){
   $('agents').innerHTML=state.agents.map(a=>`
     <div class="item ${a.id===state.active_agent_id?'active':''}" onclick="pickAgent('${a.id}')">
-      <div class="ava" title="编辑名字和头像" onclick="event.stopPropagation();editAgent('${a.id}')">${avaHTML(a.avatar)}</div>
+      <div class="ava" title="编辑名字和头像" onclick="event.stopPropagation();editAgent('${a.id}')">${avaHTML(a.avatar,a.id)}</div>
       <div class="txt"><b>${escapeHTML(a.name)}</b><small>${a.did.slice(0,20)}…</small></div>
     </div>`).join('');
   const sess=state.sessions.filter(s=>s.agent_id===state.active_agent_id)
@@ -873,14 +949,15 @@ function renderSidebar(){
     </div>`).join('');
   $('accountName').textContent=state.profile.name;
   $('accountDid').textContent=state.profile.did;
-  $('accountAva').innerHTML=avaHTML(state.profile.avatar);
+  $('accountAva').innerHTML=avaHTML(state.profile.avatar,state.profile.did||'me');
 }
 
 function renderHeader(){
   const a=state.agents.find(x=>x.id===state.active_agent_id)||{};
   $('agentName').textContent=a.name||'智能体';
   $('agentDid').textContent=a.did||'';
-  $('agentHeaderAva').src=a.avatar||'/icons/apple-touch-icon.png';
+  // 表头头像同样走确定性生成 (原来指向 /icons/... 那条路 404)
+  $('agentHeaderAva').outerHTML=`<span id="agentHeaderAva">${avaHTML(a.avatar,a.id||'agent')}</span>`;
   $('agentHeaderAva').onclick=()=>editAgent(a.id);
 }
 
@@ -1629,7 +1706,8 @@ $("worldIntentInput").addEventListener("keydown", e => { if (e.key === "Enter") 
 // 第三栏 main         = 主内容区 (现状不变; room 面板仍为可开合附加区)
 const isDesktopShell = /[?&]app=desktop\b/.test(location.search);
 function setDesktopModule(mod) {
-  document.body.classList.remove('dmod-chat', 'dmod-world');
+  desktopModule = mod;
+  document.body.classList.remove('dmod-chat', 'dmod-world', 'dmod-contacts');
   document.body.classList.add('dmod-' + mod);
   document.querySelectorAll('#primaryRail .rail-btn[data-module]').forEach(b => {
     b.classList.toggle('on', b.dataset.module === mod);
@@ -1643,7 +1721,12 @@ function initDesktopThreeCol() {
   if (slot && ws) slot.appendChild(ws);
   // 第一栏 → 第二栏: 模块切换 (并联动主区面板)
   document.querySelectorAll('#primaryRail .rail-btn[data-module]').forEach(b => {
-    b.addEventListener('click', () => { setDesktopModule(b.dataset.module); setPanel(b.dataset.module); });
+    b.addEventListener('click', () => {
+      const mod = b.dataset.module;
+      setDesktopModule(mod);
+      setPanel(mod === 'world' ? 'world' : 'chat');
+      if (mod === 'contacts') loadContacts(); // 好友 / 群聊列表按需拉取
+    });
   });
   // 第一栏底部全局入口 → relay 到现有按钮, 不重复绑定逻辑
   // 更新: 走与 #updateBtn 同一个 runUpdateFlow (下载→校验→原子替换→重启→reload), 不另写一份
@@ -1661,12 +1744,158 @@ function initDesktopThreeCol() {
 }
 if (isDesktopShell) initDesktopThreeCol();
 
+// ── 2026-10-27 (用户): 通讯录模块 (第一栏 📒 → 第二栏: 好友 / 好友请求 / 群聊) ──
+//   点好友钻取 = 「外部好友 × 外部智能体」, 布局与默认第二栏同款 (.sec + .item),
+//   但后端**暂无跨机智能体共享端点** ⇒ 列表位置显示诚实空态, 不造假数据 (端点落地后替换这两行)。
+let desktopModule='chat';
+let contacts=null, contactGroups=null, activeFriendDid='', activeGroupId='', groupTimer=null;
+const shortDid=(d)=>{const s=String(d||'');return s.length>18?s.slice(0,16)+'…':s;};
+
+async function loadContacts(){
+  try{contacts=await api('/api/friends');}catch(_){contacts=null;}
+  try{contactGroups=await api('/api/groups');}catch(_){contactGroups=null;}
+  renderContacts();
+}
+function renderContacts(){
+  const fl=$('friendList'),rl=$('friendRequests'),gl=$('groupList');
+  if(!fl)return;
+  const friends=(contacts&&contacts.friends)||[];
+  fl.innerHTML=friends.length?friends.map(did=>`
+    <div class="item${did===activeFriendDid?' active':''}" onclick="openFriend('${did}')">
+      <div class="ava">👤</div>
+      <div class="txt"><b>${escapeHTML(shortDid(did))}</b><small>${escapeHTML(shortDid(did))}</small></div>
+    </div>`).join(''):'<div class="hint">(还没有好友 — 可用手机号 / 邮箱加好友)</div>';
+  const reqs=((contacts&&contacts.requests)||[]).filter(r=>String(r.status).toLowerCase()==='pending');
+  $('secFriendReq').style.display=reqs.length?'':'none';
+  rl.innerHTML=reqs.map(r=>`
+    <div class="item">
+      <div class="ava">✉️</div>
+      <div class="txt"><b>${escapeHTML(shortDid(r.from_did))}</b><small>请求加好友</small></div>
+      <button class="dots" title="接受" onclick="decideFriend('${r.request_id}','accept')">✓</button>
+      <button class="dots" title="拒绝" onclick="decideFriend('${r.request_id}','reject')">✕</button>
+    </div>`).join('');
+  const groups=(contactGroups&&contactGroups.groups)||[];
+  gl.innerHTML=groups.length?groups.map(g=>`
+    <div class="item${g.id===activeGroupId?' active':''}" onclick="openGroup('${g.id}')">
+      <div class="ava">👥</div>
+      <div class="txt"><b>${escapeHTML(g.name||g.id)}</b><small>${escapeHTML(shortDid(g.owner))}</small></div>
+    </div>`).join(''):'<div class="hint">(还没有群聊)</div>';
+}
+async function openFriend(did){
+  activeFriendDid=did;
+  if(!contactGroups) await loadContacts(); // 确保群列表已拉 (按 owner/ACL 过滤共同群聊)
+  $('contactsList').style.display='none';
+  $('contactsFriend').style.display='';
+  $('friendDidShort').textContent=shortDid(did);
+  // 后端暂无「好友分享给我的智能体」端点 ⇒ 如实空态 (不造假数据, 端点落地后替换这两行)
+  $('friendAgents').innerHTML='<div class="hint">(对方尚未分享智能体 — 后端暂无跨机智能体共享端点)</div>';
+  $('friendSessions').innerHTML='<div class="hint">(需先拿到对方分享的智能体)</div>';
+  renderFriendGroups(did);
+}
+// 共同群聊: 群主是该好友 / 白名单含该好友 / 公开群(Open, 任何人可写) 都算"共同" — 用真实 /api/groups 数据, 不造假
+// acl 序列化 (默认 serde): 单元变体=字符串 "OwnerOnly"|"Open"; 新类型变体=对象 {"Whitelist":[did...]}
+function renderFriendGroups(did){
+  const box=$('friendGroups'); if(!box)return;
+  const groups=(contactGroups&&contactGroups.groups)||[];
+  const shared=groups.filter(g=>{
+    const acl=g.acl;
+    if(acl==='Open')return true;                              // 公开群: 任何人都可写/加入
+    if(acl&&typeof acl==='object'&&Array.isArray(acl.Whitelist))
+      return [g.owner,...acl.Whitelist].includes(did);        // 白名单群: 群主+白名单成员
+    return g.owner===did;                                      // 独占群("OwnerOnly" 或缺失): 仅群主
+  });
+  box.innerHTML=shared.length?shared.map(g=>`
+    <div class="item${g.id===activeGroupId?' active':''}" onclick="openGroup('${g.id}')">
+      <div class="ava">👥</div>
+      <div class="txt"><b>${escapeHTML(g.name||g.id)}</b><small>${escapeHTML(shortDid(g.owner))} · ${aclTag(g.acl)}</small></div>
+    </div>`).join(''):'<div class="hint">(没有与该好友共同的群聊)</div>';
+}
+function aclTag(acl){
+  if(acl==='Open')return'公开群';
+  if(acl&&typeof acl==='object'&&acl.Whitelist)return'白名单';
+  return'独占群';
+}
+function backToContacts(){
+  activeFriendDid='';
+  $('contactsFriend').style.display='none';
+  $('contactsList').style.display='';
+}
+async function decideFriend(rid,act){
+  try{
+    await api('/api/friends/'+(act==='accept'?'accept':'reject'),{method:'POST',body:JSON.stringify({request_id:rid})});
+    await loadContacts();
+  }catch(e){ const m=$('groupMeta'); if(m)m.textContent='处理好友请求失败: '+e.message; }
+}
+$('friendBack').onclick=backToContacts;
+
+// ── 群聊 (主区): 真收发 (/api/groups/{id}/messages · /say, Ed25519 签名) + 4s 轮询 ──
+async function openGroup(id){
+  activeGroupId=id;
+  const g=((contactGroups&&contactGroups.groups)||[]).find(x=>x.id===id)||{};
+  const m=document.querySelector('main');
+  m.classList.remove('world-mode');              // 与世界面板互斥
+  m.classList.add('group-mode');
+  $('groupName').textContent=g.name||id;
+  $('groupMeta').textContent=[shortDid(g.owner),g.address?('orbit '+String(g.address).slice(0,12)):''].filter(Boolean).join(' · ');
+  await loadGroupMessages();
+  if(groupTimer)clearInterval(groupTimer);
+  groupTimer=setInterval(loadGroupMessages,4000);
+  renderContacts();
+}
+function closeGroup(){
+  document.querySelector('main').classList.remove('group-mode');
+  if(groupTimer){clearInterval(groupTimer);groupTimer=null;}
+  activeGroupId='';renderContacts();
+}
+async function loadGroupMessages(){
+  if(!activeGroupId)return;
+  try{
+    const j=await api('/api/groups/'+encodeURIComponent(activeGroupId)+'/messages');
+    renderGroupMessages(j.messages||[]);
+  }catch(_){ /* 轮询失败静默, 下轮再试 */ }
+}
+function renderGroupMessages(msgs){
+  const box=$('groupMessages');
+  if(!box)return;
+  const stick=box.scrollHeight-box.scrollTop-box.clientHeight<140;
+  const me=(state&&state.profile&&state.profile.did)||'';
+  box.innerHTML=msgs.length?msgs.map(m=>`
+    <div class="gmsg${m.sender===me?' mine':''}">
+      <div class="gmeta">${escapeHTML(shortDid(m.sender))}${m.signature?' · ✓已签名':''}</div>
+      <div class="gbody">${escapeHTML(String(m.content||''))}</div>
+    </div>`).join(''):'<div class="hint">(还没有消息 — 说第一句)</div>';
+  if(stick)box.scrollTop=box.scrollHeight;
+}
+async function sendGroup(){
+  const inp=$('groupInput');
+  const text=(inp.value||'').trim();
+  if(!text||!activeGroupId)return;
+  inp.value='';
+  try{
+    await api('/api/groups/'+encodeURIComponent(activeGroupId)+'/say',{method:'POST',body:JSON.stringify({text})});
+    await loadGroupMessages();
+  }catch(e){ $('groupMeta').textContent='发送失败: '+e.message; }
+}
+$('groupSend').onclick=sendGroup;
+$('groupClose').onclick=closeGroup;
+$('groupInput').addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&!e.shiftKey){
+    if(e.isComposing||e.keyCode===229)return; // 输入法组词确认不发送
+    e.preventDefault();sendGroup();
+  }
+});
+
 // 面板切换: 世界 ⇄ 聊天
 function setPanel(panel) {
   const m = document.querySelector("main");
   m.classList.toggle("world-mode", panel === "world");
   $("worldTabBtn").style.color = panel === "world" ? "var(--accent)" : "";
-  if (isDesktopShell) setDesktopModule(panel === "world" ? "world" : "chat"); // 桌面三栏: 第一/二栏随主区面板联动 (header tab / /world 命令同样生效)
+  // 桌面三栏: 第一/二栏随主区面板联动 (header tab / /world 命令同样生效),
+  //   但**不覆盖通讯录模块** — 它是独立模块不是面板, 否则点群聊/好友会被打回聊天模块。
+  if (isDesktopShell && (desktopModule === 'chat' || desktopModule === 'world')) {
+    setDesktopModule(panel === "world" ? "world" : "chat");
+  }
+  if (panel === 'world' && activeGroupId) closeGroup(); // 世界面板与群聊面板互斥
   if (panel === "world") { if (!worldLoaded) loadWorld(); if (!worldTimer) worldTimer = setInterval(loadWorld, 15000); }
   else if (worldTimer) { clearInterval(worldTimer); worldTimer = null; }
 }
