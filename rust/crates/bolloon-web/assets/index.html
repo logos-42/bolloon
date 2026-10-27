@@ -189,7 +189,8 @@
   .composer textarea{flex:1;resize:none;height:46px;max-height:140px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:12px}
   .composer .edit-btn{display:grid;place-items:center;width:36px;height:38px;padding:0;border-radius:11px;flex:none}
   .composer .edit-btn svg{width:17px;height:17px}
-  .composer #send{min-width:58px;display:grid;place-items:center}
+  .composer #send{min-width:58px;display:grid;place-items:center;background:linear-gradient(135deg,var(--accent),#9fb52f);border-color:var(--accent);color:#1a1300;font-weight:600;box-shadow:0 1px 0 rgba(0,0,0,.06)}
+  .composer #send:hover{filter:brightness(1.06)}
   /* 终止态: bolloon 色系 (暖琥珀→珊瑚), 不再用外部品牌的写死红 */
   .composer #send.stop{background:linear-gradient(135deg,#f0a14a,#e4663a);border-color:#e4663a;color:#1b1206}
   .composer #send.stop:hover{filter:brightness(1.08)}
@@ -661,11 +662,14 @@ async function initPermission(){
 }
 // 头像渲染: ① 有真图 (data URL) 就用; ② 否则用**确定性 SVG** (按 seed 生成, 本地零依赖);
 // 以前没有 ② 时直接返回空串 ⇒ 左下角用户栏 / 智能体默认头像全空白 (leo 2026-10-27)。
+// 幂等: 已经是 data URI 就原样返回 (svgAvatar 在某些版本里已自带前缀, 再包一次会变成双层编码)
+const svgDataURI=(svg)=>{const t=String(svg);return t.startsWith('data:')?t:`data:image/svg+xml;utf8,${encodeURIComponent(t)}`;};
 const avaHTML=(a,seed)=>{
   if(a&&a.startsWith('data:image/'))return `<img src="${a}" alt="">`;
+  // 兼容: 老存档里把裸 `<svg ...>` 存进了 avatar 字段 (预设按钮的老写法) —— 直接包成 data URI
+  if(a&&String(a).trim().startsWith('<svg'))return `<img src="${svgDataURI(String(a).trim())}" alt="">`;
   const key=String(a||seed||'bolloon');
-  const svg=svgAvatar(key,key[0]||'B');
-  return `<img src="data:image/svg+xml;utf8,${encodeURIComponent(svg)}" alt="">`;
+  return `<img src="${svgDataURI(svgAvatar(key,key[0]||'B'))}" alt="">`;
 };
 
 function svgAvatar(seed,_label){
@@ -1254,7 +1258,7 @@ function editAgent(id){
   $('agentGlobalDir').value=a.global_dir||'';
   const presets=['熔岩','等离子','星云','磁场','量子','混沌','曙光','深空'];
   $('agentAvatarPresets').innerHTML=presets.map((n,i)=>`<button title="${n}"><img src="${svgAvatar(n+a.id,n[0])}" alt="${n}"></button>`).join('');
-  [...$('agentAvatarPresets').children].forEach((b,i)=>b.onclick=()=>{$('agentAvatarFile').dataset.avatar=svgAvatar(presets[i]+a.id,presets[i][0]);});
+  [...$('agentAvatarPresets').children].forEach((b,i)=>b.onclick=()=>{$('agentAvatarFile').dataset.avatar=svgDataURI(svgAvatar(presets[i]+a.id,presets[i][0]));});
   $('agentAvatarFile').dataset.avatar=a.avatar||'';
   document.getElementById('agentDlg').showModal();
 }
@@ -1265,13 +1269,13 @@ $('newAgentBtn').onclick=()=>{
   $('agentNameInput').value='';$('agentPersona').value='';$('agentWorkspace').value='';$('agentGlobalDir').value='';
   const presets=['熔岩','等离子','星云','磁场','量子','混沌','曙光','深空'];
   $('agentAvatarPresets').innerHTML=presets.map((n,i)=>`<button title="${n}"><img src="${svgAvatar(n+Date.now(),n[0])}" alt="${n}"></button>`).join('');
-  [...$('agentAvatarPresets').children].forEach((b,i)=>b.onclick=()=>{$('agentAvatarFile').dataset.avatar=svgAvatar(presets[i]+Date.now(),presets[i][0]);});
+  [...$('agentAvatarPresets').children].forEach((b,i)=>b.onclick=()=>{$('agentAvatarFile').dataset.avatar=svgDataURI(svgAvatar(presets[i]+Date.now(),presets[i][0]));});
   delete $('agentAvatarFile').dataset.avatar;
   document.getElementById('agentDlg').showModal();
 };
 $('agentSave').onclick=async()=>{
   try{
-    const avatar=$('agentAvatarFile').dataset.avatar||svgAvatar($('agentNameInput').value||'agent',($('agentNameInput').value||'A')[0]);
+    const avatar=$('agentAvatarFile').dataset.avatar||svgDataURI(svgAvatar($('agentNameInput').value||'agent',($('agentNameInput').value||'A')[0]));
     const payload={name:$('agentNameInput').value,avatar,persona:$('agentPersona').value,workspace:$('agentWorkspace').value,global_dir:$('agentGlobalDir').value};
     if(editingAgentId){
       const a=await api('/api/agents/update',{method:'POST',body:JSON.stringify(Object.assign({id:editingAgentId},payload))});
@@ -1291,7 +1295,7 @@ function openSettings(){
   $('profileName').value=state.profile.name;
   const presets=['用户','开发者','探索者','工程师','观测者','架构师','协作者','思考者'];
   $('avatarPresets').innerHTML=presets.map((n,i)=>`<button title="${n}"><img src="${svgAvatar(n+state.profile.did,n[0])}" alt="${n}"></button>`).join('');
-  [...$('avatarPresets').children].forEach((b,i)=>b.onclick=()=>{$('profileAvatarFile').dataset.avatar=svgAvatar(presets[i]+state.profile.did,presets[i][0]);});
+  [...$('avatarPresets').children].forEach((b,i)=>b.onclick=()=>{$('profileAvatarFile').dataset.avatar=svgDataURI(svgAvatar(presets[i]+state.profile.did,presets[i][0]));});
   delete $('profileAvatarFile').dataset.avatar;
   $('settingsModelLabel').textContent=(state.settings.provider||'默认')+' / '+(state.settings.model||'default');
   renderSettingsUpdate();
