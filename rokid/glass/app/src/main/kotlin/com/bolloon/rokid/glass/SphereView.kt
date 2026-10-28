@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.os.SystemClock
 import android.view.View
 import android.view.animation.DecelerateInterpolator
 
@@ -32,6 +33,9 @@ class SphereView(ctx: Context) : View(ctx) {
 
     private var scale = 1f
     private var animator: ValueAnimator? = null
+    // 呼吸：持续的正弦相位（球径与相对位置都在缓慢动，像呼吸一样）
+    private val breatheStart = SystemClock.uptimeMillis()
+    private var breathing = false
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -66,21 +70,29 @@ class SphereView(ctx: Context) : View(ctx) {
         val short = minOf(w, h)
 
         // 球之间留大间距（横向宽、纵向窄一点，才塞得进 480×380），球半径 0.145
-        val rx = w * 0.355f
-        val ry = h * 0.255f
-        val r = short * 0.145f
+        val rxBase = w * 0.355f
+        val ryBase = h * 0.255f
+        val rBase = short * 0.145f
+
+        // 呼吸相位：周期 ~4.2s，每个球相位错开，于是"互相大小和相对位置"都在动
+        val t = if (breathing) ((SystemClock.uptimeMillis() - breatheStart) % 4200L) / 4200f * (2 * Math.PI).toFloat() else 0f
 
         // 卫星球：上 / 右 / 下 / 左（不画任何连线）
         val angles = floatArrayOf(-90f, 0f, 90f, 180f)
         for (i in 0 until 4) {
+            val ph = t + i * 1.15f
+            val breath = 1f + 0.07f * kotlin.math.sin(ph)              // 球径呼吸 ±7%
+            val orbitK = 1f + 0.045f * kotlin.math.sin(ph * 0.75f + 0.9f) // 相对位置呼吸 ±4.5%
             val rad = Math.toRadians(angles[i].toDouble())
-            val bx = cx + (rx * Math.cos(rad)).toFloat()
-            val by = cy + (ry * Math.sin(rad)).toFloat()
-            drawBall(canvas, bx, by, r, labels.getOrElse(i + 1) { "" }, selected == i + 1)
+            val bx = cx + (rxBase * orbitK * Math.cos(rad)).toFloat()
+            val by = cy + (ryBase * orbitK * Math.sin(rad)).toFloat()
+            drawBall(canvas, bx, by, rBase * breath, labels.getOrElse(i + 1) { "" }, selected == i + 1)
         }
 
-        // 中心 bolloon 球
-        drawBall(canvas, cx, cy, r * 1.18f, labels.getOrElse(0) { "bolloon" }, selected == 0)
+        // 中心 bolloon 球（自己一个相位，呼吸节奏和卫星球错开）
+        val centerBreath = 1f + 0.05f * kotlin.math.sin(t + 2.4f)
+        drawBall(canvas, cx, cy, rBase * 1.18f * centerBreath, labels.getOrElse(0) { "bolloon" }, selected == 0)
+        scheduleNextFrame()
     }
 
     private fun drawBall(canvas: Canvas, x: Float, y: Float, radius0: Float, label: String, active: Boolean) {
@@ -102,9 +114,19 @@ class SphereView(ctx: Context) : View(ctx) {
         canvas.drawText(label, x, y - (fm.ascent + fm.descent) / 2f, text)
     }
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        breathing = true
+    }
+
     override fun onDetachedFromWindow() {
         animator?.cancel()
         super.onDetachedFromWindow()
+    }
+
+    /** 30fps 自驱重绘（呼吸动画；不重绘时不会持续唤醒） */
+    private fun scheduleNextFrame() {
+        if (breathing && visibility == VISIBLE) postInvalidateDelayed(33)
     }
 
     companion object {
