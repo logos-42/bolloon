@@ -140,6 +140,7 @@ class MainActivity : Activity() {
         section = hit
         sidebarLevel = 1
         screen = Screen.HOME
+        mode = Mode.CARD   // 设置只在卡片模式存在，跳转必须切模式，否则会被球体渲染吃掉
         if (::mainCol.isInitialized) render()
     }
 
