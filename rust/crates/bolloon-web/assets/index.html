@@ -582,9 +582,10 @@
          手机号/邮箱 ⇒ POST /api/contacts/search → 跨机目录 (真 HTTP 到已登记对端 /api/directory/rpc)
          姓名/昵称   ⇒ 同一接口的 locals → 本机名片本 ContactBook -->
     <div id="contactsView">
-      <div class="ct-head">通讯录 — 输手机号可跨机查找另一台机器上已发布目录的人；输姓名找本机联系人</div>
+      <!-- 2026-10-28 (用户): 身份体系 = DID; 手机号 / 邮箱 / DID 都是通讯地址, 都解析到同一个 DID, 连通后通讯地址即通 -->
+      <div class="ct-head">通讯录 — DID / 手机号 / 邮箱 都是通讯地址（都解析到同一个 DID）；输姓名找本机联系人</div>
       <div class="ct-search">
-        <input id="ctInput" type="search" placeholder="手机号 或 姓名" autocomplete="off" />
+        <input id="ctInput" type="search" placeholder="DID / 手机号 / 邮箱 / 姓名" autocomplete="off" />
         <button class="mini" id="ctGo">搜索</button>
       </div>
       <div class="ct-head" id="ctStatus"></div>
@@ -598,6 +599,12 @@
         <button class="mini" id="nodeFriendBtn">互加好友+直连</button>
       </div>
       <div class="ct-head" id="nodeStatus"></div>
+      <!-- 2026-10-28 (用户): 群聊 — 用 orbit 邀请链接加入 (后端 /api/groups/join 开出与邀请方同一个 store) -->
+      <div class="ct-head" style="margin-top:14px">群聊 — 粘贴 orbit 邀请链接加入（内容寻址，开出与邀请方同一个 store）</div>
+      <div class="ct-search">
+        <input id="groupLinkInput" type="search" placeholder="bolloon://join/…" autocomplete="off" />
+        <button class="mini" id="groupLinkJoinBtn">加入群聊</button>
+      </div>
     </div>
     <!-- 2026-10-27: 群聊面板 (通讯录 → 群聊) — 真收发: GET /api/groups/{id}/messages · POST /api/groups/{id}/say (Ed25519 签名) -->
     <div id="groupView">
@@ -605,6 +612,8 @@
         <b id="groupName">群聊</b>
         <span id="groupMeta" style="color:var(--muted);font-size:11px"></span>
         <span class="grow"></span>
+        <button id="groupInvite" class="mini" title="生成 orbit 邀请链接（内容寻址，对方开出同一个群）">邀请</button>
+        <button id="groupJoinLink" class="mini" title="用 orbit 邀请链接加入群聊">加入</button>
         <button id="groupClose" class="mini" title="关闭群聊">✕</button>
       </div>
       <div id="groupMessages"></div>
@@ -2198,6 +2207,35 @@ async function createGroup(){
 }
 $('newGroupBtn').onclick=createGroup;
 
+// ── 群聊 orbit 邀请链接: 分享(签发 bolloon://join/…) / 加入(开出**同一个** store) ──
+// 后端已实现并在此接线: POST /api/groups/{id}/share {mode:'join'} · POST /api/groups/join {link}
+// 内容寻址: 对方开出的是同一个 orbit store, 而不是"长得一样的另一个群"
+async function shareGroupLink(){
+  if(!activeGroupId){ toast('请先打开一个群聊'); return; }
+  try{
+    const r=await api('/api/groups/'+encodeURIComponent(activeGroupId)+'/share',{method:'POST',body:JSON.stringify({mode:'join'})});
+    if(r.error)throw new Error(r.error);
+    const link=r.invite||'', orbit=r.address||'';
+    try{ await navigator.clipboard.writeText(link); toast('orbit 邀请链接已复制（默认 7 天有效）'); }
+    catch(_){ toast('邀请链接: '+link); }
+    const m=$('groupMeta'); if(m&&orbit)m.title='orbit store: '+orbit;
+  }catch(e){ toast('生成邀请链接失败: '+e.message); }
+}
+async function joinGroupByLink(prefill){
+  const link=(prefill&&String(prefill).trim())||await askText('加入群聊','粘贴 orbit 邀请链接','bolloon://join/…');
+  if(!link)return;
+  try{
+    const r=await api('/api/groups/join',{method:'POST',body:JSON.stringify({link:String(link).trim()})});
+    if(r.error)throw new Error(r.error);
+    await loadContacts();
+    if(r.group_id)openGroup(r.group_id);
+    toast('已加入群聊: '+(r.name||r.group_id));
+  }catch(e){ toast('加入群聊失败: '+e.message); }
+}
+if($('groupInvite'))$('groupInvite').onclick=shareGroupLink;
+if($('groupJoinLink'))$('groupJoinLink').onclick=()=>joinGroupByLink();
+if($('groupLinkJoinBtn'))$('groupLinkJoinBtn').onclick=()=>joinGroupByLink($('groupLinkInput')?$('groupLinkInput').value:'');
+
 // ── 群聊 (主区): 真收发 (/api/groups/{id}/messages · /say, Ed25519 签名) + 4s 轮询 ──
 async function openGroup(id){
   activeGroupId=id;
@@ -2353,7 +2391,7 @@ function ctRender(r, q) {
   const rows = [];
   const d = r.directory;
   if (d && d.did) {
-    const via = d.cross_machine ? "跨机命中 (另一台机器)" : "本机目录命中";
+    const via = d.via || (d.cross_machine ? "跨机命中 (另一台机器)" : "本机目录命中");
     const sign = d.verified ? "归属已验签" : "归属未验签";
     rows.push(ctCard(d.did, d.name, via + " · " + sign, "directory", d.verified === true));
   }

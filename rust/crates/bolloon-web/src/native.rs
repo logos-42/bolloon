@@ -2642,8 +2642,25 @@ pub async fn friend_request(
         "phone" => Some(bolloon_agent::directory::ContactKind::Phone),
         _ => None,
     });
-    // 真跨机: 向已登记对端查询 (拿回的 did 必须是**对端**目录里验过签的条目)
-    let (hit, notes) = peers_lookup(&st, &contact, kind).await;
+    // DID 直连: 身份即通讯地址 — DID 自带公钥可自证 ⇒ 无需查目录, 直接建好友请求
+    // (手机号/邮箱走下面那条: 先查目求/跨机, 拿回验过签的 did)
+    let (hit, notes): (bolloon_agent::directory::LookupHit, Vec<String>) =
+        if contact.starts_with("did:") && bolloon_p2p::pubkey_of_did(&contact).is_some() {
+            (
+                bolloon_agent::directory::LookupHit {
+                    found: true,
+                    did: Some(contact.clone()),
+                    public_key_hex: bolloon_p2p::pubkey_of_did(&contact).map(|pk| hex_of(&pk)),
+                    display_name: None,
+                    revoked: false,
+                    verified: true,
+                },
+                vec!["DID 直连 · 身份自证".to_string()],
+            )
+        } else {
+            // 真跨机: 向已登记对端查询 (拿回的 did 必须是**对端**目录里验过签的条目)
+            peers_lookup(&st, &contact, kind).await
+        };
     let mut fs = st.forge.lock().await;
     match bolloon_agent::directory::remote_add_friend(
         &hit,
@@ -2778,7 +2795,20 @@ pub async fn contact_search(
     };
     let mut directory = serde_json::Value::Null;
     let mut notes: Vec<String> = vec![];
-    if plausible {
+    // ② DID 直连: did:pi:… / did:key:z… — **身份即通讯地址**
+    //    公钥内嵌在 DID 里 ⇒ 自证 (不需要目录签名), 与手机号/邮箱并列:
+    //    三者都解析到同一个 DID, 连通后通讯地址即通。
+    if query.starts_with("did:") && bolloon_p2p::pubkey_of_did(&query).is_some() {
+        directory = serde_json::json!({
+            "kind": "did",
+            "did": query,
+            "name": serde_json::Value::Null,
+            "public_key_hex": bolloon_p2p::pubkey_of_did(&query).map(|pk| hex_of(&pk)),
+            "verified": true,
+            "cross_machine": false,
+            "via": "DID 直连 · 身份自证",
+        });
+    } else if plausible {
         let local_hit = {
             let fs = st.forge.lock().await;
             let d = dir_view(&fs);
