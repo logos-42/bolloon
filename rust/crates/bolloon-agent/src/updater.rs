@@ -11,8 +11,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// 当前版本 (与 workspace 0.6.12 一致)
-pub const CURRENT_VERSION: &str = "0.6.12";
+/// 当前版本 (与 workspace 0.6.13 一致)
+pub const CURRENT_VERSION: &str = "0.6.13";
 
 /// 更新错误
 #[derive(Debug, thiserror::Error, PartialEq)]

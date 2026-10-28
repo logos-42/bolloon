@@ -214,6 +214,25 @@
   .chat-new{display:grid;place-items:center;width:32px;height:32px;padding:0;border-radius:9px;flex:none}
   .chat-new svg{width:17px;height:17px}
   .agent-head-ava{width:28px;height:28px;border-radius:9px;object-fit:cover;cursor:pointer;box-shadow:0 0 0 1px var(--line)}
+  /* ── 2026-10-28 (用户): 顶部导航栏 (性质同第一栏 rail) + 龙订阅 + 更新 + 启动 splash ── */
+  .brand-word{font-weight:700;font-size:15px;letter-spacing:.3px;color:var(--text)}
+  .top-nav{display:flex;align-items:center;gap:2px;margin:0 6px}
+  .top-nav-btn{padding:6px 13px;border-radius:9px;font-size:13px;color:var(--muted);background:transparent;border:1px solid transparent;cursor:pointer;white-space:nowrap}
+  .top-nav-btn:hover{color:var(--text);background:var(--active)}
+  .top-nav-btn.on{color:var(--accent);background:var(--panel2);border-color:var(--line);font-weight:600}
+  .dragon-btn{width:28px;height:28px;padding:0;display:grid;place-items:center;border-radius:50%;border:1px solid var(--btn-border);background:var(--btn-bg);color:var(--accent);cursor:pointer;flex:none}
+  .dragon-btn:hover{filter:brightness(1.08)}
+  .dragon-btn svg{width:17px;height:17px}
+  .top-update{width:28px;height:28px;padding:0;display:grid;place-items:center;border-radius:50%;border:1px solid var(--btn-border);background:var(--btn-bg);color:var(--text);cursor:pointer;flex:none}
+  .top-update svg{width:16px;height:16px}
+  .top-update.available{color:#1a1300;background:var(--glow);border-color:var(--glow);animation:pulse 1.6s infinite}
+  #splash{position:fixed;inset:0;z-index:300;display:grid;place-items:center;background:radial-gradient(120% 120% at 50% 30%,#1d1d1a 0%,#0e0e0d 100%);transition:opacity .55s ease;color:#effb06}
+  #splash.hide{opacity:0;pointer-events:none}
+  #splash .sp-center{text-align:center}
+  #splash .sp-logo{width:88px;height:88px;margin:0 auto}
+  #splash .sp-word{margin-top:16px;font-size:28px;font-weight:800;letter-spacing:.5px;display:flex;align-items:baseline;justify-content:center;gap:10px}
+  #splash .sp-word small{font-size:19px;font-weight:700;color:#c4d640;letter-spacing:3px}
+  #splash .sp-sub{margin-top:8px;font-size:12px;color:#8c8c84}
   .composer-footer{display:flex;gap:8px;padding:0 16px 12px}
   .mini{font-size:12px;padding:5px 9px;border-radius:999px;color:var(--muted)}
   .mini:hover{color:var(--text)}
@@ -416,6 +435,13 @@
 </style>
 </head>
 <body>
+  <div id="splash">
+    <div class="sp-center">
+      <div class="sp-logo"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#effb06"/><ellipse cx="15.9" cy="17.6" rx="6.5" ry="7.7" fill="none" stroke="#1b1a19" stroke-width="4.2"/><circle cx="15.9" cy="5.6" r="2.5" fill="#1b1a19"/></svg></div>
+      <div class="sp-word" id="spWord">Bolloon</div>
+      <div class="sp-sub" id="spSub"></div>
+    </div>
+  </div>
 <div id="sessionMenu" class="menu hidden"></div>
 <div id="agentMenu" class="menu hidden"></div>
 <div id="toast" class="toast hidden"></div>
@@ -440,7 +466,7 @@
     </div>
     <div class="rail-gap"></div>
     <!-- 更新入口: 与侧栏 #updateBtn 同源 — 默认 display:none, 有更新才由 renderUpdate() 显形 (点击 relay 到同一套安装流) -->
-    <button class="rail-btn" id="railUpdateBtn" title="安装更新" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
+    <button class="rail-btn" id="railUpdateBtn" title="下载更新" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button>
     <!-- 头像 + 主题切换 (黑白切换放进头像里): 点头像=设置, 点角落图标=切换主题 -->
     <div class="rail-ava" id="railAva" title="点击设置头像 / 个人资料">
       <div class="rail-ava-img" id="railAvaImg"></div>
@@ -495,7 +521,7 @@
         </div>
       </div>
     </div>
-    <div class="side-update"><button id="updateBtn" title="安装更新" style="display:none">⟳ 更新</button></div>
+    <div class="side-update"><button id="updateBtn" title="下载更新" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button></div>
     <div class="account" id="account" title="点击绑定手机号 / 查看身份">
       <div class="ava-wrap">
         <div class="ava" id="accountAva"></div>
@@ -512,14 +538,23 @@
           <path d="M12 8v8M8 12h8"></path>
         </svg>
       </button>
-      <img id="agentHeaderAva" class="agent-head-ava" alt="" />
-      <b id="agentName">智能体</b>
-      <span id="agentDid" style="color:var(--muted)"></span>
+      <span class="brand-icon" title="Bolloon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#effb06"/><ellipse cx="15.9" cy="17.6" rx="6.5" ry="7.7" fill="none" stroke="#1b1a19" stroke-width="4.2"/><circle cx="15.9" cy="5.6" r="2.5" fill="#1b1a19"/></svg></span>
+      <span class="brand-word">Bolloon</span>
+      <nav class="top-nav" id="topNav">
+        <button class="top-nav-btn on" data-module="chat">智能体</button>
+        <button class="top-nav-btn" data-module="world">世界</button>
+        <button class="top-nav-btn" data-module="contacts">通讯录</button>
+        <button class="top-nav-btn" data-module="room">内部商议</button>
+      </nav>
       <span class="grow"></span>
-      <button id="worldTabBtn" class="mini" title="世界模式（机会流）">🌍 世界 <span id="worldBadge" style="display:none"></span></button>
-      <!-- 2026-10-28 (用户): 通讯录 — 网页端与桌面 App 都从这里进 (搜索屏而非仅侧栏列表)。图标用 SVG (与桌面三栏 rail 同一枚地址簿图标) -->
-      <button id="contactsTabBtn" class="mini" title="通讯录（按手机号或姓名找人）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M6 15c0-1.7 1.3-3 3-3s3 1.3 3 3"/><path d="M14 8h4M14 12h4M14 16h4"/></svg> 通讯录</button>
-      <button id="roomBtn" class="mini" title="打开内部商议">内部商议</button>
+      <span id="agentCtx" style="display:flex;align-items:center;gap:8px"><img id="agentHeaderAva" class="agent-head-ava" alt="" /><b id="agentName">智能体</b><span id="agentDid" style="color:var(--muted)"></span></span>
+      <!-- 2026-10-28 (用户): 最右上龙形订阅按钮 (帛龙 = bolloon 中文名) -->
+      <button id="dragonSubBtn" class="dragon-btn" title="订阅 Bolloon 更新（帛龙）" aria-label="订阅"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 17c1.4-1 2.4-2.4 3.9-2.4S10 16 12 16s3-2 5-2 3 1.4 4 1.4"/><path d="M20.5 13.4c.7 0 1.4.4 1.6 1.4-.2.9-.9 1.4-1.8 1.2"/><path d="M19.8 14.6l.9-2.5.8.6"/><circle cx="21.1" cy="15.1" r=".5" fill="currentColor"/><path d="M14 13.6c-.7 2-2 3.3-3.7 3.3-1.7 0-2.8-1-2.8-2.5.2-1.9 1.9-3.3 3.8-3.3 1.5 0 2.6.8 3.2 2.1"/><path d="M9.8 11.4c.3-1.5-.1-2.8-1.2-3.6"/></svg></button>
+      <button id="topUpdateBtn" class="top-update" title="下载更新" aria-label="更新" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button>
+      <!-- 原有 tab 按钮: 保留为隐藏 relay 目标 (顶部导航 / 第一栏 rail 通过 .click() 复用其逻辑) -->
+      <button id="worldTabBtn" class="mini" style="display:none">🌍 世界 <span id="worldBadge" style="display:none"></span></button>
+      <button id="contactsTabBtn" class="mini" style="display:none">通讯录</button>
+      <button id="roomBtn" class="mini" style="display:none">内部商议</button>
     </header>
     <div id="chat"><div class="empty"><h1>我们要做什么？</h1></div></div>
     <div id="worldView">
@@ -1033,11 +1068,14 @@ function renderSettingsUpdate(){
 //   纪律同侧栏: **有更新才显示**, 没检测到更新 (或源不可达 unknown) 一律不显形, 绝不误报。
 function syncRailUpdate(){
   const rb=$('railUpdateBtn'); if(!rb)return;
+  const tb=$('topUpdateBtn');
   if(update&&update.available){
     rb.style.display='';rb.classList.add('available');
     rb.title='有新版本 '+update.latest+'，点击自动更新';
+    if(tb){tb.style.display='';tb.classList.add('available');tb.title=rb.title;}
   }else{
     rb.style.display='none';rb.classList.remove('available');
+    if(tb){tb.style.display='none';tb.classList.remove('available');}
   }
 }
 function renderUpdate(){
@@ -1488,6 +1526,8 @@ async function pinSession(){
   }catch(e){alert(e.message);}
 }
 
+// 2026-10-28 (用户): 最右上龙形订阅按钮 — 订阅 Bolloon 更新推送 (后端订阅端点待接, 先给诚实占位反馈)
+$('dragonSubBtn').onclick=()=>{ toast('已订阅 Bolloon 更新（帛龙）— 有新版本会通过「下载更新」按钮提示你'); };
 $('newSessionBtn').onclick=async()=>{
   try{
     cancelEdit();
@@ -1686,8 +1726,14 @@ function setUpdateStage(text,stage){
   const rb=$('railUpdateBtn');
   if(rb){
     rb.style.display='';rb.classList.add('available'); // 安装中持续可见 (此时确实"有更新正在装")
-    rb.textContent=(stage==='install'||stage==='restart')?'⏳':(stage==='done'?'✓':'⟳');
+    rb.textContent=(stage==='install'||stage==='restart')?'⏳':(stage==='done')?'✓':'⟳';
     rb.title=text;
+  }
+  const tb=$('topUpdateBtn');
+  if(tb){
+    tb.style.display='';tb.classList.add('available');
+    tb.textContent=(stage==='install'||stage==='restart')?'⏳':(stage==='done')?'✓':'⟳';
+    tb.title=text;
   }
 }
 async function runUpdateFlow(){
@@ -1987,6 +2033,23 @@ function setDesktopModule(mod) {
   document.querySelectorAll('#primaryRail .rail-btn[data-module]').forEach(b => {
     b.classList.toggle('on', b.dataset.module === mod);
   });
+  document.querySelectorAll('#topNav .top-nav-btn[data-module]').forEach(b => {
+    b.classList.toggle('on', b.dataset.module === mod);
+  });
+}
+// 2026-10-28 (用户): 顶部导航栏 — 与第一栏 rail 同源切换; 世界/通讯录/内部商议 relay 到既有 tab 按钮 (.click()), 复用其完整逻辑
+function initTopNav(){
+  const nav=$('topNav'); if(!nav)return;
+  nav.querySelectorAll('.top-nav-btn').forEach(b=>{
+    b.addEventListener('click',()=>{
+      const mod=b.dataset.module;
+      nav.querySelectorAll('.top-nav-btn').forEach(x=>x.classList.toggle('on',x.dataset.module===mod));
+      if(mod==='chat'){ setDesktopModule('chat'); setPanel('chat'); }
+      else if(mod==='world'){ const w=$('worldTabBtn'); if(w)w.click(); }
+      else if(mod==='contacts'){ const c=$('contactsTabBtn'); if(c)c.click(); }
+      else if(mod==='room'){ const r=$('roomBtn'); if(r)r.click(); }
+    });
+  });
 }
 function initDesktopThreeCol() {
   if (document.body.classList.contains('desktop3col')) return; // 幂等
@@ -2006,6 +2069,7 @@ function initDesktopThreeCol() {
   // 第一栏底部全局入口 → relay 到现有按钮, 不重复绑定逻辑
   // 更新: 走与 #updateBtn 同一个 runUpdateFlow (下载→校验→原子替换→重启→reload), 不另写一份
   $('railUpdateBtn').onclick = () => runUpdateFlow();
+  $('topUpdateBtn').onclick = () => runUpdateFlow();
   $('railThemeBtn').onclick = (e) => { e.stopPropagation(); $('themeBtn').click(); }; // 黑白切换放进头像: 点角落图标切主题 (不触发打开设置)
   $('railRoomBtn').onclick = () => $('roomBtn').click();
   $('railAva').onclick = (e) => { if (e.target.closest('#railThemeBtn')) return; openSettings(); }; // 点头像=设置, 主题小圆点已单独处理
@@ -2370,6 +2434,14 @@ loadWorld();
 setInterval(() => { if (!worldLoaded) loadWorld(); }, 60000);
 
 boot().finally(()=>{
+  initTopNav();
+  // 2026-10-28 (用户): 启动 splash — 中文 locale 显示「帛龙」, 完全打开后淡出
+  (function(){
+    const zh=/^zh/i.test(navigator.language||'');
+    const w=document.getElementById('spWord'); if(w)w.innerHTML='Bolloon'+(zh?'<small>帛龙</small>':'');
+  })();
+  const sp=document.getElementById('splash');
+  if(sp){ setTimeout(()=>{ sp.classList.add('hide'); setTimeout(()=>sp.remove(),650); }, 700); }
   setTimeout(refreshUpdate,5000);
   setInterval(refreshUpdate,60000);
   setInterval(pollAuth,5000);pollAuth(); // clarity 验证：待授权轮询

@@ -6,6 +6,8 @@
 pub mod identity;
 pub mod envelope;
 pub mod gossip;
+#[cfg(feature = "quic-transport")]
+pub mod quic_transport;
 pub mod oplog;
 pub mod replication;
 pub mod orbit_store;

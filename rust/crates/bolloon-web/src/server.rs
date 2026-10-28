@@ -495,7 +495,7 @@ async fn avatar_families() -> Json<serde_json::Value> {
 }
 
 async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": true, "version": "0.6.12" }))
+    Json(serde_json::json!({ "ok": true, "version": "0.6.13" }))
 }
 
 async fn sessions(State(st): State<AppState>) -> Json<Vec<SessionMeta>> {
