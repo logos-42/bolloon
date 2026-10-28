@@ -148,7 +148,7 @@
   .pin{font-size:10px;color:var(--accent);margin-right:4px;vertical-align:1px}
   .account{border-top:1px solid var(--line);padding:10px 12px;display:flex;align-items:center;gap:10px;cursor:pointer}
   .account:hover{background:var(--panel2)}
-  .account .ava-wrap{position:relative;flex:none}
+  .account .ava-wrap{position:relative;flex:none;display:none} /* 2026-10-28 (用户): 侧边栏展开后第二栏头像与第一栏 rail 重复, 隐藏第二栏头像(设置仍可经第一栏头像打开) */
   .account .ava{width:36px;height:36px;border-radius:50%;background:var(--panel2);display:grid;place-items:center;overflow:hidden}
   .account .ava img{width:100%;height:100%;object-fit:cover}
   .account .gear{position:absolute;right:-5px;bottom:-5px;width:19px;height:19px;border-radius:50%;padding:0;display:grid;place-items:center;font-size:11px;line-height:1;background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn-border)}
@@ -234,8 +234,11 @@
   #splash .sp-word small{font-size:19px;font-weight:700;color:#c4d640;letter-spacing:3px}
   #splash .sp-sub{margin-top:8px;font-size:12px;color:#8c8c84}
   /* ── 2026-10-28 (用户): 自定义窗口外壳 (标题栏) — 极简, 平时不占地方, 右上龙订阅 ── */
-  #titlebar{position:fixed;top:0;left:0;right:0;height:32px;z-index:200;display:flex;align-items:center;gap:8px;padding:0 10px 0 80px;background:rgba(22,22,20,.78);backdrop-filter:blur(12px);-webkit-app-region:drag;color:#effb06;font-weight:700;font-size:13px;letter-spacing:.3px;user-select:none}
-  #titlebar .tb-title{color:#effb06}
+  /* ── 2026-10-28 (用户): 窗口外壳(标题栏) — 可拖拽区; 毛玻璃透明; Bolloon 空闲隐藏, hover 显形 ── */
+  #titlebar{position:fixed;top:0;left:0;right:0;height:32px;z-index:200;display:flex;align-items:center;gap:8px;padding:0 10px 0 80px;background:rgba(18,18,16,.4);backdrop-filter:blur(16px) saturate(140%);-webkit-app-region:drag;color:#effb06;font-weight:700;font-size:13px;letter-spacing:.3px;user-select:none;transition:background .18s}
+  #titlebar:hover{background:rgba(18,18,16,.6)}
+  #titlebar .tb-title{color:#effb06;opacity:0;transition:opacity .18s}
+  #titlebar:hover .tb-title{opacity:1}
   #titlebar .grow{flex:1}
   #titlebar .dragon-btn{-webkit-app-region:no-drag;width:24px;height:24px}
   #app{box-sizing:border-box;padding-top:32px}
@@ -357,7 +360,7 @@
   .primary-rail{display:none}
   body.desktop3col .primary-rail{
     display:flex;flex-direction:column;align-items:center;gap:14px;
-    background:var(--panel);border-right:1px solid var(--line);padding:14px 0;min-width:0;overflow:hidden;
+    background:rgba(18,18,16,.4);backdrop-filter:blur(16px) saturate(140%);border-right:1px solid var(--line);padding:14px 0;min-width:0;overflow:hidden;
   }
   body.desktop3col .rail-group{display:flex;flex-direction:column;align-items:center;gap:12px}
   body.desktop3col .rail-btn svg{width:21px;height:21px;display:block}
