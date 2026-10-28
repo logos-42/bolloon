@@ -24,6 +24,7 @@ use bolloon_kernel::transport::{PeerInfo, Transport, TransportError, TransportMe
 use quinn::{ClientConfig, Endpoint, ServerConfig, VarInt};
 use quinn::crypto::rustls::QuicClientConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+#[allow(unused_imports)]
 use serde_json::json;
 use tokio::sync::{Mutex, Notify};
 

@@ -23,6 +23,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use bolloon_llm::{ChatMessage, GenerateParams, LlmRuntime};
+use bolloon_kernel::transport::{Transport, TransportMessage};
 
 use crate::server::{data_dir, AppState, ChatMessageView};
 use std::collections::HashMap;
@@ -1934,6 +1935,30 @@ pub async fn world_cards(State(st): State<AppState>) -> Json<serde_json::Value> 
     Json(serde_json::json!({ "ok": true, "count": cards.len(), "cards": cards }))
 }
 
+/// QUIC 直连 / HTTP push 共用的「世界卡片收卡」逻辑: 验签 + 好友闸 + 入信箱。
+/// QUIC 收到的信封 (已由 QuicTransport 验过 Ed25519) 与 HTTP push 的信封走同一条路径, 不重复实现。
+pub async fn deliver_world_card(
+    st: &AppState,
+    env: &bolloon_p2p::envelope::SignedEnvelope,
+) -> anyhow::Result<serde_json::Value> {
+    let card = bolloon_agent::world::unpack_world_card(env)?;
+    let mut fs = st.forge.lock().await;
+    // 好友模式的卡只收好友的 (与发送侧 delivery_for 成对, 两端都不放水)
+    bolloon_agent::world::accept_card(&card, fs.friends.friends())?;
+    let card_json = serde_json::to_value(&card).unwrap_or(serde_json::Value::Null);
+    let item = serde_json::json!({
+        "id": format!("card-{:04}", fs.inbox.len() + 1),
+        "kind": "card",
+        "score": 2.0, // 置顶
+        "title": card.title,
+        "summary": card.summary,
+        "card": card_json,
+    });
+    fs.inbox.push(item.clone());
+    fs.save(&data_dir());
+    Ok(item)
+}
+
 /// POST /api/world/cards/push → **跨机投递入口** (信封 `world.card` 帧; 验签不过即拒)
 ///
 /// 对齐 TS `POST /api/world/cards/push` (X-Signature) 与 `deliverWorldCard`:
@@ -1946,27 +1971,10 @@ pub async fn world_cards_push(
         Ok(e) => e,
         Err(_) => return Json(serde_json::json!({ "error": "信封格式错误 (拒收)" })),
     };
-    let card = match bolloon_agent::world::unpack_world_card(&env) {
-        Ok(c) => c,
-        Err(e) => return Json(serde_json::json!({ "error": format!("拒收: {e}") })),
-    };
-    let mut fs = st.forge.lock().await;
-    // 好友模式的卡只收好友的 (与发送侧 delivery_for 成对, 两端都不放水)
-    if let Err(e) = bolloon_agent::world::accept_card(&card, fs.friends.friends()) {
-        return Json(serde_json::json!({ "error": format!("拒收: {e}") }));
+    match deliver_world_card(&st, &env).await {
+        Ok(item) => Json(serde_json::json!({ "ok": true, "card": item })),
+        Err(e) => Json(serde_json::json!({ "error": format!("拒收: {e}") })),
     }
-    let card_json = serde_json::to_value(&card).unwrap_or(serde_json::Value::Null);
-    let item = serde_json::json!({
-        "id": format!("card-{:04}", fs.inbox.len() + 1),
-        "kind": "card",
-        "score": 2.0, // 置顶
-        "title": card.title,
-        "summary": card.summary,
-        "card": card_json,
-    });
-    fs.inbox.push(item.clone());
-    fs.save(&data_dir());
-    Json(serde_json::json!({ "ok": true, "card": item }))
 }
 
 /// POST /api/world/cards/share → 分享一张卡片 (**两条路径语义严格不同**)
@@ -1990,6 +1998,23 @@ pub async fn world_cards_share(
     };
     let (env, delivery) =
         bolloon_agent::world::share_card(&*st.identity, card, &friends, now_ms());
+    // QUIC 直连出站: 对**已登记 socket 地址**的好友, 经 QUIC 直发信封 (与 HTTP 跨机互补, best-effort)
+    #[cfg(feature = "quic-transport")]
+    if let Some(q) = &st.quic {
+        if let Ok(payload) = serde_json::to_value(&env) {
+            for f in &friends {
+                let msg = TransportMessage {
+                    to: Some(f.clone()),
+                    topic: Some("world.card".into()),
+                    payload: payload.clone(),
+                    from: Some(st.identity.did.as_str().to_string()),
+                };
+                if let Err(e) = q.send(msg).await {
+                    tracing::warn!("QUIC 直发好友 {} 失败: {e}", f);
+                }
+            }
+        }
+    }
     let is_broadcast = delivery.mode() == "broadcast";
     Json(serde_json::json!({
         "ok": true,
@@ -2027,6 +2052,42 @@ pub async fn world_cards_protocol(State(st): State<AppState>) -> Json<serde_json
         "verify": "信封验签 + provider_did 必须等于信封 sender; 好友模式还必须是好友; 任一不过即拒收, 不静默降级",
         "did": st.identity.did.as_str()
     }))
+}
+
+/// GET /api/quic/addr → 本节点 QUIC 收件 socket 地址 (供对端登记直连)
+#[cfg(feature = "quic-transport")]
+pub async fn quic_addr(State(st): State<AppState>) -> Json<serde_json::Value> {
+    match &st.quic {
+        Some(q) => {
+            let addr = q
+                .node_addr()
+                .await
+                .map(|a| a.to_string())
+                .unwrap_or_else(|_| String::new());
+            Json(serde_json::json!({ "ok": true, "addr": addr }))
+        }
+        None => Json(serde_json::json!({ "ok": false, "error": "QUIC 传输未启用" })),
+    }
+}
+
+/// POST /api/quic/peers → 登记对端 (did → socket 地址), QUIC 直连用它建连
+#[cfg(feature = "quic-transport")]
+pub async fn quic_peer_add(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or_default().to_string();
+    let addr = req["addr"].as_str().unwrap_or_default();
+    let Some(q) = &st.quic else {
+        return Json(serde_json::json!({ "error": "QUIC 传输未启用" }));
+    };
+    match addr.parse::<std::net::SocketAddr>() {
+        Ok(a) => {
+            q.add_peer(&did, a).await;
+            Json(serde_json::json!({ "ok": true, "did": did, "addr": addr }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": format!("地址解析失败: {e}") })),
+    }
 }
 
 /// GET /api/world/stats → 世界统计 (徽章数据源)

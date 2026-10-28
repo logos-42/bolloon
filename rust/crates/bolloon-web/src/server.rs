@@ -71,6 +71,9 @@ pub struct AppState {
     pub skills: Arc<Mutex<bolloon_agent::skills_runtime::SkillEvolver>>,
     pub session_store: Arc<bolloon_agent::SessionStore>,
     pub version: &'static str,
+    /// QUIC 端对端直连传输 (feature 门控; 默认启用): 好友对话的直连底座, 不经 HTTP 中继
+    #[cfg(feature = "quic-transport")]
+    pub quic: Option<Arc<bolloon_p2p::quic_transport::QuicTransport>>,
 }
 
 impl AppState {
@@ -120,6 +123,8 @@ impl AppState {
             skills: Arc::new(Mutex::new(bolloon_agent::skills_runtime::SkillEvolver::new())),
             session_store,
             version: "0.6.10",
+            #[cfg(feature = "quic-transport")]
+            quic: None,
         }
     }
 
@@ -264,7 +269,7 @@ struct SendResponse {
 
 /// 路由表 (serve 与测试共用; 端口绑定与路由分离)
 pub fn app(state: AppState) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/", get(index))
         // 原生 UI 数据面 (前端 index.html 期望的形状: agents/sessions/profile/settings/update)
         .route("/api/bootstrap", get(crate::native::bootstrap_native))
@@ -396,8 +401,17 @@ pub fn app(state: AppState) -> Router {
         .route("/api/update/check", get(update_check))
         .route("/api/update/install", post(update_install))
         // 完全访问权限开关 (可随时开/取消)
-        .route("/api/permission", get(get_permission).post(set_permission))
-        .with_state(state)
+        .route("/api/permission", get(get_permission).post(set_permission));
+    // QUIC 直连对端管理接口 (feature 门控; 默认启用): 暴露本节点收件地址 + 登记对端 socket
+    #[cfg(feature = "quic-transport")]
+    {
+        router = router.merge(
+            Router::new()
+                .route("/api/quic/addr", get(crate::native::quic_addr))
+                .route("/api/quic/peers", post(crate::native::quic_peer_add)),
+        );
+    }
+    router.with_state(state)
 }
 
 pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
@@ -417,6 +431,35 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
 pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
     // 启动即按本机配置装好模型通路 (200+ provider 里能解析的那些)
     state.reload_llm().await;
+
+    // QUIC 端对端直连传输: 起一个端点, 并起接收循环把直连收到的信封接到世界卡片跨机投递路径。
+    // 失败仅降级为"仅 HTTP 跨机", 不拖垮 web 服务。
+    #[cfg(feature = "quic-transport")]
+    let state = {
+        let mut state = state;
+        match bolloon_p2p::quic_transport::QuicTransport::new(&state.identity).await {
+            Ok(q) => {
+                let q = std::sync::Arc::new(q);
+                let st = state.clone();
+                let q2 = q.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let env = q2.recv().await;
+                        if let Err(e) = crate::native::deliver_world_card(&st, &env).await {
+                            tracing::warn!("QUIC 世界卡片投递失败: {e}");
+                        }
+                    }
+                });
+                tracing::info!("QUIC 端对端直连传输已启用 (收件端点已起)");
+                state.quic = Some(q);
+            }
+            Err(e) => {
+                tracing::warn!("QUIC 传输启动失败, 降级为仅 HTTP 跨机: {e}");
+            }
+        }
+        state
+    };
+
     axum::serve(listener, app(state))
         .await
         .map_err(|e| anyhow::anyhow!("web server: {e}"))

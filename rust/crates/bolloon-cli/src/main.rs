@@ -334,6 +334,30 @@ async fn run_chat(channel: &str, resume: Option<&str>) -> anyhow::Result<()> {
     let _tui_log = tui::logbus::TuiGuard::new();
     let (llm, model) = build_chat_llm();
 
+    // QUIC 端对端直连传输 (feature 默认启用): 起一个端点 + 接收循环, 让本进程能直连收发好友消息。
+    // 失败仅降级, 不中断聊天。
+    #[cfg(feature = "quic-transport")]
+    {
+        if let Ok(kp) = load_identity_or_create() {
+            match bolloon_p2p::quic_transport::QuicTransport::new(&kp).await {
+                Ok(q) => {
+                    let q = std::sync::Arc::new(q);
+                    let q2 = q.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            let env = q2.recv().await;
+                            tracing::info!(
+                                "QUIC 直连收到来自 {} 的信封 (主题 {})",
+                                env.sender, env.topic
+                            );
+                        }
+                    });
+                }
+                Err(e) => eprintln!("QUIC 传输启动失败 (降级为仅本地): {e}"),
+            }
+        }
+    }
+
     // 权限模式（对齐 TS `BOLLOON_PERM_MODE`）: bypass = 完全访问 = **所有权限开放**
     let mode = bolloon_agent::permission_mode::mode_from_env();
     let bypass = mode.is_bypass();
