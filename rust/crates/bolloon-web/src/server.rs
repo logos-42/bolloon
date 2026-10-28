@@ -94,7 +94,7 @@ impl AppState {
             .map(|(events, _)| {
                 bolloon_agent::SessionStore::messages_of(&events)
                     .into_iter()
-                    .map(|(role, content)| ChatMessageView { role, content })
+                    .map(|(role, content)| ChatMessageView { role, content, name: None })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -253,6 +253,9 @@ pub struct SessionMeta {
 pub struct ChatMessageView {
     pub role: String,
     pub content: String,
+    /// 说话者名字（智能体名）。None = 用户本人或未知；前端不要再用 "AI" 占位
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -579,10 +582,7 @@ async fn send(State(st): State<AppState>, Json(req): Json<SendRequest>) -> Json<
     // 记录用户消息
     {
         let mut msgs = st.messages.lock().await;
-        msgs.push(ChatMessageView {
-            role: "user".into(),
-            content: req.text.clone(),
-        });
+        msgs.push(ChatMessageView { role: "user".into(), content: req.text.clone(), name: None });
     }
 
     // 真实模型调用（唯一咽喉 generate；provider/model 由 UI 选择与配置决定）
@@ -595,10 +595,7 @@ async fn send(State(st): State<AppState>, Json(req): Json<SendRequest>) -> Json<
     // 记录回复 + 仅追加落盘 (可审计)
     {
         let mut msgs = st.messages.lock().await;
-        msgs.push(ChatMessageView {
-            role: "assistant".into(),
-            content: reply.clone(),
-        });
+        msgs.push(ChatMessageView { role: "assistant".into(), content: reply.clone(), name: None });
     }
     let _ = st.session_store.append(&bolloon_agent::SessionEvent::User { text: req.text });
     let _ = st

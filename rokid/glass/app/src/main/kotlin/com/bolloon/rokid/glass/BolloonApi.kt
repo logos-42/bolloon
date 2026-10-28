@@ -30,7 +30,7 @@ object BolloonApi {
         val error: String,
     )
     data class Task(val id: String, val capability: String, val claimed: Boolean, val claimer: String)
-    data class Message(val role: String, val content: String)
+    data class Message(val role: String, val content: String, val name: String? = null)
 
     private fun open(path: String, method: String = "GET", body: ByteArray? = null, contentType: String? = null): HttpURLConnection {
         val conn = URL("$BASE$path").openConnection() as HttpURLConnection
@@ -121,7 +121,11 @@ object BolloonApi {
         if (arr == null) emptyList() else {
             val all = (0 until arr.length()).map { i ->
                 val o = arr.getJSONObject(i)
-                Message(o.optString("role", "?"), o.optString("content", ""))
+                Message(
+                    o.optString("role", "?"),
+                    o.optString("content", ""),
+                    if (o.isNull("name")) null else o.optString("name", "").ifBlank { null },
+                )
             }
             all.takeLast(limit).reversed()
         }
@@ -340,7 +344,11 @@ object BolloonApi {
         j.optJSONArray("turns")?.let { arr ->
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
-                out.add(o.optString("role", "") to o.optString("content", ""))
+                out.add(
+                    o.optString("role", "") to
+                        (if (o.isNull("name") || o.optString("name", "").isBlank()) "AI"
+                         else o.optString("name", "")) + "\u0001" + o.optString("content", "")
+                )
             }
         }
         total to out

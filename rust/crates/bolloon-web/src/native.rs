@@ -1221,10 +1221,16 @@ pub async fn reply_with_model(
 }
 
 /// 记一轮对话（历史要能被下一轮读到）
-async fn remember_turn(st: &AppState, text: &str, reply: &str) {
+async fn remember_turn(st: &AppState, text: &str, reply: &str, who: Option<&str>) {
     let mut msgs = st.messages.lock().await;
-    msgs.push(ChatMessageView { role: "user".into(), content: text.to_string() });
-    msgs.push(ChatMessageView { role: "assistant".into(), content: reply.to_string() });
+    msgs.push(ChatMessageView { role: "user".into(), content: text.to_string(), name: None });
+    // 名字必须是真的那个智能体（小黑/小宝…），不能用 "AI" 占位 ——
+    // 眼镜面板靠它区分"谁回的"，占位符会让三条回复看起来是同一个人
+    msgs.push(ChatMessageView {
+        role: "assistant".into(),
+        content: reply.to_string(),
+        name: who.map(|w| w.to_string()),
+    });
     let _ = st
         .session_store
         .append(&bolloon_agent::SessionEvent::User { text: text.to_string() });
@@ -1248,7 +1254,7 @@ pub async fn turns(
     let slice: Vec<serde_json::Value> = if since < total {
         msgs[since..]
             .iter()
-            .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+            .map(|m| serde_json::json!({ "role": m.role, "content": m.content, "name": m.name }))
             .collect()
     } else {
         Vec::new()
@@ -1273,7 +1279,7 @@ pub async fn chat(
         Err(e) => e, // 错误也是"回答"：界面要能看到到底缺什么
     };
     if !reply.is_empty() {
-        remember_turn(&st, &text, &reply).await;
+        remember_turn(&st, &text, &reply, agent.as_ref().map(|a| a.name.as_str())).await;
     }
     Json(serde_json::json!({ "reply": reply }))
 }
@@ -1290,7 +1296,7 @@ pub async fn chat_stream(
         Err(e) => e,
     };
     if !reply.is_empty() {
-        remember_turn(&st, &text, &reply).await;
+        remember_turn(&st, &text, &reply, agent.as_ref().map(|a| a.name.as_str())).await;
     }
     let chunks: Vec<String> = {
         let chars: Vec<char> = reply.chars().collect();
