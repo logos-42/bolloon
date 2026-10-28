@@ -336,24 +336,50 @@ object BolloonApi {
     }
 
 
+    data class Turn(val role: String, val name: String?, val content: String)
+
     /** GET /api/turns?since=N → (新总数, 增量轮次) —— 桌面/CLI 的对话流 */
-    fun turns(since: Int): Pair<Int, List<Pair<String, String>>> = try {
+    fun turns(since: Int): Pair<Int, List<Turn>> = try {
         val j = JSONObject(readText(open("/api/turns?since=$since")))
         val total = j.optInt("total", since)
-        val out = ArrayList<Pair<String, String>>()
+        val out = ArrayList<Turn>()
         j.optJSONArray("turns")?.let { arr ->
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 out.add(
-                    o.optString("role", "") to
-                        (if (o.isNull("name") || o.optString("name", "").isBlank()) "AI"
-                         else o.optString("name", "")) + "\u0001" + o.optString("content", "")
+                    Turn(
+                        o.optString("role", ""),
+                        if (o.isNull("name") || o.optString("name", "").isBlank()) null else o.optString("name", ""),
+                        o.optString("content", ""),
+                    )
                 )
             }
         }
         total to out
     } catch (e: Exception) {
-        0 to emptyList<Pair<String, String>>()
+        0 to emptyList<Turn>()
+    }
+
+
+    /** 全部历史（/api/turns?since=0）—— bootstrap 只给最近几条，看老记录要靠这个 */
+    fun history(): List<Message> = try {
+        val j = JSONObject(readText(open("/api/turns?since=0")))
+        val out = ArrayList<Message>()
+        j.optJSONArray("turns")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                out.add(
+                    Message(
+                        o.optString("role", ""),
+                        o.optString("content", ""),
+                        if (o.isNull("name") || o.optString("name", "").isBlank()) null else o.optString("name", ""),
+                    )
+                )
+            }
+        }
+        out
+    } catch (e: Exception) {
+        emptyList()
     }
 
     fun health(): String = try {

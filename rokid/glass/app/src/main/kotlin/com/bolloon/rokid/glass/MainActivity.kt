@@ -53,13 +53,17 @@ class MainActivity : Activity() {
     private var loggedIn = false
     private var loginMsg = ""
     private var lastLangAt = 0L
-    /** 已经在 transcript 里写过多少条历史（上滑加历史用，避免重复） */
-    private var chatLoaded = 0
+    /** 对话消息模型（真名 + 内容）。渲染时**倒序**：最新在上 */
+    private var chatMsgs: List<BolloonApi.Message> = emptyList()
+    /** 当前展示多少条（上滑加大，用来看更早） */
+    private var chatLimit = 20
+    /** 上次自动贴顶时的消息条数：只有条数变了才滚，避免每次轮询把用户拽回顶部/底部 */
+    private var chatScrollMark = -1
     /** 自动贴底：用户手动上滑后关掉，否则每次重绘都被拽回最新，看着像"滑不动" */
     private var chatAutoScroll = true
     /** 桌面/CLI 对话流：眼镜端按 /api/turns 增量轮询成卡片传输流 */
     private var feedSeen = 0
-    private val feed = ArrayList<Pair<String, String>>()
+    private val feed = ArrayList<BolloonApi.Turn>()
     private var index = 0
 
     private var opportunities: List<BolloonApi.Opportunity> = emptyList()
@@ -882,12 +886,16 @@ class MainActivity : Activity() {
                         }
                         feedSeen = total
                         val who = if (lang == "zh") "电脑" else "desktop"
-                        synchronized(transcript) {
-                            newTurns.forEach { (role, text) ->
-                                transcript.append(if (role == "user") "[$who] " else "[$who·AI] ")
-                                    .append(text).append("\n")
+                        synchronized(chatMsgs) {
+                            // 桌面的轮次也进对话模型，名字用真名（没名字才叫 AI）
+                            newTurns.forEach { t ->
+                                chatMsgs = chatMsgs + BolloonApi.Message(
+                                    t.role,
+                                    t.content,
+                                    t.name ?: if (t.role == "user") null else "AI",
+                                )
                             }
-                            if (transcript.length > 20000) transcript.delete(0, transcript.length - 20000)
+                            if (chatMsgs.size > 400) chatMsgs = chatMsgs.takeLast(400)
                         }
                         runOnUiThread {
                             renderFeed()
@@ -924,7 +932,8 @@ class MainActivity : Activity() {
 
     private fun renderFeed() {
         if (!::feedStrip.isInitialized) return
-        val last = synchronized(feed) { feed.takeLast(2) }
+        // 倒序：最新的一条在最上面（眼镜上视线在上，不用往下找）
+        val last = synchronized(feed) { feed.takeLast(3).reversed() }
         if (last.isEmpty()) {
             feedStrip.visibility = TextView.GONE
             if (::cardBody.isInitialized) cardBody.setPadding(dp(4), 0, dp(4), 0)
@@ -936,9 +945,13 @@ class MainActivity : Activity() {
         feedStrip.postDelayed(feedHide, 5_000)
         // 流转条浮在底部，正文要让位，否则最后两行被盖住
         if (::cardBody.isInitialized) cardBody.setPadding(dp(4), 0, dp(4), dp(38))
-        feedStrip.text = last.joinToString("\n") { (role, text) ->
-            val who = if (role == "user") (if (lang == "zh") "你" else "you") else "AI"
-            who + ": " + Md.plain(text, 46)
+        feedStrip.text = last.joinToString("\n") { t ->
+            val who = when {
+                t.role == "user" -> if (lang == "zh") "你" else "you"
+                !t.name.isNullOrBlank() -> t.name!!
+                else -> "AI"
+            }
+            who + ": " + Md.plain(t.content, 46)
         }
         if (screen == Screen.WIDGET) renderWidget()
     }
@@ -979,6 +992,8 @@ class MainActivity : Activity() {
     }
 
     private fun renderChat() {
+        // transcript 每次都由 chatMsgs 重算：否则桌面的新轮次只进弹窗、正文不更新
+        if (chatMsgs.isNotEmpty() || transcript.isEmpty()) rebuildTranscript()
         val isGroup = chatGroup != null
         val name = chatGroup?.name ?: chatTarget?.name ?: return
         action.text = if (recorder.isRecording) "● 正在听… 再次单击发送" else "🎤 单击说话"
@@ -988,8 +1003,10 @@ class MainActivity : Activity() {
         } else {
             Md.render(transcript.toString())
         }
-        if (chatAutoScroll) {
-            (cardBody.parent as? ScrollView)?.post { (cardBody.parent as ScrollView).fullScroll(ScrollView.FOCUS_DOWN) }
+        // 只有"来了新消息"才自动贴顶；用户一旦手动翻历史，就不再动他的位置
+        if (chatAutoScroll && chatMsgs.size != chatScrollMark) {
+            chatScrollMark = chatMsgs.size
+            (cardBody.parent as? ScrollView)?.post { (cardBody.parent as ScrollView).fullScroll(ScrollView.FOCUS_UP) }
         }
         hint.text = "单击:说话/发送 · 往前滑/往后滑:翻记录 · 双击:返回"
     }
@@ -1108,10 +1125,10 @@ class MainActivity : Activity() {
     private fun onUp() {
         when (screen) {
             Screen.CHAT -> {
-                val sv = cardBody.parent as? ScrollView
-                val canUp = sv != null && sv.canScrollVertically(-1)
+                // 倒序布局下"更早"在下方：往上滑 = 先加载更多，再看情况滚动
                 chatAutoScroll = false
-                if (canUp) sv.scrollBy(0, -dp(90)) else loadChatHistory(limit = 40)
+                if (chatLimit < 400) loadChatHistory(limit = chatLimit + 20)
+                else (cardBody.parent as? ScrollView)?.scrollBy(0, -dp(90))
             }
             Screen.WIDGET -> exitWidget()
             Screen.HOME -> {
@@ -1280,6 +1297,7 @@ class MainActivity : Activity() {
         when (screen) {
             Screen.WIDGET -> exitWidget()
             Screen.CHAT -> {
+                chatAutoScroll = false
                 (cardBody.parent as? ScrollView)?.scrollBy(0, dp(90))
             }
             Screen.HOME -> {
@@ -1459,10 +1477,11 @@ class MainActivity : Activity() {
         chatTarget = agent
         chatGroup = null
         screen = Screen.CHAT
-        transcript.setLength(0)
-        transcript.append("与 ").append(agent.name).append(" 对话\n\n")
-        chatLoaded = 0
+        chatMsgs = emptyList()
+        chatLimit = 20
         chatAutoScroll = true
+        chatScrollMark = -1
+        transcript.setLength(0)
         render()
         loadChatHistory(limit = 20)
     }
@@ -1588,34 +1607,46 @@ class MainActivity : Activity() {
     }
 
     /**
-     * 把节点上的最近对话灌进 transcript。
-     * chatLoaded 记住已经写过多少条，避免每次上滑都重复堆一遍。
+     * 拉节点上的对话并按**倒序**重画：最新的在最上面。
+     * 眼镜屏小，进来第一眼就该看到最后一句，不该逼人往下滚。
      */
     private fun loadChatHistory(limit: Int = 20) {
         Thread {
-            val ms = BolloonApi.messages(limit)
+            // bootstrap 只回最近几条；要翻老记录必须走 /api/turns?since=0
+            val all = BolloonApi.history()
+            val ms = if (all.isNotEmpty()) all else BolloonApi.messages(limit)
             runOnUiThread {
                 messages = ms
                 if (screen != Screen.CHAT) { render(); return@runOnUiThread }
-                val fresh = ms.drop(chatLoaded)
-                if (fresh.isEmpty()) {
-                    transcript.append("（已经是全部记录了）\n")
-                    render()
-                    return@runOnUiThread
-                }
-                val owner = chatTarget?.name
-                fresh.forEach { m ->
-                    val who = when {
-                        m.role == "user" -> if (lang == "zh") "你" else "you"
-                        !m.name.isNullOrBlank() -> m.name!!
-                        !owner.isNullOrBlank() -> owner
-                        else -> "AI"
-                    }
-                    transcript.append(who).append(": ").append(m.content.trim()).append("\n\n")
-                }
-                chatLoaded = ms.size
+                chatMsgs = ms
+                chatLimit = limit
+                rebuildTranscript()
                 render()
+                // 倒序 ⇒ 最新在顶部，进对话就贴顶
+                (cardBody.parent as? ScrollView)?.post { (cardBody.parent as ScrollView).fullScroll(ScrollView.FOCUS_UP) }
             }
         }.start()
+    }
+
+    /** 由 chatMsgs 重画 transcript（倒序：最新在上） */
+    private fun rebuildTranscript() {
+        val owner = chatTarget?.name
+        transcript.setLength(0)
+        val head = chatGroup?.let { "群「${it.name}」" } ?: (chatTarget?.name ?: "")
+        transcript.append(head).append(" · 倒序（最新在上）\n\n")
+        val shown = chatMsgs.takeLast(chatLimit).reversed()
+        if (shown.isEmpty()) {
+            transcript.append("（还没有对话）\n")
+        } else {
+            shown.forEach { m ->
+                val who = when {
+                    m.role == "user" -> if (lang == "zh") "你" else "you"
+                    !m.name.isNullOrBlank() -> m.name!!
+                    !owner.isNullOrBlank() -> owner
+                    else -> "AI"
+                }
+                transcript.append(who).append(": ").append(m.content.trim()).append("\n\n")
+            }
+        }
     }
 }
