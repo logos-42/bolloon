@@ -713,7 +713,7 @@ class MainActivity : Activity() {
         hint.text = "往前滑:回上一条 · 往后滑:下一条 · 单击:说话 · 双击:退出"
     }
 
-    /** 侧栏「智能体」= 我自己节点上的智能体（详情 = DID 缩写 + soul + 功能简介，各占一栏） */
+    /** 侧栏「智能体」= 我的智能体（卡片 = DID + 最近对话，不显示 soul/功能） */
     private fun renderMyAgents() {
         action.text = "🎤 我的智能体（单击进入对话）"
         val a = myAgents.getOrNull(index)
@@ -724,9 +724,21 @@ class MainActivity : Activity() {
             val p = profileOf(a)
             cardBody.text = buildString {
                 append("DID   ").append(p?.didShort ?: shortDid(a.id)).append("\n")
-                append("soul  ").append(oneLine(p?.soul, p?.soulSet, "未设置（按默认身份运行）")).append("\n")
-                append("功能  ").append(oneLine(p?.agentDoc, p?.agentDocSet, "未设置（默认能力：对话/工具/记忆）"))
-                append("\n\n单击开始说话，说完再单击发送。")
+                // leo: soul / 功能 不要占位，这块位置直接显示对话（进对话之前就要看到内容）
+                append("\n最近对话\n")
+                val recent = messages.takeLast(6)
+                if (recent.isEmpty()) {
+                    append("（还没有对话）\n")
+                } else {
+                    recent.forEach { m ->
+                        val who = if (m.role == "user") (if (lang == "zh") "你" else "you") else "AI"
+                        append(who).append(": ")
+                            .append(m.content.replace("\n", " ").take(56))
+                            .append(if (m.content.length > 56) "…" else "")
+                            .append("\n")
+                    }
+                }
+                append("\n单击开始说话，说完再单击发送。")
                 append("\n共 ").append(myAgents.size).append(" 个（往后滑切换 · 长按固定 ping）")
             }
         }
@@ -852,7 +864,24 @@ class MainActivity : Activity() {
                             while (feed.size > 30) feed.removeAt(0)
                         }
                         feedSeen = total
-                        runOnUiThread { renderFeed() }
+                        val who = if (lang == "zh") "电脑" else "desktop"
+                        synchronized(transcript) {
+                            newTurns.forEach { (role, text) ->
+                                transcript.append(if (role == "user") "[$who] " else "[$who·AI] ")
+                                    .append(text).append("\n")
+                            }
+                            if (transcript.length > 20000) transcript.delete(0, transcript.length - 20000)
+                        }
+                        runOnUiThread {
+                            renderFeed()
+                            when (screen) {
+                                // 对话页：直接把新内容接进转写
+                                Screen.CHAT -> renderChat()
+                                // 卡片页：重拉数据，让"最近交流"这类对应位置真的更新
+                                Screen.HOME -> refresh()
+                                else -> {}
+                            }
+                        }
                     } else if (total != 0 && feedSeen == 0) {
                         feedSeen = total   // 首次不把历史全灌进来
                     }
@@ -869,14 +898,27 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    private val feedHide = Runnable {
+        if (::feedStrip.isInitialized) {
+            feedStrip.visibility = TextView.GONE
+            if (::cardBody.isInitialized) cardBody.setPadding(dp(4), 0, dp(4), 0)
+        }
+    }
+
     private fun renderFeed() {
         if (!::feedStrip.isInitialized) return
         val last = synchronized(feed) { feed.takeLast(2) }
         if (last.isEmpty()) {
             feedStrip.visibility = TextView.GONE
+            if (::cardBody.isInitialized) cardBody.setPadding(dp(4), 0, dp(4), 0)
             return
         }
         feedStrip.visibility = TextView.VISIBLE
+        // 只弹 5 秒：leo 要的是"飘一下就走"，不常驻占屏
+        feedStrip.removeCallbacks(feedHide)
+        feedStrip.postDelayed(feedHide, 5_000)
+        // 流转条浮在底部，正文要让位，否则最后两行被盖住
+        if (::cardBody.isInitialized) cardBody.setPadding(dp(4), 0, dp(4), dp(38))
         feedStrip.text = last.joinToString("\n") { (role, text) ->
             val who = if (role == "user") (if (lang == "zh") "你" else "you") else "AI"
             who + ": " + text.replace("\n", " ").take(46)

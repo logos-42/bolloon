@@ -650,6 +650,8 @@ async fn list_groups(State(st): State<AppState>) -> Json<serde_json::Value> {
         .groups
         .list_groups()
         .iter()
+        // 内部存储不算"我的群组"：眼镜意图流是观察账本，出现在群列表里只会误导用户
+        .filter(|m| !m.id.starts_with("intent-"))
         .map(|m| {
             serde_json::json!({
                 "id": m.id,
