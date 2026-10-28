@@ -80,6 +80,8 @@ class MainActivity : Activity() {
     private var textDimmed = false
     private var lastIntent = ""
     private var intentCount = 0
+    private var framesSeen = 0
+    private var intentsSeen = 0
     private var lastTopTitle = ""
 
     private val recorder = VoiceRecorder()
@@ -134,6 +136,11 @@ class MainActivity : Activity() {
     /** 球外文字熄灭门槛：默认 10 分钟（可用 intent extra dim_ms 覆盖，便于验收） */
     /** 验收/调试直达：am start ... --es section settings（QA 用，不影响正常流程） */
     private fun applyQaIntent(i: android.content.Intent?) {
+        if (i?.getStringExtra("screen")?.equals("widget", true) == true) {
+            enterWidget()
+            android.util.Log.i("BolloonQA", "applyQaIntent screen=widget")
+            return
+        }
         val want = i?.getStringExtra("section") ?: return
         android.util.Log.i("BolloonQA", "applyQaIntent want=$want")
         val hit = Section.values().firstOrNull { it.key.equals(want, true) } ?: return
@@ -640,7 +647,9 @@ class MainActivity : Activity() {
         val opp = opportunities.getOrNull(0)
         widgetTitle.text = "◉ Bolloon 帛龙" + if (newDrops > 0) "  +$newDrops" else ""
         widgetBody.text = when {
-            lastIntent.isNotEmpty() -> "意图：$lastIntent" + if (intentCount > 1) " ×$intentCount" else ""
+            lastIntent.isNotEmpty() ->
+                "意图：$lastIntent" + if (intentCount > 1) " ×$intentCount" else ""
+            framesSeen > 0 -> "观察中 $framesSeen 帧 / 意图 $intentsSeen"
             opp != null -> opp.title
             else -> "观察中…（每 8s 识别一次）"
         }
@@ -852,9 +861,11 @@ class MainActivity : Activity() {
                 try {
                     Thread.sleep(3_000)
                 } catch (_: InterruptedException) {
+                    android.util.Log.w("BolloonIntent", "sleep interrupted")
                     break
                 }
             }
+            android.util.Log.i("BolloonIntent", "loop exit screen=$screen on=$intentLoopOn frames=$framesSeen")
         }.start()
     }
 
@@ -1069,12 +1080,14 @@ class MainActivity : Activity() {
         widgetBar.visibility = TextView.VISIBLE
         newDrops = 0
         render()
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         startWidgetPoll()
         startIntentLoop()
     }
 
     private fun exitWidget() {
         intentLoopOn = false
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         screen = Screen.HOME
         widgetBar.visibility = TextView.GONE
         if (mode == Mode.SPHERE) {
@@ -1127,6 +1140,9 @@ class MainActivity : Activity() {
         Thread {
             while (intentLoopOn && screen == Screen.WIDGET) {
                 try {
+                    framesSeen += 1
+                    android.util.Log.i("BolloonIntent", "tick #$framesSeen screen=$screen on=$intentLoopOn")
+                    runOnUiThread { if (screen == Screen.WIDGET) renderWidget() }
                     camera.capture(
                         onJpeg = { jpeg ->
                             Thread {
@@ -1134,14 +1150,19 @@ class MainActivity : Activity() {
                                     val small = CameraCapture.downscale(jpeg)
                                     val j = BolloonApi.vision(small)
                                     val ok = j.optBoolean("ok", false)
+                                    android.util.Log.i("BolloonIntent",
+                                        "vision ok=$ok intent=" + j.optString("intent", "") +
+                                        " err=" + j.optString("error", ""))
                                     val intent = if (j.isNull("intent")) "" else j.optString("intent", "")
                                     val conf = j.optDouble("confidence", 0.0)
                                     val reason = j.optString("reason", "")
                                     val text = j.optString("text", "")
-                                    if (ok && intent.isNotEmpty() && !intentLoopOn.not()) {
+                                    if (ok && intent.isNotEmpty()) {
+                                        intentsSeen += 1
                                         BolloonApi.observeIntent(intent, conf, reason, text)
                                     }
                                     if (ok && intent.isNotEmpty()) {
+                                        intentsSeen += 1
                                         // 同一意图连续多次只计数，不重复刷屏
                                         runOnUiThread {
                                             if (intent == lastIntent) intentCount += 1 else {
@@ -1151,7 +1172,8 @@ class MainActivity : Activity() {
                                             renderWidget()
                                         }
                                     }
-                                } catch (_: Exception) {
+                                } catch (e: Exception) {
+                                    android.util.Log.w("BolloonIntent", "loop err: " + e.message)
                                 }
                             }.start()
                         },
@@ -1162,9 +1184,11 @@ class MainActivity : Activity() {
                 try {
                     Thread.sleep(8_000)
                 } catch (_: InterruptedException) {
+                    android.util.Log.w("BolloonIntent", "sleep interrupted")
                     break
                 }
             }
+            android.util.Log.i("BolloonIntent", "loop exit screen=$screen on=$intentLoopOn frames=$framesSeen")
         }.start()
     }
 
