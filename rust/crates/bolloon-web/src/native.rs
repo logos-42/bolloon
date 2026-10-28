@@ -2391,6 +2391,127 @@ pub async fn directory_peers_remove(
     }))
 }
 
+/// 把对端基址登记进 `directory_peers` (幂等), 并立即同步它的 QUIC 收件地址 (直连全自动)。
+/// QUIC 未启用时只登记基址, 不影响其它逻辑。
+async fn register_peer_url(st: &AppState, url: &str) {
+    let url = url.trim().trim_end_matches('/').to_string();
+    if url.is_empty() {
+        return;
+    }
+    {
+        let mut fs = st.forge.lock().await;
+        if !fs.directory_peers.iter().any(|p| p == &url) {
+            fs.directory_peers.push(url.clone());
+        }
+        fs.save(&data_dir());
+    }
+    #[cfg(feature = "quic-transport")]
+    if let Some(q) = &st.quic {
+        crate::native::sync_quic_peers(st, q).await;
+    }
+}
+
+/// 拉对端的 did (经它的 `/api/quic/addr`); 不可达 / 解析不了 ⇒ None
+async fn fetch_remote_did(url: &str) -> Option<String> {
+    let u = format!("{}/api/quic/addr", url.trim_end_matches('/'));
+    let handle = tokio::task::spawn_blocking(move || {
+        let resp = ureq::get(&u)
+            .timeout(std::time::Duration::from_millis(4000))
+            .call()
+            .map_err(|e| format!("不可达: {e}"))?;
+        resp.into_json::<serde_json::Value>()
+            .map_err(|e| format!("解析: {e}"))
+    });
+    let Ok(v) = handle.await else { return None };
+    let Ok(v) = v else { return None };
+    if v["ok"].as_bool().unwrap_or(false) {
+        v["did"].as_str().map(|s| s.to_string())
+    } else {
+        None
+    }
+}
+
+/// POST /api/node/connect → 「搜索到的节点一键互加好友 + 直连」
+///
+/// 发起方 (带 `url`): 登记对端基址 (→ 自动 QUIC 直连) + 拉对端 did + 把对端加为本地好友 (自动同意)
+///   + 回调对端 (带本机 did/url) 让对端也加本机为好友 ⇒ 双方互加。回调需本机对外可达基址
+///   (`BOLLOON_PUBLIC_URL`); 没配则降级为单向 (本机加对方 + 直连, 对方需也连本机才互加)。
+/// 回调方 (带 `did`, 由发起方打过来): 直接把对方 did 加为本地好友 (自动同意) + 登记对方 url (→ 直连)。
+#[derive(serde::Deserialize)]
+pub struct NodeConnectReq {
+    url: Option<String>,
+    did: Option<String>,
+    name: Option<String>,
+}
+
+pub async fn node_connect(
+    State(st): State<AppState>,
+    Json(req): Json<NodeConnectReq>,
+) -> Json<serde_json::Value> {
+    // 回调分支: 对端主动告诉我们它的 did, 直接加为好友 (显式连接 = 自动同意) + 登记其 url
+    if let Some(remote_did) = req.did.clone() {
+        if let Some(u) = &req.url {
+            register_peer_url(&st, u).await;
+        }
+        let mut fs = st.forge.lock().await;
+        let fr = fs.friends.inbound(&remote_did, &remote_did, now_ms());
+        let _ = fs.friends.accept(&fr.request_id, now_ms());
+        fs.save(&data_dir());
+        return Json(serde_json::json!({ "ok": true, "added_friend": remote_did, "mutual": true }));
+    }
+    // 发起分支
+    let url = req.url.clone().unwrap_or_default().trim().trim_end_matches('/').to_string();
+    if url.is_empty() {
+        return Json(serde_json::json!({
+            "error": "缺 url (对端节点基址, 例 http://192.168.1.9:54188)"
+        }));
+    }
+    // 1) 登记对端基址 + 自动 QUIC 直连
+    register_peer_url(&st, &url).await;
+    // 2) 拉对端 did
+    let remote_did = match fetch_remote_did(&url).await {
+        Some(d) => d,
+        None => {
+            return Json(serde_json::json!({ "error": "拉不到对端 did (QUIC 地址接口不可达)" }))
+        }
+    };
+    // 3) 加为本地好友 (自动同意)
+    {
+        let mut fs = st.forge.lock().await;
+        let fr = fs.friends.inbound(&remote_did, &remote_did, now_ms());
+        let _ = fs.friends.accept(&fr.request_id, now_ms());
+        fs.save(&data_dir());
+    }
+    // 4) 回调对端, 让它也加本机为好友 (互加) — 需本机对外可达基址
+    let mut mutual = false;
+    if let Ok(self_url) = std::env::var("BOLLOON_PUBLIC_URL") {
+        let self_url = self_url.trim().trim_end_matches('/').to_string();
+        let our_did = st.identity.did.as_str().to_string();
+        let cb = format!("{}/api/node/connect", self_url);
+        let body = serde_json::json!({
+            "did": our_did,
+            "url": self_url,
+            "name": req.name.clone().unwrap_or_default(),
+        });
+        let handle = tokio::task::spawn_blocking(move || {
+            ureq::post(&cb)
+                .timeout(std::time::Duration::from_millis(4000))
+                .send_json(body)
+                .map(|_| ())
+                .map_err(|e| format!("{e}"))
+        });
+        if let Ok(Ok(())) = handle.await {
+            mutual = true;
+        }
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "added_friend": remote_did,
+        "direct": true,
+        "mutual": mutual,
+    }))
+}
+
 /// POST /api/friends/request → **跨机加好友**: 查到 did → 发好友请求 (需对方同意)
 pub async fn friend_request(
     State(st): State<AppState>,

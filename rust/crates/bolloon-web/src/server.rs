@@ -354,8 +354,9 @@ pub fn app(state: AppState) -> Router {
             get(crate::native::directory_peers_list)
                 .post(crate::native::directory_peers_add)
                 .delete(crate::native::directory_peers_remove),
-        )
-        .route("/api/friends/request", post(crate::native::friend_request))
+                )
+                .route("/api/node/connect", post(crate::native::node_connect))
+                .route("/api/friends/request", post(crate::native::friend_request))
         .route("/api/friends/accept", post(crate::native::friend_accept))
         .route("/api/friends/reject", post(crate::native::friend_reject))
         .route("/api/friends", get(crate::native::friend_list))

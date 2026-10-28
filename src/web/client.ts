@@ -4652,6 +4652,7 @@ if (dirPhoneInput) dirPhoneInput.addEventListener('keydown', (ev) => { if (ev.ke
 const nodeUrl = document.getElementById('nodeUrl') as HTMLInputElement | null;
 const nodeSearchBtn = document.getElementById('nodeSearchBtn');
 const nodeAddBtn = document.getElementById('nodeAddBtn');
+const nodeFriendBtn = document.getElementById('nodeFriendBtn');
 const nodeStatus = document.getElementById('nodeStatus');
 
 function nodeEcho(msg: string, ok = true): void {
@@ -4689,8 +4690,28 @@ async function nodeAdd(): Promise<void> {
   }
 }
 
+async function nodeFriend(): Promise<void> {
+  const url = (nodeUrl && nodeUrl.value || '').trim().replace(/\/$/, '');
+  if (!url) { nodeEcho('请输入节点地址 (例 http://192.168.1.9:54188)'); return; }
+  nodeEcho('互加中…');
+  try {
+    const res = await fetch('/api/node/connect', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+    });
+    const d = await res.json().catch(() => ({} as any));
+    if (!res.ok || (d && d.error)) { nodeEcho('失败: ' + ((d && d.error) || res.status), false); return; }
+    const mutual = d.mutual
+      ? '（已互加：对方也已加你为好友）'
+      : '（单向：对方需也连你；或本机配 BOLLOON_PUBLIC_URL 后自动互加）';
+    nodeEcho(`✓ 已加 ${String(d.added_friend || '').slice(0, 12)}… 为好友并直连 ${mutual}`);
+  } catch (e) {
+    nodeEcho('失败: ' + String((e && (e as any).message) ? (e as any).message : e), false);
+  }
+}
+
 if (nodeSearchBtn) nodeSearchBtn.addEventListener('click', nodeSearch);
 if (nodeAddBtn) nodeAddBtn.addEventListener('click', nodeAdd);
+if (nodeFriendBtn) nodeFriendBtn.addEventListener('click', nodeFriend);
 if (nodeUrl) nodeUrl.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') nodeAdd(); });
 
 // 2026-10-05 (leo): 世界底部输入框 — 想做什么直接说, 自动触发匹配 (不是聊天输入框)
