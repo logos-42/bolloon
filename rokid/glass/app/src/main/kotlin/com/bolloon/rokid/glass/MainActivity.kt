@@ -1021,7 +1021,8 @@ class MainActivity : Activity() {
         // 只有"来了新消息"才自动贴顶；用户一旦手动翻历史，就不再动他的位置
         if (chatAutoScroll && chatMsgs.size != chatScrollMark) {
             chatScrollMark = chatMsgs.size
-            (cardBody.parent as? ScrollView)?.post { (cardBody.parent as ScrollView).fullScroll(ScrollView.FOCUS_UP) }
+            // 正序布局：最新在底部，所以"贴最新"= 滚到底
+            (cardBody.parent as? ScrollView)?.post { (cardBody.parent as ScrollView).fullScroll(ScrollView.FOCUS_DOWN) }
         }
         hint.text = "单击:说话/发送 · 往前滑/往后滑:翻记录 · 双击:返回"
     }
@@ -1140,7 +1141,7 @@ class MainActivity : Activity() {
     private fun onUp() {
         when (screen) {
             Screen.CHAT -> {
-                // 倒序布局：往上 = 回到更新的一条。小步滚动，滚到边才多拉历史
+                // 正序布局：往上 = 看更早。小步滚动，到顶才多拉历史
                 if (chatAtEdge(up = true)) {
                     if (chatLimit < 400) loadChatHistory(limit = chatLimit + 10)
                 } else {
@@ -1314,12 +1315,8 @@ class MainActivity : Activity() {
         when (screen) {
             Screen.WIDGET -> exitWidget()
             Screen.CHAT -> {
-                // 往下 = 看更早。小步滚动，到底才多拉
-                if (chatAtEdge(up = false)) {
-                    if (chatLimit < 400) loadChatHistory(limit = chatLimit + 10)
-                } else {
-                    chatScrollBy(dp(52))
-                }
+                // 正序布局：往下 = 回到最新
+                chatScrollBy(dp(52))
             }
             Screen.HOME -> {
                 if (logoFocused) {
@@ -1643,8 +1640,8 @@ class MainActivity : Activity() {
                 chatLimit = limit
                 rebuildTranscript()
                 render()
-                // 倒序 ⇒ 最新在顶部，进对话就贴顶
-                (cardBody.parent as? ScrollView)?.post { (cardBody.parent as ScrollView).fullScroll(ScrollView.FOCUS_UP) }
+                // 正序 ⇒ 最新在底部，进对话就贴底
+                (cardBody.parent as? ScrollView)?.post { (cardBody.parent as ScrollView).fullScroll(ScrollView.FOCUS_DOWN) }
             }
         }.start()
     }
@@ -1654,9 +1651,9 @@ class MainActivity : Activity() {
         val owner = chatTarget?.name
         transcript.setLength(0)
         val head = chatGroup?.let { "群「${it.name}」" } ?: (chatTarget?.name ?: "")
-        // 不显式写"倒序"——布局本身就是证据，写出来只会占屏
+        // 正序：最早在上、最新在下（和常见聊天软件一致）
         transcript.append(head).append("\n\n")
-        val shown = chatMsgs.takeLast(chatLimit).reversed()
+        val shown = chatMsgs.takeLast(chatLimit)
         if (shown.isEmpty()) {
             transcript.append("（还没有对话）\n")
         } else {
