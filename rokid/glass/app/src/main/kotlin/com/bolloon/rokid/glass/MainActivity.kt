@@ -38,9 +38,11 @@ class MainActivity : Activity() {
         GROUPS("groups"),
         SETTINGS("settings"),
     }
-    private enum class Screen { HOME, CHAT, WIDGET }
+    private enum class Screen { HOME, CHAT, WIDGET, LOGIN }
     /** 球体模式（默认）/ 卡片模式：点 bolloon 球切换 */
     private enum class Mode { SPHERE, CARD }
+    /** 登录三步：确认 → 扫码 / 眼镜出码等手机授权 */
+    private enum class LoginStage { CONFIRM, SCAN, CODE }
 
     private var section = Section.WORLD
     private var screen = Screen.HOME
@@ -52,6 +54,27 @@ class MainActivity : Activity() {
     private var llm: BolloonApi.Llm? = null
     private var loggedIn = false
     private var loginMsg = ""
+    /** 登录令牌（节点 DID 签的；只存字符串，验签在节点侧） */
+    private var authToken = ""
+    private var loginStage = LoginStage.CONFIRM
+    /** 眼镜出给手机授权的 6 位码 */
+    private var loginCode = ""
+    private var loginErr = ""
+    private var loginBusy = false
+    private var loginTick = 0
+    /** 开发者模式跳过登录（debug 包可用；只对本次进程有效，不写盘） */
+    private var devSkip = false
+    /** 登录页按键节流（触摸面板会连发 DOWN，不能每次都换一张码） */
+    private var lastLoginKey = 0L
+    /** 这张码什么时候过期（显示倒计时，别让码"看起来一闪就没"） */
+    private var loginExpiresAt = 0L
+
+    private fun loginKeyGuard(): Boolean {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastLoginKey < 600) return false
+        lastLoginKey = now
+        return true
+    }
     private var lastLangAt = 0L
     /** 对话消息模型（真名 + 内容）。渲染时**倒序**：最新在上 */
     private var chatMsgs: List<BolloonApi.Message> = emptyList()
@@ -116,6 +139,8 @@ class MainActivity : Activity() {
     // views
     private lateinit var sidebarItems: MutableList<TextView>
     private lateinit var sidebarBox: LinearLayout
+    /** 侧栏那一列（70dp）本身：登录页要整列收掉，正文才占满 */
+    private lateinit var sidebarCol: LinearLayout
     private val profiles = HashMap<String, BolloonApi.Profile>()
     private val profileLoading = HashSet<String>()
     private var sidebarLevel = 0        // 0 = 顶层四栏, 1 = 该栏的条目列表
@@ -194,6 +219,43 @@ class MainActivity : Activity() {
         getSharedPreferences("bolloon", MODE_PRIVATE).edit().putString("lang", lang).apply()
     }
 
+    /**
+     * 登录态：令牌存在本机 SharedPreferences，**验签在节点侧**（/api/auth/session）。
+     * 节点离线时验不了 ⇒ 按未登录处理（反正没节点也做不了事），不冒充"已登录"。
+     */
+    private fun loadAuth() {
+        authToken = getSharedPreferences("bolloon", MODE_PRIVATE).getString("auth_token", "") ?: ""
+        loggedIn = false
+        if (authToken.isEmpty()) return
+        val token = authToken
+        Thread {
+            val ok = BolloonApi.sessionOk(token)
+            runOnUiThread {
+                loggedIn = ok
+                if (!ok) {
+                    authToken = ""
+                    getSharedPreferences("bolloon", MODE_PRIVATE).edit().remove("auth_token").apply()
+                }
+                render()
+            }
+        }.start()
+    }
+
+    /** 拿到令牌 = 登录成功：存盘 → 回球体界面 */
+    private fun saveAuth(token: String) {
+        authToken = token
+        loggedIn = true
+        loginBusy = false
+        loginErr = ""
+        loginMsg = T("logged_in")
+        getSharedPreferences("bolloon", MODE_PRIVATE).edit().putString("auth_token", token).apply()
+        screen = Screen.HOME
+        mode = Mode.SPHERE
+        sphereSel = 0
+        render()
+        refresh()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.decorView.systemUiVisibility = 5894
@@ -205,6 +267,7 @@ class MainActivity : Activity() {
         }
         // 封面：先给 logo，再进主页
         loadLang()
+        loadAuth()
         // am start -e dim_ms 8000 传的是 String extra，两种都认
         val dimArg = intent?.getStringExtra("dim_ms")?.toLongOrNull()
             ?: intent?.getLongExtra("dim_ms", 0L) ?: 0L
@@ -297,6 +360,7 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, 0)
         }
         sidebarBox = sidebar
+        sidebarCol = sidebar
         body.addView(sidebar, LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.MATCH_PARENT))
 
         val content = LinearLayout(this).apply {
@@ -457,6 +521,9 @@ class MainActivity : Activity() {
         logo.text = "◉ Bolloon · 帛龙"
         header.text = statusLine
         if (screen == Screen.WIDGET) { renderWidget(); return }
+        if (screen == Screen.LOGIN) { renderLogin(); return }
+        // 登录页会收掉侧栏，回主页要放回来
+        if (::sidebarCol.isInitialized) sidebarCol.visibility = LinearLayout.VISIBLE
         if (mode == Mode.SPHERE && screen == Screen.HOME) { renderSphere(); return }
         sphere.visibility = TextView.GONE
         sphereHint.visibility = TextView.GONE
@@ -505,7 +572,8 @@ class MainActivity : Activity() {
         topBrand.visibility = TextView.VISIBLE
         connStatus.visibility = TextView.VISIBLE
         connStatus.text = linkLine
-        sphere.labels = listOf("Bolloon") + sphereSections.map { secLabel(it) }
+        sphere.labels = (if (loggedIn) listOf("Bolloon") else listOf(T("confirm_login"))) +
+            sphereSections.map { secLabel(it) }
         sphere.selected = sphereSel
         if (::connStatus.isInitialized) connStatus.text = linkLine
         // 10 分钟无操作 ⇒ 球之外的字全部熄灭，只剩球；任意按键点亮
@@ -513,13 +581,16 @@ class MainActivity : Activity() {
         if (::topBrand.isInitialized) topBrand.visibility = textVis
         if (::connStatus.isInitialized) connStatus.visibility = textVis
         if (::sphereHint.isInitialized) sphereHint.visibility = textVis
-        sphereHint.text = if (sphereSel == 0)
+        sphereHint.text = if (!loggedIn)
+            "未登录 · 单击:确认登录 · 其余球登录后可用"
+        else if (sphereSel == 0)
             "◉ Bolloon 帛龙 · 单击:bolloon 球→卡片模式 · 长按:选中标签→单击最小化"
         else
             "${secLabel(sphereSections[sphereSel - 1])} · " + T("tap_confirm") + " · " + T("swipe_next")
     }
 
     private fun onSphereConfirm() {
+        if (!loggedIn) { openLogin(); return }
         if (sphereSel == 0) {
             mode = Mode.CARD          // 点 bolloon 球 = 切卡片模式（当前页保留）
             logoFocused = false
@@ -1027,6 +1098,240 @@ class MainActivity : Activity() {
         hint.text = "单击:说话/发送 · 往前滑/往后滑:翻记录 · 双击:返回"
     }
 
+    // ───────────────────────── 登录 ─────────────────────────
+
+    /**
+     * 登录页：没登录时球体中心球 = 「确认登录」，点它进这里。
+     *   ① 扫电脑/手机屏幕上的二维码（拍照 → 节点解码 → 换令牌）
+     *   ② 眼镜自己出 6 位码，人在手机/电脑的 /login 里输入授权
+     * 两条路都靠节点签发同一个令牌，登录后球体恢复成正常四栏。
+     */
+    private fun openLogin() {
+        screen = Screen.LOGIN
+        loginStage = LoginStage.CONFIRM
+        loginErr = ""
+        loginBusy = false
+        loginTick = 0
+        loginCode = ""
+        render()
+    }
+
+    private fun closeLogin() {
+        screen = Screen.HOME
+        loginStage = LoginStage.CONFIRM
+        loginBusy = false
+        loginErr = ""
+        render()
+    }
+
+    /**
+     * 开发者模式跳过登录（leo：开发者模式下可以跳过登录）。
+     * 只对本次进程有效、不落盘 —— 免得"跳过一次"之后再也测不到真登录流程。
+     */
+    private fun devSkipLogin() {
+        if (!BuildConfig.DEBUG) return
+        devSkip = true
+        loggedIn = true
+        loginBusy = false
+        loginErr = ""
+        loginMsg = "开发者模式：已跳过登录（仅本次）"
+        screen = Screen.HOME
+        mode = Mode.SPHERE
+        sphereSel = 0
+        render()
+        refresh()
+    }
+
+    /** 单击：确认 → 扫码；扫码页 → 再拍一次；出码页 → 换一张码 */
+    private fun onLoginTap() {
+        if (loginBusy) return
+        when (loginStage) {
+            LoginStage.CONFIRM, LoginStage.SCAN -> startScanLogin()
+            LoginStage.CODE -> requestDeviceCode()
+        }
+    }
+
+    /** 往后滑：去「眼镜出码」那条路（扫码卡住时也必须能切过去，所以不看 busy） */
+    private fun onLoginNext() {
+        if (loginStage == LoginStage.CODE && loginCode.isNotEmpty()) requestDeviceCode() else requestDeviceCode()
+    }
+
+    /** 往前滑：回「扫码」那条路 */
+    private fun onLoginPrev() {
+        if (loginStage == LoginStage.CODE) startScanLogin() else requestDeviceCode()
+    }
+
+    /** 摄像头 9s 没出图 ⇒ 解除 busy，并提示可以改用出码（别让"识别中…"永远挂着） */
+    private val scanTimeout = Runnable {
+        if (screen == Screen.LOGIN && loginStage == LoginStage.SCAN && loginBusy) {
+            loginBusy = false
+            loginErr = T("scan_timeout")
+            render()
+        }
+    }
+
+    private fun renderLogin() {
+        // 登录页：藏球体/侧栏，正文占满
+        if (::sphere.isInitialized) sphere.visibility = TextView.GONE
+        if (::sphereHint.isInitialized) sphereHint.visibility = TextView.GONE
+        if (::topBrand.isInitialized) topBrand.visibility = TextView.GONE
+        if (::connStatus.isInitialized) connStatus.visibility = TextView.GONE
+        mainCol.visibility = LinearLayout.VISIBLE
+        if (::sidebarCol.isInitialized) sidebarCol.visibility = LinearLayout.GONE
+        cardTitle.textSize = if (loginStage == LoginStage.CODE && loginCode.isNotEmpty()) 26f else 15f
+
+        when (loginStage) {
+            LoginStage.CONFIRM -> {
+                action.text = "🔑 " + T("confirm_login")
+                cardTitle.text = T("confirm_login")
+                cardBody.text = T("login_howto")
+                hint.text = T("login_confirm_hint") + if (BuildConfig.DEBUG) " · " + T("dev_skip") else ""
+            }
+            LoginStage.SCAN -> {
+                action.text = if (loginBusy) "📷 " + T("scanning") else "📷 " + T("scan_qr")
+                cardTitle.text = T("scan_qr")
+                cardBody.text = buildString {
+                    append(T("scan_howto"))
+                    if (loginErr.isNotEmpty()) append("\n\n✗ ").append(loginErr)
+                }
+                hint.text = T("login_scan_hint")
+            }
+            LoginStage.CODE -> {
+                action.text = "⌨ " + T("login_code")
+                cardTitle.text = loginCode.ifEmpty { "······" }
+                cardBody.text = buildString {
+                    append(T("code_howto"))
+                    append("\n\n")
+                    val leftSec = ((loginExpiresAt - System.currentTimeMillis()) / 1000).coerceAtLeast(0)
+                    append(
+                        when {
+                            loginBusy && loginCode.isEmpty() -> T("code_requesting")
+                            loginCode.isEmpty() -> T("code_none")
+                            else -> T("code_wait") + "  " + leftSec + "s"
+                        }
+                    )
+                    if (loginErr.isNotEmpty()) append("\n\n✗ ").append(loginErr)
+                }
+                hint.text = T("login_code_hint")
+            }
+        }
+    }
+
+    /** ① 扫码登录：拍照 → 节点解二维码 → 兑换令牌 */
+    private fun startScanLogin() {
+        loginStage = LoginStage.SCAN
+        loginBusy = true
+        loginErr = ""
+        render()
+        keyHandler.removeCallbacks(scanTimeout)
+        keyHandler.postDelayed(scanTimeout, 9_000)
+        camera.capture(
+            onJpeg = { jpeg ->
+                Thread {
+                    val small = CameraCapture.downscale(jpeg)
+                    val (code, scanErr) = BolloonApi.scanQr(small)
+                    if (code.isEmpty()) {
+                        runOnUiThread {
+                            keyHandler.removeCallbacks(scanTimeout)
+                            if (screen != Screen.LOGIN || loginStage != LoginStage.SCAN) return@runOnUiThread
+                            loginBusy = false
+                            loginErr = scanErr
+                            render()
+                        }
+                    } else {
+                        val (token, claimErr) = BolloonApi.claim(code)
+                        runOnUiThread {
+                            keyHandler.removeCallbacks(scanTimeout)
+                            if (screen != Screen.LOGIN || loginStage != LoginStage.SCAN) return@runOnUiThread
+                            if (token.isNotEmpty()) saveAuth(token)
+                            else {
+                                loginBusy = false
+                                loginErr = claimErr
+                                render()
+                            }
+                        }
+                    }
+                }.start()
+            },
+            onError = { msg ->
+                runOnUiThread {
+                    keyHandler.removeCallbacks(scanTimeout)
+                    if (screen != Screen.LOGIN || loginStage != LoginStage.SCAN) return@runOnUiThread
+                    loginBusy = false
+                    loginErr = msg
+                    render()
+                }
+            },
+        )
+    }
+
+    /** ② 眼镜出码：屏幕上显示 6 位码，等手机/电脑在 /login 里授权 */
+    private fun requestDeviceCode() {
+        loginStage = LoginStage.CODE
+        loginBusy = true
+        loginErr = ""
+        loginTick = 0
+        // 旧码还活着就继续显示它，别闪成"······"（leo：码一闪就没，看不清楚）
+        if (loginExpiresAt <= System.currentTimeMillis()) loginCode = ""
+        render()
+        Thread {
+            val dc = BolloonApi.deviceCode()
+            runOnUiThread {
+                loginBusy = false
+                if (dc == null || dc.code.isEmpty()) {
+                    loginErr = T("code_fail")
+                    render()
+                } else {
+                    loginCode = dc.code
+                    loginExpiresAt = System.currentTimeMillis() +
+                        (if (dc.expiresInMs > 0) dc.expiresInMs else 180_000L)
+                    render()
+                    pollDeviceCode(dc.code)
+                }
+            }
+        }.start()
+    }
+
+    private fun pollDeviceCode(code: String) {
+        val deadline = System.currentTimeMillis() + 180_000L
+        Thread {
+            while (System.currentTimeMillis() < deadline) {
+                if (screen != Screen.LOGIN || loginStage != LoginStage.CODE || loginCode != code) return@Thread
+                val (approved, used, remain) = BolloonApi.loginStatus(code)
+                if (used) return@Thread
+                if (approved) {
+                    val (token, err) = BolloonApi.claim(code)
+                    runOnUiThread {
+                        if (token.isNotEmpty()) saveAuth(token)
+                        else { loginErr = err; render() }
+                    }
+                    return@Thread
+                }
+                if (remain <= 0) {
+                    runOnUiThread {
+                        if (screen == Screen.LOGIN && loginStage == LoginStage.CODE && loginCode == code) {
+                            loginErr = T("code_expired")
+                            render()
+                        }
+                    }
+                    return@Thread
+                }
+                runOnUiThread { if (screen == Screen.LOGIN && loginStage == LoginStage.CODE) { loginTick += 1; render() } }
+                try {
+                    Thread.sleep(2_000)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+            }
+            runOnUiThread {
+                if (screen == Screen.LOGIN && loginStage == LoginStage.CODE && !loggedIn) {
+                    loginErr = T("code_expired")
+                    render()
+                }
+            }
+        }.start()
+    }
+
     // ───────────────────────── 按键 ─────────────────────────
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -1039,6 +1344,39 @@ class MainActivity : Activity() {
         }
         val code = event.keyCode
         val isEnter = code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_DPAD_CENTER
+        // 登录页：单击推进/重试，滑动换方式，双击返回；debug 包长按 = 跳过登录
+        if (screen == Screen.LOGIN) {
+            if (isEnter) {
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    if (event.repeatCount == 0 && BuildConfig.DEBUG) {
+                        longPressFired = false
+                        val r = Runnable { longPressFired = true; devSkipLogin() }
+                        longPressTask = r
+                        keyHandler.postDelayed(r, 700)
+                    }
+                } else if (event.action == KeyEvent.ACTION_UP) {
+                    longPressTask?.let { keyHandler.removeCallbacks(it) }
+                    if (!longPressFired) onLoginTap()
+                }
+                return true
+            }
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                // 触摸面板长滑会连发 DOWN：只认第一次，否则会把刚出的码一直换掉
+                if (event.repeatCount > 0) return true
+                when (code) {
+                    KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        if (loginKeyGuard()) onLoginNext()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        if (loginKeyGuard()) onLoginPrev()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_BACK -> { closeLogin(); return true }
+                }
+            }
+            return super.dispatchKeyEvent(event)
+        }
         // 球体模式：五个球之间切换，单击进球（bolloon 球 = 切卡片模式）
         if (mode == Mode.SPHERE && screen == Screen.HOME) {
             if (isEnter) {
@@ -1149,6 +1487,7 @@ class MainActivity : Activity() {
                 }
             }
             Screen.WIDGET -> exitWidget()
+            Screen.LOGIN -> closeLogin()
             Screen.HOME -> {
                 if (logoFocused) { refresh(); return }
                 if (sidebarLevel == 1) {
@@ -1313,6 +1652,7 @@ class MainActivity : Activity() {
     /** 往下走（往后滑）：条目往下一条；到底则进下一栏 */
     private fun onDown() {
         when (screen) {
+            Screen.LOGIN -> {}
             Screen.WIDGET -> exitWidget()
             Screen.CHAT -> {
                 // 正序布局：往下 = 回到最新
@@ -1359,6 +1699,7 @@ class MainActivity : Activity() {
 
     private fun onConfirm() {
         when (screen) {
+            Screen.LOGIN -> onLoginTap()
             Screen.HOME -> {
                 if (logoFocused) {
                     // 长按选中了左上角标签 → 单击 = 最小化

@@ -186,7 +186,7 @@
       "id": "current-status.md",
       "type": "chapter",
       "label": "Bolloon 当前状态",
-      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize, organize-result-box, unreported-escape, loop-completeness-check, write-file-default-permit, cli-kubo-autostart, terminal-tool, denylist-only-guard, js-yaml-esm-fix, dep-upgrade-2026-09-08, cli-fast-start, zero-install-warnings, agent-gateway-bootstrap, mobile-gateway, qr-scan-join, net-command, shared-context, ios-appintents-deeplink, circuit-relay-v2, p2p-circuit-inbound, next-tools-2026-09-13, clarify-channel, browser-cdp, computer-use, patch-tool, setup-wizard, skill-share-ipfs, x402-paid-info, paid-info-verify, x402-direct-payment, x402-onchain-verify, cron-tick-lock, cron-dnd-quiet, mobile-tap-network, gateway-join-closed-loop, gateway-join-tool, deepseek-reasoning-content, address-broadcast-tofu, npm-0.4.23, npm-0.4.24, npm-0.5.0, mobile-self-join, delegate-real-execution, ios-sim-join-e2e, pkg-rename-hibs-bolloon, compliance-privacy-gate, adaptive-icon, store-flavor, permissions-doc, durable-run, run-store, run-state-machine, checkpoint, recovery-protocol, phase-0, acceptance-matrix, api-runs, cli-runs, durable-run-m1-hard-constraint, persistence-strict, run-lock, corrupt-fallback, degradations, update-protocol, version-info, install-identity, update-manager, update-state, update-lock, doctor, publish-gate, bare-word-commands, runtime-bootstrap, install-protocol, path-config, package-manager, doctor, open-tasks-public-projection, public-open-tasks-2026-09-23, task-open-announcement-live-2026-09-24, skill-doc-cli-parity-2026-09-24, task-announce-board-docs, task-group-channel-docs, x402-order-identity, eip-3009-bol1-nonce, x402-buyer-pay-cli, v0.5.4-tui-session-wallet, bolloon-native-macro-kernel-2026-10-02, web-render-silent-noop-2026-10-02, mobile-web-bundle-selfcontained-2026-10-02, phone-pair-reverse-2026-10-17, avatar-hashavatar-2026-10-27, phone-did-login-2026-10-27, web-account-menu-2026-10-27, group-chat-background-2026-10-27, agent-private-identity-2026-10-27, v0.6.11]",
+      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize, organize-result-box, unreported-escape, loop-completeness-check, write-file-default-permit, cli-kubo-autostart, terminal-tool, denylist-only-guard, js-yaml-esm-fix, dep-upgrade-2026-09-08, cli-fast-start, zero-install-warnings, agent-gateway-bootstrap, mobile-gateway, qr-scan-join, net-command, shared-context, ios-appintents-deeplink, circuit-relay-v2, p2p-circuit-inbound, next-tools-2026-09-13, clarify-channel, browser-cdp, computer-use, patch-tool, setup-wizard, skill-share-ipfs, x402-paid-info, paid-info-verify, x402-direct-payment, x402-onchain-verify, cron-tick-lock, cron-dnd-quiet, mobile-tap-network, gateway-join-closed-loop, gateway-join-tool, deepseek-reasoning-content, address-broadcast-tofu, npm-0.4.23, npm-0.4.24, npm-0.5.0, mobile-self-join, delegate-real-execution, ios-sim-join-e2e, pkg-rename-hibs-bolloon, compliance-privacy-gate, adaptive-icon, store-flavor, permissions-doc, durable-run, run-store, run-state-machine, checkpoint, recovery-protocol, phase-0, acceptance-matrix, api-runs, cli-runs, durable-run-m1-hard-constraint, persistence-strict, run-lock, corrupt-fallback, degradations, update-protocol, version-info, install-identity, update-manager, update-state, update-lock, doctor, publish-gate, bare-word-commands, runtime-bootstrap, install-protocol, path-config, package-manager, doctor, open-tasks-public-projection, public-open-tasks-2026-09-23, task-open-announcement-live-2026-09-24, skill-doc-cli-parity-2026-09-24, task-announce-board-docs, task-group-channel-docs, x402-order-identity, eip-3009-bol1-nonce, x402-buyer-pay-cli, v0.5.4-tui-session-wallet, bolloon-native-macro-kernel-2026-10-02, web-render-silent-noop-2026-10-02, mobile-web-bundle-selfcontained-2026-10-02, phone-pair-reverse-2026-10-17, avatar-hashavatar-2026-10-27, phone-did-login-2026-10-27, web-account-menu-2026-10-27, group-chat-background-2026-10-27, agent-private-identity-2026-10-27, v0.6.11, glass-qr-login-2026-10-28]",
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/current-status.md"
@@ -300,6 +300,15 @@
       "source_file": "docs/wiki/github-and-raw-strategy.md"
     },
     {
+      "id": "glass-reality-interface.md",
+      "type": "chapter",
+      "label": "眼镜端 Reality Interface —— 常驻感知 / 门控表达 / 可遗忘",
+      "tags": "[glass, rokid, reality-interface, proactivity, gate, privacy, forgetting, memory-ladder, context, product-definition]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/glass-reality-interface.md"
+    },
+    {
       "id": "goal-continuation-flywheel.md",
       "type": "chapter",
       "label": "Goal 长期执行飞轮 (意图 + 执行机制: 意图 → Goal → continuation → Run → Memory/Skill → 下一次执行)",
@@ -334,6 +343,15 @@
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/goal-model-policy.md"
+    },
+    {
+      "id": "group-subtopic-sharing.md",
+      "type": "chapter",
+      "label": "群内子讨论与统一分享/邀请设计（orbit store 下的小组讨论 + 跨传输统一入口）",
+      "tags": "[group-chat, orbitdb, sub-topic, subgroup, sharing, invite, transport, iroh, pubsub, acl]",
+      "stage": "draft",
+      "audience": "self",
+      "source_file": "docs/wiki/group-subtopic-sharing.md"
     },
     {
       "id": "hermes-agent-architecture.md",
@@ -579,6 +597,15 @@
       "source_file": "docs/wiki/q1-q5-report-2026-07-07.md"
     },
     {
+      "id": "rokid-glasses-baremetal.md",
+      "type": "chapter",
+      "label": "Rokid Glasses 裸机开发接入（RG-glasses2 / YodaOS-Sprite）与眼镜端 Bolloon 客户端",
+      "tags": "[rokid, glasses, yodaos-sprite, android, adb, baremetal, camera2, ocr, whisper, asr, bolloon]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/rokid-glasses-baremetal.md"
+    },
+    {
       "id": "runtime-bootstrap-protocol.md",
       "type": "chapter",
       "label": "运行时安装协议 (Node/npm · Git · Python 的检查、安装、PATH 与验证)",
@@ -749,6 +776,11 @@
     {
       "from": "cli-startup-panel.md",
       "to": "log.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "rokid-glasses-baremetal.md",
       "type": "references"
     },
     {
@@ -959,6 +991,11 @@
     {
       "from": "efficode.md",
       "to": "agent-economic-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "glass-reality-interface.md",
+      "to": "three-terminal-product-vision.md",
       "type": "references"
     },
     {
@@ -1178,6 +1215,11 @@
     },
     {
       "from": "index.md",
+      "to": "group-subtopic-sharing.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
       "to": "network-pulse.md",
       "type": "references"
     },
@@ -1339,6 +1381,11 @@
     {
       "from": "index.md",
       "to": "q1-q5-report-2026-07-07.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "rokid-glasses-baremetal.md",
       "type": "references"
     },
     {
@@ -1532,6 +1579,11 @@
       "type": "references"
     },
     {
+      "from": "log.md",
+      "to": "group-subtopic-sharing.md",
+      "type": "references"
+    },
+    {
       "from": "model-discovery.md",
       "to": "provider-registry.md",
       "type": "references"
@@ -1642,6 +1694,21 @@
       "type": "references"
     },
     {
+      "from": "rokid-glasses-baremetal.md",
+      "to": "glass-reality-interface.md",
+      "type": "references"
+    },
+    {
+      "from": "rokid-glasses-baremetal.md",
+      "to": "rust-rewrite.md",
+      "type": "references"
+    },
+    {
+      "from": "rokid-glasses-baremetal.md",
+      "to": "log.md",
+      "type": "references"
+    },
+    {
       "from": "runtime-bootstrap-protocol.md",
       "to": "update-protocol.md",
       "type": "references"
@@ -1668,16 +1735,16 @@
     }
   ],
   "stats": {
-    "node_count": 78,
-    "edge_count": 192,
+    "node_count": 81,
+    "edge_count": 200,
     "node_types": {
       "meta": 16,
       "protocol": 22,
-      "chapter": 39,
+      "chapter": 42,
       "claim": 1
     },
     "edge_types": {
-      "references": 190,
+      "references": 198,
       "supersedes": 2
     }
   }

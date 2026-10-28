@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Bolloon · 登录</title>
+<style>
+  :root{ color-scheme: dark; --bg:#1a1a18; --panel:#222220; --line:#3a3a36;
+         --text:#d8d8c8; --muted:#909088; --accent:#c4d640; }
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;
+       display:flex;justify-content:center;padding:24px 16px}
+  .wrap{width:100%;max-width:420px}
+  h1{font-size:17px;margin:0 0 6px;color:var(--accent);letter-spacing:.5px}
+  .sub{color:var(--muted);font-size:12px;margin:0 0 14px}
+  #qrbox{background:#fff;border-radius:12px;padding:12px;display:flex;justify-content:center;
+         align-items:center;min-height:260px}
+  #qrbox svg{width:100%;height:auto;max-width:260px;display:block}
+  .code{font:600 20px/1.2 ui-monospace,Menlo,monospace;letter-spacing:6px;text-align:center;
+        margin:12px 0 4px;color:#fff}
+  .state{text-align:center;color:var(--muted);font-size:12px;min-height:18px}
+  hr{border:0;border-top:1px solid var(--line);margin:18px 0 14px}
+  .row{display:flex;gap:8px;margin-top:8px}
+  input{flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);
+        border-radius:8px;padding:10px 12px;font:600 15px/1 ui-monospace,Menlo,monospace;
+        letter-spacing:4px;text-transform:uppercase}
+  button{background:var(--accent);color:#1a1a18;border:0;border-radius:8px;padding:10px 14px;
+         font-weight:600;font-size:13px;white-space:nowrap}
+  .msg{margin-top:10px;font-size:12px;color:var(--accent);min-height:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>◉ Bolloon · 帛龙</h1>
+  <p class="sub">用眼镜的摄像头扫下面这个码 —— 扫到就登录，不用打字。</p>
+
+  <div id="qrbox"></div>
+  <div class="code" id="code">······</div>
+  <div class="state" id="state">正在出码…</div>
+
+  <hr />
+  <p class="sub">或者不用扫：眼镜上显示 6 位码时，在这里输入并授权。</p>
+  <div class="row">
+    <input id="cd" maxlength="6" placeholder="ABC234" autocapitalize="characters"
+           autocomplete="off" spellcheck="false" />
+    <button id="ok">授权这台眼镜</button>
+  </div>
+  <div class="msg" id="msg"></div>
+</div>
+<script>
+const $ = (s) => document.querySelector(s);
+let cur = "";
+
+async function post(url, body) {
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  return r.json();
+}
+
+async function issue() {
+  try {
+    const j = await post("/api/auth/qr/issue");
+    if (!j.ok) throw new Error(j.error || "出码失败");
+    cur = j.code;
+    $("#qrbox").innerHTML = j.svg || "";
+    $("#code").textContent = j.code;
+    $("#state").textContent = "等眼镜扫码…";
+    poll();
+  } catch (e) {
+    $("#state").textContent = "✗ " + e.message + "（刷新重试）";
+  }
+}
+
+async function poll() {
+  if (!cur) return;
+  try {
+    const r = await fetch("/api/auth/qr/status?code=" + encodeURIComponent(cur));
+    const j = await r.json();
+    if (j.ok && j.used) { $("#state").textContent = "✓ 眼镜已登录"; return; }
+    if (!j.ok) { issue(); return; }
+    const left = Math.max(0, Math.ceil((j.expires_in_ms || 0) / 1000));
+    $("#state").textContent = left > 0 ? "等眼镜扫码… " + left + "s" : "已过期，重新出码…";
+    if (left <= 0) { issue(); return; }
+  } catch (_) {}
+  setTimeout(poll, 1500);
+}
+
+$("#ok").onclick = async () => {
+  const code = ($("#cd").value || "").trim().toUpperCase();
+  if (!code) return;
+  const j = await post("/api/auth/qr/approve", { code });
+  $("#msg").textContent = j.ok ? "✓ 已授权 " + code + " · 眼镜会自动登录" : "✗ " + (j.error || "授权失败");
+};
+
+issue();
+</script>
+</body>
+</html>

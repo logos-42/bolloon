@@ -191,3 +191,45 @@ fn parse_prediction(raw: &str) -> (String, f64, String) {
     (cleaned.chars().take(12).collect::<String>(), 0.0, "模型未按 JSON 回答".into())
 }
 
+
+/// 二维码解码（同一支 macOS Vision 助手，`--qr` 模式走条码检测）
+///
+/// 眼镜端没有可用的条码库：拍照 → 节点解码 → 回码。与 OCR 同一条链路，
+/// 所以 `scripts/setup-ocr.sh` 编出来的 `~/.bolloon/bin/vision-ocr` 两个模式都能跑。
+pub async fn qr_decode(bytes: &[u8]) -> Result<String, String> {
+    let bin = ocr_bin();
+    if !bin.exists() {
+        return Err(format!(
+            "条码解码助手不存在: {}（跑 scripts/setup-ocr.sh）",
+            bin.display()
+        ));
+    }
+    let dir = std::env::temp_dir().join("bolloon-vision");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("建临时目录失败: {e}"))?;
+    let img_path = dir.join(format!(
+        "qr-{}-{}.jpg",
+        std::process::id(),
+        chrono::Utc::now().timestamp_millis()
+    ));
+    std::fs::write(&img_path, bytes).map_err(|e| format!("写临时图片失败: {e}"))?;
+
+    let out = tokio::time::timeout(
+        Duration::from_secs(20),
+        tokio::process::Command::new(&bin).arg("--qr").arg(&img_path).output(),
+    )
+    .await;
+    let _ = std::fs::remove_file(&img_path);
+
+    match out {
+        Err(_) => Err("条码解码超时 (20s)".into()),
+        Ok(Err(e)) => Err(format!("启动解码助手失败: {e}")),
+        Ok(Ok(o)) => {
+            let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !o.status.success() || text.is_empty() {
+                // 退出码 4 = 画面里没有二维码（正常情况，不是错误）
+                return Err("画面里没找到二维码".into());
+            }
+            Ok(text)
+        }
+    }
+}

@@ -323,6 +323,16 @@ pub fn app(state: AppState) -> Router {
         .route("/api/intent/observe", post(crate::native::intent_observe))
         .route("/api/identity/env", get(crate::native::identity_env))
         .route("/api/turns", get(crate::native::turns))
+        // 眼镜扫码登录：电脑/手机出码，眼镜扫 → 令牌（也可以在 /login 输 6 位码授权）
+        .route("/login", get(crate::qr_login::login_page))
+        .route("/api/auth/qr/issue", post(crate::qr_login::qr_issue))
+        .route("/api/auth/qr/svg", get(crate::qr_login::qr_svg))
+        .route("/api/auth/qr/approve", post(crate::qr_login::qr_approve))
+        .route("/api/auth/qr/scan", post(crate::qr_login::qr_scan))
+        .route("/api/auth/qr/claim", post(crate::qr_login::qr_claim))
+        .route("/api/auth/qr/status", get(crate::qr_login::qr_status))
+        .route("/api/auth/device-code", get(crate::qr_login::device_code))
+        .route("/api/auth/session", get(crate::qr_login::session_check))
         // 判断力/意图自动存档（电脑总账 + 智能体侧账）
         .route("/api/archive", post(crate::archive::archive))
         .route("/api/archive/summary", get(crate::archive::summary))
@@ -441,8 +451,11 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
             bolloon_kernel::orphan_recovery::runs_dir(),
         ),
     ));
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-    tracing::info!("bolloon web listening on http://127.0.0.1:{port}");
+    // 默认只听回环（网页只给本机的眼镜/浏览器用）。
+    // 手机也要打开 /login 扫码时: BOLLOON_BIND=0.0.0.0 bolloon web —— 同 Wi-Fi 下用 http://<本机 IP>:<port>/login。
+    let host = std::env::var("BOLLOON_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
+    tracing::info!("bolloon web listening on http://{host}:{port}");
     serve_on(state, listener).await
 }
 

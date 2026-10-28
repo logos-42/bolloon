@@ -388,4 +388,63 @@ object BolloonApi {
     } catch (e: Exception) {
         "节点离线：${e.message ?: e.javaClass.simpleName}"
     }
+
+    // ───────────────── 登录（/api/auth/**）─────────────────
+    // 两条路：① 眼镜扫电脑/手机屏幕上的二维码；② 眼镜出 6 位码，手机/电脑输入授权。
+    // 令牌是本机节点 DID 签的，会话校验放节点侧（眼镜只存字符串）。
+
+    data class DeviceCode(val code: String, val expiresInMs: Long)
+
+    private fun enc(s: String): String = java.net.URLEncoder.encode(s, "UTF-8")
+
+    /** 眼镜自己出一张码（显示在镜片上，等手机/电脑输入授权） */
+    fun deviceCode(): DeviceCode? = try {
+        val j = JSONObject(readText(open("/api/auth/device-code")))
+        if (!j.optBoolean("ok", false)) null
+        else DeviceCode(j.optString("code", ""), j.optLong("expires_in_ms", 0L))
+    } catch (e: Exception) {
+        null
+    }
+
+    /** 那张码被授权/被用掉了吗 → (approved, used, 剩余毫秒) */
+    fun loginStatus(code: String): Triple<Boolean, Boolean, Long> = try {
+        val j = JSONObject(readText(open("/api/auth/qr/status?code=${enc(code)}")))
+        if (!j.optBoolean("ok", false)) Triple(false, false, 0L)
+        else Triple(
+            j.optBoolean("approved", false),
+            j.optBoolean("used", false),
+            j.optLong("expires_in_ms", 0L),
+        )
+    } catch (e: Exception) {
+        Triple(false, false, 0L)
+    }
+
+    /** 用码换令牌 → (token, 错误) */
+    fun claim(code: String): Pair<String, String> = try {
+        val body = JSONObject().put("code", code).toString().toByteArray()
+        val j = JSONObject(readText(open("/api/auth/qr/claim", "POST", body, "application/json")))
+        if (j.optBoolean("ok", false)) j.optString("token", "") to ""
+        else "" to j.optString("error", "兑换失败")
+    } catch (e: Exception) {
+        "" to (e.message ?: "网络错误")
+    }
+
+    /** 拍到的画面交给节点解二维码 → (码, 错误) */
+    fun scanQr(jpeg: ByteArray): Pair<String, String> = try {
+        val b64 = Base64.getEncoder().encodeToString(jpeg)
+        val body = JSONObject().put("image_base64", b64).toString().toByteArray()
+        val j = JSONObject(readText(open("/api/auth/qr/scan", "POST", body, "application/json")))
+        if (j.optBoolean("ok", false)) j.optString("code", "") to ""
+        else "" to j.optString("error", "没扫到码")
+    } catch (e: Exception) {
+        "" to (e.message ?: "网络错误")
+    }
+
+    /** 令牌还有效吗（节点用自己的公钥验签） */
+    fun sessionOk(token: String): Boolean = try {
+        val j = JSONObject(readText(open("/api/auth/session?token=${enc(token)}")))
+        j.optBoolean("ok", false)
+    } catch (e: Exception) {
+        false
+    }
 }
