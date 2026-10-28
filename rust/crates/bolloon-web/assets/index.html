@@ -2072,7 +2072,7 @@ function initDesktopThreeCol() {
   // 第一栏底部全局入口 → relay 到现有按钮, 不重复绑定逻辑
   // 更新: 走与 #updateBtn 同一个 runUpdateFlow (下载→校验→原子替换→重启→reload), 不另写一份
   $('railUpdateBtn').onclick = () => runUpdateFlow();
-  $('topUpdateBtn').onclick = () => runUpdateFlow();
+  const tb2=$('topUpdateBtn'); if(tb2) tb2.onclick = () => runUpdateFlow(); // 外壳(标题栏)已无此按钮, 判空
   $('railThemeBtn').onclick = (e) => { e.stopPropagation(); $('themeBtn').click(); }; // 黑白切换放进头像: 点角落图标切主题 (不触发打开设置)
   $('railRoomBtn').onclick = () => $('roomBtn').click();
   $('railAva').onclick = (e) => { if (e.target.closest('#railThemeBtn')) return; openSettings(); }; // 点头像=设置, 主题小圆点已单独处理
