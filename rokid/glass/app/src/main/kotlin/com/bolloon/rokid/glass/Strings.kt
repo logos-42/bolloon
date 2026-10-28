@@ -277,6 +277,23 @@ object Strings {
             "es" to "sin imagen · desliza para usar código", "fr" to "pas d'image · glissez pour un code",
             "la" to "nulla imago · labere ut codex",
         ),
+        "logged_in_short" to mapOf(
+            "zh" to "已登录", "en" to "signed in", "ar" to "مسجّل", "pt" to "conectado",
+            "es" to "conectado", "fr" to "connecté", "la" to "inus",
+        ),
+        "not_logged_in" to mapOf(
+            "zh" to "未登录", "en" to "not signed in", "ar" to "غير مسجّل", "pt" to "não conectado",
+            "es" to "sin sesión", "fr" to "non connecté", "la" to "non inus",
+        ),
+        "dev_skip_short" to mapOf(
+            "zh" to "开发者跳过", "en" to "dev skipped", "ar" to "تخطي المطوّر", "pt" to "pulado (dev)",
+            "es" to "omitido (dev)", "fr" to "ignoré (dev)", "la" to "transitus (dev)",
+        ),
+        "tap_login_action" to mapOf(
+            "zh" to "单击:登录/退出登录", "en" to "tap: sign in / out", "ar" to "انقر: دخول/خروج",
+            "pt" to "toque: entrar/sair", "es" to "toca: entrar/salir",
+            "fr" to "appuyez : entrer/sortir", "la" to "tange: intra/exi",
+        ),
         "dev_skip" to mapOf(
             "zh" to "长按:跳过登录(开发者)", "en" to "long-press: skip login (dev)",
             "ar" to "اضغط مطولاً: تخطي الدخول (مطوّر)", "pt" to "toque longo: pular login (dev)",

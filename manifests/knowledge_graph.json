@@ -600,7 +600,7 @@
       "id": "rokid-glasses-baremetal.md",
       "type": "chapter",
       "label": "Rokid Glasses 裸机开发接入（RG-glasses2 / YodaOS-Sprite）与眼镜端 Bolloon 客户端",
-      "tags": "[rokid, glasses, yodaos-sprite, android, adb, baremetal, camera2, ocr, whisper, asr, bolloon]",
+      "tags": "[rokid, glasses, yodaos-sprite, android, adb, baremetal, camera2, ocr, whisper, asr, bolloon, qr-login, qr-code]",
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/rokid-glasses-baremetal.md"

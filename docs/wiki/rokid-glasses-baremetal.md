@@ -9,7 +9,7 @@ stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [rokid, glasses, yodaos-sprite, android, adb, baremetal, camera2, ocr, whisper, asr, bolloon]
+tags: [rokid, glasses, yodaos-sprite, android, adb, baremetal, camera2, ocr, whisper, asr, bolloon, qr-login, qr-code]
 ---
 
 # Rokid Glasses 裸机开发接入 — 设备事实、可用/不可用边界、眼镜端 Bolloon 客户端
@@ -129,6 +129,24 @@ tags: [rokid, glasses, yodaos-sprite, android, adb, baremetal, camera2, ocr, whi
 
 两种模式共享同一份状态（section / 选中项 / 列表数据），切模式**不丢当前页面**。
 
+## 8.6 登录（扫码 / 出码两条路，2026-10-28）
+
+眼镜上没有键盘，所以登录**不做密码**，只做「把本机节点身份授给这台眼镜」：两条路共用一个**一次性码**（6 位，去掉 `0/O/1/I` 的 32 字母表，180s 有效，用完即废）。
+
+| 路 | 谁出码 | 谁确认 | 链路 |
+| --- | --- | --- | --- |
+| ① 扫码 | 电脑/手机（`/login` 页出二维码） | 眼镜拍一下 | `/api/auth/qr/issue` → 页面内联 SVG → 眼镜拍照 → `POST /api/auth/qr/scan`（节点 macOS Vision 解）→ `POST /api/auth/qr/claim` |
+| ② 出码 | 眼镜（镜片显示 6 位码） | 手机/电脑在 `/login` 输入并点「授权这台眼镜」 | `GET /api/auth/device-code` → `POST /api/auth/qr/approve` → 眼镜轮询 `/api/auth/qr/status` 见到 `approved` → `claim` |
+
+- **令牌** = `{code}.{ts}.{ed25519 签名 hex}`，签名体 `glass|{code}|{ts}`；`GET /api/auth/session?token=` 用本机 identity 公钥**离线验签** + 30 天有效期，节点**不存令牌**（换身份/换机自然失效）。
+- **授权门**：`via=device` 的码（显示在镜片上，谁看见都能念）必须有人在手机/电脑点过授权才给令牌，否则 `claim` 返回 `need_approve`；`via=screen` 的码本身就是授权凭据。
+- **眼镜端 UI**：未登录时球体**中心球=「确认登录」**（其余球点了也进登录页）；登录页三态 `CONFIRM / SCAN / CODE`——单击推进或重试、往后滑换路线（扫码 ⇄ 出码）、双击返回；出码页 26sp 大字 + 剩余秒数。令牌存 `SharedPreferences`（`auth_token`），启动时验一次，进程被杀重开仍是登录态。
+- **设置页第 5 行**：显示 已登录 / 未登录 / 开发者跳过，**单击 = 登录或退出登录**（退出清令牌 + 清开发者跳过，中心球回到「确认登录」）。
+- **开发者模式跳过**：debug 包在确认页**长按**（≥700ms）= 跳过登录，**只对本次进程有效、不落盘**（否则跳过一次就再也测不到真流程）。
+- **手机打开 `/login` 需要局域网监听**：默认只绑 `127.0.0.1`；`BOLLOON_BIND=0.0.0.0 bolloon web` 后用 `http://<电脑 IP>:54188/login`。
+
+踩过的四个坑（都在眼镜端）：① 登录页正文整块不显示 —— 收侧栏时藏了 `sidebarBox.parent`，它的 parent 是含正文的 `body`，要收的是 `sidebarCol` 本身；② 出码页「一闪就没」—— 扫码 `loginBusy` 把滑动挡死 + 触摸面板长滑连发 `DPAD_DOWN`（未过滤 `repeatCount`）会不停换码 ⇒ 600ms 节流 + 只认首次 + 码不被重取清空；③ 摄像头不出图会永久挂在「识别中…」⇒ 9s 看门狗解除 busy 并提示改道；④ `session` 端点原来只判「令牌非空」= 假门，本轮改成真验签。
+
 ## 9. 验证记录（真跑）
 
 | 项 | 结果 |
@@ -141,6 +159,9 @@ tags: [rokid, glasses, yodaos-sprite, android, adb, baremetal, camera2, ocr, whi
 | `/api/vision` | ✅ 真截图 OCR 全中文 + 命中意图 |
 | 扫一眼（眼镜上） | ✅ 相机真出图、链路走通（当次镜头对着空白场景，结果「已识别画面（未匹配意图）」） |
 | 语音闭环（眼镜上） | ✅ `AudioRecord` → `/api/asr` → 文本上屏 → `/api/chat`。**唯一保留**：没人对着麦克风说话，识别到的是环境声（已加 RMS 静音门） |
+| 登录·扫码路 | ✅ 真浏览器 `/login` 出真二维码 → `vision-ocr --qr` 解出 `bolloon://login?code=S6UZ7U` → 节点 `/api/auth/qr/scan` 同码 → `claim` → `/api/auth/session` 验签通过 → 二次 `claim` 拒 |
+| 登录·出码路 | ✅ 真机出码 `JHNQS2`/`PWMWV9`（大字 + 倒计时）→ 手机侧 `approve` → 眼镜自动 `claim` 回球体；`run-as cat shared_prefs` 里是真令牌，杀进程重启仍登录态 |
+| 登录·测试门 | ✅ `cargo test -p bolloon-web --lib qr_login` 4/4（真 HTTP 全链路 + `/login` 页可达 + 假签名拒 + 一次性拒 + 授权门） |
 | `/api/asr` | ✅ whisper-base 真转写（`你好,我是小星,现在测试眼镜余音时别` — 3.8s/5s 音频；base 模型有字错，可升 small） |
 
 ## 10. 诚实边界（未做/未验）
@@ -150,6 +171,8 @@ tags: [rokid, glasses, yodaos-sprite, android, adb, baremetal, camera2, ocr, whi
 - **「最近交流」不是按联系人分库**：读的是 `/api/bootstrap` 运行期消息流最新 5 条。
 - **「执行工作」读 `/api/tasks` 任务板**，当前空。
 - **Rust 交叉编译到 arm64-Android 未跑过**：`scripts/build-android-rust.sh` 已写好（需 NDK r27c，本机正在下），眼镜现在是客户端、节点在 Mac 上。
+- **登录不是接口门禁**：节点其它 API 仍未鉴权，令牌只用于眼镜端「是否已登录」的判定与身份证明。
+- **眼镜对着屏幕扫码那一步未在本会话目验**：解码环节是用页面截图在节点侧验的；leo 现场确认「扫描成立」覆盖了那一跳。
 - **未验**：眼镜独立联网（`wlan0` 当时 `DOWN`）、Wi-Fi 配网、后台常驻/开机自启、x402 真链支付、连续语音多轮上下文。
 
 相关：[glass-reality-interface.md](./glass-reality-interface.md)（产品定义：常驻感知 vs 遥控器）、[rust-rewrite.md](./rust-rewrite.md)、[log.md](./log.md)。

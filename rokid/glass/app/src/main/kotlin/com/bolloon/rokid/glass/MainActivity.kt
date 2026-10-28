@@ -639,6 +639,11 @@ class MainActivity : Activity() {
                 T("phone") + " / " + (phone?.let { if (it.bound) "…" + it.phone.takeLast(4) else T("not_bound") } ?: "…"),
                 T("model") + " / " + (llm?.let { "${it.provider} · ${it.model}" } ?: "…"),
                 T("link") + " / " + if (linkLine.contains("已连") || linkLine.contains("connected")) "✓" else "✗",
+                T("login") + " / " + when {
+                    devSkip -> T("dev_skip_short")
+                    loggedIn -> "✓"
+                    else -> "✗"
+                },
             )
         }
         if (labels.isEmpty()) {
@@ -952,11 +957,18 @@ class MainActivity : Activity() {
             append(T("model")).append("   ")
                 .append(llm?.let { "${it.provider} · ${it.model}" + if (it.keyOk) " ✓" else " ✗" } ?: "…")
                 .append("  (").append(T("sync_same")).append(")\n")
+            append(T("login")).append("   ").append(
+                when {
+                    devSkip -> T("dev_skip_short")
+                    loggedIn -> T("logged_in_short")
+                    else -> T("not_logged_in")
+                }
+            ).append("\n")
             if (loginMsg.isNotEmpty()) append(loginMsg).append("\n")
             append(T("version")).append("   0.1.0")
             append("\n\n").append(T("tap_lang"))
         }
-        hint.text = T("tap_lang") + " · " + T("swipe_next") + " · " + T("dbl_exit")
+        hint.text = T("tap_login_action") + " · " + T("swipe_next") + " · " + T("dbl_exit")
     }
 
     /** 桌面/CLI 输入 + AI 回复 → 眼镜卡片传输流（3s 增量） */
@@ -1122,6 +1134,20 @@ class MainActivity : Activity() {
         loginBusy = false
         loginErr = ""
         render()
+    }
+
+    /** 退出登录：清掉令牌 + 开发者跳过标记，回到未登录球体（中心球变「确认登录」） */
+    private fun logout() {
+        authToken = ""
+        loggedIn = false
+        devSkip = false
+        loginMsg = ""
+        getSharedPreferences("bolloon", MODE_PRIVATE).edit().remove("auth_token").apply()
+        screen = Screen.HOME
+        mode = Mode.SPHERE
+        sphereSel = 0
+        render()
+        refresh()
     }
 
     /**
@@ -1694,7 +1720,7 @@ class MainActivity : Activity() {
         Section.EXTERNAL -> maxOf(contacts.size, 1)
         Section.AGENTS -> maxOf(myAgents.size, 1)
         Section.GROUPS -> maxOf(groups.size, 1)
-        Section.SETTINGS -> 4
+        Section.SETTINGS -> 5
     }
 
     private fun onConfirm() {
@@ -1735,6 +1761,8 @@ class MainActivity : Activity() {
                         2 -> refreshLlm()
                         // 链接：重探
                         3 -> refreshLink()
+                        // 登录：已登录 → 退出；未登录 → 去登录
+                        4 -> if (loggedIn || devSkip) logout() else openLogin()
                         else -> render()
                     }
                 }
