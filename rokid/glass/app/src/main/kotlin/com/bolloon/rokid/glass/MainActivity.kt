@@ -59,6 +59,21 @@ class MainActivity : Activity() {
     private var chatLimit = 20
     /** 上次自动贴顶时的消息条数：只有条数变了才滚，避免每次轮询把用户拽回顶部/底部 */
     private var chatScrollMark = -1
+    private var lastChatScroll = 0L
+
+    /** 对话页滚动节流 160ms：连按也不会一次跳半屏 */
+    private fun chatScrollBy(dy: Int) {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastChatScroll < 160) return
+        lastChatScroll = now
+        chatAutoScroll = false
+        (cardBody.parent as? ScrollView)?.scrollBy(0, dy)
+    }
+
+    private fun chatAtEdge(up: Boolean): Boolean {
+        val sv = cardBody.parent as? ScrollView ?: return true
+        return if (up) !sv.canScrollVertically(-1) else !sv.canScrollVertically(1)
+    }
     /** 自动贴底：用户手动上滑后关掉，否则每次重绘都被拽回最新，看着像"滑不动" */
     private var chatAutoScroll = true
     /** 桌面/CLI 对话流：眼镜端按 /api/turns 增量轮询成卡片传输流 */
@@ -1125,10 +1140,12 @@ class MainActivity : Activity() {
     private fun onUp() {
         when (screen) {
             Screen.CHAT -> {
-                // 倒序布局下"更早"在下方：往上滑 = 先加载更多，再看情况滚动
-                chatAutoScroll = false
-                if (chatLimit < 400) loadChatHistory(limit = chatLimit + 20)
-                else (cardBody.parent as? ScrollView)?.scrollBy(0, -dp(90))
+                // 倒序布局：往上 = 回到更新的一条。小步滚动，滚到边才多拉历史
+                if (chatAtEdge(up = true)) {
+                    if (chatLimit < 400) loadChatHistory(limit = chatLimit + 10)
+                } else {
+                    chatScrollBy(-dp(52))
+                }
             }
             Screen.WIDGET -> exitWidget()
             Screen.HOME -> {
@@ -1297,8 +1314,12 @@ class MainActivity : Activity() {
         when (screen) {
             Screen.WIDGET -> exitWidget()
             Screen.CHAT -> {
-                chatAutoScroll = false
-                (cardBody.parent as? ScrollView)?.scrollBy(0, dp(90))
+                // 往下 = 看更早。小步滚动，到底才多拉
+                if (chatAtEdge(up = false)) {
+                    if (chatLimit < 400) loadChatHistory(limit = chatLimit + 10)
+                } else {
+                    chatScrollBy(dp(52))
+                }
             }
             Screen.HOME -> {
                 if (logoFocused) {
@@ -1633,7 +1654,8 @@ class MainActivity : Activity() {
         val owner = chatTarget?.name
         transcript.setLength(0)
         val head = chatGroup?.let { "群「${it.name}」" } ?: (chatTarget?.name ?: "")
-        transcript.append(head).append(" · 倒序（最新在上）\n\n")
+        // 不显式写"倒序"——布局本身就是证据，写出来只会占屏
+        transcript.append(head).append("\n\n")
         val shown = chatMsgs.takeLast(chatLimit).reversed()
         if (shown.isEmpty()) {
             transcript.append("（还没有对话）\n")
