@@ -157,6 +157,20 @@ pub fn install(source: &dyn UpdateSource, self_path: &Path) -> Result<InstallRep
 ///
 /// 返回新进程 pid (spawn 失败如实报 — 调用方保留旧进程继续服务)
 pub fn restart(self_path: &Path, args: &[String]) -> Result<u32, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: 若自身位于 .app bundle 内, 用 `open -a` 拉起 GUI
+        // (直接 spawn 裸二进制不会激活窗口, 表现为"更新后不重启")
+        let p = self_path.to_string_lossy();
+        if let Some(idx) = p.find(".app/Contents/MacOS") {
+            let bundle = &p[..idx + 4]; // 含 ".app"
+            return std::process::Command::new("open")
+                .args(["-a", bundle])
+                .spawn()
+                .map(|c| c.id())
+                .map_err(|e| e.to_string());
+        }
+    }
     std::process::Command::new(self_path)
         .args(args)
         .spawn()
