@@ -50,6 +50,7 @@
 | [network-ledger-design.md](./network-ledger-design.md) | **Bolloon Network Ledger**(设计): 签名区块 DAG + 三层最终性 + 账本重放派生 Pulse/任务/交易 + Explorer 增量加载 | draft |
 | [pulse-ledger-design.md](./pulse-ledger-design.md) | 链式活动账本 + 链上锚定 (设计计划): 哈希链/Merkle 根/最终性/由链派生的公开投影/跟区块头轮转 | proposed |
 | [deliberation-design.md](./deliberation-design.md) | **群内商议机制 (draft, 2026-10-27)**: 推选(谁发言)/发言(控麦)/并发(去重+序号+冷却); 参考 hushfusion `kernel/ha` 纯函数+端口注入+fail-closed; 外部智能体=Advisor(合作顾问, 不可命令/不可主持) | draft |
+| [group-subtopic-sharing.md](./group-subtopic-sharing.md) | **群内子讨论 + 统一分享/邀请 (draft, 2026-10-28)**: 回答"orbitdb/pubsub/iroh 群聊一样吗"——三者分层不同(存储层=orbit store / 传输层=pubsub·iroh·HTTP / 分享邀请层=应传输无关); 子讨论=**独立子 store**(parent 指针 + Whitelist ⇒ 组织内部才可写, 本地 append 也拦)而非给消息加 topic; 统一入口 `/api/groups/{id}/share`(join=签名邀请链接带 manifest / read=只读快照)与 `/api/groups/join`(邀请者公钥由 `by=<did>` 反解 ⇒ 无需人工交换公钥); 此前邀请机能在运行时**从未接线** | draft |
 | [network-pulse.md](./network-pulse.md) | v1 (2026-09-22 加 `confirmed_activity`; **2026-09-24 顶部计数逐字段定源**) | **网络脉冲**: 匿名可验证的公开观察投影 (事件白名单 · 去重 · 隐私阈值 · live/stale/unavailable · `GET /api/public/network/progress` · **冻结形状 `confirmed_activity` = 真实任务/链上活动行, 来源 chain-index/pulse-events/none**) · **`totals_scope.fields` 逐字段口径 + 「无源 = null = 页面写未接入」+ 同一概念不变量门 (顶部计数 vs 表格)** |
 | [m1-m4-closure.md](./m1-m4-closure.md) | v1 | **M1–M4 收口验收口径**(冻结): 四个唯一事实来源 + 四条不可违反规则 + 5 个用户态口径 + 跨里程碑验收矩阵 + 失败→出口映射 |
 | [product-core-focus.md](./product-core-focus.md) | v1 | **产品核心收缩**: 一句话核心承诺 + 五步闭环 + 三问过滤器 + 冻结清单(不改代码) + M1-M4 路线图 + M1 真实差距 |

@@ -29,7 +29,7 @@ use bolloon_x402::{
     paid_info::{compute_content_hash, PaidInfoItem},
 };
 use bolloon_llm::{LlmRuntime, ProviderConfig};
-use bolloon_p2p::{GroupAcl, GroupOrbitHub, KeyPair};
+use bolloon_p2p::{make_invite_link, pubkey_of_did, verify_invite_link, GroupAcl, GroupOrbitHub, KeyPair};
 use std::io::Read;
 
 /// rust 原生版数据目录 — **单一真源** (CLI/Web/App/SDK 同一口径: BolloonHome)
@@ -368,6 +368,13 @@ pub fn app(state: AppState) -> Router {
         .route("/api/groups", get(list_groups).post(create_group))
         .route("/api/groups/{id}/messages", get(group_messages))
         .route("/api/groups/{id}/say", post(group_say))
+        // 子讨论 (小组讨论 / 组织内部) + 统一分享 + 凭邀请加入
+        .route(
+            "/api/groups/{id}/topics",
+            get(group_topics).post(group_create_topic),
+        )
+        .route("/api/groups/{id}/share", post(group_share))
+        .route("/api/groups/join", post(group_join))
         // 任务公告板
         .route("/api/tasks", get(list_tasks).post(publish_task))
         .route("/api/tasks/{id}/claim", post(claim_task))
@@ -636,6 +643,188 @@ async fn group_messages(
             .collect()
     };
     Json(serde_json::json!({ "messages": out, "thinking": thinking }))
+}
+
+#[derive(Deserialize)]
+struct CreateTopicRequest {
+    name: String,
+    /// 能在这个小组里发言的成员 DID —— **其余人在这个子讨论里被 ACL 拒** ("组织内部讨论"的硬约束)
+    #[serde(default)]
+    members: Vec<String>,
+    /// 子讨论 id (不填则按 `<父群id>-t<ts>` 生成)
+    #[serde(default)]
+    id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ShareGroupRequest {
+    /// `join` = 签发邀请链接 (对方可按 ACL 写入); `read` = 只读快照页 (不加入也能看)
+    #[serde(default = "default_share_mode")]
+    mode: String,
+    /// 邀请截止 epoch ms (不填 = 7 天后)
+    #[serde(default)]
+    exp_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct JoinGroupRequest {
+    /// 群主签发的 `bolloon://join/...` 邀请链接
+    link: String,
+    /// 子讨论邀请可携带父群 id, 以便挂到正确的父下
+    #[serde(default)]
+    parent: Option<String>,
+}
+
+fn default_share_mode() -> String {
+    "read".to_string()
+}
+
+/// 分享 token = 身份私钥对 (群|时间) 签名取前 24 hex ⇒ 不可猜 (不依赖随机源)
+fn group_share_token(st: &AppState, group_id: &str, now: u64) -> String {
+    let sig = st.identity.sign(format!("groupshare|{group_id}|{now}").as_bytes());
+    sig.iter().take(12).map(|b| format!("{b:02x}")).collect()
+}
+
+/// 取邀请链接里的查询参数 (链接含 `?t=&exp=&by=&m=`)
+fn link_query(link: &str, key: &str) -> Option<String> {
+    let q = link.split_once('?')?.1;
+    q.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        (k == key).then(|| v.to_string())
+    })
+}
+
+/// POST /api/groups/{id}/topics — 在群内开**子讨论** (小组讨论 / 组织内部: 只让 `members` 发言)
+async fn group_create_topic(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateTopicRequest>,
+) -> Json<serde_json::Value> {
+    let now = chrono::Utc::now().timestamp_millis() as u64;
+    let topic_id = req
+        .id
+        .clone()
+        .unwrap_or_else(|| format!("{id}-t{:x}", now % 0xffff_ffff));
+    match st
+        .groups
+        .create_topic(&id, &topic_id, &req.name, req.members.clone(), &st.identity, now)
+    {
+        Ok(meta) => Json(serde_json::json!({
+            "id": meta.id, "name": meta.name, "parent": meta.parent,
+            "address": meta.address, "members": req.members,
+        })),
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// GET /api/groups/{id}/topics — 列出某个群的子讨论
+async fn group_topics(State(st): State<AppState>, Path(id): Path<String>) -> Json<serde_json::Value> {
+    let topics: Vec<serde_json::Value> = st
+        .groups
+        .topics(&id)
+        .iter()
+        .map(|m| serde_json::json!({
+            "id": m.id, "name": m.name, "address": m.address, "created_at_ms": m.created_at_ms,
+        }))
+        .collect();
+    Json(serde_json::json!({ "topics": topics }))
+}
+
+/// POST /api/groups/{id}/share — **统一分享**: 整群与子讨论走**同一入口、同一套判据**
+///
+/// - `mode=join`: 群主签**邀请链接** (`bolloon://join/…`, 带 manifest) ⇒ 对方开出的是**同一个** store
+///   (内容寻址, 而不是另建一个长得一样的群)
+/// - `mode=read`: **只读快照**页 (`/share/<token>`), 不加入也能看; token 由身份签名派生 ⇒ 不可猜
+async fn group_share(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ShareGroupRequest>,
+) -> Json<serde_json::Value> {
+    let now = chrono::Utc::now().timestamp_millis() as u64;
+    let Some(meta) = st.groups.meta(&id) else {
+        return Json(serde_json::json!({ "error": format!("群不存在: {id}") }));
+    };
+    match req.mode.as_str() {
+        "join" => {
+            let Some(manifest) = st.groups.manifest_of(&id) else {
+                return Json(serde_json::json!({ "error": "取不到该群 manifest (store 未打开)" }));
+            };
+            let exp = req.exp_ms.unwrap_or(now + 7 * 24 * 3600 * 1000);
+            match make_invite_link(&id, &st.identity, &manifest, exp, now) {
+                Ok(link) => Json(serde_json::json!({
+                    "mode": "join", "invite": link, "expires_at_ms": exp,
+                    "group_id": id, "address": manifest.address(),
+                })),
+                Err(e) => Json(serde_json::json!({ "error": format!("邀请链接签发失败: {e}") })),
+            }
+        }
+        "read" => {
+            let Ok(msgs) = st.groups.history(&id, 200) else {
+                return Json(serde_json::json!({ "error": format!("读不到群历史: {id}") }));
+            };
+            let self_did = st.identity.did.as_str().to_string();
+            let rows: Vec<serde_json::Value> = msgs
+                .iter()
+                .map(|m| serde_json::json!({
+                    "role": if m.signer == self_did { "user" } else { "agent" },
+                    "from": m.from, "text": m.text, "ts": m.ts,
+                    "kind": m.kind, "signer": m.signer, "hash": m.hash,
+                }))
+                .collect();
+            let n = rows.len();
+            let token = group_share_token(&st, &id, now);
+            let snapshot = serde_json::json!({
+                "token": token,
+                "kind": if meta.parent.is_some() { "topic" } else { "group" },
+                "group_id": id, "parent": meta.parent, "title": meta.name,
+                "by_did": self_did, "shared_at_ms": now, "messages": rows,
+            });
+            let dir = data_dir().join("shares");
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                return Json(serde_json::json!({ "error": e.to_string() }));
+            }
+            let body = serde_json::to_string_pretty(&snapshot).unwrap_or_default();
+            if let Err(e) = std::fs::write(dir.join(format!("{token}.json")), body) {
+                return Json(serde_json::json!({ "error": e.to_string() }));
+            }
+            Json(serde_json::json!({
+                "mode": "read", "url": format!("/share/{token}"), "token": token, "messages": n,
+            }))
+        }
+        other => Json(serde_json::json!({
+            "error": format!("未知分享模式: {other} (可用 join | read)"),
+        })),
+    }
+}
+
+/// POST /api/groups/join — 凭邀请链接加入**同一个** store
+///
+/// 把此前**从未接线的**签名邀请机能在运行时闭环。验签用邀请者公钥, **从链接里的 `by=<did>` 反解**
+/// (`did:pi:` / `did:key:z` 都支持) ⇒ 不需要额外人工交换公钥。
+async fn group_join(
+    State(st): State<AppState>,
+    Json(req): Json<JoinGroupRequest>,
+) -> Json<serde_json::Value> {
+    let now = chrono::Utc::now().timestamp_millis() as u64;
+    let Some(inviter_did) = link_query(&req.link, "by") else {
+        return Json(serde_json::json!({ "error": "邀请链接里读不到邀请者 DID (by=)" }));
+    };
+    let Some(pk) = pubkey_of_did(&inviter_did) else {
+        return Json(serde_json::json!({
+            "error": format!("邀请者 DID 反解不出公钥: {inviter_did}"),
+        }));
+    };
+    match verify_invite_link(&req.link, now, &pk) {
+        Ok((gid, manifest)) => {
+            let meta = st.groups.import_group_as(&gid, manifest, req.parent.clone(), now);
+            Json(serde_json::json!({
+                "group_id": meta.id, "name": meta.name, "parent": meta.parent,
+                "address": meta.address,
+                "same_store_as_inviter": st.groups.address_of(&gid).as_deref() == Some(meta.address.as_str()),
+            }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": format!("邀请链接校验失败: {e}") })),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1226,10 +1415,16 @@ mod route_tests {
         )
     }
 
+    /// `BOLLOON_HOME` 是**进程级全局环境变量**: 两条起真服务的 e2e 并行跑会互相串
+    /// (后写的那个把前一条的 home 抢走)。用一把静态锁把它们串起来 ——
+    /// 不加这把锁, 通讯录用例会把这条的目录换成自己的。
+    static HOME_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// 真起一个服务 (端口 0), 用 ureq 走真 HTTP:
     /// bootstrap 带真实消息流 → 分享链接能打开 → 梦想文档作者取 profile → 状态登记
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn share_bootstrap_dream_routes_e2e() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let home = std::env::temp_dir().join(format!("bolloon-web-e2e-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
@@ -1290,6 +1485,63 @@ mod route_tests {
             // 会话不存在 → 明确报错, 不返回假链接
             let miss = post_json("/api/sessions/share", serde_json::json!({ "id": "sess-nope" }));
             assert!(miss["error"].as_str().unwrap().contains("会话不存在"));
+
+            // 4) 群 + 子讨论: **分开讨论** —— 小组消息不混进父群
+            let grp = post_json("/api/groups", serde_json::json!({ "name": "研发群" }));
+            let gid = grp["id"].as_str().expect("group id").to_string();
+            let topic = post_json(
+                &format!("/api/groups/{gid}/topics"),
+                serde_json::json!({ "id": "t1", "name": "上线评审", "members": [] }),
+            );
+            assert_eq!(topic["id"], serde_json::json!("t1"), "{topic}");
+            assert_eq!(topic["parent"], serde_json::json!(gid), "{topic}");
+
+            let tid = "t1".to_string();
+            let r1 = post_json(&format!("/api/groups/{tid}/say"), serde_json::json!({ "text": "小组内部意见" }));
+            let r2 = post_json(&format!("/api/groups/{gid}/say"), serde_json::json!({ "text": "群里公开说" }));
+            assert!(r1["error"].is_null(), "子讨论发言应成功: {r1}");
+            assert!(r2["error"].is_null(), "父群发言应成功: {r2}");
+
+            let sub = get_json(&format!("/api/groups/{tid}/messages"));
+            let parent = get_json(&format!("/api/groups/{gid}/messages"));
+            // 注意: 群消息的 HTTP 形状字段是 content/sender/seq (不是 text)
+            let sub_txt: Vec<&str> = sub["messages"].as_array().unwrap().iter().filter_map(|m| m["content"].as_str()).collect();
+            let par_txt: Vec<&str> = parent["messages"].as_array().unwrap().iter().filter_map(|m| m["content"].as_str()).collect();
+            assert!(sub_txt.contains(&"小组内部意见"), "{sub_txt:?}");
+            assert!(!par_txt.contains(&"小组内部意见"), "子讨论消息不该混进父群: {par_txt:?}");
+            assert!(par_txt.contains(&"群里公开说"), "{par_txt:?}");
+            assert!(
+                parent["messages"].as_array().unwrap().iter().any(|m| m["kind"] == "topic"),
+                "父群应留有签名 topic 记录"
+            );
+            assert_eq!(get_json(&format!("/api/groups/{gid}/topics"))["topics"].as_array().unwrap().len(), 1);
+
+            // 5) **统一分享**: 整群与子讨论同一入口、同一套判据
+            let join_share = post_json(&format!("/api/groups/{gid}/share"), serde_json::json!({ "mode": "join" }));
+            let link = join_share["invite"].as_str().expect("invite link").to_string();
+            assert!(link.starts_with(&format!("bolloon://join/{gid}?")), "{link}");
+            assert!(link.contains("&m="), "邀请链接必须带 manifest ⇒ 对方开同一个 store: {link}");
+
+            let read_share = post_json(&format!("/api/groups/{gid}/share"), serde_json::json!({ "mode": "read" }));
+            let gtok = read_share["token"].as_str().expect("token").to_string();
+            assert_eq!(gtok.len(), 24, "{read_share}");
+            assert!(get_text(&format!("/share/{gtok}")).contains("群里公开说"), "只读快照页应有群消息");
+            let gsnap = get_json(&format!("/api/share/{gtok}"));
+            assert_eq!(gsnap["kind"], serde_json::json!("group"), "{gsnap}");
+            assert_eq!(gsnap["group_id"], serde_json::json!(gid));
+
+            // 未知模式 → 明确报错, 不静默走默认
+            let bad = post_json(&format!("/api/groups/{gid}/share"), serde_json::json!({ "mode": "zip" }));
+            assert!(bad["error"].as_str().unwrap().contains("未知分享模式"), "{bad}");
+
+            // 6) **凭邀请加入**闭环: 从链接的 by=<did> 反解邀请者公钥验签 ⇒ 开出同一个 store
+            let joined = post_json("/api/groups/join", serde_json::json!({ "link": link.clone() }));
+            assert!(joined["error"].is_null(), "邀请加入应成功: {joined}");
+            assert_eq!(joined["same_store_as_inviter"], serde_json::json!(true), "{joined}");
+            // 篡改签名 ⇒ 必须被拒 (不让伪造链接混进同一个 store)
+            let tampered = link.replacen("t=", "t=zz", 1);
+            let bad_join = post_json("/api/groups/join", serde_json::json!({ "link": tampered }));
+            assert!(!bad_join["error"].is_null(), "伪造邀请链接必须被拒: {bad_join}");
 
             // 4) 梦想文档: 作者取真实 profile 名 (不硬编码 user), 并登记到状态
             let dream = post_json("/api/dream/topic", serde_json::json!({ "topic": "核聚变口径" }));
@@ -1433,5 +1685,106 @@ mod route_tests {
         })
         .await
         .unwrap();
+    }
+
+    /// 通讯录 (2026-10-28): 真起服务 + 真 HTTP —— 「顶部搜索框搜手机号或姓名找出特定的人」。
+    ///
+    /// 钉住三件事:
+    /// ① **姓名**走本机名片本, 大小写不敏感, 改名不产生重影;
+    /// ② **手机号**形状的查询真的去做了跨机尝试 (`cross_machine_tried`), 但没登记对端时
+    ///    **如实不命中** —— 不拿本机目录冒充对端、不把"没对手域"说成"查无此人";
+    /// ③ 空查询 = 打开通讯录的全量。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn contacts_search_endpoint_e2e() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-web-contacts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+
+        let state = AppState::new(offline_llm());
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = serve_on(state, listener).await;
+        });
+        let base = format!("http://{addr}");
+
+        tokio::task::spawn_blocking(move || {
+            let get_json = |path: &str| -> serde_json::Value {
+                ureq::get(&format!("{base}{path}")).call().unwrap().into_json().unwrap()
+            };
+            let post_json = |path: &str, body: serde_json::Value| -> serde_json::Value {
+                ureq::post(&format!("{base}{path}"))
+                    .send_json(body)
+                    .unwrap()
+                    .into_json()
+                    .unwrap()
+            };
+
+            // 1) 起手是空的
+            let empty = get_json("/api/contacts");
+            assert!(empty["items"].as_array().unwrap().is_empty(), "新 home 通讯录为空: {empty}");
+
+            // 2) 存两个备注名
+            let a = post_json(
+                "/api/contacts/set",
+                serde_json::json!({ "did": "did:pi:AAA111", "name": "老李" }),
+            );
+            assert_eq!(a["ok"], serde_json::json!(true), "{a}");
+            post_json(
+                "/api/contacts/set",
+                serde_json::json!({ "did": "did:pi:BBB222", "name": "Leo" }),
+            );
+
+            // 3) 按**姓名**搜 — 大小写不敏感, 且明确不是跨机搜索
+            let s1 = post_json("/api/contacts/search", serde_json::json!({ "query": "老李" }));
+            assert_eq!(s1["count"], serde_json::json!(1), "{s1}");
+            assert_eq!(s1["locals"][0]["did"], serde_json::json!("did:pi:AAA111"));
+            assert_eq!(s1["locals"][0]["name"], serde_json::json!("老李"));
+            assert_eq!(s1["cross_machine_tried"], serde_json::json!(false), "名字走本机名片本, 不假装跨机: {s1}");
+
+            let s2 = post_json("/api/contacts/search", serde_json::json!({ "query": "leo" }));
+            assert_eq!(s2["count"], serde_json::json!(1), "大小写不敏感: {s2}");
+            assert_eq!(s2["locals"][0]["did"], serde_json::json!("did:pi:BBB222"));
+
+            // DID 片段也能搜到 (拿半截 DID 找人)
+            let s3 = post_json("/api/contacts/search", serde_json::json!({ "query": "AAA111" }));
+            assert_eq!(s3["count"], serde_json::json!(1), "{s3}");
+
+            // 4) 按**手机号**搜 — 形状合法 ⇒ 真的去做了跨机尝试; 但**没登记任何对端**
+            //    ⇒ 如实不命中, 不拿本机目录冒充对端
+            let s4 = post_json(
+                "/api/contacts/search",
+                serde_json::json!({ "query": "13800001111" }),
+            );
+            assert_eq!(s4["cross_machine_tried"], serde_json::json!(true), "手机号形状要走跨机: {s4}");
+            assert!(s4["directory"].is_null(), "没有对手域就不该有目录命中 — 不冒充: {s4}");
+
+            // 5) 空查询 = 打开通讯录的全量
+            let s5 = post_json("/api/contacts/search", serde_json::json!({ "query": "" }));
+            assert_eq!(s5["count"], serde_json::json!(2), "{s5}");
+
+            // 6) 改名不产生重影 (同一 DID 只留一条)
+            post_json(
+                "/api/contacts/set",
+                serde_json::json!({ "did": "did:pi:AAA111", "name": "老李叔" }),
+            );
+            let s6 = post_json("/api/contacts/search", serde_json::json!({ "query": "" }));
+            assert_eq!(s6["count"], serde_json::json!(2), "改名而不是新增: {s6}");
+            let s7 = post_json("/api/contacts/search", serde_json::json!({ "query": "老李" }));
+            assert_eq!(s7["locals"][0]["name"], serde_json::json!("老李叔"), "{s7}");
+
+            // 7) 空名字写得进去就出鬼了 → 拒
+            let bad = post_json(
+                "/api/contacts/set",
+                serde_json::json!({ "did": "did:pi:CCC333", "name": "  " }),
+            );
+            assert!(bad["error"].as_str().is_some(), "空名字必须拒: {bad}");
+        })
+        .await
+        .unwrap();
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

@@ -534,3 +534,59 @@ TS 是**功能与行为基准**, Rust 是**目标架构**; 迁移 ≠ 逐行翻�
 - 取消目前只接 Ctrl+C; Esc / UI 中断未接。
 - 审计落盘走 `HOME` / `USERPROFILE`。
 - 检索与选择层 (BM25 / 向量 / 重排) 未建 —— 按序排在工具族迁移之后。
+
+## 2026-10-28 第二十四批 (通讯录: 网页端/桌面端统一的联系人搜索 — 手机号跨机 + 名称本机)
+
+leo 需求原话: 「网页端和 APP 端点击『通讯录』按钮后, 应进入搜索或联系人界面。在页面顶部有一个搜索框,
+搜索手机号或名称即可展示出特定的人。该功能也是跨机功能。」
+
+**动手前查清的三件事 (决定了整套设计)**: ① 网页端与 APP 端是**同一个 SPA**
+(`bolloon-web/assets/index.html`, `include_str!` 编译期内嵌), Tauri 只是加载它并追加 `?app=desktop`;
+② 📒 通讯录此前**只在桌面三栏显形** (`body.desktop3col` 才出现的第一栏 rail), **网页端没有入口**,
+而且两端都**没有搜索框**; ③ `FriendBook.friends` 只存裸 DID ⇒ 「按名称搜」此前**无数据可搜**。
+
+| 层 | 落地 | 纪律 |
+|---|---|---|
+| **跨机 (手机号/邮箱)** | **复用既有真实现**, 一行传输没新写: `NativeState.directory_peers` → 真 HTTP 打到对端 `POST /api/directory/rpc` → 对端用**他自己的 pepper** 查自己的目录 | pepper 永不出本机; 删掉任何"把自己当对端"的假象 |
+| **`bolloon-agent/contacts.rs` `ContactBook`** (新, 7 单测) | 本机名片本: `ContactCard{did,name,source,added_at_ms}` + `upsert/remove/name_of/search` + 纯函数 `card_matches`(名称或 DID 子串, 大小写不敏感, 空查询=全量) 与 `merge_directory_view`(好友 ∪ 名片本, 按 DID 去重) | 名字**只在本地**不对外同步 —— 名字没有盲化索引, **不假装它是全网搜索**; 好友关系仍在 `FriendBook`, 名片本只回答"这个人叫什么" |
+| **`NativeState.contacts`** | 挂 `#[serde(default)]`, 落在既有 `native-state.json` | 不开新文件、不开全局 Map; 旧状态文件照读 |
+| **端点** | `GET /api/contacts` · `POST /api/contacts/set` · `POST /api/contacts/search`(**一次同时返回** `directory` 与 `locals`); `/api/friends` 加 `items` 带名字视图 | `directory.cross_machine` 如实标注"是不是真去了对端"; 没登记对手域 ⇒ `found:false` + `notes` 说明, **不把网络失败伪装成查无此人** |
+| **SPA UI** | header `#contactsTabBtn` 📒(**网页端与桌面端都保留** — 不像 `#worldTabBtn`/`#roomBtn` 在桌面隐藏, 因为 rail 的 📒 只切第二栏列表、**不给搜索屏**) + `#contactsView` 面板 + **顶部搜索框** (`ctInput`/`ctGo`, Enter 即搜); 结果行标「跨机命中(另一台机器)/本机目录命中 · 归属已验签」 | 目录命中可**加好友**(走既有 `remote_add_friend`+consent, **未验签条目不给加**) 或**存为联系人**(写备注名); 动态按钮走事件委托 + `data-*`, 不用内联 onclick (名字里的引号会把它打断); 备注输入走页内 `askText` (Tauri 禁用 `window.prompt`) |
+
+**验证 (真跑)**: `cargo check --workspace --all-targets` **0 error** · `cargo test --workspace`
+**860 passed / 0 failed** (新增 `contacts.rs` 单测 7 条 + `bolloon-web` 真起服务走真 HTTP 的
+`contacts_search_endpoint_e2e` 1 条, 覆盖: 空起手 → 存两个备注名 → 按姓名命中且大小写不敏感 →
+DID 片段可搜 → 手机号形状**真的去做了跨机尝试**(`cross_machine_tried:true`)但无对手域时**如实不命中** →
+空查询=全量 → 改名不产生重影 → 空名字被拒) · 内联 JS 抽出 `node --check` 通过。
+
+**踩到的坑**: ① 期间被 `bolloon-p2p/group_orbit.rs` 缺 `parent` 字段挡住整仓编译 —— 那是**别人半成品正在写**,
+重跑即过; 连带现象: 我的 `contacts.rs`/`native.rs` 改动被中途提交 `f1d759c9` 吸收了 ⇒ **有另一个会话同时在改这棵树**
+(已提示 leo, 避免两份重复实现)。② `BOLLOON_HOME` 是进程级全局环境变量, 两条起真服务的 e2e 并行会互抢 home,
+故加 `HOME_GUARD` 静态锁把两条串行(现有那条也补了取锁)。
+
+**诚实边界**: 名称搜索**只覆盖本机名片本** —— 没有全网姓名字典, 没存过的名字搜不到;
+跨机查询需**先登记对端基址** (`/api/directory/peers`), 目前是 HTTP 点到点, **没有节点发现/心跳, 不是 DHT**;
+从搜索结果到"给这个人发消息"的会话入口尚未接线 (聊天仍走群聊/智能体会话面板)。
+
+---
+
+## 2026-10-28 第二十五批 (群内子讨论 + 统一分享/邀请：小组讨论 & 组织内部讨论)
+
+**动机**: leo「分享和邀请加入 orbitdb 的群聊和 pubsub 和 iroh 群聊一样吗？在一个群聊里面，小组内进行讨论，也就是一个组织内部进行讨论。所以有的时候，你需要把这个 orbit 的群聊和其他的功能混合在一块儿，或者是分开讨论。可以分享是最好的。」
+
+**先钉事实（再谈一样不一样）**: ① **三者不在同一层** —— 存储/权威层 = orbit store（`GroupOrbitHub`/`OrbitStore`）；传输层 = pubsub / iroh（TS `gateway-group.ts` / `hybrid-messenger.ts` / `iroh-transport.ts`，Rust 侧仍 HTTP 点到点）；**pubsub / iroh 不是"群"**，也没有成员登记 ⇒ 把它们与群并列是分层错位。② 分享此前**分裂三套**（会话 token 快照 / world card 信封 broadcast·friends / orbit 签名邀请链接），且**没有群分享入口**。③ `make_invite_link` / `verify_invite_link` / `import_group` **只被 `group_orbit.rs` 自身单测调用过，运行时从未接线**。
+
+| Rust 模块 / 端点 | 冻结语义 |
+| --- | --- |
+| **`group_orbit.rs`** | 新增 `GroupMeta.parent`（**`serde(default)` 兼容既有落盘索引**）+ `EntryKind::Topic` + `create_topic` / `topics` / `import_group_as` / `manifest_of`。**子讨论 = 独立子 store**（自带 manifest ⇒ 自带 ACL），而非给每条消息加 topic 字段 ⇒ 分享/邀请与整群**自动同源**，且不迁移既有 entry 结构 |
+| **组织内部讨论（硬约束）** | 子讨论 ACL = `GroupAcl::Whitelist(members)` ⇒ 非成员写不进去。已核实 `WriteAcl::allows`（owner 恒可写）与既有单测 `acl_owner_only_blocks_stranger_on_disk_store`：**本地 append 也拦外人**，不是只在接收复制时才拦 |
+| **顺序即原子性** | `create_topic` 先向父群写一条**签名** `topic` entry（含子讨论 id/address/成员），成功才建子 store ⇒ 父群写不进则失败，且**不留孤儿子群**（`topic_requires_parent_write_permission` 为证） |
+| **统一分享** `POST /api/groups/{id}/share` | **整群与子讨论同一入口、同一套判据**：`mode=join` ⇒ 群主签 `bolloon://join/…`（**带 manifest** ⇒ 对方开出的是同一个 store，不是长得一样的群）；`mode=read` ⇒ `/share/<token>` 只读快照页（token 由身份签名派生取前 24 hex，不可猜） |
+| **邀请加入** `POST /api/groups/join` | 把此前从未接线的邀请机能在运行时闭环。验签用的**邀请者公钥从链接里的 `by=<did>` 经 `Did::pubkey()` 反解**（`did:pi:` / `did:key:z` 均支持）⇒ **无需额外人工交换公钥**；签名被篡改必拒 |
+| **复用而非新增** | 子讨论本身就是一个群 id ⇒ `/api/groups/{id}/say` 与 `/api/groups/{id}/messages` **一行未改即可用于子讨论** |
+
+**门禁（真跑）**: `cargo test -p bolloon-p2p` **66/0**（新增 3 条：`topic_internal_write_outsider_refused` / `topic_is_separate_from_parent_but_recorded_in_it` / `topic_requires_parent_write_permission`）；`cargo test -p bolloon-web` **17/0**（`share_bootstrap_dream_routes_e2e` 内真跑 HTTP 全链路：建群 → 建子讨论 → 两边发帖 → **子讨论消息不混进父群** → 父群留有签名 topic 记录 → `join` 链接带 manifest → `read` 快照页真能打开 → 未知模式明确报错 → 凭链接加入且同一 store → 篡改签名被拒）；`cargo test -p bolloon-agent` **405/0**；`cargo build --workspace` **0 error**；wiki `wiki_check` / `wiki_lint --strict=v2` OK（新增 `group-subtopic-sharing.md`，已在 `index.md` 注册）。
+
+**拾遗（只有真跑才校正得了的）**: 群消息的 HTTP 形状字段是 `content` / `sender` / `seq` / `timestamp_ms`，**不是** `text` / `signer` / `ts` —— 按印象写断言会得到空列表。
+
+**诚实边界**: ① 子讨论的访问控制是**谁能写**的 scope，**不是读隐私**（拿到底层 block 复制权限的人仍读得到 ⇒ 要"内部才能读"需另做加密或不分发，本批未做）；② `Whitelist` 改成员 ⇒ manifest 变 ⇒ **address 变**，本批**未**提供"就地修改子讨论成员"的迁移路径；③ 邀请链接只校**签名与过期**，不校"邀请者此刻是否仍是被授权的人"（策略取舍，未收紧）；④ 传输层**仍未切到 iroh**（Rust 侧跨机仍是 HTTP 点到点），本批的分享/邀请是逻辑指针层 ⇒ 换传输不改语义，但**没有**在真 iroh 上跑过；⑤ 只读快照页复用会话分享的通用渲染（按 `role` 显示"我"/"智能体"），未为群聊定制视图。

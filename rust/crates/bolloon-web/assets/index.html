@@ -217,6 +217,7 @@
   .composer-footer{display:flex;gap:8px;padding:0 16px 12px}
   .mini{font-size:12px;padding:5px 9px;border-radius:999px;color:var(--muted)}
   .mini:hover{color:var(--text)}
+  .mini svg{width:14px;height:14px;vertical-align:-2px}
   /* ── Apple iOS 风格滑动开关 (可复用 ToggleSwitch) ── */
   .ts{display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none;font:inherit;color:var(--text);line-height:1}
   .ts input{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;white-space:nowrap;clip:rect(0 0 0 0);clip-path:inset(50%)}
@@ -516,6 +517,8 @@
       <span id="agentDid" style="color:var(--muted)"></span>
       <span class="grow"></span>
       <button id="worldTabBtn" class="mini" title="世界模式（机会流）">🌍 世界 <span id="worldBadge" style="display:none"></span></button>
+      <!-- 2026-10-28 (用户): 通讯录 — 网页端与桌面 App 都从这里进 (搜索屏而非仅侧栏列表)。图标用 SVG (与桌面三栏 rail 同一枚地址簿图标) -->
+      <button id="contactsTabBtn" class="mini" title="通讯录（按手机号或姓名找人）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M6 15c0-1.7 1.3-3 3-3s3 1.3 3 3"/><path d="M14 8h4M14 12h4M14 16h4"/></svg> 通讯录</button>
       <button id="roomBtn" class="mini" title="打开内部商议">内部商议</button>
     </header>
     <div id="chat"><div class="empty"><h1>我们要做什么？</h1></div></div>
@@ -533,6 +536,18 @@
         </div>
         <div class="world-stat" id="worldStats"></div>
       </aside>
+    </div>
+    <!-- 2026-10-28: 通讯录搜索面板 — 顶部搜索框找人 (网页端与桌面 App 同一份 DOM)
+         手机号/邮箱 ⇒ POST /api/contacts/search → 跨机目录 (真 HTTP 到已登记对端 /api/directory/rpc)
+         姓名/昵称   ⇒ 同一接口的 locals → 本机名片本 ContactBook -->
+    <div id="contactsView">
+      <div class="ct-head">通讯录 — 输手机号可跨机查找另一台机器上已发布目录的人；输姓名找本机联系人</div>
+      <div class="ct-search">
+        <input id="ctInput" type="search" placeholder="手机号 或 姓名" autocomplete="off" />
+        <button class="mini" id="ctGo">搜索</button>
+      </div>
+      <div class="ct-head" id="ctStatus"></div>
+      <div id="ctResults" style="display:flex;flex-direction:column;gap:8px"></div>
     </div>
     <!-- 2026-10-27: 群聊面板 (通讯录 → 群聊) — 真收发: GET /api/groups/{id}/messages · POST /api/groups/{id}/say (Ed25519 签名) -->
     <div id="groupView">
@@ -2188,7 +2203,10 @@ $('groupInput').addEventListener('keydown',e=>{
 function setPanel(panel) {
   const m = document.querySelector("main");
   m.classList.toggle("world-mode", panel === "world");
+  m.classList.toggle("contacts-mode", panel === "contacts");
   $("worldTabBtn").style.color = panel === "world" ? "var(--accent)" : "";
+  const _ctTab = $("contactsTabBtn");
+  if (_ctTab) _ctTab.style.color = panel === "contacts" ? "var(--accent)" : "";
   // 桌面三栏: 第一/二栏随主区面板联动 (header tab / /world 命令同样生效),
   //   但**不覆盖通讯录模块** — 它是独立模块不是面板, 否则点群聊/好友会被打回聊天模块。
   if (isDesktopShell && (desktopModule === 'chat' || desktopModule === 'world')) {
@@ -2203,6 +2221,137 @@ $("worldTabBtn").addEventListener("click", () => {
   const isWorld = document.querySelector("main").classList.contains("world-mode");
   setPanel(isWorld ? "chat" : "world");
 });
+
+// ── 2026-10-28 (用户): 通讯录 —— 网页端与桌面 App **同一个搜索面板、同一份代码** ──
+// 顶部输入框「搜手机号或姓名，展示出特定的人」。后端 /api/contacts/search 一次返回两类命中:
+//   ① directory — 手机号/邮箱形状: 先本机目录, 再**跨机**问已登记对端
+//      (真 HTTP 打到对端 /api/directory/rpc, 对端用**他自己的 pepper** 查自己的目录
+//       ⇒ 这就是"能找到另一台机器上的人"的部分; cross_machine 字段如实标注是不是真去了对端)
+//   ② locals    — 姓名/昵称: 查本机名片本 ContactBook (名字没有全网索引 ⇒ 不假装能搜全网)
+// notes 里承载"对端不可达"一类原因, 展示出来 —— **不把网络失败伪装成查无此人**。
+let ctLastQuery = "";
+
+async function ctSearch() {
+  const inp = $("ctInput"), box = $("ctResults"), st = $("ctStatus");
+  if (!inp || !box) return;
+  const q = (inp.value || "").trim();
+  ctLastQuery = q;
+  box.innerHTML = '<div class="ct-head">搜索中…</div>';
+  if (st) st.textContent = "";
+  try {
+    const r = await api("/api/contacts/search", { method: "POST", body: JSON.stringify({ query: q }) });
+    ctRender(r, q);
+  } catch (e) {
+    box.innerHTML = '<div class="ct-head">搜索失败: ' + escapeHTML(String((e && e.message) || e)) + "</div>";
+  }
+}
+
+function ctCard(did, name, sub, kind, verified) {
+  const label = (name && String(name).trim()) ? String(name) : shortDid(did);
+  const renameBtn =
+    `<button class="mini ct-act" data-act="rename" data-did="${escapeHTML(did || "")}">` +
+    ((name && String(name).trim()) ? "改名" : "加备注") + "</button>";
+  const acts =
+    kind === "directory"
+      ? (verified
+          ? `<button class="mini ct-act" data-act="add" data-contact="${escapeHTML(ctLastQuery)}">加好友</button>`
+          : '<span class="ct-sub">归属未验签 · 不可加</span>') +
+        `<button class="mini ct-act" data-act="rename" data-did="${escapeHTML(did || "")}">存为联系人</button>`
+      : renameBtn;
+  return `<div class="ct-row">
+    <div class="ct-ava">${escapeHTML(String(label).slice(0, 1))}</div>
+    <div class="ct-who">
+      <div class="ct-name">${escapeHTML(label)}</div>
+      <div class="ct-sub">${escapeHTML(sub || "")}</div>
+    </div>
+    <div class="ct-acts">${acts}</div>
+  </div>`;
+}
+
+function ctRender(r, q) {
+  const box = $("ctResults");
+  if (!box) return;
+  const rows = [];
+  const d = r.directory;
+  if (d && d.did) {
+    const via = d.cross_machine ? "跨机命中 (另一台机器)" : "本机目录命中";
+    const sign = d.verified ? "归属已验签" : "归属未验签";
+    rows.push(ctCard(d.did, d.name, via + " · " + sign, "directory", d.verified === true));
+  }
+  for (const c of (r.locals || [])) {
+    rows.push(ctCard(c.did, c.name, c.is_friend ? "联系人 · 已是好友" : "联系人", "contact", true));
+  }
+  const notes = (r.notes || []).length
+    ? `<div class="ct-head">${escapeHTML((r.notes || []).join(" · "))}</div>`
+    : "";
+  const head = `<div class="ct-head">${
+    q ? `“${escapeHTML(q)}” 找到 ${rows.length} 人` : `共 ${rows.length} 位联系人`
+  }</div>`;
+  const empty = rows.length
+    ? ""
+    : '<div class="ct-head">没有匹配的人 — 手机号需对方已发布目录且在线，才会跨机可见</div>';
+  box.innerHTML = head + notes + rows.join("") + empty;
+}
+
+// 加好友: 走既有跨机链路 (对方 consent 后才算好友, 本机不自动通过)
+async function ctAddFriend(contact) {
+  const st = $("ctStatus");
+  try {
+    const r = await api("/api/friends/request", { method: "POST", body: JSON.stringify({ contact }) });
+    if (r && r.error) throw new Error(r.error);
+    if (st) st.textContent = "✓ 好友申请已发出 (需对方同意)" + ((r && r.detail) ? " · " + r.detail : "");
+    await ctSearch();
+  } catch (e) {
+    if (st) st.textContent = "加好友失败: " + String((e && e.message) || e);
+  }
+}
+
+// 备注名称保存在本机名片本 (不像联系方式那样做盲化; 名字只在本地, 不对外同步)
+async function ctRename(did) {
+  const st = $("ctStatus");
+  if (!did) return;
+  const nm = await askText("联系人备注", "", "给 " + did.slice(0, 16) + "… 起个名字");
+  if (nm == null || !String(nm).trim()) return;
+  try {
+    const r = await api("/api/contacts/set", { method: "POST", body: JSON.stringify({ did, name: String(nm).trim() }) });
+    if (r && r.error) throw new Error(r.error);
+    if (st) st.textContent = "✓ 已保存备注";
+    await ctSearch();
+  } catch (e) {
+    if (st) st.textContent = "保存失败: " + String((e && e.message) || e);
+  }
+}
+
+const ctTabBtn = $("contactsTabBtn");
+if (ctTabBtn) {
+  ctTabBtn.addEventListener("click", () => {
+    const isCt = document.querySelector("main").classList.contains("contacts-mode");
+    setPanel(isCt ? "chat" : "contacts");
+    if (!isCt) {
+      // 群聊面板也会占主区; 开通讯录前先收掉, 否则 CSS 互斥导致面板不显
+      if (typeof activeGroupId !== "undefined" && activeGroupId) closeGroup();
+      ctSearch();
+    }
+  });
+}
+if ($("ctGo")) $("ctGo").addEventListener("click", ctSearch);
+if ($("ctInput")) {
+  $("ctInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      ctSearch();
+    }
+  });
+}
+// 事件委托: 动态渲染出来的按钮 (内联 onclick 会被名字里的引号打断, 这里只用 data-* 传 DID)
+if ($("ctResults")) {
+  $("ctResults").addEventListener("click", (ev) => {
+    const b = ev.target && ev.target.closest ? ev.target.closest(".ct-act") : null;
+    if (!b) return;
+    if (b.dataset.act === "add") ctAddFriend(b.dataset.contact || "");
+    else if (b.dataset.act === "rename") ctRename(b.dataset.did || "");
+  });
+}
 
 // 输入框 /world ⇄ /chat 命令 (对齐 TS: 本地 UI 命令, 不发消息)
 const _origSend = window.send;
