@@ -316,6 +316,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/chat", post(crate::native::chat))
         // 眼镜端语音: POST 原始 WAV → 本机 whisper 转文本
         .route("/api/asr", post(crate::asr::asr))
+        // 判断力/意图自动存档（电脑总账 + 智能体侧账）
+        .route("/api/archive", post(crate::archive::archive))
+        .route("/api/archive/summary", get(crate::archive::summary))
         // 眼镜端「扫一眼」: POST 图片 → 离线 OCR + 意图匹配
         .route("/api/vision", post(crate::vision::vision))
         .route("/api/chat/stream", post(crate::native::chat_stream))

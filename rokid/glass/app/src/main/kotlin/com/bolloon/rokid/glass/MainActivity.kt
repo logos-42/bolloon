@@ -13,6 +13,7 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import org.json.JSONObject
 
 /**
  * Bolloon 眼镜主页 — 480x380 / 无触屏，全靠触摸面板按键驱动。
@@ -82,6 +83,7 @@ class MainActivity : Activity() {
     private lateinit var splash: TextView
     private lateinit var sphere: SphereView
     private lateinit var sphereHint: TextView
+    private lateinit var topBrand: TextView
     private lateinit var mainCol: LinearLayout
     private lateinit var widgetBar: LinearLayout
     private lateinit var widgetTitle: TextView
@@ -102,6 +104,11 @@ class MainActivity : Activity() {
         splash.visibility = TextView.VISIBLE
         render()
         refresh()
+        // 启动即留一条决策记录：这也是"眼镜端 → 节点存档"通路的自检点
+        Archive.record(
+            this, Archive.KIND_JUDGMENT, "glass-app", null,
+            JSONObject().put("decision", "app_open").put("mode", mode.name),
+        )
         splash.postDelayed({ splash.visibility = TextView.GONE }, 900)
         // 常驻轻刷新：屏幕上看到的余额/消息/卡片不会长期停在旧值
         val ticker = android.os.Handler(mainLooper)
@@ -136,9 +143,9 @@ class MainActivity : Activity() {
             setPadding(dp(8), dp(3), dp(6), dp(3))
         }
         logo = TextView(this).apply {
-            text = "◉ bolloon"
+            text = "◉ Bolloon · 帛龙"
             textSize = 13f
-            setTextColor(Color.WHITE)
+            setTextColor(Color.parseColor("#E6FF00"))
             setTypeface(typeface, Typeface.BOLD)
         }
         header = TextView(this).apply {
@@ -213,6 +220,19 @@ class MainActivity : Activity() {
             visibility = TextView.GONE
         }
         outer.addView(sphere)
+        topBrand = TextView(this).apply {
+            text = "◉ Bolloon · 帛龙"
+            textSize = 12f
+            setTextColor(Color.parseColor("#E6FF00"))
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            val lp = android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.gravity = Gravity.TOP or Gravity.START
+            layoutParams = lp
+            visibility = TextView.GONE
+        }
+        outer.addView(topBrand)
         sphereHint = TextView(this).apply {
             textSize = 9f
             gravity = Gravity.CENTER
@@ -239,7 +259,7 @@ class MainActivity : Activity() {
             layoutParams = lp
         }
         widgetTitle = TextView(this).apply {
-            text = "◉ bolloon"
+            text = "◉ Bolloon 帛龙"
             textSize = 11f
             setTextColor(Color.WHITE)
             setTypeface(typeface, Typeface.BOLD)
@@ -255,7 +275,7 @@ class MainActivity : Activity() {
         outer.addView(widgetBar)
 
         splash = TextView(this).apply {
-            text = "◉ bolloon"
+            text = "◉ Bolloon 帛龙"
             textSize = 26f
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
@@ -272,12 +292,13 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
-        logo.text = "◉ bolloon"
+        logo.text = "◉ Bolloon · 帛龙"
         header.text = statusLine
         if (screen == Screen.WIDGET) { renderWidget(); return }
         if (mode == Mode.SPHERE && screen == Screen.HOME) { renderSphere(); return }
         sphere.visibility = TextView.GONE
         sphereHint.visibility = TextView.GONE
+        topBrand.visibility = TextView.GONE
         mainCol.visibility = LinearLayout.VISIBLE
         if (screen == Screen.HOME) {
             renderSidebar()
@@ -308,10 +329,11 @@ class MainActivity : Activity() {
         mainCol.visibility = LinearLayout.GONE
         sphere.visibility = TextView.VISIBLE
         sphereHint.visibility = TextView.VISIBLE
+        topBrand.visibility = TextView.VISIBLE
         sphere.labels = SphereView.DEFAULT_LABELS
         sphere.selected = sphereSel
         sphereHint.text = if (sphereSel == 0)
-            "◉ bolloon · 单击切到卡片模式 · 前后滑换球"
+            "◉ Bolloon 帛龙 · 单击切到卡片模式 · 前后滑换球"
         else
             "${Section.values()[sphereSel - 1].label} · 单击进入 · 前后滑换球"
     }
@@ -426,13 +448,13 @@ class MainActivity : Activity() {
             hint.text = "外壳已选中 · 单击:切回球体模式 · 长按:最小化 · 往下走:回到内容"
         } else {
             logo.setBackgroundColor(Color.TRANSPARENT)
-            logo.setTextColor(Color.WHITE)
+            logo.setTextColor(Color.parseColor("#E6FF00"))
         }
     }
 
     private fun renderWidget() {
         val opp = opportunities.getOrNull(0)
-        widgetTitle.text = "◉ bolloon" + if (newDrops > 0) "  +$newDrops" else ""
+        widgetTitle.text = "◉ Bolloon 帛龙" + if (newDrops > 0) "  +$newDrops" else ""
         widgetBody.text = opp?.title ?: "等待世界消息…"
     }
 
@@ -568,6 +590,10 @@ class MainActivity : Activity() {
     }
 
     private fun openGroupChat(group: BolloonApi.Group) {
+        Archive.record(
+            this, Archive.KIND_JUDGMENT, "glass-group", null,
+            JSONObject().put("decision", "open_group").put("group", group.name).put("acl", group.acl),
+        )
         chatGroup = group
         chatTarget = null
         screen = Screen.CHAT
@@ -926,6 +952,12 @@ class MainActivity : Activity() {
     // ───────────────────────── 对话 ─────────────────────────
 
     private fun openChat(agent: BolloonApi.Agent) {
+        if (agent.id.isNotEmpty()) {
+            Archive.record(
+                this, Archive.KIND_JUDGMENT, "glass-card", agent.id,
+                JSONObject().put("decision", "open_agent").put("name", agent.name).put("did", agent.id),
+            )
+        }
         chatTarget = agent
         chatGroup = null
         screen = Screen.CHAT

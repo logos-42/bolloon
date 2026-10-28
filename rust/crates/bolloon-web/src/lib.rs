@@ -7,6 +7,7 @@
 //!
 //! 版本 0.6.13（与 TS 版保持一致）。
 
+pub mod archive;
 pub mod asr;
 pub mod avatar;
 pub mod native;

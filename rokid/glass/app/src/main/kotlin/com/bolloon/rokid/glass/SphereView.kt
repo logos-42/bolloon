@@ -148,6 +148,6 @@ class SphereView(ctx: Context) : View(ctx) {
     }
 
     companion object {
-        val DEFAULT_LABELS = listOf("bolloon", "世界", "外部", "智能体", "群组")
+        val DEFAULT_LABELS = listOf("Bolloon", "世界", "外部", "智能体", "群组")
     }
 }
