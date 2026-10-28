@@ -2090,6 +2090,47 @@ pub async fn quic_peer_add(
     }
 }
 
+/// 直连全自动的核心: 把已登记的 `directory_peers` (HTTP 基址) 各自的 QUIC 收件地址自动喂给直连端点。
+/// 每个对端暴露 `/api/quic/addr` (did + socket), 拉到后 `add_peer`; 之后 `share` 时自动经 QUIC 直发,
+/// 不再依赖 HTTP 中继那条路径。对端不可达 / 解析不了 ⇒ 跳过, 绝不影响其它逻辑。
+#[cfg(feature = "quic-transport")]
+pub async fn sync_quic_peers(
+    st: &AppState,
+    q: &std::sync::Arc<bolloon_p2p::quic_transport::QuicTransport>,
+) {
+    let peers = {
+        let fs = st.forge.lock().await;
+        fs.directory_peers.clone()
+    };
+    for peer in peers {
+        let base = peer.trim().trim_end_matches('/');
+        let url = format!("{base}/api/quic/addr");
+        // spawn_blocking: ureq 是同步客户端, 不堵 async runtime (对齐 post_lookup_replies)
+        let handle = tokio::task::spawn_blocking(move || {
+            let resp = ureq::get(&url)
+                .timeout(std::time::Duration::from_millis(4000))
+                .call()
+                .map_err(|e| format!("不可达/超时: {e}"))?;
+            resp.into_json::<serde_json::Value>()
+                .map_err(|e| format!("reply 解析不了: {e}"))
+        });
+        let Ok(v) = handle.await else { continue };
+        let Ok(v) = v else { continue };
+        if !v["ok"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let did = v["did"].as_str().unwrap_or_default();
+        let addr = v["addr"].as_str().unwrap_or_default();
+        if did.is_empty() {
+            continue;
+        }
+        match addr.parse::<std::net::SocketAddr>() {
+            Ok(a) => q.add_peer(did, a).await,
+            Err(e) => tracing::warn!("对端 {peer} 的 QUIC 地址解析失败: {e}"),
+        }
+    }
+}
+
 /// GET /api/world/stats → 世界统计 (徽章数据源)
 pub async fn world_stats(State(st): State<AppState>) -> Json<serde_json::Value> {
     let fs = st.forge.lock().await;
@@ -2321,6 +2362,11 @@ pub async fn directory_peers_add(
         fs.directory_peers.push(url.clone());
     }
     fs.save(&data_dir());
+    // 直连全自动: 新登记的对端, 立刻拉它的 QUIC 地址并喂给直连端点
+    #[cfg(feature = "quic-transport")]
+    if let Some(q) = &st.quic {
+        crate::native::sync_quic_peers(&st, q).await;
+    }
     Json(serde_json::json!({ "added": url, "peers": fs.directory_peers }))
 }
 

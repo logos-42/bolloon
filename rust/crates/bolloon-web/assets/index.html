@@ -589,6 +589,14 @@
       </div>
       <div class="ct-head" id="ctStatus"></div>
       <div id="ctResults" style="display:flex;flex-direction:column;gap:8px"></div>
+      <!-- 2026-10-28: 直连节点 — 搜索探测可达性 + 添加注册对端, 后端自动经 QUIC 点对点直连 (直连全自动) -->
+      <div class="ct-head" style="margin-top:14px">直连节点 — 粘贴好友节点地址 (例 http://192.168.1.9:54188), 添加后自动点对点直连, 无需手动交换地址</div>
+      <div class="ct-search">
+        <input id="nodeUrl" type="search" placeholder="节点地址 URL" autocomplete="off" />
+        <button class="mini" id="nodeSearchBtn">搜索</button>
+        <button class="mini" id="nodeAddBtn">添加</button>
+      </div>
+      <div class="ct-head" id="nodeStatus"></div>
     </div>
     <!-- 2026-10-27: 群聊面板 (通讯录 → 群聊) — 真收发: GET /api/groups/{id}/messages · POST /api/groups/{id}/say (Ed25519 签名) -->
     <div id="groupView">

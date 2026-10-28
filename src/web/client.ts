@@ -4648,6 +4648,51 @@ if (dirVerifyBtn) dirVerifyBtn.addEventListener('click', dirVerifySelf);
 if (dirListBtn) dirListBtn.addEventListener('click', dirList);
 if (dirPhoneInput) dirPhoneInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') dirSearchAdd(); });
 
+// ── 2026-10-28: 直连节点面板 — 搜索探测可达性 + 添加注册对端; 后端自动经 QUIC 点对点直连 ──
+const nodeUrl = document.getElementById('nodeUrl') as HTMLInputElement | null;
+const nodeSearchBtn = document.getElementById('nodeSearchBtn');
+const nodeAddBtn = document.getElementById('nodeAddBtn');
+const nodeStatus = document.getElementById('nodeStatus');
+
+function nodeEcho(msg: string, ok = true): void {
+  if (nodeStatus) nodeStatus.innerHTML = (ok ? '' : '⚠ ') + escapeHtml(msg);
+}
+
+async function nodeSearch(): Promise<void> {
+  const url = (nodeUrl && nodeUrl.value || '').trim().replace(/\/$/, '');
+  if (!url) { nodeEcho('请输入节点地址 (例 http://192.168.1.9:54188)'); return; }
+  nodeEcho('探测中…');
+  try {
+    const res = await fetch(`${url}/api/quic/addr`);
+    const d = await res.json().catch(() => ({} as any));
+    if (!res.ok || !d.ok) { nodeEcho(`不可达: ${(d && d.error) || res.status}`, false); return; }
+    const did = (d.did ? String(d.did).slice(0, 12) : '');
+    nodeEcho(`✓ 可达 — 对方 QUIC 收件地址 ${d.addr}${did ? ` (did ${did}…)` : ''}`);
+  } catch (e) {
+    nodeEcho('探测失败: ' + String((e && (e as any).message) ? (e as any).message : e), false);
+  }
+}
+
+async function nodeAdd(): Promise<void> {
+  const url = (nodeUrl && nodeUrl.value || '').trim().replace(/\/$/, '');
+  if (!url) { nodeEcho('请输入节点地址 (例 http://192.168.1.9:54188)'); return; }
+  nodeEcho('添加中…');
+  try {
+    const res = await fetch('/api/directory/peers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+    });
+    const d = await res.json().catch(() => ({} as any));
+    if (!res.ok || (d && d.error)) { nodeEcho('添加失败: ' + ((d && d.error) || res.status), false); return; }
+    nodeEcho('✓ 已添加对端 — 后端将自动经 QUIC 点对点直连 (无需手动交换地址)');
+  } catch (e) {
+    nodeEcho('添加失败: ' + String((e && (e as any).message) ? (e as any).message : e), false);
+  }
+}
+
+if (nodeSearchBtn) nodeSearchBtn.addEventListener('click', nodeSearch);
+if (nodeAddBtn) nodeAddBtn.addEventListener('click', nodeAdd);
+if (nodeUrl) nodeUrl.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') nodeAdd(); });
+
 // 2026-10-05 (leo): 世界底部输入框 — 想做什么直接说, 自动触发匹配 (不是聊天输入框)
 const worldInput = document.getElementById('world-input');
 const worldInputSend = document.getElementById('world-input-send');

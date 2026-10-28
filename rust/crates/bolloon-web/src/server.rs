@@ -451,7 +451,19 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                     }
                 });
                 tracing::info!("QUIC 端对端直连传输已启用 (收件端点已起)");
-                state.quic = Some(q);
+                state.quic = Some(q.clone());
+                // 直连全自动: 立即 + 周期把 directory_peers 的 QUIC 地址同步给直连端点,
+                // 之后 share 自动经 QUIC 直发, 不再依赖 HTTP 中继。
+                let st_sync = state.clone();
+                tokio::spawn(async move {
+                    crate::native::sync_quic_peers(&st_sync, &q).await;
+                    let mut ticker =
+                        tokio::time::interval(std::time::Duration::from_secs(30));
+                    loop {
+                        ticker.tick().await;
+                        crate::native::sync_quic_peers(&st_sync, &q).await;
+                    }
+                });
             }
             Err(e) => {
                 tracing::warn!("QUIC 传输启动失败, 降级为仅 HTTP 跨机: {e}");
