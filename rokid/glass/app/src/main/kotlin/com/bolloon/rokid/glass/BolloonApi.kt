@@ -248,6 +248,38 @@ object BolloonApi {
         null
     }
 
+
+    data class Phone(val bound: Boolean, val phone: String, val identityMatch: Boolean)
+
+    /** GET /api/phone → 手机号绑定状态（绑定是 DID 签名，不是短信） */
+    fun phone(): Phone = try {
+        val j = JSONObject(readText(open("/api/phone")))
+        Phone(
+            bound = j.optBoolean("bound", false),
+            phone = j.optString("phone", ""),
+            identityMatch = j.optBoolean("identity_match", false),
+        )
+    } catch (e: Exception) {
+        Phone(false, "", false)
+    }
+
+
+    /** 打开即探测桌面节点：HTTP 是否通 + QUIC 直连端点是否在 */
+    fun probe(): String {
+        return try {
+            val h = JSONObject(readText(open("/api/health")))
+            val ver = h.optString("version", "?")
+            val q = runCatching { JSONObject(readText(open("/api/quic/addr"))) }.getOrNull()
+            val addr = q?.optString("addr", "").orEmpty()
+            if (q?.optBoolean("ok", false) == true && addr.isNotEmpty())
+                "已连桌面 · HTTP v$ver · QUIC $addr"
+            else
+                "已连桌面 · HTTP v$ver"
+        } catch (e: Exception) {
+            "未连桌面 · 检查 adb reverse 54188 / 同一网络"
+        }
+    }
+
     fun health(): String = try {
         val json = JSONObject(readText(open("/api/friends")))
         "节点在线 · 好友 ${json.optJSONArray("friends")?.length() ?: 0}"

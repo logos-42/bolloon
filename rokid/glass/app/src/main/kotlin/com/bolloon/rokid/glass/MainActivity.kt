@@ -31,8 +31,12 @@ import org.json.JSONObject
  */
 class MainActivity : Activity() {
 
-    private enum class Section(val label: String) {
-        WORLD("世界"), EXTERNAL("外部"), AGENTS("智能体"), GROUPS("群组")
+    private enum class Section(val zh: String, val en: String) {
+        WORLD("世界", "World"),
+        EXTERNAL("外部", "External"),
+        AGENTS("智能体", "Agents"),
+        GROUPS("群组", "Groups"),
+        SETTINGS("设置", "Settings"),
     }
     private enum class Screen { HOME, CHAT, WIDGET }
     /** 球体模式（默认）/ 卡片模式：点 bolloon 球切换 */
@@ -42,6 +46,9 @@ class MainActivity : Activity() {
     private var screen = Screen.HOME
     private var mode = Mode.SPHERE
     private var sphereSel = 0
+    /** zh | en（设置页可切；球体模式不出现设置球） */
+    private var lang = "zh"
+    private var phone: BolloonApi.Phone? = null
     private var index = 0
 
     private var opportunities: List<BolloonApi.Opportunity> = emptyList()
@@ -53,6 +60,8 @@ class MainActivity : Activity() {
     private var messages: List<BolloonApi.Message> = emptyList()
     private var pendingAuth = 0
     private var statusLine = "连接节点中…"
+    /** 桌面连接链路（HTTP/QUIC），与数据统计分开显示 */
+    private var linkLine = "连接桌面节点…"
     private var shotLine = ""
     private var shotText = ""
     private var logoFocused = false
@@ -84,12 +93,29 @@ class MainActivity : Activity() {
     private lateinit var sphere: SphereView
     private lateinit var sphereHint: TextView
     private lateinit var topBrand: TextView
+    private lateinit var connStatus: TextView
     private lateinit var mainCol: LinearLayout
     private lateinit var widgetBar: LinearLayout
     private lateinit var widgetTitle: TextView
     private lateinit var widgetBody: TextView
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun L(zh: String, en: String): String = if (lang == "en") en else zh
+
+    private fun secLabel(sec: Section): String = if (lang == "en") sec.en else sec.zh
+
+    /** 球体模式只放 4 个业务栏，设置不进球 */
+    private val sphereSections: List<Section>
+        get() = listOf(Section.WORLD, Section.EXTERNAL, Section.AGENTS, Section.GROUPS)
+
+    private fun loadLang() {
+        lang = getSharedPreferences("bolloon", MODE_PRIVATE).getString("lang", "zh") ?: "zh"
+    }
+
+    private fun saveLang() {
+        getSharedPreferences("bolloon", MODE_PRIVATE).edit().putString("lang", lang).apply()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,6 +127,8 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA), 1)
         }
         // 封面：先给 logo，再进主页
+        loadLang()
+        statusLine = "连接桌面节点…"
         splash.visibility = TextView.VISIBLE
         render()
         refresh()
@@ -110,6 +138,11 @@ class MainActivity : Activity() {
             JSONObject().put("decision", "app_open").put("mode", mode.name),
         )
         splash.postDelayed({ splash.visibility = TextView.GONE }, 900)
+        // App 打开即连桌面（HTTP 探测；QUIC 端点若在会一并显示）
+        Thread {
+            val line = BolloonApi.probe()
+            runOnUiThread { linkLine = line; render() }
+        }.start()
         // 常驻轻刷新：屏幕上看到的余额/消息/卡片不会长期停在旧值
         val ticker = android.os.Handler(mainLooper)
         ticker.postDelayed(object : Runnable {
@@ -233,6 +266,17 @@ class MainActivity : Activity() {
             visibility = TextView.GONE
         }
         outer.addView(topBrand)
+        connStatus = TextView(this).apply {
+            textSize = 9f
+            setTextColor(Color.parseColor("#8A8A8A"))
+            setPadding(dp(6), dp(6), dp(8), dp(4))
+            val lp = android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.gravity = Gravity.TOP or Gravity.END
+            layoutParams = lp
+            visibility = TextView.GONE
+        }
+        outer.addView(connStatus)
         sphereHint = TextView(this).apply {
             textSize = 9f
             gravity = Gravity.CENTER
@@ -291,6 +335,13 @@ class MainActivity : Activity() {
         return outer
     }
 
+    /** 卡片切换：从一侧滑入 12dp，慢一点、有过渡感 */
+    private fun animateCard(dir: Int) {
+        if (!::cardBody.isInitialized) return
+        cardBody.translationX = dir * dp(14).toFloat()
+        cardBody.animate().translationX(0f).setDuration(160).start()
+    }
+
     private fun render() {
         logo.text = "◉ Bolloon · 帛龙"
         header.text = statusLine
@@ -299,6 +350,7 @@ class MainActivity : Activity() {
         sphere.visibility = TextView.GONE
         sphereHint.visibility = TextView.GONE
         topBrand.visibility = TextView.GONE
+        if (::connStatus.isInitialized) connStatus.visibility = TextView.GONE
         mainCol.visibility = LinearLayout.VISIBLE
         if (screen == Screen.HOME) {
             renderSidebar()
@@ -312,6 +364,16 @@ class MainActivity : Activity() {
             }
             renderChat()
         }
+    }
+
+    private var lastNavStep = 0L
+
+    /** 卡片/切栏节流：380ms 一次，避免"嗖"地连跳 */
+    private fun navDebounce(): Boolean {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastNavStep < 380) return false
+        lastNavStep = now
+        return true
     }
 
     private var lastSphereStep = 0L
@@ -330,12 +392,15 @@ class MainActivity : Activity() {
         sphere.visibility = TextView.VISIBLE
         sphereHint.visibility = TextView.VISIBLE
         topBrand.visibility = TextView.VISIBLE
-        sphere.labels = SphereView.DEFAULT_LABELS
+        connStatus.visibility = TextView.VISIBLE
+        connStatus.text = linkLine
+        sphere.labels = listOf("Bolloon") + sphereSections.map { secLabel(it) }
         sphere.selected = sphereSel
+        if (::connStatus.isInitialized) connStatus.text = linkLine
         sphereHint.text = if (sphereSel == 0)
-            "◉ Bolloon 帛龙 · 单击切到卡片模式 · 前后滑换球"
+            "◉ Bolloon 帛龙 · 单击:bolloon 球→卡片模式 · 长按:选中标签→单击最小化"
         else
-            "${Section.values()[sphereSel - 1].label} · 单击进入 · 前后滑换球"
+            "${secLabel(sphereSections[sphereSel - 1])} · " + L("单击进入 · 前后滑换球", "tap to enter · swipe to change")
     }
 
     private fun onSphereConfirm() {
@@ -343,7 +408,7 @@ class MainActivity : Activity() {
             mode = Mode.CARD          // 点 bolloon 球 = 切卡片模式（当前页保留）
             logoFocused = false
         } else {
-            section = Section.values()[sphereSel - 1]
+            section = sphereSections[sphereSel - 1]
             sidebarLevel = 1
             index = 0
             mode = Mode.CARD
@@ -364,7 +429,7 @@ class MainActivity : Activity() {
 
         if (sidebarLevel == 0) {
             Section.values().forEachIndexed { i, s ->
-                val tv = sidebarRow(s.label, active = i == section.ordinal, small = false)
+                val tv = sidebarRow(secLabel(s), active = i == section.ordinal, small = false)
                 tv.setOnClickListener { section = s; index = 0; sidebarLevel = 1; render(); refresh() }
                 sidebarBox.addView(tv)
                 sidebarItems.add(tv)
@@ -373,7 +438,7 @@ class MainActivity : Activity() {
         }
 
         // 二级：标题行（点它回顶层）+ 条目
-        val head = sidebarRow("‹ " + section.label, active = false, small = true)
+        val head = sidebarRow("‹ " + secLabel(section), active = false, small = true)
         head.setOnClickListener { sidebarLevel = 0; render() }
         sidebarBox.addView(head)
 
@@ -382,6 +447,7 @@ class MainActivity : Activity() {
             Section.EXTERNAL -> contacts.map { it.name }
             Section.AGENTS -> myAgents.map { it.name }
             Section.GROUPS -> groups.map { it.name }
+            Section.SETTINGS -> listOf(L("语言 / Language", "Language / 语言"), L("手机号 / Phone", "Phone / 手机号"))
         }
         if (labels.isEmpty()) {
             sidebarBox.addView(sidebarRow("（空）", active = false, small = true))
@@ -415,28 +481,37 @@ class MainActivity : Activity() {
             Section.EXTERNAL -> "🎤 外部智能体"
             Section.AGENTS -> "🎤 我的智能体"
             Section.GROUPS -> "💬 群组"
+            Section.SETTINGS -> L("⚙ 设置", "⚙ Settings")
         }
         cardTitle.text = when (section) {
             Section.WORLD -> "世界 · ${opportunities.size} 张卡片"
             Section.EXTERNAL -> "外部智能体 · ${contacts.size}"
             Section.AGENTS -> "我的智能体 · ${myAgents.size}"
             Section.GROUPS -> "群组 · ${groups.size}"
+            Section.SETTINGS -> L("设置", "Settings")
         }
         cardBody.text = when (section) {
             Section.WORLD -> "往后滑进列表 → 侧栏换成卡片标题\n单击 = 扫一眼（摄像头 → OCR → 匹配意图 → 刷卡片）"
             Section.EXTERNAL -> "往后滑进列表 → 侧栏换成外部智能体名单\n长按条目 = 固定 ping"
             Section.AGENTS -> "往后滑进列表 → 侧栏换成我的智能体名单\n长按条目 = 固定 ping"
             Section.GROUPS -> "往后滑进列表 → 侧栏换成群组名单\n（本地群 + 含外部智能体的群）"
+            Section.SETTINGS -> L("语言 / 手机号 / 蓝牙 都在这页", "Language / Phone / Bluetooth live here")
         }
         hint.text = "往后滑:进列表 · 单击:进列表 · 双击:退出"
     }
 
+    private fun ensureSectionData() {
+        if (section == Section.SETTINGS && phone == null) refreshPhone()
+    }
+
     private fun renderCurrentSection() {
+        ensureSectionData()
         when (section) {
             Section.WORLD -> renderOpportunities()
             Section.EXTERNAL -> renderContacts()
             Section.AGENTS -> renderMyAgents()
             Section.GROUPS -> renderGroups()
+            Section.SETTINGS -> renderSettings()
         }
     }
 
@@ -445,10 +520,18 @@ class MainActivity : Activity() {
         if (logoFocused) {
             logo.setBackgroundColor(Color.WHITE)
             logo.setTextColor(Color.BLACK)
-            hint.text = "外壳已选中 · 单击:切回球体模式 · 长按:最小化 · 往下走:回到内容"
+            if (::topBrand.isInitialized) {
+                topBrand.setBackgroundColor(Color.WHITE)
+                topBrand.setTextColor(Color.BLACK)
+            }
+            hint.text = "标签已选中 · 单击:最小化到左下角 · 双击:球体/卡片互换"
         } else {
             logo.setBackgroundColor(Color.TRANSPARENT)
             logo.setTextColor(Color.parseColor("#E6FF00"))
+            if (::topBrand.isInitialized) {
+                topBrand.setBackgroundColor(Color.TRANSPARENT)
+                topBrand.setTextColor(Color.parseColor("#E6FF00"))
+            }
         }
     }
 
@@ -614,6 +697,39 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    private fun renderSettings() {
+        action.text = L("⚙ 单击切换语言 / Tap to switch language", "⚙ Tap to switch language / 切换语言")
+        cardTitle.text = L("设置", "Settings")
+        val ph = phone
+        val phoneLine = when {
+            ph == null -> L("查询中…", "loading…")
+            !ph.bound -> L("未绑定（在电脑/手机 Web UI 绑定）", "not bound (bind in web UI)")
+            else -> {
+                val p = ph.phone
+                val masked = if (p.length >= 7) p.take(3) + "****" + p.takeLast(4) else p
+                masked + if (ph.identityMatch) L(" · 已验签", " · verified") else L(" · 校验未通过", " · unverified")
+            }
+        }
+        cardBody.text = buildString {
+            append(L("语言", "Language")).append("   ").append(if (lang == "en") "English" else "中文").append("\n")
+            append(L("手机号", "Phone")).append("   ").append(phoneLine).append("\n")
+            append(L("蓝牙", "Bluetooth")).append("   ").append(L("由手机端配对连接", "paired from phone")).append("\n")
+            append(L("链接", "Link")).append("   ").append(linkLine).append("\n")
+            append(L("数据", "Data")).append("   ").append(statusLine).append("\n")
+            append(L("版本", "Version")).append("   0.1.0")
+            append("\n\n").append(L("单击：中文 ⇄ English", "Tap: 中文 ⇄ English"))
+        }
+        hint.text = L("单击:切换语言 · 往后滑:回世界 · 双击:退出",
+                      "tap: switch language · swipe: next · double-tap: exit")
+    }
+
+    private fun refreshPhone() {
+        Thread {
+            val p = BolloonApi.phone()
+            runOnUiThread { phone = p; if (section == Section.SETTINGS) render() }
+        }.start()
+    }
+
     private fun renderChat() {
         val isGroup = chatGroup != null
         val name = chatGroup?.name ?: chatTarget?.name ?: return
@@ -632,7 +748,19 @@ class MainActivity : Activity() {
         // 球体模式：五个球之间切换，单击进球（bolloon 球 = 切卡片模式）
         if (mode == Mode.SPHERE && screen == Screen.HOME) {
             if (isEnter) {
-                if (event.action == KeyEvent.ACTION_UP) onSphereConfirm()
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    if (event.repeatCount == 0) {
+                        longPressFired = false
+                        val r = Runnable { longPressFired = true; onLongPress() }
+                        longPressTask = r
+                        keyHandler.postDelayed(r, 700)
+                    }
+                } else if (event.action == KeyEvent.ACTION_UP) {
+                    longPressTask?.let { keyHandler.removeCallbacks(it) }
+                    if (!longPressFired) {
+                        if (logoFocused) enterWidget() else onSphereConfirm()
+                    }
+                }
                 return true
             }
             if (event.action == KeyEvent.ACTION_DOWN) {
@@ -679,14 +807,22 @@ class MainActivity : Activity() {
         return super.dispatchKeyEvent(event)
     }
 
-    /** 长按：外壳=最小化到左下角挂件；列表条目=固定 ping */
+    /** 长按：选中左上角标签（选中后单击=最小化）；列表条目=固定 ping */
     private fun onLongPress() {
-        if (screen == Screen.HOME && logoFocused) {
-            enterWidget()
+        if (screen == Screen.HOME) {
+            if (sidebarLevel == 1 && !logoFocused) {
+                when (section) {
+                    Section.AGENTS -> myAgents.getOrNull(index)?.let { fixedPing(it); return }
+                    Section.EXTERNAL -> contacts.getOrNull(index)?.let { fixedPing(it); return }
+                    else -> {}
+                }
+            }
+            logoFocused = true
+            render()
             return
         }
-        if (screen != Screen.HOME || sidebarLevel != 1) {
-            hint.text = "长按：顶部外壳=最小化 · 列表条目=固定 ping"
+        if (screen != Screen.HOME) {
+            hint.text = "长按：首页选中左上角标签 → 单击最小化"
             return
         }
         when (section) {
@@ -717,9 +853,11 @@ class MainActivity : Activity() {
             Screen.HOME -> {
                 if (logoFocused) { refresh(); return }
                 if (sidebarLevel == 1) {
-                    if (index > 0) { index -= 1; render(); return }
-                    sidebarLevel = 0
-                    render()
+                    if (index > 0) {
+                        if (navDebounce()) { index -= 1; animateCard(-1); render() }
+                        return
+                    }
+                    if (navDebounce()) { sidebarLevel = 0; render() }
                     return
                 }
                 val values = Section.values()
@@ -818,6 +956,7 @@ class MainActivity : Activity() {
                 }
                 if (sidebarLevel == 0) {
                     // 顶层：往后滑 = 下一栏（进栏在单击里）
+                    if (!navDebounce()) return
                     val values = Section.values()
                     section = values[(section.ordinal + 1) % values.size]
                     index = 0
@@ -827,8 +966,7 @@ class MainActivity : Activity() {
                 }
                 val size = currentListSize()
                 if (index + 1 < size) {
-                    index += 1
-                    render()
+                    if (navDebounce()) { index += 1; animateCard(1); render() }
                     return
                 }
                 val values = Section.values()
@@ -845,17 +983,15 @@ class MainActivity : Activity() {
         Section.EXTERNAL -> maxOf(contacts.size, 1)
         Section.AGENTS -> maxOf(myAgents.size, 1)
         Section.GROUPS -> maxOf(groups.size, 1)
+        Section.SETTINGS -> 2
     }
 
     private fun onConfirm() {
         when (screen) {
             Screen.HOME -> {
                 if (logoFocused) {
-                    // 点顶部外壳（= bolloon 球）= 切回球体模式；长按才是最小化
-                    mode = Mode.SPHERE
-                    sphereSel = 0
-                    logoFocused = false
-                    render()
+                    // 长按选中了左上角标签 → 单击 = 最小化
+                    enterWidget()
                     return
                 }
                 if (sidebarLevel == 0) {
@@ -870,6 +1006,12 @@ class MainActivity : Activity() {
                     Section.EXTERNAL -> contacts.getOrNull(index)?.let { openChat(it) } ?: refresh()
                     Section.AGENTS -> myAgents.getOrNull(index)?.let { openChat(it) } ?: refresh()
                     Section.GROUPS -> groups.getOrNull(index)?.let { openGroupChat(it) } ?: refresh()
+                    Section.SETTINGS -> {
+                        lang = if (lang == "zh") "en" else "zh"
+                        saveLang()
+                        render()
+                        refreshPhone()
+                    }
                 }
             }
             Screen.CHAT -> toggleTalk()
@@ -880,6 +1022,14 @@ class MainActivity : Activity() {
     private fun onBack() {
         if (screen == Screen.WIDGET) {
             exitWidget()
+            return
+        }
+        if (screen == Screen.HOME && logoFocused) {
+            // 标签选中态双击 = 球体/卡片互换
+            logoFocused = false
+            mode = if (mode == Mode.SPHERE) Mode.CARD else Mode.SPHERE
+            sphereSel = 0
+            render()
             return
         }
         if (screen == Screen.CHAT) {

@@ -1,12 +1,10 @@
 //! 眼镜端「扫一眼」视觉入口 — POST /api/vision
 //!
-//! 眼镜拍一张 → 这里离线 OCR（macOS Vision）→ 得到画面里的文字 →
-//! 与节点上已有的意图（/api/intents）做词面匹配 → 返回：
-//!   { ok, text, intent:{tag,...}|null, hint }
+//! 链路：眼镜拍一张 → 离线 OCR（macOS Vision）拿画面文字 → **AI 预测意图**（节点 LLM）
+//!      → 返回 {text, intent, confidence, reason} 给眼镜刷新世界卡片。
 //!
-//! 为什么 OCR 而不是视觉大模型：当前节点的 LLM 提供商（deepseek-chat）不吃图，
-//! 而 Vision 的离线文字识别不要 key、不要联网、中文够准 —— 先让链路真的通，
-//! 视觉模型接进来时只需换 ocr_text() 的实现。
+//! 关键：意图是**模型预测**出来的，不是拿已有意图列表做关键词匹配；
+//! 已有意图只当"用户长期关注方向"的提示喂给模型，模型可以给出全新标签。
 //!
 //! 环境变量：
 //! - BOLLOON_OCR_BIN  默认 ~/.bolloon/bin/vision-ocr（scripts/setup-ocr.sh 编译）
@@ -14,8 +12,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use axum::extract::State;
 use axum::Json;
 use serde::Deserialize;
+
+use crate::server::AppState;
 
 fn home() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
@@ -44,7 +45,10 @@ fn decode_b64(s: &str) -> Result<Vec<u8>, String> {
 }
 
 /// POST /api/vision
-pub async fn vision(Json(req): Json<VisionRequest>) -> Json<serde_json::Value> {
+pub async fn vision(
+    State(st): State<AppState>,
+    Json(req): Json<VisionRequest>,
+) -> Json<serde_json::Value> {
     let bytes = match decode_b64(&req.image_base64) {
         Ok(b) => b,
         Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
@@ -101,60 +105,89 @@ pub async fn vision(Json(req): Json<VisionRequest>) -> Json<serde_json::Value> {
         }));
     }
 
-    let intent = match_intent(&text, req.intents.as_deref());
+    // ② AI 预测意图（模型判断"用户此刻想做什么"，不是关键词匹配）
+    let focus = req
+        .intents
+        .as_ref()
+        .map(|v| v.join("、"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "（暂无）".to_string());
+
+    let prompt = format!(
+        "你是眼镜上的意图预测器。下面是从用户眼前画面里 OCR 出来的文字。\n\
+         请预测用户此刻最可能想做什么，输出一个简短中文意图（2-6 个字，可以是全新的词，不要硬套参考列表）。\n\
+         只输出一行 JSON：{{\"intent\":\"...\",\"confidence\":0到1的小数,\"reason\":\"不超过20字\"}}\n\
+         参考（用户长期关注的方向，仅供理解语境）：{focus}\n\
+         画面文字：\n{text}"
+    );
+
+    let raw = match crate::native::reply_with_model(&st, &prompt, None).await {
+        Ok(r) => r,
+        Err(e) => {
+            return Json(serde_json::json!({
+                "ok": true, "text": text, "intent": null, "confidence": 0.0,
+                "source": "llm-unavailable", "error": e,
+                "hint": "OCR 成功但模型不可用（检查 provider/key）；意图未预测，不冒充匹配成功"
+            }))
+        }
+    };
+
+    let (intent, confidence, reason) = parse_prediction(&raw);
     Json(serde_json::json!({
         "ok": true,
         "text": text,
-        "intent": intent,
-        "hint": intent
-            .as_ref()
-            .map(|i| format!("匹配到意图「{i}」，机会卡片已按它刷新"))
-            .unwrap_or_else(|| "没匹配到已有意图，已按画面文字刷新机会".to_string()),
+        "intent": if intent.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(intent.clone()) },
+        "confidence": confidence,
+        "reason": reason,
+        "source": "llm",
+        "raw": raw.chars().take(300).collect::<String>(),
+        "hint": if intent.is_empty() {
+            "模型没给出明确意图".to_string()
+        } else {
+            format!("AI 预判意图「{intent}」")
+        }
     }))
 }
 
-/// 词面匹配：把意图标签和画面文字做最长公共 token 命中。
-/// 不调 LLM —— 快、可解释、没网也能用；真接了视觉模型再换这里。
-fn match_intent(text: &str, intents: Option<&[String]>) -> Option<String> {
-    let pool: Vec<String> = match intents {
-        Some(list) if !list.is_empty() => list.to_vec(),
-        _ => default_intents(),
-    };
-    let hay = text.to_lowercase();
-    let mut best: Option<(usize, String)> = None;
-    for tag in pool {
-        let t = tag.trim();
-        if t.is_empty() {
-            continue;
-        }
-        let tl = t.to_lowercase();
-        // 整词命中优先，其次逐字命中数
-        if hay.contains(&tl) {
-            let score = tl.chars().count() + 100;
-            if best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
-                best = Some((score, t.to_string()));
-            }
-        } else {
-            let hits = tl
-                .chars()
-                .filter(|c| !c.is_whitespace() && hay.contains(*c))
-                .count();
-            if hits >= 2
-                && best.as_ref().map(|(s, _)| hits > *s).unwrap_or(true)
-            {
-                best = Some((hits, t.to_string()));
+/// 从模型回复里抠出 {intent, confidence, reason}（容忍 ```json 包裹与前后废话）
+fn parse_prediction(raw: &str) -> (String, f64, String) {
+    let cleaned = raw
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    if let (Some(s), Some(e)) = (cleaned.find('{'), cleaned.rfind('}')) {
+        if e > s {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&cleaned[s..=e]) {
+                let intent = v
+                    .get("intent")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let conf = v
+                    .get("confidence")
+                    .and_then(|x| x.as_f64())
+                    .or_else(|| {
+                        v.get("confidence")
+                            .and_then(|x| x.as_str())
+                            .and_then(|s| s.parse::<f64>().ok())
+                    })
+                    .unwrap_or(0.0)
+                    .clamp(0.0, 1.0);
+                let reason = v
+                    .get("reason")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                return (intent, conf, reason);
             }
         }
     }
-    best.map(|(_, t)| t)
+    // 模型没按 JSON 回：原文当意图用，但置信度 0，并标明未按格式回答
+    (cleaned.chars().take(12).collect::<String>(), 0.0, "模型未按 JSON 回答".into())
 }
 
-fn default_intents() -> Vec<String> {
-    [
-        "可控核聚变", "合作招募", "招聘", "采购", "报价", "发票", "海关", "防火", "监理",
-        "翻译", "会议", "路演", "投资", "论文", "项目",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
-}
