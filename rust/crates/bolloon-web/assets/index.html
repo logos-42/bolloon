@@ -233,6 +233,12 @@
   #splash .sp-word{margin-top:16px;font-size:28px;font-weight:800;letter-spacing:.5px;display:flex;align-items:baseline;justify-content:center;gap:10px}
   #splash .sp-word small{font-size:19px;font-weight:700;color:#c4d640;letter-spacing:3px}
   #splash .sp-sub{margin-top:8px;font-size:12px;color:#8c8c84}
+  /* ── 2026-10-28 (用户): 自定义窗口外壳 (标题栏) — 极简, 平时不占地方, 右上龙订阅 ── */
+  #titlebar{position:fixed;top:0;left:0;right:0;height:32px;z-index:200;display:flex;align-items:center;gap:8px;padding:0 10px 0 80px;background:rgba(22,22,20,.78);backdrop-filter:blur(12px);-webkit-app-region:drag;color:#effb06;font-weight:700;font-size:13px;letter-spacing:.3px;user-select:none}
+  #titlebar .tb-title{color:#effb06}
+  #titlebar .grow{flex:1}
+  #titlebar .dragon-btn{-webkit-app-region:no-drag;width:24px;height:24px}
+  #app{box-sizing:border-box;padding-top:32px}
   .composer-footer{display:flex;gap:8px;padding:0 16px 12px}
   .mini{font-size:12px;padding:5px 9px;border-radius:999px;color:var(--muted)}
   .mini:hover{color:var(--text)}
@@ -452,6 +458,12 @@
   <input id="askInput" />
   <div class="row"><button id="askCancel">取消</button><button class="primary" id="askOk">确定</button></div>
 </dialog>
+<div id="titlebar" data-tauri-drag-region>
+  <span class="tb-title">Bolloon</span>
+  <span class="grow"></span>
+  <!-- 2026-10-28 (用户): 窗口外壳右上龙形订阅按钮 (帛龙 = bolloon 中文名) -->
+  <button id="dragonSubBtn" class="dragon-btn" title="订阅 Bolloon 更新（帛龙）" aria-label="订阅"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 17c1.4-1 2.4-2.4 3.9-2.4S10 16 12 16s3-2 5-2 3 1.4 4 1.4"/><path d="M20.5 13.4c.7 0 1.4.4 1.6 1.4-.2.9-.9 1.4-1.8 1.2"/><path d="M19.8 14.6l.9-2.5.8.6"/><circle cx="21.1" cy="15.1" r=".5" fill="currentColor"/><path d="M14 13.6c-.7 2-2 3.3-3.7 3.3-1.7 0-2.8-1-2.8-2.5.2-1.9 1.9-3.3 3.8-3.3 1.5 0 2.6.8 3.2 2.1"/><path d="M9.8 11.4c.3-1.5-.1-2.8-1.2-3.6"/></svg></button>
+</div>
 <div id="app">
   <!-- 2026-10-26 (用户): 桌面三栏 — 第一栏: 全局导航栏。
        仅 Tauri 壳显示 (?app=desktop → body.desktop3col); 网页端 display:none。
@@ -538,20 +550,11 @@
           <path d="M12 8v8M8 12h8"></path>
         </svg>
       </button>
-      <span class="brand-icon" title="Bolloon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#effb06"/><ellipse cx="15.9" cy="17.6" rx="6.5" ry="7.7" fill="none" stroke="#1b1a19" stroke-width="4.2"/><circle cx="15.9" cy="5.6" r="2.5" fill="#1b1a19"/></svg></span>
-      <span class="brand-word">Bolloon</span>
-      <nav class="top-nav" id="topNav">
-        <button class="top-nav-btn on" data-module="chat">智能体</button>
-        <button class="top-nav-btn" data-module="world">世界</button>
-        <button class="top-nav-btn" data-module="contacts">通讯录</button>
-        <button class="top-nav-btn" data-module="room">内部商议</button>
-      </nav>
+      <img id="agentHeaderAva" class="agent-head-ava" alt="" />
+      <b id="agentName">智能体</b>
+      <span id="agentDid" style="color:var(--muted)"></span>
       <span class="grow"></span>
-      <span id="agentCtx" style="display:flex;align-items:center;gap:8px"><img id="agentHeaderAva" class="agent-head-ava" alt="" /><b id="agentName">智能体</b><span id="agentDid" style="color:var(--muted)"></span></span>
-      <!-- 2026-10-28 (用户): 最右上龙形订阅按钮 (帛龙 = bolloon 中文名) -->
-      <button id="dragonSubBtn" class="dragon-btn" title="订阅 Bolloon 更新（帛龙）" aria-label="订阅"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 17c1.4-1 2.4-2.4 3.9-2.4S10 16 12 16s3-2 5-2 3 1.4 4 1.4"/><path d="M20.5 13.4c.7 0 1.4.4 1.6 1.4-.2.9-.9 1.4-1.8 1.2"/><path d="M19.8 14.6l.9-2.5.8.6"/><circle cx="21.1" cy="15.1" r=".5" fill="currentColor"/><path d="M14 13.6c-.7 2-2 3.3-3.7 3.3-1.7 0-2.8-1-2.8-2.5.2-1.9 1.9-3.3 3.8-3.3 1.5 0 2.6.8 3.2 2.1"/><path d="M9.8 11.4c.3-1.5-.1-2.8-1.2-3.6"/></svg></button>
-      <button id="topUpdateBtn" class="top-update" title="下载更新" aria-label="更新" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button>
-      <!-- 原有 tab 按钮: 保留为隐藏 relay 目标 (顶部导航 / 第一栏 rail 通过 .click() 复用其逻辑) -->
+      <!-- 模块入口统一在左侧第一栏 rail; 此处保留隐藏 relay 以维持既有 JS 绑定 (room 由 railRoomBtn 触发) -->
       <button id="worldTabBtn" class="mini" style="display:none">🌍 世界 <span id="worldBadge" style="display:none"></span></button>
       <button id="contactsTabBtn" class="mini" style="display:none">通讯录</button>
       <button id="roomBtn" class="mini" style="display:none">内部商议</button>

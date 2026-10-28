@@ -40,7 +40,9 @@ fn main() {
                     format!("http://127.0.0.1:{port}/?app=desktop").parse().unwrap(),
                 ),
             )
-            .title("Bolloon — 去中心化智能体资源交流网络")
+            .title("Bolloon")
+            // 2026-10-28 (用户): 自定义窗口外壳 — 透明标题栏, 由前端 #titlebar 自绘 (品牌 + 龙订阅)
+            .title_bar_style(tauri::TitleBarStyle::Transparent)
             .inner_size(1200.0, 800.0)
             .min_inner_size(900.0, 600.0)
             .build()?;
