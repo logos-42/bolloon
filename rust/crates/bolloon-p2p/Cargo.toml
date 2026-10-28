@@ -12,7 +12,6 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-anyhow.workspace = true
 uuid.workspace = true
 async-trait.workspace = true
 ed25519-dalek.workspace = true
@@ -23,21 +22,25 @@ rand = "0.8"
 chrono.workspace = true
 futures.workspace = true
 bolloon-kernel = { path = "../bolloon-kernel" }
+anyhow.workspace = true
 # 端对端直连传输 (QUIC)。feature 门控: 默认不拉, 避免拖慢整仓。
 # 注: 首选本是 iroh, 但 iroh-net 0.28 的传递依赖 netwatch 0.1.0 卡死在 socket2 0.5 API,
 # 与本环境统一的 socket2 0.6.5 (已移除 Type::RAW) 无法共存, 整仓编不过 —— 故改用 iroh 底层的
 # 同一个 QUIC 库 quinn 直连 (一样的"端对端直连"语义, 干净的依赖树)。同一 Transport 端口,
 # 日后要换回 iroh 只是再写一份适配器。
-quinn = "0.11"
-rcgen = "0.13"
-rustls = "0.23"
+# 端对端直连传输用 quinn。关掉 quinn 默认 feature (尤其是 platform-verifier, 它把 aws-lc-rs 拉进来),
+# 只留 rustls-ring (TLS 后端) + runtime-tokio; 否则 rustls 会同时启用 ring 与 aws-lc-rs 两个 provider 冲突。
+quinn = { version = "0.11", optional = true, default-features = false, features = ["rustls-ring", "runtime-tokio"] }
+# rustls 作直接依赖 (quinn 已拉同一份, 不重复): 构建静态证书信任根需要其类型/trait 在作用域。
+# 必须 default-features=false 且只开 ring, 否则默认 aws-lc-rs 与 quinn 的 ring 冲突。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 # 可选 DIAP 后端：通过 feature 注入, 不在 workspace 成员里直接 path 依赖
 # （DIAP 的 cid 0.10 → yanked core2 会拖垮整个 workspace 解析; 单独仓库维护）
 [features]
 default = []
 # 启用 QUIC 直连传输 (端对端好友对话的传输底座)
-quic-transport = ["dep:quinn", "dep:rcgen"]
+quic-transport = ["dep:quinn"]
 # 未来接 DIAP 时: 在 Cargo.toml 加
 #   diap-rs-sdk = { path = "../DIAP_Rust_SDK", optional = true }
 #   diap-backend = ["dep:diap-rs-sdk"]

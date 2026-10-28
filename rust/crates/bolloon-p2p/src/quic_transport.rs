@@ -3,8 +3,11 @@
 //! 设计要点:
 //! - 用 **quinn** (iroh 底层用的同一个 QUIC 库) 做**真正点对点直连**: 不走 HTTP 中继,
 //!   两端各自起 QUIC 端点, 按对端 socket 地址直接建连。
-//! - TLS 用自签证书 (仅满足 QUIC 的 TLS 1.3 握手要求); **真实信任靠 `SignedEnvelope` 的 Ed25519
-//!   验签**, 所以客户端一律 `AcceptAnyCert` —— 证书身份无所谓。
+//! - **静态自签证书** (`CERT_DER`/`KEY_DER`) 仅用于满足 QUIC 的 TLS 1.3 握手; 真实信任靠
+//!   `SignedEnvelope` 的 Ed25519 验签。一个端点同时是服务端 (收 + TLS 服务端) 与客户端
+//!   (发 + 信任静态证书, 经 `set_default_client_config`), 不需要第二个端点, 也不需要任何
+//!   自定义证书校验器。注意: 这张证书**不是身份密钥** (身份是 DID 的 ed25519), 所有安装共享
+//!   同一张, 仅作 QUIC 通道加密; 日后要按节点隔离可改为经注册表下发每节点证书。
 //! - `TransportMessage.to` 在这里就是**对端 DID**; 对端地址 (`SocketAddr`) 靠 `add_peer` 手动下发
 //!   (线上可接既有 `directory_peers` 注册表), 离线/测试照常直连。
 //! - 整套传输对"人机不可分辨"零影响: 信封里本来就没有 human/AI 字段, AI 回复也走用户 KeyPair 签名。
@@ -13,32 +16,67 @@
 //! netwatch/socket2 冲突编不过, 故先落 quinn)。
 
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bolloon_kernel::transport::{PeerInfo, Transport, TransportError, TransportMessage};
-use quinn::{ClientConfig, Endpoint, ServerConfig};
+use quinn::{ClientConfig, Endpoint, ServerConfig, VarInt};
+use quinn::crypto::rustls::QuicClientConfig;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use serde_json::json;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Mutex, Notify};
+
+/// 单条 DM 信封上限 (防滥用); quinn 的 read_to_end 需要显式 size_limit
+const MAX_MSG: usize = 16 * 1024 * 1024;
 
 use crate::envelope::SignedEnvelope;
 use crate::identity::KeyPair;
 
-/// 承载层 ALPN: 与信封协议名一致, 防止与其它 QUIC 应用串台
-const BOLLOON_ALPN: &[u8] = b"bolloon-envelope/1";
+/// 静态自签证书 + 私钥 (见文件头说明): 仅供 QUIC 通道加密, 不作身份
+const CERT_DER: &[u8] = &[
+48,130,1,91,48,130,1,1,160,3,2,1,2,2,20,95,
+20,38,169,93,57,213,20,245,79,180,22,79,43,226,178,133,
+32,238,12,48,10,6,8,42,134,72,206,61,4,3,2,48,
+18,49,16,48,14,6,3,85,4,3,12,7,98,111,108,108,
+111,111,110,48,30,23,13,50,54,49,48,50,56,48,52,48,
+57,51,54,90,23,13,51,54,49,48,50,53,48,52,48,57,
+51,54,90,48,18,49,16,48,14,6,3,85,4,3,12,7,
+98,111,108,108,111,111,110,48,89,48,19,6,7,42,134,72,
+206,61,2,1,6,8,42,134,72,206,61,3,1,7,3,66,
+0,4,185,22,121,47,102,175,24,70,128,126,182,209,56,17,
+241,223,141,78,79,129,173,102,125,229,124,245,158,173,173,245,
+117,59,243,179,242,76,92,19,200,134,239,40,93,170,223,112,
+146,199,134,253,113,61,187,138,185,50,97,189,204,47,181,236,
+181,189,163,53,48,51,48,18,6,3,85,29,17,4,11,48,
+9,130,7,98,111,108,108,111,111,110,48,29,6,3,85,29,
+14,4,22,4,20,17,129,110,22,137,181,84,228,48,244,153,
+107,31,75,94,100,11,42,181,15,48,10,6,8,42,134,72,
+206,61,4,3,2,3,72,0,48,69,2,33,0,239,189,126,
+67,199,29,194,44,117,60,97,155,104,91,117,197,230,24,93,
+11,80,73,59,102,191,23,250,165,183,74,107,70,2,32,32,
+44,157,230,220,19,135,107,118,117,170,255,89,34,110,193,243,
+85,34,48,213,234,22,118,174,30,99,20,151,54,152,192
+];
+const KEY_DER: &[u8] = &[
+48,129,135,2,1,0,48,19,6,7,42,134,72,206,61,2,
+1,6,8,42,134,72,206,61,3,1,7,4,109,48,107,2,
+1,1,4,32,195,178,189,55,75,46,206,89,10,55,106,31,
+148,206,76,67,167,94,118,193,80,155,210,85,91,202,123,175,
+162,254,168,71,161,68,3,66,0,4,185,22,121,47,102,175,
+24,70,128,126,182,209,56,17,241,223,141,78,79,129,173,102,
+125,229,124,245,158,173,173,245,117,59,243,179,242,76,92,19,
+200,134,239,40,93,170,223,112,146,199,134,253,113,61,187,138,
+185,50,97,189,204,47,181,236,181,189
+];
 
-/// QUIC 直连传输节点
+/// QUIC 直连传输节点 (单端点: 既收又发)
 pub struct QuicTransport {
     endpoint: Endpoint,
     /// did → 对端 socket 地址 (手动登记; 线上经 directory_peers 注册表下发)
     peers: Mutex<HashMap<String, SocketAddr>>,
-    /// 已收且验签过的信封
-    inbox: Mutex<Vec<SignedEnvelope>>,
-    /// 内容哈希去重
-    seen: Mutex<HashSet<String>>,
-    /// 有新信封时唤醒等待者
+    inbox: Arc<Mutex<Vec<SignedEnvelope>>>,
+    seen: Arc<Mutex<HashSet<String>>>,
     notify: Arc<Notify>,
     /// 本节点身份 (给发出去的信封签名 —— **用户的 KeyPair**, 不是 agent 的)
     kp: KeyPair,
@@ -47,12 +85,16 @@ pub struct QuicTransport {
 impl QuicTransport {
     /// 起一个 QUIC 端点 (随机端口), 同时能收能发
     pub async fn new(kp: &KeyPair) -> anyhow::Result<Self> {
-        let endpoint = make_endpoint()?;
+        let (server_config, client_config) = make_configs()?;
+        let mut endpoint = Endpoint::server(server_config, "0.0.0.0:0".parse::<SocketAddr>().unwrap())
+            .map_err(|e| anyhow::anyhow!("QUIC bind: {e}"))?;
+        // 同一个端点, 外出连接用"信任静态证书"的客户端配置
+        endpoint.set_default_client_config(client_config);
         let t = Self {
             endpoint,
             peers: Mutex::new(HashMap::new()),
-            inbox: Mutex::new(Vec::new()),
-            seen: Mutex::new(HashSet::new()),
+            inbox: Arc::new(Mutex::new(Vec::new())),
+            seen: Arc::new(Mutex::new(HashSet::new())),
             notify: Arc::new(Notify::new()),
             kp: kp.clone(),
         };
@@ -60,9 +102,19 @@ impl QuicTransport {
         Ok(t)
     }
 
-    /// 本节点对外 socket 地址, 用于与对端交换
+    /// 本节点对外 socket 地址 (收件端点), 用于与对端交换。
+    /// 若绑定在 0.0.0.0/:: 上, 返回回环地址让本地/同机交换可达; 真实跨机部署经
+    /// directory_peers 注册表下发对端实际可达地址 (注册表记录的是对端源 IP)。
     pub async fn node_addr(&self) -> anyhow::Result<SocketAddr> {
-        Ok(self.endpoint.local_addr()?)
+        let mut a = self.endpoint.local_addr()?;
+        if a.ip().is_unspecified() {
+            a.set_ip(if a.is_ipv6() {
+                std::net::IpAddr::V6(Ipv6Addr::LOCALHOST)
+            } else {
+                std::net::IpAddr::V4(Ipv4Addr::LOCALHOST)
+            });
+        }
+        Ok(a)
     }
 
     /// 手动登记对端 (离线/测试: 直接喂 SocketAddr; 线上: 经 directory_peers 注册表下发)
@@ -110,7 +162,6 @@ impl QuicTransport {
     }
 }
 
-/// 处理一条入站连接: 逐个收取双向流, 解析+验签+去重后入库
 async fn handle_conn(
     conn: quinn::Connection,
     inbox: Arc<Mutex<Vec<SignedEnvelope>>>,
@@ -118,12 +169,18 @@ async fn handle_conn(
     notify: Arc<Notify>,
 ) -> anyhow::Result<()> {
     loop {
-        let (mut recv, _send) = match conn.accept_bi().await {
+        let (_send, mut recv) = match conn.accept_bi().await {
             Ok(x) => x,
             Err(_) => break, // 对端关门 / 流结束
         };
-        let mut buf = Vec::new();
-        if recv.read_to_end(&mut buf).await? == 0 && buf.is_empty() {
+        let buf = match recv.read_to_end(MAX_MSG).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(err = %e, "QUIC 读取失败");
+                continue;
+            }
+        };
+        if buf.is_empty() {
             continue;
         }
         let env: SignedEnvelope = match serde_json::from_slice(&buf) {
@@ -143,6 +200,8 @@ async fn handle_conn(
             inbox.lock().await.push(env);
             notify.notify_waiters();
         }
+        // 读完即关连接: 通知发送方 (它 await closed()) 消息已送达, 避免发完即关的竞态
+        conn.close(VarInt::from(0u32), b"ok");
     }
     Ok(())
 }
@@ -151,58 +210,26 @@ fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis() as u64
 }
 
-/// 生成一个自签证书 +  permissive 客户端的 QUIC 端点
-/// (证书身份无关紧要, 真实信任靠信封验签)
-fn make_endpoint() -> anyhow::Result<Endpoint> {
-    // 自签证书 (QUIC 的 TLS 1.3 握手需要; 我们不靠它做身份识别)
-    let mut params = rcgen::CertificateParams::new(vec!["bolloon".to_string()]);
-    let key = rcgen::KeyPair::generate(&rcgen::PKCS_ECDSA_P256_SHA256)?;
-    let certified = params.self_signed(&key)?;
-    let cert_der = certified.der().clone();
-    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(
-        rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()),
-    );
+/// 构建 server / client 配置: 共用静态自签证书
+fn make_configs() -> anyhow::Result<(ServerConfig, ClientConfig)> {
+    let cert_der = CertificateDer::from(CERT_DER.to_vec());
+    let key_der = PrivateKeyDer::try_from(KEY_DER.to_vec())
+        .map_err(|e| anyhow::anyhow!("私钥解析: {e}"))?;
 
-    let server_config =
-        ServerConfig::with_single_cert(vec![cert_der], key_der).map_err(|e| anyhow::anyhow!("QUIC server config: {e}"))?;
+    let server_config = ServerConfig::with_single_cert(vec![cert_der.clone()], key_der)
+        .map_err(|e| anyhow::anyhow!("QUIC server config: {e}"))?;
 
-    // 客户端: 接受任何证书 (身份由信封验签保证)
-    let mut client_config = ClientConfig::new(Arc::new(AcceptAnyCert));
-    client_config.enable_sni = false;
+    // 客户端: 把静态证书放进根信任 (等同放行所有用这张证书的对端; 真实身份仍靠信封验签)
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert_der).map_err(|e| anyhow::anyhow!("根证书: {e}"))?;
+    let rustls_client = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let quic_client = QuicClientConfig::try_from(rustls_client)
+        .map_err(|e| anyhow::anyhow!("QuicClientConfig: {e}"))?;
+    let client_config = ClientConfig::new(Arc::new(quic_client));
 
-    let endpoint = Endpoint::new(
-        server_config,
-        Some(client_config),
-        "0.0.0.0:0".parse::<SocketAddr>().unwrap(),
-    )
-    .map_err(|e| anyhow::anyhow!("QUIC bind: {e}"))?;
-    Ok(endpoint)
-}
-
-/// 自定义证书校验: 一律放行 (QUIC 握手仍走 TLS 1.3, 但身份信任交给信封)
-struct AcceptAnyCert;
-
-impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-            rustls::SignatureScheme::ED25519,
-            rustls::SignatureScheme::RSA_PSS_SHA256,
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-        ]
-    }
+    Ok((server_config, client_config))
 }
 
 #[async_trait]
@@ -227,11 +254,13 @@ impl Transport for QuicTransport {
         let data =
             serde_json::to_vec(&env).map_err(|e| TransportError::Io(format!("编码: {e}")))?;
 
-        let conn = self
+        let connecting = self
             .endpoint
-            .connect(addr, &addr.ip().to_string())
-            .await
+            .connect(addr, "bolloon")
             .map_err(|e| TransportError::Io(format!("连接 {to}: {e}")))?;
+        let conn = connecting
+            .await
+            .map_err(|e| TransportError::Io(format!("握手 {to}: {e}")))?;
         let (mut send, _recv) = conn
             .open_bi()
             .await
@@ -240,13 +269,14 @@ impl Transport for QuicTransport {
             .await
             .map_err(|e| TransportError::Io(format!("写: {e}")))?;
         send.finish()
-            .await
             .map_err(|e| TransportError::Io(format!("finish: {e}")))?;
+        // 等接收方读完并关闭连接 (它读完会 conn.close), 保证消息确实送达;
+        // 否则发完即丢连接会 race 掉未传输完的流。兜底 30s 超时, 不无限阻塞。
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(30), conn.closed()).await;
         Ok(())
     }
 
     async fn broadcast(&self, msg: TransportMessage) -> Result<(), TransportError> {
-        // 直连语义下: 广播 = 发给所有已知对端
         let targets: Vec<String> = self.peers.lock().await.keys().cloned().collect();
         if targets.is_empty() {
             return Err(TransportError::PeerNotFound("没有已登记对端".into()));
@@ -286,7 +316,7 @@ mod tests {
         let a = QuicTransport::new(&kp_a).await.expect("a 端点起不来");
         let b = QuicTransport::new(&kp_b).await.expect("b 端点起不来");
 
-        // B 把自己的 socket 地址告诉 A (线上这步走 directory_peers 注册表)
+        // B 把自己的收件地址告诉 A (线上这步走 directory_peers 注册表)
         let b_addr = b.node_addr().await.expect("取 B 地址失败");
         a.add_peer(kp_b.did.as_str(), b_addr).await;
 
@@ -301,8 +331,7 @@ mod tests {
         // B 必须在本地收到并验签通过 —— 这就是"端对端直连"的最小证明
         let env = tokio::time::timeout(std::time::Duration::from_secs(10), b.recv())
             .await
-            .expect("10s 内没收到")
-            .unwrap_or_else(|| panic!("收件箱空"));
+            .expect("10s 内没收到");
         assert!(env.verify().is_ok(), "对端验签必须过");
         assert_eq!(env.sender, kp_a.did.as_str());
         assert_eq!(env.payload["text"], "你好, 我是 A (走 QUIC 直连)");
