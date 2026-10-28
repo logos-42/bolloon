@@ -423,7 +423,7 @@ class MainActivity : Activity() {
         if (logoFocused) {
             logo.setBackgroundColor(Color.WHITE)
             logo.setTextColor(Color.BLACK)
-            hint.text = "外壳已选中 · 单击:最小化到左下角 · 往下走:回到内容"
+            hint.text = "外壳已选中 · 单击:切回球体模式 · 长按:最小化 · 往下走:回到内容"
         } else {
             logo.setBackgroundColor(Color.TRANSPARENT)
             logo.setTextColor(Color.WHITE)

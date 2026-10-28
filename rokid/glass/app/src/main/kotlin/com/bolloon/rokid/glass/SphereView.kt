@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.os.SystemClock
+import android.view.Choreographer
 import android.view.View
 import android.view.animation.DecelerateInterpolator
 
@@ -74,18 +75,23 @@ class SphereView(ctx: Context) : View(ctx) {
         val ryBase = h * 0.255f
         val rBase = short * 0.145f
 
-        // 呼吸相位：周期 ~4.2s，每个球相位错开，于是"互相大小和相对位置"都在动
-        val t = if (breathing) ((SystemClock.uptimeMillis() - breatheStart) % 4200L) / 4200f * (2 * Math.PI).toFloat() else 0f
+        // 两条独立时间轴（都放慢）：
+        //   呼吸 ~7s 一息；环轨公转 60s 一整圈（很慢的绕行，像引力）
+        val elapsed = if (breathing) SystemClock.uptimeMillis() - breatheStart else 0L
+        // 连续相位：不取模 ⇒ 没有循环接缝（sin 对大数依然连续）
+        val t = (elapsed / 7000.0 * 2 * Math.PI).toFloat()
 
         // 卫星球：上 / 右 / 下 / 左（不画任何连线）
+        // 环轨公转：60s 转一整圈（远慢于呼吸），椭圆轨道 ⇒ 快慢自然变化
+        val spin = (elapsed / 60000.0 * 2 * Math.PI).toFloat()
         val angles = floatArrayOf(-90f, 0f, 90f, 180f)
         for (i in 0 until 4) {
             val ph = t + i * 1.15f
-            val breath = 1f + 0.07f * kotlin.math.sin(ph)              // 球径呼吸 ±7%
-            val orbitK = 1f + 0.045f * kotlin.math.sin(ph * 0.75f + 0.9f) // 相对位置呼吸 ±4.5%
-            val rad = Math.toRadians(angles[i].toDouble())
-            val bx = cx + (rxBase * orbitK * Math.cos(rad)).toFloat()
-            val by = cy + (ryBase * orbitK * Math.sin(rad)).toFloat()
+            val breath = 1f + 0.07f * kotlin.math.sin(ph)                 // 球径呼吸 ±7%
+            val orbitK = 1f + 0.045f * kotlin.math.sin(ph * 0.75f + 0.9f) // 轨道半径呼吸 ±4.5%
+            val ang = Math.toRadians(angles[i].toDouble()) + spin
+            val bx = cx + (rxBase * orbitK * Math.cos(ang)).toFloat()
+            val by = cy + (ryBase * orbitK * Math.sin(ang)).toFloat()
             drawBall(canvas, bx, by, rBase * breath, labels.getOrElse(i + 1) { "" }, selected == i + 1)
         }
 
@@ -120,13 +126,25 @@ class SphereView(ctx: Context) : View(ctx) {
     }
 
     override fun onDetachedFromWindow() {
+        breathing = false
+        framePosted = false
         animator?.cancel()
         super.onDetachedFromWindow()
     }
 
-    /** 30fps 自驱重绘（呼吸动画；不重绘时不会持续唤醒） */
+    private var framePosted = false
+
+    /** vsync 对齐自驱重绘：60fps 连续，不会有 33ms 定时器累积抖动 */
     private fun scheduleNextFrame() {
-        if (breathing && visibility == VISIBLE) postInvalidateDelayed(33)
+        if (!breathing || visibility != VISIBLE || framePosted) return
+        framePosted = true
+        Choreographer.getInstance().postFrameCallback(object : Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                framePosted = false
+                if (!breathing || visibility != VISIBLE) return
+                invalidate()
+            }
+        })
     }
 
     companion object {
