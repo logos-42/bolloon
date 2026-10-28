@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  眼镜端只允许对本机回环地址走明文 HTTP：
+  bolloon 节点在本机 127.0.0.1:54188 起 Web/API（裸机开发无 TLS），
+  或者通过 `adb reverse tcp:54188 tcp:54188` 映射到开发机。
+  其它域名仍强制 HTTPS。
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

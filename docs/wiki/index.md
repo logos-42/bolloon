@@ -151,3 +151,4 @@ python3 scripts/stale_report.py
 - [Bolloon.md](../../Bolloon.md) — 项目入口文档
 - [Bolloon.md](../../Bolloon.md) — 产品/架构主文档 (root; CLAUDE.md 已从仓里移除)
 - [AGENTS.md](../../AGENTS.md) — 通用 agent 规则
+| [rokid-glasses-baremetal.md](./rokid-glasses-baremetal.md) | v2 | Rokid Glasses 裸机开发接入：设备实测（型号/系统/屏幕/按键类触摸面板）+ 企业版 SDK 为何绑不上 + 官方公开裸机路径 + 三端点（asr/wallet/vision）+ 球体/卡片双模式 + 语音闭环与诚实边界 | current |

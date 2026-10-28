@@ -301,7 +301,11 @@ pub fn app(state: AppState) -> Router {
         .route("/api/agents/delete", post(crate::native::delete_agent))
         .route("/api/agents/share", post(crate::native::share_agent))
         .route("/api/agents/ping", post(crate::native::set_agent_ping))
+        // 智能体档案（DID 缩写 + soul 介绍 + 功能简介），眼镜端详情页用
+        .route("/api/agents/{id}/profile", get(crate::native::agent_profile))
         .route("/api/wallet/authorize", post(crate::native::authorize_wallet))
+        // 眼镜端钱包视图: 地址 + 链上余额（真实 RPC）
+        .route("/api/wallet", get(crate::wallet::wallet))
         .route("/api/phone/bind", post(crate::native::bind_phone))
         .route("/api/phone", get(crate::native::phone_status))
         // 手机号登录 = 挑战-应答 + 公钥验签 (证明手机号与 DID 同一个身份; 不是短信登录)
@@ -310,6 +314,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/profile", post(crate::native::set_profile))
         .route("/api/settings", post(crate::native::set_settings))
         .route("/api/chat", post(crate::native::chat))
+        // 眼镜端语音: POST 原始 WAV → 本机 whisper 转文本
+        .route("/api/asr", post(crate::asr::asr))
+        // 眼镜端「扫一眼」: POST 图片 → 离线 OCR + 意图匹配
+        .route("/api/vision", post(crate::vision::vision))
         .route("/api/chat/stream", post(crate::native::chat_stream))
         .route("/api/chat/status", get(crate::native::chat_status))
         .route("/api/chat/stop", post(crate::native::chat_stop))

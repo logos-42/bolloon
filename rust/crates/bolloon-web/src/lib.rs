@@ -7,8 +7,11 @@
 //!
 //! 版本 0.6.13（与 TS 版保持一致）。
 
+pub mod asr;
 pub mod avatar;
 pub mod native;
 pub mod room_bus;
 pub mod server;
+pub mod vision;
+pub mod wallet;
 pub use server::*;

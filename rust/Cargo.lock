@@ -365,6 +365,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "bolloon-agent",
  "bolloon-kernel",
  "bolloon-llm",

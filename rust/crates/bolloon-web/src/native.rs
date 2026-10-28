@@ -3312,3 +3312,36 @@ fn verify_proof(pubkey_hex: &str, msg: &[u8], sig_hex: &str) -> bool {
 fn short_did(did: &str) -> String {
     if did.len() <= 18 { did.to_string() } else { format!("{}…{}", &did[..12], &did[did.len()-4..]) }
 }
+
+/// GET /api/agents/{id}/profile → 智能体档案：DID（含缩写）+ soul 介绍 + 功能简介
+///
+/// soul.md / agent.md 是 home 里该智能体的默认文档；没写过就如实说没设置，
+/// 不用 persona 冒充 soul。
+pub async fn agent_profile(
+    AxumPath(id): AxumPath<String>,
+    State(st): State<AppState>,
+) -> Json<serde_json::Value> {
+    let agent = {
+        let fs = st.forge.lock().await;
+        fs.agents.iter().find(|a| a.id == id).cloned()
+    };
+    let Some(a) = agent else {
+        return Json(serde_json::json!({ "ok": false, "error": "智能体不存在" }));
+    };
+    let dir = data_dir().join("agents").join(&a.id);
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+    let soul = read("soul.md");
+    let doc = read("agent.md");
+    Json(serde_json::json!({
+        "ok": true,
+        "id": a.id,
+        "name": a.name,
+        "did": a.did,
+        "did_short": short_did(&a.did),
+        "soul": soul,
+        "soul_set": !soul.trim().is_empty(),
+        "agent_doc": doc,
+        "agent_doc_set": !doc.trim().is_empty(),
+        "persona": a.persona,
+    }))
+}
