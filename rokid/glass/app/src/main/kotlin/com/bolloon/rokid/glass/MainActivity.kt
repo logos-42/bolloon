@@ -64,6 +64,18 @@ class MainActivity : Activity() {
     private var loginTick = 0
     /** 开发者模式跳过登录（debug 包可用；只对本次进程有效，不写盘） */
     private var devSkip = false
+    /**
+     * 开发者模式：**debug 包 + 插着 USB 数据线**才出现（leo: USB 接口的时候才开始显示开发者模式）。
+     * 拔线用眼镜时看不到开发者选项，正常用户也不会误触。
+     */
+    private fun devMode(): Boolean {
+        if (!BuildConfig.DEBUG) return false
+        val bias = registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+            ?: return false
+        val plugged = bias.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0)
+        return plugged != 0
+    }
+
     /** 登录页按键节流（触摸面板会连发 DOWN，不能每次都换一张码） */
     private var lastLoginKey = 0L
     /** 这张码什么时候过期（显示倒计时，别让码"看起来一闪就没"） */
@@ -640,7 +652,7 @@ class MainActivity : Activity() {
                 T("model") + " / " + (llm?.let { "${it.provider} · ${it.model}" } ?: "…"),
                 T("link") + " / " + if (linkLine.contains("已连") || linkLine.contains("connected")) "✓" else "✗",
                 T("login") + " / " + when {
-                    devSkip -> T("dev_skip_short")
+                    devSkip && devMode() -> T("dev_skip_short")
                     loggedIn -> "✓"
                     else -> "✗"
                 },
@@ -959,7 +971,7 @@ class MainActivity : Activity() {
                 .append("  (").append(T("sync_same")).append(")\n")
             append(T("login")).append("   ").append(
                 when {
-                    devSkip -> T("dev_skip_short")
+                    devSkip && devMode() -> T("dev_skip_short")
                     loggedIn -> T("logged_in_short")
                     else -> T("not_logged_in")
                 }
@@ -1155,7 +1167,7 @@ class MainActivity : Activity() {
      * 只对本次进程有效、不落盘 —— 免得"跳过一次"之后再也测不到真登录流程。
      */
     private fun devSkipLogin() {
-        if (!BuildConfig.DEBUG) return
+        if (!devMode()) return
         devSkip = true
         loggedIn = true
         loginBusy = false
@@ -1211,7 +1223,7 @@ class MainActivity : Activity() {
                 action.text = "🔑 " + T("confirm_login")
                 cardTitle.text = T("confirm_login")
                 cardBody.text = T("login_howto")
-                hint.text = T("login_confirm_hint") + if (BuildConfig.DEBUG) " · " + T("dev_skip") else ""
+                hint.text = T("login_confirm_hint") + if (devMode()) " · " + T("dev_skip") else ""
             }
             LoginStage.SCAN -> {
                 action.text = if (loginBusy) "📷 " + T("scanning") else "📷 " + T("scan_qr")
@@ -1374,7 +1386,7 @@ class MainActivity : Activity() {
         if (screen == Screen.LOGIN) {
             if (isEnter) {
                 if (event.action == KeyEvent.ACTION_DOWN) {
-                    if (event.repeatCount == 0 && BuildConfig.DEBUG) {
+                    if (event.repeatCount == 0 && devMode()) {
                         longPressFired = false
                         val r = Runnable { longPressFired = true; devSkipLogin() }
                         longPressTask = r

@@ -31,6 +31,7 @@ hex.workspace = true
 libc.workspace = true
 bolloon-tui = { path = "../bolloon-tui" }
 base64 = { workspace = true }
+qrcode = { version = "0.14.1", default-features = false }
 
 # QUIC 端对端直连传输 (默认启用): 好友对话的直连底座, 不经 HTTP 中继。
 # 关掉即退回纯 HTTP 跨机, 不影响其它功能。

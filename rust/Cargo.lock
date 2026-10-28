@@ -264,6 +264,7 @@ dependencies = [
  "clap",
  "hex",
  "libc",
+ "qrcode",
  "serde",
  "serde_json",
  "thiserror",

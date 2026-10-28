@@ -91,6 +91,11 @@ enum Commands {
         #[command(subcommand)]
         action: UpdateAction,
     },
+    /// 眼镜端登录 (终端出二维码, 眼镜扫一下就登录)
+    Glass {
+        #[command(subcommand)]
+        action: GlassAction,
+    },
     /// 做梦 (整理记忆与经验, 升级项目 skills)
     Dream {
         /// 主题 (给了就写梦想文档)
@@ -188,8 +193,87 @@ async fn main() -> anyhow::Result<()> {
             run_model(provider, usable, filter, model, base_url, api_key_stdin)
         }
         Some(Commands::Update { action }) => run_update(action),
+        Some(Commands::Glass { action }) => match action {
+            GlassAction::Login { port, once } => glass_login(port, once),
+        },
         Some(Commands::Dream { topic, domain }) => run_dream(topic, &domain),
     }
+}
+
+#[derive(Subcommand)]
+enum GlassAction {
+    /// 出一张登录二维码 (终端直接显示; 眼镜扫 → 直接登录)
+    Login {
+        /// 节点端口 (与 `bolloon web` 一致)
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+        /// 只把码打出来, 不等扫码结果
+        #[arg(long)]
+        once: bool,
+    },
+}
+
+/// 眼镜端登录: 终端出二维码 → 眼镜扫 → 节点签发令牌 (眼镜自己存, 终端只报结果)
+///
+/// 为什么走 HTTP 而不是直接写码库: 出码与兑换必须在**同一个节点进程**里,
+/// 眼镜是打这个节点的 /api/auth/qr/*; 终端直接改文件会出现「码写了但没人能兑换」。
+fn glass_login(port: u16, once: bool) -> anyhow::Result<()> {
+    let base = format!("http://127.0.0.1:{port}");
+    let issued: serde_json::Value = match ureq::post(&format!("{base}/api/auth/qr/issue"))
+        .send_json(serde_json::json!({}))
+    {
+        Ok(r) => r.into_json()?,
+        Err(e) => anyhow::bail!(
+            "节点没在跑（{base}）：先开一个终端跑 `bolloon web`，再回来执行这条命令。\n原因: {e}"
+        ),
+    };
+    if !issued["ok"].as_bool().unwrap_or(false) {
+        anyhow::bail!("出码失败: {issued}");
+    }
+    let code = issued["code"].as_str().unwrap_or_default().to_string();
+    let url = issued["url"].as_str().unwrap_or_default().to_string();
+
+    // 终端二维码: 用同一套 qrcode 编码, 渲染成方块字符 (终端里不用开浏览器也能扫)
+    let qr = qrcode::QrCode::new(url.as_bytes())
+        .map_err(|e| anyhow::anyhow!("二维码编码失败: {e}"))?;
+    let art = qr
+        .render::<qrcode::render::unicode::Dense1x2>()
+        .dark_color(qrcode::render::unicode::Dense1x2::Dark)
+        .light_color(qrcode::render::unicode::Dense1x2::Light)
+        .build();
+
+    println!();
+    println!("  眼镜登录 —— 用眼镜摄像头扫下面这个码");
+    println!();
+    for line in art.lines() {
+        println!("  {line}");
+    }
+    println!();
+    println!("  码: {code}   (也可以在 /login 页输这串, 或让眼镜出码在手机授权)");
+    println!("  有效 180 秒");
+    println!();
+
+    if once {
+        return Ok(());
+    }
+
+    println!("  等眼镜扫码…（Ctrl+C 退出）");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let Ok(resp) = ureq::get(&format!("{base}/api/auth/qr/status?code={code}")).call() else {
+            continue;
+        };
+        let Ok(st) = resp.into_json::<serde_json::Value>() else { continue };
+        if st["used"].as_bool().unwrap_or(false) {
+            println!("\n  ✓ 眼镜已登录");
+            return Ok(());
+        }
+        if !st["ok"].as_bool().unwrap_or(false) {
+            anyhow::bail!("码失效了（可能已过期）：重新跑 `bolloon glass login`");
+        }
+    }
+    anyhow::bail!("180 秒没扫 —— 码已过期，重新跑 `bolloon glass login`")
 }
 
 /// 启动 web —— 启动期走**品牌仪表盘** (`tui::LoadingTui`, 复用 TS `LoadingTUI`)
