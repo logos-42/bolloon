@@ -31,12 +31,12 @@ import org.json.JSONObject
  */
 class MainActivity : Activity() {
 
-    private enum class Section(val zh: String, val en: String) {
-        WORLD("世界", "World"),
-        EXTERNAL("外部", "External"),
-        AGENTS("智能体", "Agents"),
-        GROUPS("群组", "Groups"),
-        SETTINGS("设置", "Settings"),
+    private enum class Section(val key: String) {
+        WORLD("world"),
+        EXTERNAL("external"),
+        AGENTS("agents"),
+        GROUPS("groups"),
+        SETTINGS("settings"),
     }
     private enum class Screen { HOME, CHAT, WIDGET }
     /** 球体模式（默认）/ 卡片模式：点 bolloon 球切换 */
@@ -49,6 +49,13 @@ class MainActivity : Activity() {
     /** zh | en（设置页可切；球体模式不出现设置球） */
     private var lang = "zh"
     private var phone: BolloonApi.Phone? = null
+    private var llm: BolloonApi.Llm? = null
+    private var loggedIn = false
+    private var loginMsg = ""
+    private var lastLangAt = 0L
+    /** 桌面/CLI 对话流：眼镜端按 /api/turns 增量轮询成卡片传输流 */
+    private var feedSeen = 0
+    private val feed = ArrayList<Pair<String, String>>()
     private var index = 0
 
     private var opportunities: List<BolloonApi.Opportunity> = emptyList()
@@ -66,6 +73,13 @@ class MainActivity : Activity() {
     private var shotText = ""
     private var logoFocused = false
     private var newDrops = 0
+    /** 最小化后常开的意图识别（视频时间连续识别） */
+    private var intentLoopOn = false
+    private var lastKeyAt = 0L
+    /** 球体模式：球之外的字（品牌名/连接状态/提示）是否已熄灭 */
+    private var textDimmed = false
+    private var lastIntent = ""
+    private var intentCount = 0
     private var lastTopTitle = ""
 
     private val recorder = VoiceRecorder()
@@ -94,6 +108,7 @@ class MainActivity : Activity() {
     private lateinit var sphereHint: TextView
     private lateinit var topBrand: TextView
     private lateinit var connStatus: TextView
+    private lateinit var feedStrip: TextView
     private lateinit var mainCol: LinearLayout
     private lateinit var widgetBar: LinearLayout
     private lateinit var widgetTitle: TextView
@@ -101,16 +116,47 @@ class MainActivity : Activity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    private fun L(zh: String, en: String): String = if (lang == "en") en else zh
+    /** 多语言取词（界面框架文字全走 Strings 表；数据内容不翻译） */
+    private fun T(key: String): String = Strings.t(lang, key)
 
-    private fun secLabel(sec: Section): String = if (lang == "en") sec.en else sec.zh
+    private fun secLabel(sec: Section): String = T(sec.key)
+
+    private fun nextLang(): String {
+        val all = Strings.LANGS
+        val i = all.indexOf(lang)
+        return all[(if (i < 0) 0 else i + 1) % all.size]
+    }
 
     /** 球体模式只放 4 个业务栏，设置不进球 */
     private val sphereSections: List<Section>
         get() = listOf(Section.WORLD, Section.EXTERNAL, Section.AGENTS, Section.GROUPS)
 
+    /** 球外文字熄灭门槛：默认 10 分钟（可用 intent extra dim_ms 覆盖，便于验收） */
+    /** 验收/调试直达：am start ... --es section settings（QA 用，不影响正常流程） */
+    private fun applyQaIntent(i: android.content.Intent?) {
+        val want = i?.getStringExtra("section") ?: return
+        android.util.Log.i("BolloonQA", "applyQaIntent want=$want")
+        val hit = Section.values().firstOrNull { it.key.equals(want, true) } ?: return
+        section = hit
+        sidebarLevel = 1
+        screen = Screen.HOME
+        if (::mainCol.isInitialized) render()
+    }
+
+    override fun onNewIntent(i: android.content.Intent) {
+        super.onNewIntent(i)
+        setIntent(i)
+        applyQaIntent(i)
+    }
+
+    private fun dimMs(): Long {
+        val prefs = getSharedPreferences("bolloon", MODE_PRIVATE)
+        return prefs.getLong("dim_ms", 600_000L)
+    }
+
     private fun loadLang() {
-        lang = getSharedPreferences("bolloon", MODE_PRIVATE).getString("lang", "zh") ?: "zh"
+        val saved = getSharedPreferences("bolloon", MODE_PRIVATE).getString("lang", "zh") ?: "zh"
+        lang = if (saved in Strings.LANGS) saved else "zh"
     }
 
     private fun saveLang() {
@@ -128,6 +174,25 @@ class MainActivity : Activity() {
         }
         // 封面：先给 logo，再进主页
         loadLang()
+        // am start -e dim_ms 8000 传的是 String extra，两种都认
+        val dimArg = intent?.getStringExtra("dim_ms")?.toLongOrNull()
+            ?: intent?.getLongExtra("dim_ms", 0L) ?: 0L
+        applyQaIntent(intent)
+        if (dimArg > 0) {
+            getSharedPreferences("bolloon", MODE_PRIVATE).edit().putLong("dim_ms", dimArg).apply()
+        }
+        lastKeyAt = android.os.SystemClock.uptimeMillis()
+        keyHandler.postDelayed(object : Runnable {
+            override fun run() {
+                if (mode == Mode.SPHERE && screen == Screen.HOME && !textDimmed &&
+                    android.os.SystemClock.uptimeMillis() - lastKeyAt >= dimMs()
+                ) {
+                    textDimmed = true
+                    render()
+                }
+                keyHandler.postDelayed(this, 5_000)
+            }
+        }, 5_000)
         statusLine = "连接桌面节点…"
         splash.visibility = TextView.VISIBLE
         render()
@@ -143,6 +208,7 @@ class MainActivity : Activity() {
             val line = BolloonApi.probe()
             runOnUiThread { linkLine = line; render() }
         }.start()
+        startFeedLoop()
         // 常驻轻刷新：屏幕上看到的余额/消息/卡片不会长期停在旧值
         val ticker = android.os.Handler(mainLooper)
         ticker.postDelayed(object : Runnable {
@@ -277,6 +343,20 @@ class MainActivity : Activity() {
             visibility = TextView.GONE
         }
         outer.addView(connStatus)
+        feedStrip = TextView(this).apply {
+            textSize = 9f
+            setTextColor(Color.parseColor("#B8B8B8"))
+            setBackgroundColor(Color.parseColor("#CC0A0A0A"))
+            setPadding(dp(8), dp(3), dp(8), dp(3))
+            maxLines = 2
+            val lp = android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.gravity = Gravity.BOTTOM or Gravity.START
+            lp.bottomMargin = dp(20)
+            layoutParams = lp
+            visibility = TextView.GONE
+        }
+        outer.addView(feedStrip)
         sphereHint = TextView(this).apply {
             textSize = 9f
             gravity = Gravity.CENTER
@@ -368,10 +448,10 @@ class MainActivity : Activity() {
 
     private var lastNavStep = 0L
 
-    /** 卡片/切栏节流：380ms 一次，避免"嗖"地连跳 */
+    /** 卡片/切栏节流：600ms 一次，避免"嗖"地连跳 */
     private fun navDebounce(): Boolean {
         val now = android.os.SystemClock.uptimeMillis()
-        if (now - lastNavStep < 380) return false
+        if (now - lastNavStep < 600) return false
         lastNavStep = now
         return true
     }
@@ -397,10 +477,15 @@ class MainActivity : Activity() {
         sphere.labels = listOf("Bolloon") + sphereSections.map { secLabel(it) }
         sphere.selected = sphereSel
         if (::connStatus.isInitialized) connStatus.text = linkLine
+        // 10 分钟无操作 ⇒ 球之外的字全部熄灭，只剩球；任意按键点亮
+        val textVis = if (textDimmed) TextView.GONE else TextView.VISIBLE
+        if (::topBrand.isInitialized) topBrand.visibility = textVis
+        if (::connStatus.isInitialized) connStatus.visibility = textVis
+        if (::sphereHint.isInitialized) sphereHint.visibility = textVis
         sphereHint.text = if (sphereSel == 0)
             "◉ Bolloon 帛龙 · 单击:bolloon 球→卡片模式 · 长按:选中标签→单击最小化"
         else
-            "${secLabel(sphereSections[sphereSel - 1])} · " + L("单击进入 · 前后滑换球", "tap to enter · swipe to change")
+            "${secLabel(sphereSections[sphereSel - 1])} · " + T("tap_confirm") + " · " + T("swipe_next")
     }
 
     private fun onSphereConfirm() {
@@ -447,7 +532,12 @@ class MainActivity : Activity() {
             Section.EXTERNAL -> contacts.map { it.name }
             Section.AGENTS -> myAgents.map { it.name }
             Section.GROUPS -> groups.map { it.name }
-            Section.SETTINGS -> listOf(L("语言 / Language", "Language / 语言"), L("手机号 / Phone", "Phone / 手机号"))
+            Section.SETTINGS -> listOf(
+                T("language") + " / " + (Strings.LANG_NAMES[lang] ?: lang),
+                T("phone") + " / " + (phone?.let { if (it.bound) "…" + it.phone.takeLast(4) else T("not_bound") } ?: "…"),
+                T("model") + " / " + (llm?.let { "${it.provider} · ${it.model}" } ?: "…"),
+                T("link") + " / " + if (linkLine.contains("已连") || linkLine.contains("connected")) "✓" else "✗",
+            )
         }
         if (labels.isEmpty()) {
             sidebarBox.addView(sidebarRow("（空）", active = false, small = true))
@@ -481,27 +571,30 @@ class MainActivity : Activity() {
             Section.EXTERNAL -> "🎤 外部智能体"
             Section.AGENTS -> "🎤 我的智能体"
             Section.GROUPS -> "💬 群组"
-            Section.SETTINGS -> L("⚙ 设置", "⚙ Settings")
+            Section.SETTINGS -> "⚙ " + T("settings")
         }
         cardTitle.text = when (section) {
-            Section.WORLD -> "世界 · ${opportunities.size} 张卡片"
+            Section.WORLD -> T("world") + " · ${opportunities.size}"
             Section.EXTERNAL -> "外部智能体 · ${contacts.size}"
             Section.AGENTS -> "我的智能体 · ${myAgents.size}"
             Section.GROUPS -> "群组 · ${groups.size}"
-            Section.SETTINGS -> L("设置", "Settings")
+            Section.SETTINGS -> T("settings")
         }
         cardBody.text = when (section) {
             Section.WORLD -> "往后滑进列表 → 侧栏换成卡片标题\n单击 = 扫一眼（摄像头 → OCR → 匹配意图 → 刷卡片）"
             Section.EXTERNAL -> "往后滑进列表 → 侧栏换成外部智能体名单\n长按条目 = 固定 ping"
             Section.AGENTS -> "往后滑进列表 → 侧栏换成我的智能体名单\n长按条目 = 固定 ping"
             Section.GROUPS -> "往后滑进列表 → 侧栏换成群组名单\n（本地群 + 含外部智能体的群）"
-            Section.SETTINGS -> L("语言 / 手机号 / 蓝牙 都在这页", "Language / Phone / Bluetooth live here")
+            Section.SETTINGS -> T("language") + " / " + T("phone") + " / " + T("bluetooth")
         }
         hint.text = "往后滑:进列表 · 单击:进列表 · 双击:退出"
     }
 
     private fun ensureSectionData() {
-        if (section == Section.SETTINGS && phone == null) refreshPhone()
+        if (section == Section.SETTINGS) {
+            if (phone == null) refreshPhone()
+            if (llm == null) refreshLlm()
+        }
     }
 
     private fun renderCurrentSection() {
@@ -536,9 +629,20 @@ class MainActivity : Activity() {
     }
 
     private fun renderWidget() {
+        // 最小化 = 只留左下角挂件：球体/顶栏/连接状态全部让位
+        if (::sphere.isInitialized) sphere.visibility = TextView.GONE
+        if (::sphereHint.isInitialized) sphereHint.visibility = TextView.GONE
+        if (::topBrand.isInitialized) topBrand.visibility = TextView.GONE
+        if (::connStatus.isInitialized) connStatus.visibility = TextView.GONE
+        mainCol.visibility = LinearLayout.GONE
+        widgetBar.visibility = TextView.VISIBLE
         val opp = opportunities.getOrNull(0)
         widgetTitle.text = "◉ Bolloon 帛龙" + if (newDrops > 0) "  +$newDrops" else ""
-        widgetBody.text = opp?.title ?: "等待世界消息…"
+        widgetBody.text = when {
+            lastIntent.isNotEmpty() -> "意图：$lastIntent" + if (intentCount > 1) " ×$intentCount" else ""
+            opp != null -> opp.title
+            else -> "观察中…（每 8s 识别一次）"
+        }
     }
 
     private fun renderOpportunities() {
@@ -698,29 +802,102 @@ class MainActivity : Activity() {
     }
 
     private fun renderSettings() {
-        action.text = L("⚙ 单击切换语言 / Tap to switch language", "⚙ Tap to switch language / 切换语言")
-        cardTitle.text = L("设置", "Settings")
+        action.text = "⚙ " + T("tap_lang")
+        cardTitle.text = T("settings")
         val ph = phone
         val phoneLine = when {
-            ph == null -> L("查询中…", "loading…")
-            !ph.bound -> L("未绑定（在电脑/手机 Web UI 绑定）", "not bound (bind in web UI)")
+            ph == null -> "…"
+            !ph.bound -> T("not_bound")
             else -> {
                 val p = ph.phone
                 val masked = if (p.length >= 7) p.take(3) + "****" + p.takeLast(4) else p
-                masked + if (ph.identityMatch) L(" · 已验签", " · verified") else L(" · 校验未通过", " · unverified")
+                masked + if (ph.identityMatch) " · ✓" else " · ✗"
             }
         }
         cardBody.text = buildString {
-            append(L("语言", "Language")).append("   ").append(if (lang == "en") "English" else "中文").append("\n")
-            append(L("手机号", "Phone")).append("   ").append(phoneLine).append("\n")
-            append(L("蓝牙", "Bluetooth")).append("   ").append(L("由手机端配对连接", "paired from phone")).append("\n")
-            append(L("链接", "Link")).append("   ").append(linkLine).append("\n")
-            append(L("数据", "Data")).append("   ").append(statusLine).append("\n")
-            append(L("版本", "Version")).append("   0.1.0")
-            append("\n\n").append(L("单击：中文 ⇄ English", "Tap: 中文 ⇄ English"))
+            append(T("language")).append("   ").append(Strings.LANG_NAMES[lang] ?: lang).append("\n")
+            append(T("phone")).append("   ").append(phoneLine).append("\n")
+            append(T("bluetooth")).append("   ").append(T("bt_from_phone")).append("\n")
+            append(T("link")).append("   ").append(linkLine).append("\n")
+            append(T("data")).append("   ").append(statusLine).append("\n")
+            append(T("model")).append("   ")
+                .append(llm?.let { "${it.provider} · ${it.model}" + if (it.keyOk) " ✓" else " ✗" } ?: "…")
+                .append("  (").append(T("sync_same")).append(")\n")
+            if (loginMsg.isNotEmpty()) append(loginMsg).append("\n")
+            append(T("version")).append("   0.1.0")
+            append("\n\n").append(T("tap_lang"))
         }
-        hint.text = L("单击:切换语言 · 往后滑:回世界 · 双击:退出",
-                      "tap: switch language · swipe: next · double-tap: exit")
+        hint.text = T("tap_lang") + " · " + T("swipe_next") + " · " + T("dbl_exit")
+    }
+
+    /** 桌面/CLI 输入 + AI 回复 → 眼镜卡片传输流（3s 增量） */
+    private fun startFeedLoop() {
+        Thread {
+            while (true) {
+                try {
+                    val (total, newTurns) = BolloonApi.turns(feedSeen)
+                    if (newTurns.isNotEmpty()) {
+                        synchronized(feed) {
+                            feed.addAll(newTurns)
+                            while (feed.size > 30) feed.removeAt(0)
+                        }
+                        feedSeen = total
+                        runOnUiThread { renderFeed() }
+                    } else if (total != 0 && feedSeen == 0) {
+                        feedSeen = total   // 首次不把历史全灌进来
+                    }
+                } catch (_: Exception) {
+                }
+                try {
+                    Thread.sleep(3_000)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+        }.start()
+    }
+
+    private fun renderFeed() {
+        if (!::feedStrip.isInitialized) return
+        val last = synchronized(feed) { feed.takeLast(2) }
+        if (last.isEmpty()) {
+            feedStrip.visibility = TextView.GONE
+            return
+        }
+        feedStrip.visibility = TextView.VISIBLE
+        feedStrip.text = last.joinToString("\n") { (role, text) ->
+            val who = if (role == "user") (if (lang == "zh") "你" else "you") else "AI"
+            who + ": " + text.replace("\n", " ").take(46)
+        }
+        if (screen == Screen.WIDGET) renderWidget()
+    }
+
+    private fun doLogin() {
+        loginMsg = "…"
+        render()
+        Thread {
+            val (ok, reason) = BolloonApi.login()
+            runOnUiThread {
+                loggedIn = ok
+                loginMsg = if (ok) T("logged_in") else T("login_fail") + " · " + reason
+                render()
+            }
+        }.start()
+    }
+
+    private fun refreshLlm() {
+        Thread {
+            val m = BolloonApi.models()
+            runOnUiThread { llm = m; render() }
+        }.start()
+    }
+
+    private fun refreshLink() {
+        linkLine = "…"
+        Thread {
+            val line = BolloonApi.probe()
+            runOnUiThread { linkLine = line; render() }
+        }.start()
     }
 
     private fun refreshPhone() {
@@ -743,6 +920,13 @@ class MainActivity : Activity() {
     // ───────────────────────── 按键 ─────────────────────────
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            lastKeyAt = android.os.SystemClock.uptimeMillis()
+            if (textDimmed) {
+                textDimmed = false
+                render()
+            }
+        }
         val code = event.keyCode
         val isEnter = code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_DPAD_CENTER
         // 球体模式：五个球之间切换，单击进球（bolloon 球 = 切卡片模式）
@@ -885,11 +1069,18 @@ class MainActivity : Activity() {
         newDrops = 0
         render()
         startWidgetPoll()
+        startIntentLoop()
     }
 
     private fun exitWidget() {
+        intentLoopOn = false
         screen = Screen.HOME
         widgetBar.visibility = TextView.GONE
+        if (mode == Mode.SPHERE) {
+            if (::sphere.isInitialized) sphere.visibility = TextView.VISIBLE
+        } else {
+            mainCol.visibility = LinearLayout.VISIBLE
+        }
         mainCol.visibility = LinearLayout.VISIBLE
         newDrops = 0
         render()
@@ -922,6 +1113,57 @@ class MainActivity : Activity() {
                 }
             }
             widgetPolling = false
+        }.start()
+    }
+
+    /**
+     * 最小化后常开的意图识别：每 8s 拍一帧 → OCR + AI 预测意图 → 落 OrbitDB(intent-stream)。
+     * 意图不进本地日志就够了吗？不够 —— leo 要的是给群聊内部智能体当输入，所以必须上报节点。
+     */
+    private fun startIntentLoop() {
+        if (intentLoopOn) return
+        intentLoopOn = true
+        Thread {
+            while (intentLoopOn && screen == Screen.WIDGET) {
+                try {
+                    camera.capture(
+                        onJpeg = { jpeg ->
+                            Thread {
+                                try {
+                                    val small = CameraCapture.downscale(jpeg)
+                                    val j = BolloonApi.vision(small)
+                                    val ok = j.optBoolean("ok", false)
+                                    val intent = if (j.isNull("intent")) "" else j.optString("intent", "")
+                                    val conf = j.optDouble("confidence", 0.0)
+                                    val reason = j.optString("reason", "")
+                                    val text = j.optString("text", "")
+                                    if (ok && intent.isNotEmpty() && !intentLoopOn.not()) {
+                                        BolloonApi.observeIntent(intent, conf, reason, text)
+                                    }
+                                    if (ok && intent.isNotEmpty()) {
+                                        // 同一意图连续多次只计数，不重复刷屏
+                                        runOnUiThread {
+                                            if (intent == lastIntent) intentCount += 1 else {
+                                                lastIntent = intent
+                                                intentCount = 1
+                                            }
+                                            renderWidget()
+                                        }
+                                    }
+                                } catch (_: Exception) {
+                                }
+                            }.start()
+                        },
+                        onError = { _ -> },
+                    )
+                } catch (_: Exception) {
+                }
+                try {
+                    Thread.sleep(8_000)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
         }.start()
     }
 
@@ -983,7 +1225,7 @@ class MainActivity : Activity() {
         Section.EXTERNAL -> maxOf(contacts.size, 1)
         Section.AGENTS -> maxOf(myAgents.size, 1)
         Section.GROUPS -> maxOf(groups.size, 1)
-        Section.SETTINGS -> 2
+        Section.SETTINGS -> 4
     }
 
     private fun onConfirm() {
@@ -1006,11 +1248,24 @@ class MainActivity : Activity() {
                     Section.EXTERNAL -> contacts.getOrNull(index)?.let { openChat(it) } ?: refresh()
                     Section.AGENTS -> myAgents.getOrNull(index)?.let { openChat(it) } ?: refresh()
                     Section.GROUPS -> groups.getOrNull(index)?.let { openGroupChat(it) } ?: refresh()
-                    Section.SETTINGS -> {
-                        lang = if (lang == "zh") "en" else "zh"
-                        saveLang()
-                        render()
-                        refreshPhone()
+                    Section.SETTINGS -> when (index) {
+                        // 语言：900ms 才允许再切，别一路刷过 7 语
+                        0 -> {
+                            val now = android.os.SystemClock.uptimeMillis()
+                            if (now - lastLangAt > 900) {
+                                lastLangAt = now
+                                lang = nextLang()
+                                saveLang()
+                                render()
+                            }
+                        }
+                        // 手机号：真登录（节点 DID 签名 + 验签）
+                        1 -> doLogin()
+                        // 模型：刷新（看是否与桌面/CLI 同步）
+                        2 -> refreshLlm()
+                        // 链接：重探
+                        3 -> refreshLink()
+                        else -> render()
                     }
                 }
             }
@@ -1218,7 +1473,8 @@ class MainActivity : Activity() {
                 messages = ms
                 pendingAuth = pa
                 statusLine = if (opps.isSuccess || cs.isSuccess)
-                    "世界 ${opportunities.size} · 外部 ${contacts.size} · 我的 ${myAgents.size} · 群 ${groups.size}"
+                    "${T("world")} ${opportunities.size} · ${T("external")} ${contacts.size} · " +
+                        "${T("agents")} ${myAgents.size} · ${T("groups")} ${groups.size}"
                 else "节点离线 · 检查 adb reverse 54188"
                 if (index >= currentListSize()) index = 0
                 render()

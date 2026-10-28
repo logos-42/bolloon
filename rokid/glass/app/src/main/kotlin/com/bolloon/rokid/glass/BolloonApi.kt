@@ -280,6 +280,74 @@ object BolloonApi {
         }
     }
 
+
+    /** POST /api/intent/observe → 意图落 OrbitDB(intent-stream)，给群聊内部智能体当输入 */
+    fun observeIntent(intent: String, confidence: Double, reason: String, text: String): Boolean = try {
+        val payload = JSONObject()
+            .put("intent", intent)
+            .put("confidence", confidence)
+            .put("reason", reason)
+            .put("text", text.take(200))
+            .put("source", "glass-widget")
+            .toString().toByteArray()
+        val body = readText(open("/api/intent/observe", "POST", payload, "application/json"))
+        JSONObject(body).optBoolean("ok", false)
+    } catch (e: Exception) {
+        false
+    }
+
+
+    data class Llm(val provider: String, val model: String, val keyOk: Boolean)
+
+    /** GET /api/models → 当前 provider/model（与 CLI/桌面同一份配置） */
+    fun models(): Llm = try {
+        val j = JSONObject(readText(open("/api/models")))
+        val active = j.optString("active", "")
+        val model = j.optString("active_model", "")
+        var keyOk = false
+        j.optJSONArray("providers")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                if (o.optString("name") == active) keyOk = o.optBoolean("has_key", false)
+            }
+        }
+        Llm(active, model, keyOk)
+    } catch (e: Exception) {
+        Llm("", "", false)
+    }
+
+    /**
+     * 手机号登录 = 先取挑战再验签（nonce 一次性，不能复用）。
+     * POST /api/phone/challenge → POST /api/phone/login（节点用 DID 私钥签名）
+     */
+    fun login(): Pair<Boolean, String> = try {
+        // ① 取新挑战（旧挑战用过就废，必须每次新取）
+        readText(open("/api/phone/challenge", "POST", "{}".toByteArray(), "application/json"))
+        // ② 拿挑战去登录
+        val body = readText(open("/api/phone/login", "POST", "{}".toByteArray(), "application/json"))
+        val j = JSONObject(body)
+        j.optBoolean("ok", false) to j.optString("reason", j.optString("error", ""))
+    } catch (e: Exception) {
+        false to (e.message ?: "网络错误")
+    }
+
+
+    /** GET /api/turns?since=N → (新总数, 增量轮次) —— 桌面/CLI 的对话流 */
+    fun turns(since: Int): Pair<Int, List<Pair<String, String>>> = try {
+        val j = JSONObject(readText(open("/api/turns?since=$since")))
+        val total = j.optInt("total", since)
+        val out = ArrayList<Pair<String, String>>()
+        j.optJSONArray("turns")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                out.add(o.optString("role", "") to o.optString("content", ""))
+            }
+        }
+        total to out
+    } catch (e: Exception) {
+        0 to emptyList<Pair<String, String>>()
+    }
+
     fun health(): String = try {
         val json = JSONObject(readText(open("/api/friends")))
         "节点在线 · 好友 ${json.optJSONArray("friends")?.length() ?: 0}"

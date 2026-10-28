@@ -316,6 +316,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/chat", post(crate::native::chat))
         // 眼镜端语音: POST 原始 WAV → 本机 whisper 转文本
         .route("/api/asr", post(crate::asr::asr))
+        // 眼镜最小化后的实时意图 → OrbitDB(intent-stream) → 群聊 prompt
+        .route("/api/intent/observe", post(crate::native::intent_observe))
+        .route("/api/identity/env", get(crate::native::identity_env))
+        .route("/api/turns", get(crate::native::turns))
         // 判断力/意图自动存档（电脑总账 + 智能体侧账）
         .route("/api/archive", post(crate::archive::archive))
         .route("/api/archive/summary", get(crate::archive::summary))
