@@ -108,3 +108,22 @@ npx tsx scripts/gen-update-manifest.ts \
 - 不兼容版本 / target 缺失：manifest 无当前平台条目 → `check` 报错 → `failed`。
 - 版本比较：插件默认只安装「远程版本 > 当前版本」，不会降级。
 - 重复点击 / 并发：Rust `UPDATING` 互斥 + 前端状态机防重入。
+
+## 一键验收（发版收尾必跑）
+
+```bash
+cd ../bolloon-UI        # 与 bolloon 同级
+python3 scripts/verify-update-chain.py
+```
+
+它把这条链上必须同时自洽的三份东西一次验完，任一环错位都会指名道姓地红：
+
+1. `tauri.conf.json` 的 `pubkey`（keyid 与签名里的 keyid 必须一致 —— **客户端用的是编进二进制的这把**）
+2. 线上 `latest.json` 的 `signature`（ed25519 + blake2b-512 预哈希，验的是文件摘要不是原始字节）
+3. 线上 `Bolloon.app.tar.gz` 的**实际字节**（并与 `bolloon-UI/update/macos/` 里那份逐字节比对）
+
+退出码 0 = 链路自洽；1 = 有不一致，输出里会说明是"keyid 不同"「验签失败」还是"本地与线上字节不同"。
+
+> 已经踩过三次，都是"看起来有更新、实际装不上"：并行 `cargo tauri build` 重建了 tar.gz 而 `.sig` 留在旧字节 ·
+> `pubkey` 写成了 `RW…` key 行（应为 `base64(minisign 文本)`）· 两条会话互相覆盖 `updater.key`。
+> 规矩：**签 → 发布 → 立刻跑这个脚本 → 记 sha256**，中间不要插别的构建。
