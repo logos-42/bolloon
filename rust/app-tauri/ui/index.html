@@ -233,15 +233,8 @@
   #splash .sp-word{margin-top:16px;font-size:28px;font-weight:800;letter-spacing:.5px;display:flex;align-items:baseline;justify-content:center;gap:10px}
   #splash .sp-word small{font-size:19px;font-weight:700;color:#c4d640;letter-spacing:3px}
   #splash .sp-sub{margin-top:8px;font-size:12px;color:#8c8c84}
-  /* ── 2026-10-28 (用户): 自定义窗口外壳 (标题栏) — 极简, 平时不占地方, 右上龙订阅 ── */
-  /* ── 2026-10-28 (用户): 窗口外壳(标题栏) — 可拖拽区; 毛玻璃透明; Bolloon 空闲隐藏, hover 显形 ── */
-  #titlebar{position:fixed;top:0;left:0;right:0;height:32px;z-index:200;display:flex;align-items:center;gap:8px;padding:0 10px 0 80px;background:rgba(18,18,16,.4);backdrop-filter:blur(16px) saturate(140%);-webkit-app-region:drag;color:#effb06;font-weight:700;font-size:13px;letter-spacing:.3px;user-select:none;transition:background .18s}
-  #titlebar:hover{background:rgba(18,18,16,.6)}
-  #titlebar .tb-title{color:#effb06;opacity:0;transition:opacity .18s}
-  #titlebar:hover .tb-title{opacity:1}
-  #titlebar .grow{flex:1}
-  #titlebar .dragon-btn{-webkit-app-region:no-drag;width:24px;height:24px}
-  #app{box-sizing:border-box;padding-top:32px}
+  /* ── 2026-10-30 (用户): 去掉独立窗口外壳(标题栏)的单独顶部位置; 改为左侧"外壳栏"(独立列, 毛玻璃), 与第一栏并列, 二者皆毛玻璃 ── */
+  #app{box-sizing:border-box}
   .composer-footer{display:flex;gap:8px;padding:0 16px 12px}
   .mini{font-size:12px;padding:5px 9px;border-radius:999px;color:var(--muted)}
   .mini:hover{color:var(--text)}
@@ -362,13 +355,24 @@
     display:flex;flex-direction:column;align-items:center;gap:14px;
     background:rgba(18,18,16,.4);backdrop-filter:blur(16px) saturate(140%);border-right:1px solid var(--line);padding:14px 0;min-width:0;overflow:hidden;
   }
+  /* 外壳栏: 原顶部标题栏改为左侧独立列, 毛玻璃透明; 兼作窗口拖拽区 */
+  .shell-rail{display:none}
+  body.desktop3col .shell-rail{
+    display:flex;flex-direction:column;align-items:center;gap:14px;
+    background:rgba(18,18,16,.4);backdrop-filter:blur(16px) saturate(140%);border-right:1px solid var(--line);padding:14px 0;min-width:0;overflow:hidden;
+    -webkit-app-region:drag;
+  }
+  body.desktop3col .shell-rail .shell-logo,
+  body.desktop3col .shell-rail .dragon-btn{-webkit-app-region:no-drag}
+  body.desktop3col .shell-logo{display:block;width:30px;height:30px;border-radius:9px;overflow:hidden;flex:none;cursor:pointer;box-shadow:0 0 0 1px var(--line)}
+  body.desktop3col .shell-logo svg{width:100%;height:100%;display:block}
   body.desktop3col .rail-group{display:flex;flex-direction:column;align-items:center;gap:12px}
   body.desktop3col .rail-btn svg{width:21px;height:21px;display:block}
-  body.desktop3col #app{grid-template-columns:56px 284px minmax(0,1fr)}
+  body.desktop3col #app{grid-template-columns:52px 56px 284px minmax(0,1fr)}
   /* 桌面 APP 收缩: 整个第二栏完全消失 (只留第一栏 + 主区), 不预留第二栏宽度 */
-  body.desktop3col #app.collapsed{grid-template-columns:56px 0 minmax(0,1fr)}
-  body.desktop3col #app.room-open{grid-template-columns:56px 284px minmax(0,1fr) var(--roomw,360px)}
-  body.desktop3col #app.collapsed.room-open{grid-template-columns:56px 0 minmax(0,1fr) var(--roomw,360px)}
+  body.desktop3col #app.collapsed{grid-template-columns:52px 56px 0 minmax(0,1fr)}
+  body.desktop3col #app.room-open{grid-template-columns:52px 56px 284px minmax(0,1fr) var(--roomw,360px)}
+  body.desktop3col #app.collapsed.room-open{grid-template-columns:52px 56px 0 minmax(0,1fr) var(--roomw,360px)}
   /* 桌面端: 第二栏顶部的 Bolloon logo + 折叠按钮是网页端的设置, APP 第一栏已是完整侧边栏 ⇒ 移除 */
   body.desktop3col .brand{display:none}
   body.desktop3col .rail-gap{flex:1}
@@ -438,8 +442,8 @@
   body.desktop3col #worldTabBtn,body.desktop3col #roomBtn{display:none}
   /* ── 响应式: 桌面窗口过窄时第二栏收成图标列 (第一栏/主区保留) ── */
   @media(max-width:860px){
-    body.desktop3col #app{grid-template-columns:56px 66px minmax(0,1fr)}
-    body.desktop3col #app.room-open{grid-template-columns:56px 66px minmax(0,1fr) var(--roomw,360px)}
+    body.desktop3col #app{grid-template-columns:52px 56px 66px minmax(0,1fr)}
+    body.desktop3col #app.room-open{grid-template-columns:52px 56px 66px minmax(0,1fr) var(--roomw,360px)}
   }
 </style>
 </head>
@@ -461,13 +465,14 @@
   <input id="askInput" />
   <div class="row"><button id="askCancel">取消</button><button class="primary" id="askOk">确定</button></div>
 </dialog>
-<div id="titlebar" data-tauri-drag-region>
-  <span class="tb-title">Bolloon</span>
-  <span class="grow"></span>
-  <!-- 2026-10-28 (用户): 窗口外壳右上龙形订阅按钮 (帛龙 = bolloon 中文名) -->
-  <button id="dragonSubBtn" class="dragon-btn" title="订阅 Bolloon 更新（帛龙）" aria-label="订阅"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 17c1.4-1 2.4-2.4 3.9-2.4S10 16 12 16s3-2 5-2 3 1.4 4 1.4"/><path d="M20.5 13.4c.7 0 1.4.4 1.6 1.4-.2.9-.9 1.4-1.8 1.2"/><path d="M19.8 14.6l.9-2.5.8.6"/><circle cx="21.1" cy="15.1" r=".5" fill="currentColor"/><path d="M14 13.6c-.7 2-2 3.3-3.7 3.3-1.7 0-2.8-1-2.8-2.5.2-1.9 1.9-3.3 3.8-3.3 1.5 0 2.6.8 3.2 2.1"/><path d="M9.8 11.4c.3-1.5-.1-2.8-1.2-3.6"/></svg></button>
-</div>
+
 <div id="app">
+  <!-- 2026-10-30 (用户): 外壳栏 — 原独立顶部标题栏改为左侧独立列, 毛玻璃, 兼作窗口拖拽区; 龙订阅按钮在此 -->
+  <div class="shell-rail" id="shellRail">
+    <span class="shell-logo" id="shellLogo" role="img" aria-label="Bolloon" title="Bolloon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#effb06"/><ellipse cx="15.9" cy="17.6" rx="6.5" ry="7.7" fill="none" stroke="#1b1a19" stroke-width="4.2"/><circle cx="15.9" cy="5.6" r="2.5" fill="#1b1a19"/></svg></span>
+    <div class="rail-gap"></div>
+    <button id="dragonSubBtn" class="dragon-btn" title="订阅 Bolloon 更新（帛龙）" aria-label="订阅"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 17c1.4-1 2.4-2.4 3.9-2.4S10 16 12 16s3-2 5-2 3 1.4 4 1.4"/><path d="M20.5 13.4c.7 0 1.4.4 1.6 1.4-.2.9-.9 1.4-1.8 1.2"/><path d="M19.8 14.6l.9-2.5.8.6"/><circle cx="21.1" cy="15.1" r=".5" fill="currentColor"/><path d="M14 13.6c-.7 2-2 3.3-3.7 3.3-1.7 0-2.8-1-2.8-2.5.2-1.9 1.9-3.3 3.8-3.3 1.5 0 2.6.8 3.2 2.1"/><path d="M9.8 11.4c.3-1.5-.1-2.8-1.2-3.6"/></svg></button>
+  </div>
   <!-- 2026-10-26 (用户): 桌面三栏 — 第一栏: 全局导航栏。
        仅 Tauri 壳显示 (?app=desktop → body.desktop3col); 网页端 display:none。
        职责: 只做模块切换 + 全局入口 (relay 到现有按钮), 不放列表 — 列表在第二栏。 -->
