@@ -96,6 +96,13 @@ impl RoomBus {
 
 /// 推举: 被 @ 的内部智能体优先 (可多个 ⇒ 并发回应); 否则用商议中枢选的 speaker;
 /// 再不行按 `cursor` 轮转 —— 群里总得有人接话, 不能"发了没人理"。
+/// 一条群消息最多推举/接话的智能体数（群聊智能体上限；由 leo 2026-10-29 定为 1000）。
+///
+/// 它与成本直接相关：N 个 agent 各自一次模型调用 ⇒ 一条消息成本 = N × 单次成本。
+/// 1000 上限下，一条消息在廉价档约 ¥3.4、旗舰档约 ¥106 —— 所以必须配合意图预算
+/// (`default_max_model_calls`) 才有意义；没有预算闸就等于没有闸。
+pub const MAX_ELECTED_AGENTS: usize = 1000;
+
 pub fn elect(
     agents: &[AgentView],
     addressed: &[String],
@@ -117,8 +124,11 @@ pub fn elect(
             .cloned()
             .collect();
         if !hit.is_empty() {
-            // 并发上限 3: 群里一次 @ 五个智能体不该把本机拖死
-            return hit.into_iter().take(3).collect();
+            // 一条消息最多推举这么多个智能体（2026-10-29 leo 定：群聊智能体上限 1000）。
+            // 注意：这是**产品上限**，不是成本上限 —— 1000 个 agent 各自一次模型调用，
+            // 一条消息的现金成本就是单次的 1000 倍。真正的成本闸在意图预算
+            // (`economic.default_max_model_calls`) 上，两者必须一起用。
+            return hit.into_iter().take(MAX_ELECTED_AGENTS).collect();
         }
     }
     if let Some(sp) = speaker {
@@ -372,6 +382,23 @@ fn short(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 群聊智能体上限 = 1000（leo 2026-10-29 定）：@ 到一大批人时推举数不许被截成 3。
+    /// 同时钉住"不超过上限"—— 上限本身也是成本闸的前提。
+    #[test]
+    fn elect_is_capped_at_one_thousand_not_three() {
+        let many: Vec<AgentView> = (0..1200).map(|i| agent(&format!("a{i}"), "小星")).collect();
+        let picked = elect(&many, &["小星".to_string()], None, 0);
+        assert_eq!(picked.len(), MAX_ELECTED_AGENTS, "上限 1000");
+        assert_eq!(MAX_ELECTED_AGENTS, 1000, "上限值本身钉死");
+        assert!(picked.len() > 3, "不许再退回旧的 3 人截断");
+
+        // 不足上限时按命中数推举
+        let few: Vec<AgentView> = (0..5).map(|i| agent(&format!("b{i}"), "小星")).collect();
+        assert_eq!(elect(&few, &["小星".to_string()], None, 0).len(), 5);
+        // 没被 @ 时仍然只推 1 个（轮转），不会因为上限变大人人开口
+        assert_eq!(elect(&many, &[], None, 7).len(), 1);
+    }
 
     fn agent(id: &str, name: &str) -> AgentView {
         AgentView {
