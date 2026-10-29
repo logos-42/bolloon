@@ -1,8 +1,12 @@
+[lib]
+name = "bolloon_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [package]
 name = "bolloon-tauri"
-version = "0.6.13"
+version = "0.7.0"
 edition = "2024"
-rust-version = "1.99"
+rust-version = "1.85"
 description = "Bolloon 桌面外壳 (Tauri) — 托管内嵌服务, 壳不写业务"
 
 # 独立于 workspace (tauri 依赖树大, 不拖垮主构建)
