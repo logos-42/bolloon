@@ -2448,6 +2448,8 @@ fn update_candidates(file: &str) -> Vec<String> {
 }
 
 /// 当前平台的可执行文件名 (与发布产物同名; 老资产名 `bolloon-bin` 作为兜底)
+/// 注: 旧的 self-overwrite 更新路径已废弃, 此函数暂未使用, 保留供手动排查。
+#[allow(dead_code)]
 fn update_binary_assets() -> Vec<&'static str> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
@@ -2483,9 +2485,16 @@ pub async fn update(State(st): State<AppState>) -> Json<serde_json::Value> {
     Json(native_update_info(&st))
 }
 
-/// POST /api/update/apply → 内部安装一条龙 + spawn 新进程 (旧进程随后退出)
+/// POST /api/update/apply
+///
+/// ⚠️ 历史背景: 旧版 App 在这里尝试「下载 bolloon-bin 覆盖 current_exe() 再重启」,
+/// 在打包后的 Tauri 二进制上不可靠 (macOS 会破坏 .app 包签名, 且覆盖后无法可靠重启),
+/// 而且旧 App 根本没有 tauri-plugin-updater, 无法自我升级。
+///
+/// 改为: 本机桌面环境下直接打开发布下载页, 引导用户**手动装一次新版本**;
+/// 新版本内置 tauri-plugin-updater, 之后即可走原生自动更新。非桌面/无法判定时返回下载链接。
 pub async fn update_apply(State(st): State<AppState>) -> Json<serde_json::Value> {
-    // 安装互斥: 同一二进制只允许一条安装流程 (两个请求同时替换会把自己装残)
+    // 安装互斥: 同一二进制只允许一条安装流程 (避免重复触发)
     if st
         .updating
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -2497,58 +2506,59 @@ pub async fn update_apply(State(st): State<AppState>) -> Json<serde_json::Value>
             "message": "安装中 — 不重复下载替换",
         }));
     }
-    struct Src;
-    impl bolloon_agent::updater::UpdateSource for Src {
-        fn latest_version(&self) -> Result<String, String> {
-            Ok("latest".into())
-        }
-        fn download(&self) -> Result<Vec<u8>, String> {
-            let mut last = String::from("没有可用的下载源");
-            for asset in update_binary_assets() {
-                let r = fetch_first(asset, |url| {
-                    let resp = ureq::get(url)
-                        .timeout(std::time::Duration::from_secs(180))
-                        .call()
-                        .map_err(|e| e.to_string())?;
-                    let mut out = Vec::new();
-                    use std::io::Read;
-                    resp.into_reader()
-                        .read_to_end(&mut out)
-                        .map_err(|e| e.to_string())?;
-                    if out.is_empty() {
-                        return Err("空文件".into());
-                    }
-                    Ok(out)
-                });
-                match r {
-                    Ok(b) => return Ok(b),
-                    Err(e) => last = e,
-                }
-            }
-            Err(last)
+    struct Guard<'a>(&'a std::sync::atomic::AtomicBool);
+    impl<'a> Drop for Guard<'a> {
+        fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
+    }
+    let _g = Guard(&st.updating);
+
+    let release_url = "https://github.com/logos-42/bolloon/releases/latest";
+    let is_desktop = std::env::current_exe()
+        .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS"))
+        .unwrap_or(false);
+    if is_desktop {
+        match open_in_browser(release_url) {
+            Ok(()) => return Json(serde_json::json!({
+                "bootstrap": true,
+                "url": release_url,
+                "message": "已打开下载页, 请安装新版本以启用自动更新",
+            })),
+            Err(e) => return Json(serde_json::json!({
+                "error": format!("无法打开下载页: {e}"),
+                "url": release_url,
+            })),
         }
     }
-    let Ok(self_path) = std::env::current_exe() else {
-        st.updating.store(false, Ordering::SeqCst); // 没开始装 → 放行后续重试
-        return Json(serde_json::json!({ "error": "无法定位自身二进制" }));
-    };
-    match bolloon_agent::updater::install(&Src, &self_path) {
-        Ok(report) => {
-            let args: Vec<String> = std::env::args().skip(1).collect();
-            let new_pid = bolloon_agent::updater::restart(&self_path, &args).ok();
-            if new_pid.is_none() {
-                // 装好了但没起来 → 放行, 让人能再点一次 (不卡死在"安装中")
-                st.updating.store(false, Ordering::SeqCst);
-            }
-            Json(serde_json::json!({
-                "installing": true, "restarting": new_pid.is_some(), "new_pid": new_pid, "report": report,
-            }))
-        }
-        Err(e) => {
-            st.updating.store(false, Ordering::SeqCst); // 装失败 → 放行重试
-            Json(serde_json::json!({ "error": e.to_string() }))
-        }
+    Json(serde_json::json!({
+        "url": release_url,
+        "message": "请前往发布页手动下载新版本",
+    }))
+}
+
+/// 在用户本机用默认浏览器打开 URL (仅桌面环境调用)。
+#[allow(dead_code)]
+fn open_in_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(url).spawn()?;
     }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn()?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open").arg(url).spawn()?;
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = url;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "unsupported os",
+        ));
+    }
+    Ok(())
 }
 
 // ────────────────────────── 世界模式 (对齐 TS routes-world.ts) ──────────────────────────
