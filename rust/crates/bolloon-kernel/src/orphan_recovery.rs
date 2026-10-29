@@ -55,6 +55,7 @@ pub fn runs_dir() -> PathBuf {
 }
 
 /// pid 是否存活 (对齐 TS `pidAlive`: 0/缺失 = 死; 自身 pid = 活; kill(pid,0) 成功或 EPERM = 活)。
+#[cfg(unix)]
 fn pid_alive(pid: u64) -> bool {
     if pid == 0 {
         return false;
@@ -71,6 +72,29 @@ fn pid_alive(pid: u64) -> bool {
     }
     // EPERM = 进程存在但无权探它 (别人的进程) → 也算活着
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Windows 版: OpenProcess + GetExitCodeProcess (STILL_ACTIVE = 259)。
+#[cfg(windows)]
+fn pid_alive(pid: u64) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    if pid == 0 || pid > u32::MAX as u64 {
+        return false;
+    }
+    if pid == std::process::id() as u64 {
+        return true;
+    }
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32) };
+    if handle.is_null() {
+        return false;
+    }
+    let mut code: u32 = 0;
+    let ok = unsafe { GetExitCodeProcess(handle, &mut code) };
+    unsafe { CloseHandle(handle) };
+    ok != 0 && code == STILL_ACTIVE as u32
 }
 
 fn now_iso() -> String {

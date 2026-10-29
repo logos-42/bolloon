@@ -60,7 +60,8 @@ pub fn run() {
             //    (浏览器直接访问同一端口不带该参数, 仍是原单侧栏布局, 网页端不变)
             #[cfg(desktop)]
             {
-                let window = tauri::WebviewWindowBuilder::new(
+                #[allow(unused_mut)]
+                let mut window_builder = tauri::WebviewWindowBuilder::new(
                     &handle,
                     "main",
                     tauri::WebviewUrl::External(
@@ -68,11 +69,18 @@ pub fn run() {
                     ),
                 )
                 .title("Bolloon")
-                // 2026-10-28 (用户): 自定义窗口外壳 — 透明标题栏, 由前端 #titlebar 自绘 (品牌+龙订阅)
-                .title_bar_style(tauri::TitleBarStyle::Transparent)
                 .inner_size(1200.0, 800.0)
-                .min_inner_size(900.0, 600.0)
-                .build()?;
+                .min_inner_size(900.0, 600.0);
+
+                // 2026-10-28 (用户): 自定义窗口外壳 — 透明标题栏, 由前端 #titlebar 自绘 (品牌+龙订阅)
+                // title_bar_style 仅 macOS 可用; Windows/Linux 用默认标题栏。
+                #[cfg(target_os = "macos")]
+                {
+                    window_builder =
+                        window_builder.title_bar_style(tauri::TitleBarStyle::Transparent);
+                }
+
+                let window = window_builder.build()?;
                 let _ = window;
             }
 

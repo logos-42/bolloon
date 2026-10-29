@@ -29,3 +29,11 @@ bolloon-llm = { path = "../../crates/bolloon-llm" }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+# 体积优化: Windows 便携 exe / Android .so 都要塞进 25 MiB 的分发上限
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "s"
+panic = "abort"

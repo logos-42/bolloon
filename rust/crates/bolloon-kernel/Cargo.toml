@@ -18,7 +18,13 @@ async-trait.workspace = true
 futures.workspace = true
 dashmap.workspace = true
 anyhow.workspace = true
+
+# 平台相关: pid 存活探测用 kill(0) / OpenProcess
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tokio.workspace = true
