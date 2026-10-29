@@ -76,6 +76,12 @@ pub struct AppState {
     pub quic: Option<Arc<bolloon_p2p::quic_transport::QuicTransport>>,
     /// scratch 子系统执行端口 (宿主注入真执行器; 默认 noop)
     pub script_run: bolloon_agent::scratch::ScriptRunPort,
+    /// 受治理动态配置管理器 (A/B/C 类动态配置 + 审计/回滚; 重启恢复)
+    pub config: std::sync::Arc<bolloon_config::ConfigManager>,
+    /// LLM 调用健康计数 (真实测量: 供配置优化闭环当可信指标源; 进程内共享一份)
+    pub llm_health: std::sync::Arc<bolloon_agent::kernel_loop::LlmHealth>,
+    /// 旁路经济层 (默认关闭; 配置加载后才真正构造 — 见 `serve_on`)
+    pub econ: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<bolloon_econ::ShadowEconomy>>>,
 }
 
 impl AppState {
@@ -128,6 +134,12 @@ impl AppState {
             #[cfg(feature = "quic-transport")]
             quic: None,
             script_run: bolloon_agent::scratch::ScriptRunPort::noop(),
+            // 受治理配置: 默认 (文件加载在 serve_on 异步完成, 此处先建空管理器)
+            config: std::sync::Arc::new(bolloon_config::ConfigManager::new(Some(
+                data_dir().join("config.json"),
+            ))),
+            llm_health: std::sync::Arc::new(bolloon_agent::kernel_loop::LlmHealth::default()),
+            econ: std::sync::Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -389,6 +401,22 @@ pub fn app(state: AppState) -> Router {
                 .route("/api/node/connect", post(crate::native::node_connect))
                 .route("/api/scratch/run", post(crate::native::scratch_run))
                 .route("/api/scratch/list", get(crate::native::scratch_list))
+                .route("/api/config/current", get(crate::native::config_current))
+                .route("/api/config/apply", post(crate::native::config_apply))
+                .route("/api/config/rollback", post(crate::native::config_rollback))
+                // 可观测: 配置指标 + 任务↔版本证据链 + 回滚点
+                .route(
+                    "/api/config/observability",
+                    get(crate::native::config_observability),
+                )
+                // AI 优化闭环 (默认建议级: 只出提案, 不写配置)
+                .route("/api/config/optimize", post(crate::native::config_optimize))
+                // 多节点: 从对端拉取配置 (最终一致; 对端不可用则本地不变)
+                .route("/api/config/peer-sync", post(crate::native::config_peer_sync))
+                // 监控面板 (自包含静态页, 不进前端构建)
+                .route("/config", get(crate::native::config_panel))
+                // 经济层 (旁路计量) 报告: 影子模式下的真实成本/本该被拦/影子路由
+                .route("/api/econ/report", get(crate::native::econ_report))
                 .route("/api/friends/request", post(crate::native::friend_request))
         .route("/api/friends/accept", post(crate::native::friend_accept))
         .route("/api/friends/reject", post(crate::native::friend_reject))
@@ -514,6 +542,18 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
     state.script_run = bolloon_agent::scratch::ScriptRunPort::new(std::sync::Arc::new(
         bolloon_agent::scratch::TokioScriptRunner::new(),
     ));
+    // 受治理配置: 启动时从文件恢复 (失败则保持默认, fail-closed)
+    let _ = state.config.load_from_file().await;
+    // 经济层: 按已加载配置构造 (默认 enabled=false ⇒ 空转, 零行为差异)
+    {
+        let ec = state.config.current().config.economic.clone();
+        let dir = data_dir().join("econ");
+        let econ = std::sync::Arc::new(bolloon_econ::ShadowEconomy::new(ec, Some(dir.as_path())));
+        if econ.enabled() {
+            tracing::info!(mode = %econ.report().mode, "经济层已启用 (shadow 默认: 只计量不阻断)");
+        }
+        let _ = state.econ.set(econ);
+    }
     // 孤儿 catch: 周期 reconcile scratch 运行 (crash 后未收尾的 run 标 interrupted)
     let scratch_dir = bolloon_agent::home::BolloonHome::resolve().scratch_dir();
     tokio::spawn(async move {
@@ -977,6 +1017,8 @@ async fn group_say(
                 fs.room_last_speaker.insert(id.clone(), first.clone());
                 fs.save(&data_dir());
             }
+            // 记录人类发言（重置监督器沉默计时，避免自驱抢在人类前面）
+            st.room_bus.mark_human(&id);
             crate::room_bus::spawn_reports(st.clone(), id.clone(), req.text.clone(), targets);
             Json(serde_json::json!({
             "hash": entry.hash,
@@ -1887,6 +1929,79 @@ mod route_tests {
         })
         .await
         .unwrap();
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 经济层 shadow 真跑: **默认关闭时零行为**, 打开后只记账不拦不换。
+    ///
+    /// 判据 (真 HTTP, 不是读代码):
+    /// ① 没有 config.json ⇒ `/api/econ/report` 回 `enabled=false` 且账本为空;
+    /// ② 写 `{"economic":{"enabled":true}}` 重启服务 ⇒ `enabled=true` / `mode=shadow` /
+    ///    `enforcement_enabled=false` (没有显式强制就不许强制);
+    /// ③ 报告里不出现任何凭证字段 (密钥不上线)。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn econ_shadow_mode_is_off_by_default_and_honest_when_on() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-econ-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+
+        // 起一个服务 (端口 0) 并取一条报告
+        async fn report_once(home: &std::path::Path) -> serde_json::Value {
+            let _ = home;
+            let state = AppState::new(offline_llm());
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                let _ = serve_on(state, listener).await;
+            });
+            tokio::task::spawn_blocking(move || {
+                ureq::get(&format!("http://{addr}/api/econ/report"))
+                    .call()
+                    .unwrap()
+                    .into_json::<serde_json::Value>()
+                    .unwrap()
+            })
+            .await
+            .unwrap()
+        }
+
+        // ① 默认关闭: 报告如实说"没开", 账本是空的 (不是"零成本", 是"没在计量")
+        let off = report_once(&home).await;
+        assert_eq!(off["enabled"], serde_json::json!(false), "{off}");
+        assert_eq!(off["meter"]["events"], serde_json::json!(0), "{off}");
+        assert!(off["would_block"].as_array().unwrap().is_empty());
+        assert!(
+            off.get("mode").is_none() || off["mode"].is_null(),
+            "关闭态不假装自己有模式: {off}"
+        );
+
+        // ② 显式打开 (仍默认 shadow): 只记账, 不强制
+        std::fs::create_dir_all(home.join("rust")).unwrap();
+        std::fs::write(
+            home.join("rust").join("config.json"),
+            r#"{"economic":{"enabled":true,"metering_enabled":true}}"#,
+        )
+        .unwrap();
+        let on = report_once(&home).await;
+        assert_eq!(on["enabled"], serde_json::json!(true), "{on}");
+        assert_eq!(on["mode"], serde_json::json!("shadow"), "{on}");
+        assert_eq!(on["metering_enabled"], serde_json::json!(true));
+        assert_eq!(
+            on["enforcement_enabled"],
+            serde_json::json!(false),
+            "打开经济层不等于允许强制: {on}"
+        );
+        assert_eq!(on["settlement_enabled"], serde_json::json!(false));
+        assert_eq!(on["price_version"], serde_json::Value::Null, "没价格表就不许编价格");
+
+        // ③ 凭证不上线: 报告里不许出现 key/secret 形状
+        let raw = on.to_string().to_lowercase();
+        for forbidden in ["api_key", "apikey", "authorization", "sk-", "secret"] {
+            assert!(!raw.contains(forbidden), "经济层报告泄漏了 `{forbidden}`: {on}");
+        }
 
         let _ = std::fs::remove_dir_all(&home);
     }

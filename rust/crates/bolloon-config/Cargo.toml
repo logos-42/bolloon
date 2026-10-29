@@ -1,0 +1,18 @@
+[package]
+name = "bolloon-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bolloon 受治理的动态配置系统 (ConfigManager / Snapshot / Validator / Event / Audit / RuntimePolicy)"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

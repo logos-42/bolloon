@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/bolloon-kernel",
+    "crates/bolloon-config",
+    "crates/bolloon-econ",
     "crates/bolloon-harness",
     "crates/bolloon-llm",
     "crates/bolloon-agent",

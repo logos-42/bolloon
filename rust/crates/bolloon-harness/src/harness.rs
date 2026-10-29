@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
+use bolloon_config::{policy::RuntimePolicy, ConfigView};
 
 /// 工具调用（模型发来的原始调用）
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -170,6 +171,9 @@ pub struct Harness {
     evidence_log: Arc<Mutex<Vec<serde_json::Value>>>,
     /// 事件（追加订阅者由上层收）
     events: Arc<Mutex<Vec<GateEvent>>>,
+    /// 受治理配置视图 (可选)。提供 A 类安全紧急控制 (emergency_stop/revoked) 与 C 类超时覆盖。
+    /// 只读读取, 绝不绕过既有 permission/denylist/budget 门。
+    config: Option<ConfigView>,
 }
 
 impl std::fmt::Debug for Harness {
@@ -216,12 +220,24 @@ impl Harness {
             idempotency: Arc::new(Mutex::new(HashMap::new())),
             evidence_log: Arc::new(Mutex::new(vec![])),
             events: Arc::new(Mutex::new(vec![])),
+            config: None,
         }
     }
 
     pub fn with_policy(mut self, policy: Arc<dyn PolicyEngine>) -> Self {
         self.policy = policy;
         self
+    }
+
+    /// 注入受治理配置视图。安全紧急控制 (A) 与超时覆盖 (C) 经此读取; 只读, 不绕过既有门。
+    pub fn with_config(mut self, config: ConfigView) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// 就地注入配置视图 (用于已从 `Arc` 取出的场景, 避免 move out of Arc)。
+    pub fn set_config(&mut self, config: ConfigView) {
+        self.config = Some(config);
     }
 
     /// 构造期授予（同步）。高风险工具（shell / payment…）走这条路 ——
@@ -261,6 +277,60 @@ impl Harness {
         };
 
         // 2. permission：默认只放行 default_allowed；高风险工具须**显式授权**才能过
+        //    + A 类安全紧急控制 (emergency_stop / revoked_tools) 经独立安全路径, 可覆盖任务级快照
+        {
+            let snap = self.config.as_ref().map(|v| v.read().unwrap().clone());
+            if let Some(snap) = snap.as_ref() {
+                if snap.config.safety.emergency_stop {
+                    let denial = Denial {
+                        reason: "emergency_stop 已生效：所有工具调用被拒".into(),
+                        tool: call.name.clone(),
+                        effect: def.effect,
+                        policy: "safety.emergency_stop".into(),
+                    };
+                    self.record_event(GateEvent::Denied {
+                        tool: call.name.clone(),
+                        reason: denial.reason.clone(),
+                        call_id: call.id.clone(),
+                    })
+                    .await;
+                    return GateOutcome {
+                        call_id: call.id.clone(),
+                        tool: call.name.clone(),
+                        denied: Some(denial),
+                        result: None,
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                    };
+                }
+                if snap
+                    .config
+                    .safety
+                    .revoked_tools
+                    .iter()
+                    .any(|t| t == &call.name)
+                {
+                    let denial = Denial {
+                        reason: format!("工具 {} 已被配置撤销", call.name),
+                        tool: call.name.clone(),
+                        effect: def.effect,
+                        policy: "safety.revoked".into(),
+                    };
+                    self.record_event(GateEvent::Denied {
+                        tool: call.name.clone(),
+                        reason: denial.reason.clone(),
+                        call_id: call.id.clone(),
+                    })
+                    .await;
+                    return GateOutcome {
+                        call_id: call.id.clone(),
+                        tool: call.name.clone(),
+                        denied: Some(denial),
+                        result: None,
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                    };
+                }
+            }
+        }
         if !def.default_allowed && !self.granted.lock().await.contains(&call.name) {
             let denial = Denial {
                 reason: format!("工具 {} 非默认允许（effect={:?}），需显式授权", call.name, def.effect),
@@ -344,9 +414,17 @@ impl Harness {
             }
         }
 
-        // 6. execute（带超时）
+        // 6. execute（带超时）。超时优先取自动态配置 (C 类); 否则用预算 max_ms (修复此前死字段)
+        let budget_max_ms = { let b = self.budget.lock().await; b.max_ms };
+        let timeout_ms = match &self.config {
+            Some(v) => {
+                let g = v.read().unwrap();
+                RuntimePolicy::tool_timeout_ms(&**g)
+            }
+            None => budget_max_ms,
+        };
         let result = match tokio::time::timeout(
-            std::time::Duration::from_millis(120_000),
+            std::time::Duration::from_millis(timeout_ms),
             self.executor.execute(call.clone()),
         )
         .await
@@ -355,7 +433,7 @@ impl Harness {
             Err(_) => ToolResult {
                 ok: false,
                 output: "工具执行超时".into(),
-                elapsed_ms: 120_000,
+                elapsed_ms: timeout_ms,
                 verified: None,
                 evidence: None,
             },

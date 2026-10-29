@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bolloon · 配置可观测</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--line:#30363d;--fg:#c9d1d9;--dim:#8b949e;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--accent:#58a6ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;padding:24px}
+  h1{font-size:16px;margin:0 0 4px}
+  .sub{color:var(--dim);margin-bottom:18px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-bottom:18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+  .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:20px;margin-top:4px}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:18px}
+  th,td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:left;font-size:12px;vertical-align:top}
+  th{color:var(--dim);font-weight:600;background:#12171e}
+  tr:last-child td{border-bottom:none}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .dim{color:var(--dim)}
+  h2{font-size:13px;margin:18px 0 8px;color:var(--accent)}
+  button{background:#21262d;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit}
+  button:hover{border-color:var(--accent)}
+  input{background:#0b0f14;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:inherit}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+  pre{background:#0b0f14;border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;max-height:220px;font-size:12px}
+  .foot{color:var(--dim);font-size:11px;margin-top:16px}
+</style>
+</head>
+<body>
+<h1>配置可观测 / 治理面板</h1>
+<div class="sub">读取 <code>/api/config/observability</code>，每 3 秒刷新。这里只展示<b>测出来</b>的数：配置路径的读写指标、LLM 真实调用计数、任务↔版本证据链。</div>
+
+<div class="grid" id="cards"></div>
+
+<h2>任务 ↔ 配置版本证据链（最近 50 条）</h2>
+<table><thead><tr><th>时间</th><th>任务 ID</th><th>面</th><th>事件</th><th>配置版本</th><th>模型</th><th>停止</th><th>工具</th></tr></thead>
+<tbody id="bindings"></tbody></table>
+
+<h2>回滚点</h2>
+<div class="row" id="versions"></div>
+
+<h2>AI 优化闭环（默认建议级：只出提案）</h2>
+<div class="row">
+  <input id="metric" value="llm.failure_rate" size="22" title="指标名">
+  <select id="direction"><option value="higher_helps">提高参数有利于该指标</option><option value="lower_helps">降低参数有利于该指标</option></select>
+  <button onclick="optimize('advisory')">出提案</button>
+  <button onclick="optimize('restricted')">受限自动执行</button>
+</div>
+<pre id="optout" class="dim">尚未运行。参数方向由人声明（AI 无权决定方向），闭环只在预算内小步试、指标恶化即回滚。</pre>
+
+<h2>多节点同步（最终一致，不是分布式事务）</h2>
+<div class="row">
+  <input id="peer" placeholder="http://127.0.0.1:54189" size="30">
+  <button onclick="peerSync()">从对端拉取配置</button>
+</div>
+<pre id="peerout" class="dim">对端版本更高时本地应用；对端不可用 ⇒ 本地配置不动（fail-closed）。</pre>
+
+<div class="foot">提示：紧急停止 / 撤销工具属 A 类安全控制，<b>不跨节点协调</b> —— 每个节点必须各自置位。</div>
+
+<script>
+const fmt = (n, d = 2) => (n === null || n === undefined || Number.isNaN(n)) ? "—" : Number(n).toFixed(d);
+function card(k, v, cls) { return `<div class="card"><div class="k">${k}</div><div class="v ${cls || ""}">${v}</div></div>`; }
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/config/observability").then(x => x.json());
+    if (!r.ok) throw new Error(r.error || "读取失败");
+    const m = r.metrics, h = r.llm_health;
+    document.getElementById("cards").innerHTML = [
+      card("当前配置版本", "v" + r.version),
+      card("可回滚版本", (r.history_versions || []).join(", ") || "（无）", "dim"),
+      card("配置读取次数", m.reads),
+      card("单次读取开销", fmt(m.avg_read_ns, 0) + " ns"),
+      card("更新成功 / 被拒", m.applies + " / " + m.apply_rejects, m.apply_rejects ? "warn" : "ok"),
+      card("更新失败率", (fmt(m.apply_failure_rate * 100, 1)) + " %", m.apply_failure_rate > 0.2 ? "bad" : ""),
+      card("平均更新耗时", fmt(m.avg_apply_ms) + " ms"),
+      card("回滚次数 / 失败率", m.rollbacks + " / " + fmt(m.rollback_failure_rate * 100, 1) + " %"),
+      card("LLM 调用 / 失败率", h.attempts + " / " + fmt(h.failure_rate * 100, 1) + " %", h.failure_rate > 0.2 ? "bad" : ""),
+      card("LLM 重试次数", h.retries),
+    ].join("");
+    const rows = (r.bindings || []).slice().reverse().slice(0, 50).map(b => `<tr>
+      <td class="dim">${(b.at || "").replace("T", " ").slice(0, 19)}</td>
+      <td>${b.task_id}</td><td>${b.surface}</td>
+      <td class="${b.event === "end" ? "dim" : "ok"}">${b.event}</td>
+      <td>v${b.config_version}</td>
+      <td>${b.model || '<span class="dim">—</span>'}</td>
+      <td>${b.stop || '<span class="dim">—</span>'}</td>
+      <td>${b.tool_calls ?? '<span class="dim">—</span>'}</td></tr>`).join("");
+    document.getElementById("bindings").innerHTML = rows || '<tr><td colspan="8" class="dim">还没有任务绑定记录（跑一次对话就会写入）</td></tr>';
+    document.getElementById("versions").innerHTML = (r.history_versions || []).map(v =>
+      `<button onclick="rollback(${v})">回滚到 v${v}</button>`).join("") || '<span class="dim">暂无历史版本</span>';
+  } catch (e) {
+    document.getElementById("cards").innerHTML = card("读取失败", e.message, "bad");
+  }
+}
+
+async function rollback(v) {
+  if (!confirm("回滚到 v" + v + "？会生成一个新版本（内容等于该版本）。")) return;
+  const r = await fetch("/api/config/rollback", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({version: v})}).then(x => x.json());
+  alert(r.ok ? ("已回滚，新版本 v" + r.version) : ("失败: " + r.error));
+  refresh();
+}
+
+async function optimize(mode) {
+  const body = {mode, metric: document.getElementById("metric").value, direction: document.getElementById("direction").value};
+  const out = document.getElementById("optout");
+  out.textContent = "运行中…";
+  try {
+    const r = await fetch("/api/config/optimize", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body)}).then(x => x.json());
+    out.textContent = JSON.stringify(r, null, 2);
+  } catch (e) { out.textContent = "失败: " + e.message; }
+  refresh();
+}
+
+async function peerSync() {
+  const url = document.getElementById("peer").value.trim();
+  const out = document.getElementById("peerout");
+  if (!url) { out.textContent = "先填对端地址"; return; }
+  try {
+    const r = await fetch("/api/config/peer-sync", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({peer_url: url})}).then(x => x.json());
+    out.textContent = JSON.stringify(r, null, 2);
+  } catch (e) { out.textContent = "失败: " + e.message; }
+  refresh();
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

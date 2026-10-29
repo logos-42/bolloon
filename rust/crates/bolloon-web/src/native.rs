@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use bolloon_llm::{ChatMessage, GenerateParams, GenerateResult, LlmRuntime, ToolSchema};
 use bolloon_kernel::transport::{Transport, TransportMessage};
-use bolloon_agent::kernel_loop::{KernelLoop, LoopStrategy, LlmGoalReviewer};
+use bolloon_agent::kernel_loop::{KernelLoop, LoopStrategy, LlmGoalReviewer, NoopObserver};
 
 use crate::server::{data_dir, AppState, ChatMessageView};
 use std::collections::HashMap;
@@ -140,6 +140,9 @@ pub struct NativeState {
     /// 「发起交流」时选定的参与者 (group_id → 选中的智能体 id), 让推举只在选中者里挑 (选谁谁接话)
     #[serde(default)]
     pub room_participants: std::collections::HashMap<String, Vec<String>>,
+    /// 各群警长 (group_id → 当选智能体 id); 计分直选结果, 开页/发起交流时计算 (特质分本身不出行)
+    #[serde(default)]
+    pub sheriff_by_group: std::collections::HashMap<String, String>,
     // ── 世界模式 (对齐 TS routes-world: 意图 / 机会流 / 校准环 / 信箱) ──
     /// 意图标签 (世界按意图重打分)
     pub intents: Vec<String>,
@@ -1315,17 +1318,93 @@ pub async fn reply_with_agent(
 
     // 工具 + 自主循环 (Harness 九步门控 + 目标 review 对齐初始意图)
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (harness, schemas) =
+    let (mut harness, schemas) =
         bolloon_agent::builtin_tools::builtin_harness(60, 300_000, cancel, false).await;
+    // 受治理配置: 安全紧急控制 + 超时覆盖 (harness)
+    let harness = {
+        let h = std::sync::Arc::get_mut(&mut harness).expect("harness Arc 应唯一");
+        h.set_config(st.config.view());
+        harness
+    };
     let strategy = Arc::new(WebStrategy { llm: llm.clone() });
     let reviewer = Arc::new(LlmGoalReviewer::new(llm.clone(), provider_id.clone(), model.clone()));
     let loop_ = KernelLoop::new(strategy, harness)
         .with_limits(40, 3)
-        .with_goal_review(reviewer);
-    let steps = loop_
-        .run(&provider_id, &model, messages, schemas, Some(system_prompt))
+        .with_goal_review(reviewer)
+        // 真实测量计数: 供 AI 优化闭环读取 `llm.failure_rate`
+        .with_health(st.llm_health.clone())
+        .with_config(st.config.view());
+    let task_id = format!(
+        "web-{}-{}",
+        chrono::Utc::now().timestamp_millis(),
+        std::process::id()
+    );
+    // 证据链从**任务开始就写**: 失败的运行同样要能追查"它当时用的是哪一版配置"
+    // (只在成功时写, 等于把最需要审计的那一半丢掉)。
+    let pre_version = st.config.current().version;
+    let bind = bolloon_config::TaskBinding::start(
+        &task_id,
+        "web",
+        pre_version,
+        st.config.current().config.task.default_model.clone(),
+    );
+    st.config.record_binding(bind.clone());
+    // 经济层 (旁路, 默认关闭): 只把已发生的事实记成用量事件, 不改任何执行语义
+    let econ_arc = st.econ.get().filter(|e| e.enabled()).cloned();
+    let econ_obs = econ_arc.as_ref().map(|e| {
+        bolloon_agent::econ_shadow::EconomyObserver::new(
+            e.clone(),
+            bolloon_econ::CallCtx::new(&task_id, "web").with_surface("web"),
+            provider_id.clone(),
+            model.clone(),
+        )
+    });
+    let chain = match econ_obs.as_ref() {
+        Some(e) => bolloon_agent::kernel_loop::ObserverChain::new(vec![
+            &NoopObserver as &dyn bolloon_agent::kernel_loop::LoopObserver,
+            e as &dyn bolloon_agent::kernel_loop::LoopObserver,
+        ]),
+        None => bolloon_agent::kernel_loop::ObserverChain::new(vec![
+            &NoopObserver as &dyn bolloon_agent::kernel_loop::LoopObserver,
+        ]),
+    };
+    let run = match loop_
+        .run_observed(
+            &chain,
+            &provider_id,
+            &model,
+            messages,
+            schemas,
+            Some(system_prompt),
+        )
         .await
-        .map_err(|e| format!("agent 循环失败: {e}"))?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            st.config
+                .record_binding(bind.end(&format!("Failed({e})"), 0));
+            if let Some(ec) = &econ_arc {
+                ec.end_task(&task_id, false);
+            }
+            return Err(format!("agent 循环失败: {e}"));
+        }
+    };
+    {
+        let tools_used: u32 = run.steps.iter().map(|s| s.tool_calls.len() as u32).sum();
+        st.config
+            .record_binding(bind.end(&format!("{:?}", run.stop), tools_used));
+    }
+    // 经济层收尾 (影子模式: 只记成败, 不影响结果)
+    if let Some(e) = &econ_arc {
+        e.end_task(
+            &task_id,
+            matches!(
+                run.stop,
+                Some(bolloon_agent::kernel_loop::StopReason::Finished)
+            ),
+        );
+    }
+    let steps = run.steps;
     let final_text = steps
         .iter()
         .rev()
@@ -1557,15 +1636,45 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
         let fs = st.forge.lock().await;
         fs.room_last_speaker.get(&active).cloned().unwrap_or_default()
     };
+    // 警长（开页即算；缺失则补算并缓存；特质分不出行，仅返回当选者）
+    let (sheriff_id, sheriff_name) = {
+        let cached = {
+            let fs = st.forge.lock().await;
+            fs.sheriff_by_group.get(&active).cloned()
+        };
+        let id = match cached {
+            Some(i) => i,
+            None => match elect_group_sheriff(&st, &active).await {
+                Some(s) => {
+                    let mut fs = st.forge.lock().await;
+                    fs.sheriff_by_group.insert(active.clone(), s.clone());
+                    s
+                }
+                None => String::new(),
+            },
+        };
+        let name = {
+            let fs = st.forge.lock().await;
+            fs.agents
+                .iter()
+                .find(|a| a.id == id)
+                .map(|a| a.name.clone())
+                .unwrap_or_default()
+        };
+        (id, name)
+    };
     Json(serde_json::json!({
         "messages": msgs,
         "members": members,
         "groups": group_views,
+        "sheriff": sheriff_id,
+        "sheriff_name": sheriff_name,
         "state": {
             "running": running || !thinking.is_empty(),
             "turn": 0, "max_turns": 0, "topic": "",
             "participants": thinking,
             "elected": elected,
+            "leader_agent_id": sheriff_id.clone(),
         },
         "active_group_id": active,
         "deliberation_roles": roles,
@@ -1614,6 +1723,27 @@ pub fn room_candidate_agents(fs: &NativeState, gid: &str) -> Vec<AgentView> {
     }
     out.sort_by_key(|a| chosen.iter().position(|c| c == &a.id).unwrap_or(usize::MAX));
     out
+}
+
+/// 计分直选某群警长（开页即算, 不在交流中重算）:
+/// 读每个内部智能体的 archive 历史 → 五特质(确定性主轴) → 加权总分最高者当选。
+/// 无内部智能体 → None（fail-closed, 不臆造警长）。特质分本身不出行, 仅存当选者 id。
+pub async fn elect_group_sheriff(st: &AppState, _gid: &str) -> Option<String> {
+    let agents = {
+        let fs = st.forge.lock().await;
+        fs.agents.clone()
+    };
+    if agents.is_empty() {
+        return None;
+    }
+    let base = crate::server::data_dir().join("agents");
+    let mut scored: Vec<(String, bolloon_agent::character::CharacterTraits)> =
+        Vec::with_capacity(agents.len());
+    for a in &agents {
+        let dir = base.join(&a.id).join("archive");
+        scored.push((a.id.clone(), bolloon_agent::character::score_agent(&dir)));
+    }
+    bolloon_agent::character::elect_sheriff(&scored)
 }
 
 /// POST /api/room/start —— 真正发起交流: 记录所选参与者, 并让选中的智能体立刻开场 (后台并发)。
@@ -1665,6 +1795,14 @@ pub async fn room_start(
         fs.room_running.insert(gid.clone(), true);
         out
     };
+    // 计分直选警长（开页即算；特质分不出行，仅存当选者）
+    let sheriff = elect_group_sheriff(&st, &gid).await;
+    {
+        let mut fs = st.forge.lock().await;
+        if let Some(sh) = &sheriff {
+            fs.sheriff_by_group.insert(gid.clone(), sh.clone());
+        }
+    }
     if targets.is_empty() {
         return Json(serde_json::json!({
             "ok": false,
@@ -2908,8 +3046,8 @@ pub async fn scratch_run(
     }
 }
 
-/// GET /api/scratch/list → 列出所有 scratch run (catch 位置视图): run_id/status/lang/exit/输出摘要
-pub async fn scratch_list(State(st): State<AppState>) -> Json<serde_json::Value> {
+/// GET /api/scratch/list → 列出所有 scratch run (catch位置视图): run_id/status/lang/exit/输出摘要
+pub async fn scratch_list(_st: State<AppState>) -> Json<serde_json::Value> {
     let scratch = bolloon_agent::home::BolloonHome::resolve().scratch_dir();
     let runs = bolloon_agent::scratch::list_runs(&scratch);
     let runs: Vec<serde_json::Value> = runs
@@ -2931,6 +3069,292 @@ pub async fn scratch_list(State(st): State<AppState>) -> Json<serde_json::Value>
         })
         .collect();
     Json(serde_json::json!({ "ok": true, "runs": runs, "scratch_dir": scratch.to_string_lossy() }))
+}
+
+// ────────────────────────── 受治理动态配置 API ──────────────────────────
+
+/// GET /api/config/current → 当前有效配置快照 (版本/内容/来源/操作者/原因)
+pub async fn config_current(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let snap = st.config.current();
+    Json(serde_json::json!({
+        "ok": true,
+        "version": snap.version,
+        "applied_at": snap.applied_at,
+        "source": snap.source,
+        "operator": snap.operator,
+        "reason": snap.reason,
+        "restored_from": snap.restored_from,
+        "config": snap.config,
+    }))
+}
+
+/// POST /api/config/apply → 应用一份新配置 (A/B/C/D 按 auth 级别分流; 验证失败保持旧配置)
+///
+/// body: { config: AppConfig, auth?: "ai"|"operator"|"system"(默认), operator?, reason? }
+pub async fn config_apply(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let config: bolloon_config::AppConfig = match serde_json::from_value(
+        req.get("config").cloned().unwrap_or(serde_json::Value::Null),
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(serde_json::json!({ "ok": false, "error": format!("config 解析失败: {e}") }))
+        }
+    };
+    let auth = match req.get("auth").and_then(|v| v.as_str()) {
+        Some("ai") => bolloon_config::ConfigAuth::Ai,
+        Some("operator") => bolloon_config::ConfigAuth::Operator,
+        _ => bolloon_config::ConfigAuth::System,
+    };
+    let operator = req
+        .get("operator")
+        .and_then(|v| v.as_str())
+        .unwrap_or("api")
+        .to_string();
+    let reason = req
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("api apply")
+        .to_string();
+    match st
+        .config
+        .apply(bolloon_config::ConfigProposal {
+            based_on: None,
+            config,
+            auth,
+            source: "api".into(),
+            operator,
+            reason,
+        })
+        .await
+    {
+        Ok(snap) => Json(serde_json::json!({ "ok": true, "version": snap.version })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+/// POST /api/config/rollback → 回滚到指定历史版本
+///
+/// body: { version: u64 }
+pub async fn config_rollback(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let version = match req.get("version").and_then(|v| v.as_u64()) {
+        Some(v) => v,
+        None => return Json(serde_json::json!({ "ok": false, "error": "缺少 version" })),
+    };
+    match st.config.rollback_to(version).await {
+        Ok(snap) => Json(serde_json::json!({ "ok": true, "version": snap.version, "restored_from": snap.restored_from })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+// ────────────────────────── 配置可观测 / AI 优化闭环 / 多节点 ──────────────────────────
+
+/// 真实测量的指标源: 只暴露**测出来**的数。
+///
+/// 关键诚实点: `llm.failure_rate` 在没有调用样本时返回 `None` (没有样本 ≠ 0 失败),
+/// 于是闭环会以 `NoTrustedMetric` 拒绝启动, 而不是拿一个假的 0 去调参。
+struct RuntimeMetricSource {
+    config: bolloon_config::MetricsSnapshot,
+    llm: std::sync::Arc<bolloon_agent::kernel_loop::LlmHealth>,
+}
+
+impl bolloon_config::MetricSource for RuntimeMetricSource {
+    fn read(&self, name: &str) -> Option<bolloon_config::MetricSample> {
+        let v = match name {
+            "config.apply_failure_rate" => self.config.apply_failure_rate,
+            "config.rollback_failure_rate" => self.config.rollback_failure_rate,
+            "config.avg_apply_ms" => self.config.avg_apply_ms,
+            "config.avg_read_ns" => self.config.avg_read_ns,
+            "llm.failure_rate" => {
+                if self.llm.attempts() == 0 {
+                    return None;
+                }
+                self.llm.failure_rate()
+            }
+            "llm.attempts" => self.llm.attempts() as f64,
+            "llm.retries" => self.llm.retries() as f64,
+            _ => return None,
+        };
+        Some(bolloon_config::MetricSample::measured(name, v))
+    }
+}
+
+/// GET /api/econ/report → 影子经济层报告 (用量 / 预算 / 本该被拦 / 影子路由 / 公共池 / 贡献)。
+///
+/// 关闭态如实回 `enabled=false` 与空账本 —— 不假装"零成本", 这里零是"没在计量"。
+pub async fn econ_report(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let Some(econ) = st.econ.get() else {
+        return Json(serde_json::json!({
+            "ok": true,
+            "enabled": false,
+            "reason": "经济层尚未初始化",
+        }));
+    };
+    let report = econ.report();
+    Json(serde_json::json!({
+        "ok": true,
+        "enabled": report.enabled,
+        "mode": report.mode,
+        "metering_enabled": report.metering_enabled,
+        "enforcement_enabled": report.enforcement_enabled,
+        "settlement_enabled": report.settlement_enabled,
+        "price_version": report.price_version,
+        "meter": report.meter,
+        "by_intent": report.by_intent,
+        "budgets": report.budgets,
+        "would_block": report.would_block,
+        "shadow_routing": report.shadow_routing,
+        "pool": report.pool,
+        "settlements_total_usd": report.settlements_total_usd,
+        "settlements_by_payer": report.settlements_by_payer,
+        "contributions": report.contributions,
+        "providers": report.providers,
+        "tasks_total": report.tasks_total,
+        "tasks_succeeded": report.tasks_succeeded,
+        "free_task_completion_rate": report.free_task_completion_rate,
+        "meter_failures": report.meter_failures,
+    }))
+}
+
+/// GET /api/config/observability → 配置指标 + 任务↔版本证据链 + 回滚点
+pub async fn config_observability(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let snap = st.config.current();
+    let metrics = st.config.metrics();
+    let bindings = st.config.evidence().all();
+    let mut per_version: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for b in &bindings {
+        *per_version
+            .entry(format!("v{}", b.config_version))
+            .or_insert(0) += 1;
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "version": snap.version,
+        "applied_at": snap.applied_at,
+        "history_versions": st.config.history_versions(),
+        "metrics": metrics,
+        "llm_health": {
+            "attempts": st.llm_health.attempts(),
+            "failures": st.llm_health.failures(),
+            "retries": st.llm_health.retries(),
+            "failure_rate": st.llm_health.failure_rate(),
+        },
+        "tasks_per_version": per_version,
+        "bindings": bindings,
+    }))
+}
+
+/// POST /api/config/optimize → AI 优化闭环。默认 `advisory`: **只出提案, 不写配置**。
+///
+/// body: { mode?: "advisory"|"restricted", metric?, direction?: "higher_helps"|"lower_helps",
+///         higher_is_better?, min_improvement_ratio?, max_adjustment_ratio?,
+///         degrade_rollback_ratio?, max_rounds?, max_wall_ms? }
+pub async fn config_optimize(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mode = match req.get("mode").and_then(|v| v.as_str()).unwrap_or("advisory") {
+        "restricted" => bolloon_config::AiMode::RestrictedAuto,
+        _ => bolloon_config::AiMode::Advisory,
+    };
+    let objective = bolloon_config::OptimizationObjective {
+        metric: req
+            .get("metric")
+            .and_then(|v| v.as_str())
+            .unwrap_or("llm.failure_rate")
+            .to_string(),
+        higher_is_better: req
+            .get("higher_is_better")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        min_improvement_ratio: req
+            .get("min_improvement_ratio")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.05),
+        max_adjustment_ratio: req
+            .get("max_adjustment_ratio")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.25),
+        degrade_rollback_ratio: req
+            .get("degrade_rollback_ratio")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.10),
+        max_rounds: req.get("max_rounds").and_then(|v| v.as_u64()).unwrap_or(3) as u32,
+        max_wall_ms: req
+            .get("max_wall_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(60_000),
+    };
+    let direction = match req.get("direction").and_then(|v| v.as_str()).unwrap_or("higher_helps") {
+        "lower_helps" => bolloon_config::ParamResponse::LowerHelps,
+        _ => bolloon_config::ParamResponse::HigherHelps,
+    };
+    let src = RuntimeMetricSource {
+        config: st.config.metrics(),
+        llm: st.llm_health.clone(),
+    };
+    let opt = bolloon_config::AiOptimizer::new(mode, objective, direction);
+    match mode {
+        // 建议级: 产出提案 + 证据, 不动配置
+        bolloon_config::AiMode::Advisory => match opt.propose(&st.config, &src) {
+            Ok(p) => Json(serde_json::json!({
+                "ok": true, "mode": "advisory", "applied": false, "proposals": p,
+            })),
+            Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        },
+        // 受限自动级: 白名单参数 + 预算 + 停止条件 + 恶化即回滚
+        bolloon_config::AiMode::RestrictedAuto => match opt.run(&st.config, &src).await {
+            Ok(r) => Json(serde_json::json!({
+                "ok": true,
+                "mode": "restricted",
+                "report": r,
+                "summary": bolloon_config::optimizer::report_line(&r),
+            })),
+            Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        },
+    }
+}
+
+/// POST /api/config/peer-sync → 从对端节点拉取配置 (最终一致; 对端失效则本地不变)
+///
+/// body: { peer_url: "http://host:port", timeout_ms? }
+pub async fn config_peer_sync(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let peer = req
+        .get("peer_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if peer.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺少 peer_url" }));
+    }
+    let timeout = req
+        .get("timeout_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3_000);
+    match st.config.sync_from_peer(&peer, timeout, "api").await {
+        Ok(Some(s)) => Json(serde_json::json!({
+            "ok": true, "applied": true, "version": s.version, "source": s.source,
+        })),
+        Ok(None) => Json(serde_json::json!({
+            "ok": true, "applied": false, "note": "对端版本不高于本地, 无需同步",
+        })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+/// GET /config → 自包含监控面板 (不进前端构建, 避免和 client.ts 的产物耦合)
+pub async fn config_panel() -> axum::response::Html<&'static str> {
+    axum::response::Html(include_str!("../assets/config.html"))
 }
 
 /// POST /api/friends/request → **跨机加好友**: 查到 did → 发好友请求 (需对方同意)

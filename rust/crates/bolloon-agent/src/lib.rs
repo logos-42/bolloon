@@ -3,6 +3,7 @@
 //! KernelLoop: prepare → model call → harness tool call → checkpoint → reducer → continuation → finish
 //! 会话值：多人群聊中 agent 的参与逻辑（何时开口/冷却/幂等）
 
+pub mod econ_shadow;
 pub mod kernel_loop;
 pub mod group_chat;
 pub mod task_board;
@@ -21,6 +22,7 @@ pub mod heartbeat;
 pub mod setup;
 pub mod subagents;
 pub mod judgeness;
+pub mod character;
 pub mod documents;
 pub mod task_group;
 pub mod wallet;
@@ -66,4 +68,5 @@ pub use world::*;
 pub use goal::*;
 pub use contacts::*;
 pub use deliberation::*;
+pub use character::*;
 pub use heartbeat::*;

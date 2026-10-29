@@ -6,10 +6,15 @@
 use std::sync::Arc;
 use async_trait::async_trait;
 
-use bolloon_harness::{Harness, ToolCall};
+use bolloon_config::{policy::RuntimePolicy, ConfigView};
+use bolloon_harness::{GateOutcome, Harness, ToolCall};
 use bolloon_llm::{ChatMessage, GenerateParams, GenerateResult, LlmRuntime, ToolSchema};
 
 /// 循环策略（模型调用的组成方式；Pi adapter 与 native adapter 共用）
+///
+/// 流式渲染/中断监听这类"怎么调模型"的差异属于**策略**（在 `call` 内部自理），
+/// 轮次推进、工具门、无进展保护、配置覆盖属于**循环**（本文件）。
+/// 这样 CLI 与 Web 共用同一个循环，不再各自实现一套。
 #[async_trait]
 pub trait LoopStrategy: Send + Sync {
     /// 组装消息 + 调模型，返回结果 (provider_id 选供应商, model 选具体模型)
@@ -137,6 +142,114 @@ pub struct LoopStep {
     pub stop: Option<StopReason>,
 }
 
+/// 一次运行的完整产物: 步骤 + **被循环改写后的消息历史** (调用方据此落盘会话)。
+pub struct LoopRun {
+    pub steps: Vec<LoopStep>,
+    pub messages: Vec<ChatMessage>,
+    pub stop: Option<StopReason>,
+    /// 本次运行**捕获**的配置版本 (任务级快照; 中途配置更新不改变它)。
+    /// 调用方据此把 `任务 ID ↔ 配置版本` 写进证据链。
+    pub config_version: u64,
+}
+
+/// LLM 调用健康计数 (真实测量, 供 AI 优化闭环的可信指标源使用)。
+/// 只有**实际发生**的调用/失败才会计数 —— 模型自述不算指标。
+#[derive(Debug, Default)]
+pub struct LlmHealth {
+    attempts: std::sync::atomic::AtomicU64,
+    failures: std::sync::atomic::AtomicU64,
+    retries: std::sync::atomic::AtomicU64,
+}
+
+impl LlmHealth {
+    pub fn record_attempt(&self, ok: bool) {
+        use std::sync::atomic::Ordering;
+        self.attempts.fetch_add(1, Ordering::Relaxed);
+        if !ok {
+            self.failures.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn record_retry(&self) {
+        self.retries
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn attempts(&self) -> u64 {
+        self.attempts.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn failures(&self) -> u64 {
+        self.failures.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn retries(&self) -> u64 {
+        self.retries.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    /// 失败率 (无样本时返回 0; 调用方据 attempts 判断样本是否足够)
+    pub fn failure_rate(&self) -> f64 {
+        let a = self.attempts();
+        if a == 0 {
+            0.0
+        } else {
+            self.failures() as f64 / a as f64
+        }
+    }
+}
+
+/// 循环观察者: 上层 (CLI/TUI/Web) 在循环的关键节点插入自己的渲染/记账,
+/// 而不必复制一份循环。观察者**只读**循环事实, 不得改执行语义
+/// (想改语义就改策略或配置, 不许在这里旁路 Harness 门)。
+#[async_trait]
+pub trait LoopObserver: Send + Sync {
+    /// 一轮开始 (模型调用之前)
+    async fn on_turn_start(&self, _turn: u32, _max_steps: u32) {}
+    /// 单个工具调用进入 Harness 门之前
+    async fn on_tool_begin(&self, _turn: u32, _call: &ToolCall) {}
+    /// Harness 门返回后 (denied / 执行结果都在里面)
+    async fn on_tool_result(&self, _turn: u32, _call: &ToolCall, _outcome: &GateOutcome) {}
+    /// 一轮结束 (本轮 step 已定型)
+    async fn on_turn_end(&self, _turn: u32, _step: &LoopStep) {}
+}
+
+/// 观察者链: 多个观察者按顺序收同一份事实 (UI 渲染 + 经济计量互不干扰)。
+/// 任何一环都不许改变执行语义 (它们只读)。
+pub struct ObserverChain<'a> {
+    obs: Vec<&'a dyn LoopObserver>,
+}
+
+impl<'a> ObserverChain<'a> {
+    pub fn new(obs: Vec<&'a dyn LoopObserver>) -> Self {
+        Self { obs }
+    }
+}
+
+#[async_trait]
+impl LoopObserver for ObserverChain<'_> {
+    async fn on_turn_start(&self, turn: u32, max_steps: u32) {
+        for o in &self.obs {
+            o.on_turn_start(turn, max_steps).await;
+        }
+    }
+    async fn on_tool_begin(&self, turn: u32, call: &ToolCall) {
+        for o in &self.obs {
+            o.on_tool_begin(turn, call).await;
+        }
+    }
+    async fn on_tool_result(&self, turn: u32, call: &ToolCall, outcome: &GateOutcome) {
+        for o in &self.obs {
+            o.on_tool_result(turn, call, outcome).await;
+        }
+    }
+    async fn on_turn_end(&self, turn: u32, step: &LoopStep) {
+        for o in &self.obs {
+            o.on_turn_end(turn, step).await;
+        }
+    }
+}
+
+/// 不做任何事的观察者 (Web / 无界面场景)。
+pub struct NoopObserver;
+
+#[async_trait]
+impl LoopObserver for NoopObserver {}
+
 /// KernelLoop：可注入依赖的循环执行器
 pub struct KernelLoop<S: LoopStrategy> {
     strategy: Arc<S>,
@@ -149,6 +262,10 @@ pub struct KernelLoop<S: LoopStrategy> {
     max_reflect: u32,
     /// 目标审查员：自问自答收尾前把关是否对齐初始意图 (None = 不审查, 退化为原行为)
     goal_review: Option<Arc<dyn GoalReviewer>>,
+    /// 受治理配置视图 (可选): B 类任务级 + C 类运行参数覆盖。只读, 不绕过既有门。
+    config: Option<ConfigView>,
+    /// LLM 调用健康计数 (真实测量; 与调用方共享时可供配置优化闭环读取)
+    health: Arc<LlmHealth>,
 }
 
 impl<S: LoopStrategy> KernelLoop<S> {
@@ -160,7 +277,19 @@ impl<S: LoopStrategy> KernelLoop<S> {
             max_no_progress: 3,
             max_reflect: 4,
             goal_review: None,
+            config: None,
+            health: Arc::new(LlmHealth::default()),
         }
+    }
+
+    /// 注入共享的健康计数器 (同一进程内多次运行/多个入口共用一份统计)。
+    pub fn with_health(mut self, health: Arc<LlmHealth>) -> Self {
+        self.health = health;
+        self
+    }
+
+    pub fn health(&self) -> Arc<LlmHealth> {
+        self.health.clone()
     }
 
     pub fn with_limits(mut self, max_steps: u32, max_no_progress: u32) -> Self {
@@ -179,20 +308,76 @@ impl<S: LoopStrategy> KernelLoop<S> {
         self
     }
 
+    /// 注入受治理配置视图。B 类 (模型/prompt/预算) 与 C 类 (超时/重试/并发/步数) 经此覆盖; 只读。
+    pub fn with_config(mut self, config: ConfigView) -> Self {
+        self.config = Some(config);
+        self
+    }
+
     pub fn harness(&self) -> &Arc<Harness> {
         &self.harness
     }
 
-    /// 运行完整循环。调用方提供初始消息与工具集（从 harness 注册表取）。
-    /// 每轮: model → tool_calls → harness gate → 结果拼回消息 → 继续
+    /// 运行完整循环（无观察者）。调用方提供初始消息与工具集（从 harness 注册表取）。
     pub async fn run(
         &self,
+        provider_id: &str,
+        model: &str,
+        messages: Vec<ChatMessage>,
+        tools: Vec<ToolSchema>,
+        initial_context: Option<String>,
+    ) -> Result<Vec<LoopStep>, String> {
+        let r = self
+            .run_observed(
+                &NoopObserver,
+                provider_id,
+                model,
+                messages,
+                tools,
+                initial_context,
+            )
+            .await?;
+        Ok(r.steps)
+    }
+
+    /// 运行完整循环 + 观察者回调（CLI/TUI 用）。返回 steps **和被改写后的消息历史**。
+    /// 每轮: model → tool_calls → harness gate → 结果拼回消息 → 继续
+    pub async fn run_observed<O: LoopObserver>(
+        &self,
+        obs: &O,
         provider_id: &str,
         model: &str,
         mut messages: Vec<ChatMessage>,
         tools: Vec<ToolSchema>,
         initial_context: Option<String>,
-    ) -> Result<Vec<LoopStep>, String> {
+    ) -> Result<LoopRun, String> {
+        // 受治理配置覆盖 (B 类任务级 + C 类运行参数): 仅对新任务/新 run 生效, 不中途改语义
+        let snap = self.config.as_ref().map(|v| v.read().unwrap().clone());
+        let model = match snap
+            .as_ref()
+            .and_then(|s| RuntimePolicy::model_override(&**s).0)
+        {
+            Some(m) => m,
+            None => model.to_string(),
+        };
+        let max_steps = snap
+            .as_ref()
+            .map(|s| RuntimePolicy::max_steps(&**s))
+            .unwrap_or(self.max_steps);
+        let max_no_progress = snap
+            .as_ref()
+            .map(|s| RuntimePolicy::max_no_progress(&**s))
+            .unwrap_or(self.max_no_progress);
+        let max_reflect = snap
+            .as_ref()
+            .map(|s| RuntimePolicy::max_reflect(&**s))
+            .unwrap_or(self.max_reflect);
+        let retries = snap
+            .as_ref()
+            .map(|s| RuntimePolicy::llm_retries(&**s))
+            .unwrap_or(3) as u32;
+        let initial_context = initial_context;
+
         if let Some(ctx) = initial_context {
             messages.insert(
                 0,
@@ -207,6 +392,29 @@ impl<S: LoopStrategy> KernelLoop<S> {
             );
         }
 
+        // B 类 prompt 覆盖 (需 Operator 授权): 显式**替换**首条 system 提示。
+        // 没有 system 消息时插到最前; 有则原地替换 —— 覆盖是"覆盖", 不做拼接, 免得
+        // 身份提示与覆盖段并存造成语义漂移 (审计里 operator/reason 已记录谁改的)。
+        if let Some(p) = snap
+            .as_ref()
+            .and_then(|s| RuntimePolicy::prompt_override(&**s))
+        {
+            match messages.iter_mut().find(|m| m.role == "system") {
+                Some(m) => m.content = p,
+                None => messages.insert(
+                    0,
+                    ChatMessage {
+                        role: "system".into(),
+                        content: p,
+                        name: None,
+                        tool_call_id: None,
+                        images: vec![],
+                        tool_calls: None,
+                    },
+                ),
+            }
+        }
+
         let mut steps = vec![];
         let mut no_progress = 0u32;
         // 初始意图: 取首条 user 消息, 目标 review 用它对齐
@@ -218,20 +426,24 @@ impl<S: LoopStrategy> KernelLoop<S> {
         // 自问自答连击: 连续「无工具但有内容」的轮数
         let mut reflect_streak: u32 = 0;
 
-        for turn in 1..=self.max_steps {
+        for turn in 1..=max_steps {
+            obs.on_turn_start(turn, max_steps).await;
             // 模型调用带重试兜底: 超时/瞬时错误退避重试, 避免"上次回复超时了"直接中断整个会话
             let resp = {
                 let mut last_err = String::new();
                 let mut got: Option<GenerateResult> = None;
-                for attempt in 0..=3 {
-                    match self.strategy.call(provider_id, model, messages.clone(), tools.clone()).await {
+                for attempt in 0..=retries {
+                    match self.strategy.call(provider_id, &model, messages.clone(), tools.clone()).await {
                         Ok(r) => {
+                            self.health.record_attempt(true);
                             got = Some(r);
                             break;
                         }
                         Err(e) => {
+                            self.health.record_attempt(false);
                             last_err = e.clone();
-                            if attempt < 3 {
+                            if attempt < retries {
+                                self.health.record_retry();
                                 tokio::time::sleep(std::time::Duration::from_secs(2u64 * (attempt as u64 + 1))).await;
                             }
                         }
@@ -270,20 +482,23 @@ impl<S: LoopStrategy> KernelLoop<S> {
                 // 2) 本轮前若动过工具 → 跑目标 review 对齐初始意图; 通过对才停, 否则让模型下一轮自纠
                 // 3) 从未动过工具(纯闲聊) → 退化为原行为: 无工具即停(省一次 review 调用)
                 let did_tools = steps.iter().any(|s| !s.tool_calls.is_empty());
-                if reflect_streak >= self.max_reflect {
+                if reflect_streak >= max_reflect {
                     steps.push(LoopStep {
                         turn,
                         response: Some(resp),
                         tool_calls: vec![],
                         stop: Some(StopReason::Finished),
                     });
+                    if let Some(st) = steps.last() {
+                        obs.on_turn_end(turn, st).await;
+                    }
                     break;
                 }
                 let aligned = if did_tools {
                     let transcript = build_transcript(&messages, &resp);
                     match &self.goal_review {
                         Some(reviewer) => {
-                            reviewer.is_aligned(provider_id, model, &initial_intent, &transcript).await.unwrap_or(false)
+                            reviewer.is_aligned(provider_id, &model, &initial_intent, &transcript).await.unwrap_or(false)
                         }
                         None => true,
                     }
@@ -297,6 +512,9 @@ impl<S: LoopStrategy> KernelLoop<S> {
                         tool_calls: vec![],
                         stop: Some(StopReason::Finished),
                     });
+                    if let Some(st) = steps.last() {
+                        obs.on_turn_end(turn, st).await;
+                    }
                     break;
                 }
                 // 未对齐: 把本轮回应当 observation 拼回, 下一轮模型继续/自纠
@@ -306,6 +524,9 @@ impl<S: LoopStrategy> KernelLoop<S> {
                     tool_calls: vec![],
                     stop: None,
                 });
+                if let Some(st) = steps.last() {
+                    obs.on_turn_end(turn, st).await;
+                }
                 messages.push(ChatMessage {
                     role: "assistant".into(),
                     content: resp.content.clone(),
@@ -327,7 +548,9 @@ impl<S: LoopStrategy> KernelLoop<S> {
                     arguments: serde_json::from_str(&tc.function.arguments)
                         .unwrap_or_else(|_| serde_json::json!({})),
                 };
+                obs.on_tool_begin(turn, &call).await;
                 let outcome = self.harness.gate(call.clone()).await;
+                obs.on_tool_result(turn, &call, &outcome).await;
                 executed.push(call.clone());
                 let (out_txt, tool_ok) = match &outcome {
                     bolloon_harness::GateOutcome {
@@ -357,6 +580,9 @@ impl<S: LoopStrategy> KernelLoop<S> {
                 tool_calls: executed.clone(),
                 stop: None,
             });
+            if let Some(st) = steps.last() {
+                obs.on_turn_end(turn, st).await;
+            }
 
             // 把 assistant 消息 + tool 结果拼回 history
             let assistant_msg = ChatMessage {
@@ -380,7 +606,7 @@ impl<S: LoopStrategy> KernelLoop<S> {
             messages.extend(tool_messages);
 
             // 无进展保护
-            if no_progress >= self.max_no_progress && !has_tools {
+            if no_progress >= max_no_progress && !has_tools {
                 steps.push(LoopStep {
                     turn,
                     response: None,
@@ -395,11 +621,18 @@ impl<S: LoopStrategy> KernelLoop<S> {
         if let Some(l) = last {
             if l.stop.is_none() {
                 // 跑满 max_steps 且没有正常停止 → 合并进最后一步（不追加新 step）
-                l.stop = Some(StopReason::MaxTurns(self.max_steps));
+                l.stop = Some(StopReason::MaxTurns(max_steps));
             }
         }
 
-        Ok(steps)
+        let stop = steps.last().and_then(|s| s.stop.clone());
+        let config_version = snap.as_ref().map(|s| s.version).unwrap_or(0);
+        Ok(LoopRun {
+            steps,
+            messages,
+            stop,
+            config_version,
+        })
     }
 }
 
@@ -645,4 +878,129 @@ mod tests {
         assert!(matches!(last.stop, Some(StopReason::Finished)), "最终应 Finished");
         assert!(steps.iter().filter(|s| !s.tool_calls.is_empty()).count() >= 2, "应至少调了 2 次工具");
     }
+
+    /// `run_observed`: 观察者拿到轮次/工具回调, 且返回被改写的历史 + 捕获的配置版本。
+    /// 这是 CLI 接入统一循环的契约 (CLI 只提供策略+观察者, 循环本体唯一)。
+    #[tokio::test]
+    async fn run_observed_hooks_history_and_config_version() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingObserver {
+            turns: AtomicUsize,
+            tools: AtomicUsize,
+        }
+        #[async_trait]
+        impl LoopObserver for CountingObserver {
+            async fn on_turn_start(&self, _t: u32, _m: u32) {
+                self.turns.fetch_add(1, Ordering::SeqCst);
+            }
+            async fn on_tool_result(&self, _t: u32, _c: &ToolCall, _o: &GateOutcome) {
+                self.tools.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let (harness, strategy) = setup().await;
+        let mgr = bolloon_config::ConfigManager::new(None);
+        let mut cfg = bolloon_config::AppConfig::default();
+        cfg.task.max_steps = 3;
+        mgr.apply(bolloon_config::ConfigProposal::system(cfg, "test"))
+            .await
+            .unwrap();
+
+        let obs = CountingObserver {
+            turns: AtomicUsize::new(0),
+            tools: AtomicUsize::new(0),
+        };
+        let loop_ = KernelLoop::new(strategy, harness).with_config(mgr.view());
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: "请读取文件".into(),
+            name: None,
+            tool_call_id: None,
+            images: vec![],
+            tool_calls: None,
+        }];
+        let run = loop_
+            .run_observed(&obs, "p", "m", messages, vec![], None)
+            .await
+            .unwrap();
+
+        assert!(obs.turns.load(Ordering::SeqCst) >= 2, "至少两轮");
+        assert_eq!(obs.tools.load(Ordering::SeqCst), 1, "一个工具调用");
+        assert_eq!(run.config_version, 1, "必须是本次运行捕获的配置版本");
+        assert!(
+            run.messages.iter().any(|m| m.role == "tool"),
+            "返回的历史里必须有工具结果 (CLI 靠它落盘会话)"
+        );
+        assert!(matches!(run.stop, Some(StopReason::Finished)));
+        assert_eq!(loop_.health().attempts(), 2, "真实计量: 两次模型调用");
+        assert_eq!(loop_.health().failures(), 0);
+    }
+
+    /// B 类 `system_prompt_override`: **替换**首条 system, 不是拼接 (覆盖就是覆盖)
+    #[tokio::test]
+    async fn config_prompt_override_replaces_system_prompt() {
+        use std::sync::Mutex;
+
+        struct EchoStrategy {
+            seen_system: Mutex<String>,
+        }
+        #[async_trait]
+        impl LoopStrategy for EchoStrategy {
+            async fn call(
+                &self,
+                _provider_id: &str,
+                _model: &str,
+                messages: Vec<ChatMessage>,
+                _tools: Vec<ToolSchema>,
+            ) -> Result<GenerateResult, String> {
+                if let Some(m) = messages.iter().find(|m| m.role == "system") {
+                    *self.seen_system.lock().unwrap() = m.content.clone();
+                }
+                Ok(GenerateResult {
+                    content: "ok".into(),
+                    tool_calls: vec![],
+                    finish_reason: "stop".into(),
+                    usage: bolloon_llm::Usage::default(),
+                    model: "m".into(),
+                })
+            }
+        }
+
+        let (harness, _) = setup().await;
+        let mgr = bolloon_config::ConfigManager::new(None);
+        let mut cfg = bolloon_config::AppConfig::default();
+        cfg.task.system_prompt_override = Some("你是被覆盖后的提示".into());
+        mgr.apply(bolloon_config::ConfigProposal::system(cfg, "override"))
+            .await
+            .unwrap();
+
+        let strategy = Arc::new(EchoStrategy {
+            seen_system: Mutex::new(String::new()),
+        });
+        let loop_ = KernelLoop::new(strategy.clone(), harness).with_config(mgr.view());
+        let _ = loop_
+            .run(
+                "p",
+                "m",
+                vec![ChatMessage {
+                    role: "system".into(),
+                    content: "原始身份提示".into(),
+                    name: None,
+                    tool_call_id: None,
+                    images: vec![],
+                    tool_calls: None,
+                }],
+                vec![],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            strategy.seen_system.lock().unwrap().as_str(),
+            "你是被覆盖后的提示",
+            "配置的 prompt 覆盖必须替换 system, 而不是把它追加到身份提示后面"
+        );
+    }
+
 }

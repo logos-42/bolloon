@@ -122,6 +122,11 @@ impl BolloonHome {
         self.root.join("scratch")
     }
 
+    /// 受治理动态配置文件路径 (`<root>/config.json`); 原子写 + 重启恢复。
+    pub fn config_file(&self) -> PathBuf {
+        self.root.join("config.json")
+    }
+
     /// 建 agent 目录族 (幂等)
     pub fn ensure_agent(&self, agent_id: &str) -> Result<PathBuf, HomeError> {
         let dir = self.agent_dir(agent_id)?;

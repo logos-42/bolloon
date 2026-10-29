@@ -16,3 +16,4 @@ uuid.workspace = true
 async-trait.workspace = true
 dashmap.workspace = true
 bolloon-kernel = { path = "../bolloon-kernel" }
+bolloon-config = { path = "../bolloon-config" }

@@ -1,0 +1,15 @@
+[package]
+name = "bolloon-econ"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bolloon 旁路经济层: 用量计量 / 意图预算 / 供给登记 / 贡献账本 / 结算账本 (shadow 优先, 默认全关)"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+bolloon-config = { path = "../bolloon-config" }

@@ -22,6 +22,8 @@
 | [android-agent-runtime.md](./android-agent-runtime.md) | v2 | Android Agent Runtime 架构 (Phase 1-4: Accessibility/Shizuku/本地LLM/Agent OS) |
 | [agent-economic-protocol.md](./agent-economic-protocol.md) | v2 | Agent Economic Protocol 设计 (7 协议 + bolloon 映射 + Registry/x402/Policy MVP) |
 | [durable-run-protocol.md](./durable-run-protocol.md) | v2 | Durable Run 协议 (Goal→Run→Checkpoint→Recovery 状态机 + 字段协议 + 现状盘点 + 六阶段完成度台账) |
+| [economic-layer.md](./economic-layer.md) | v2 | **旁路经济层 (2026-10-29)**: 三账本(消耗/贡献/结算) · 意图预算只回答"本该拦吗" · 影子模式默认 · 供给登记≠授权 · 四种可替换路由(影子) · 价格表版本化 · 关闭即零行为 | current |
+| [dynamic-config.md](./dynamic-config.md) | v2 | **受治理动态配置 (2026-10-29)**: A–E 分类与生效规则 · ConfigManager（原子快照/版本单调/失败不 swap/审计/回滚）· CLI 与 Web 共用 KernelLoop（`LoopObserver`/`run_observed`）· 多节点=租约+栅栏+对端拉取（**不是分布式事务**）· AI 优化三级（默认建议级，可信指标+预算+停止+自动回滚）· 可观测（指标 + 任务↔配置版本证据链 + `/config` 面板）| current |
 | [model-selection-protocol.md](./model-selection-protocol.md) | v2 | 模型选择协议 (统一入口 + 有效模型配置 + 五层优先级 + 每 Run 快照 + 命令面 + 验收矩阵) |
 | [model-selector-p2.md](./model-selector-p2.md) | v2 | 模型分步选择器 + **冻结的模型元数据接口** (七步流程 · P3/P5 唯一填充点 · 未知语义 · 三条遗留结清 · 并行名册) |
 | [provider-registry.md](./provider-registry.md) | v2 | **供应商注册表 + 兼容协议 (P3)**: 13 家内置逐项有出处 (默认 URL/环境变量/默认模型/发现/认证/工具调用/reasoning/是否本地/**是否允许当长期任务执行器**) + 通用自定义供应商 (`openai-compatible`/`anthropic`/`gemini`/`ollama` + baseUrl/modelsEndpoint/authHeader) 不动 TS 联合类型 + **旧配置向后兼容** (数组形/吸收旧写法/自定义 activeProvider 不再被静默改成 ollama) + 元数据填充点只填有真值的项 + 真跑 44/0 与 8 条变异判红 |

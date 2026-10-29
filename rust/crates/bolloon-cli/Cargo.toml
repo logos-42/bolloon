@@ -24,6 +24,9 @@ bolloon-web = { path = "../bolloon-web" }
 bolloon-kernel = { path = "../bolloon-kernel" }
 bolloon-agent = { path = "../bolloon-agent" }
 bolloon-harness = { path = "../bolloon-harness" }
+bolloon-config = { path = "../bolloon-config" }
+bolloon-econ = { path = "../bolloon-econ" }
+async-trait.workspace = true
 bolloon-p2p = { path = "../bolloon-p2p" }
 chrono.workspace = true
 ureq = { version = "2", features = ["json"] }

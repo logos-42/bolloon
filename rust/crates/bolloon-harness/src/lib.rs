@@ -5,5 +5,7 @@
 
 mod harness;
 pub mod security;
+pub mod role;
 pub use harness::*;
 pub use security::{guard_shell, guard_tool_arg, GuardError};
+pub use role::*;
