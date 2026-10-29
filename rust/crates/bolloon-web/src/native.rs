@@ -1122,10 +1122,35 @@ pub async fn agent_by_id(st: &AppState, id: Option<&str>) -> Option<AgentView> {
 
 /// **全仓唯一的模型调用入口** (web 侧): 解析 provider/model, 带上 system 与消息真发一次。
 /// 拆出来是为了让群聊后台汇报与普通对话走同一条通路 (配置/错误口径一字不差)。
+/// 一次模型调用的经济层归属（web 侧唯一模型咽喉的记录口径）。
+///
+/// `intent_id` 是**根意图**：群聊里一条人类消息触发的多次调用共用同一个 intent_id，
+/// 这样"一条群消息总共花了多少、几个 agent 各花了多少"能从账本里直接查出来。
+#[derive(Debug, Clone, Default)]
+pub struct EconCtx {
+    pub intent_id: String,
+    pub group_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub surface: String,
+}
+
+/// 兼容旧调用方（无经济层归属）：等价于 `call_model_metered(.., None)`。
 pub async fn call_model(
     st: &AppState,
     system: &str,
     messages: Vec<ChatMessage>,
+) -> Result<String, String> {
+    call_model_metered(st, system, messages, None).await
+}
+
+/// **唯一的模型调用咽喉**：所有 web 侧调用（私聊/群聊/汇报）都必须走这里。
+/// 经济层开启时，每次调用记一条事件（provider/model/token/耗时/成败 + group_id/agent_id/根意图）；
+/// 关闭时零记录、零行为差异。
+pub async fn call_model_metered(
+    st: &AppState,
+    system: &str,
+    messages: Vec<ChatMessage>,
+    econ_ctx: Option<EconCtx>,
 ) -> Result<String, String> {
     let (ui_provider, ui_model) = {
         let fs = st.forge.lock().await;
@@ -1184,12 +1209,79 @@ pub async fn call_model(
     });
     full.extend(messages);
 
-    let mut params = GenerateParams::new(model, full);
+    let mut params = GenerateParams::new(model.clone(), full);
     params.temperature = 0.7;
     params.max_tokens = 4096;
-    llm.generate(&provider_id, params)
-        .await
-        .map(|g| g.content)
+
+    // ── 经济层计量（旁路：只记录，绝不改变调用结果） ──
+    let started = std::time::Instant::now();
+    let res = llm.generate(&provider_id, params).await;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    if let Some(econ) = st.econ.get() {
+        let (tin, tout, status) = match &res {
+            Ok(g) => (
+                Some(g.usage.prompt_tokens),
+                Some(g.usage.completion_tokens),
+                bolloon_econ::MeterStatus::Ok,
+            ),
+            // 失败也算一次调用（真花出去/真试过），但 token 未知 ⇒ 如实留 None
+            Err(_) => (None, None, bolloon_econ::MeterStatus::Failed),
+        };
+        let ctx = match &econ_ctx {
+            Some(e) => {
+                let mut c = bolloon_econ::CallCtx::new(e.intent_id.clone(), "web");
+                c.intent_id = if e.intent_id.is_empty() {
+                    None
+                } else {
+                    Some(e.intent_id.clone())
+                };
+                c.executor = e.agent_id.clone().unwrap_or_else(|| "web".to_string());
+                c.surface = if e.surface.is_empty() {
+                    "web".to_string()
+                } else {
+                    e.surface.clone()
+                };
+                c
+            }
+            None => {
+                let mut c = bolloon_econ::CallCtx::new(
+                    format!("web-{elapsed_ms}-{}", chrono::Utc::now().timestamp_millis()),
+                    "web",
+                );
+                c.surface = "web".to_string();
+                c
+            }
+        };
+        let mut ev = serde_json::Map::new();
+        if let Some(g) = econ_ctx.as_ref().and_then(|e| e.group_id.clone()) {
+            ev.insert("group_id".into(), serde_json::json!(g));
+        }
+        if let Some(a) = econ_ctx.as_ref().and_then(|e| e.agent_id.clone()) {
+            ev.insert("agent_id".into(), serde_json::json!(a));
+        }
+        if let Some(e) = econ_ctx.as_ref() {
+            ev.insert("surface".into(), serde_json::json!(e.surface));
+        }
+        let evidence = if ev.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(ev))
+        };
+        // 价格/成本由 econ 依价格表算；没价格表就只记 token（不编金额）
+        econ.on_model_call(
+            &ctx,
+            &provider_id,
+            &model,
+            tin,
+            tout,
+            None, // 供应商没给缓存命中 token：留空，不编
+            status,
+            elapsed_ms,
+            evidence,
+        );
+    }
+
+    res.map(|g| g.content)
         .map_err(|e| format!("模型调用失败（{provider_id}）: {e}"))
 }
 
@@ -1230,7 +1322,19 @@ pub async fn reply_with_model(
         tool_calls: None,
         images: vec![],
     });
-    call_model(st, &system_prompt, messages).await
+    // 私聊一轮 = 一个根意图（同一条消息内的重试/多轮共享它）
+    call_model_metered(
+        st,
+        &system_prompt,
+        messages,
+        Some(EconCtx {
+            intent_id: format!("chat:{}", chrono::Utc::now().timestamp_millis()),
+            group_id: None,
+            agent_id: agent.map(|a| a.id.clone()),
+            surface: "web-chat".to_string(),
+        }),
+    )
+    .await
 }
 
 /// 自主 agent 对话: 跑 KernelLoop (工具调用 + 自问自答持续推进 + 目标 review 对齐初始意图)
@@ -1819,7 +1923,13 @@ pub async fn room_start(
         group_name
     );
     // 立刻让选中的智能体后台开场 (不阻塞本次请求)
-    crate::room_bus::spawn_reports(st.clone(), gid.clone(), trigger, targets);
+    crate::room_bus::spawn_reports(
+        st.clone(),
+        gid.clone(),
+        trigger,
+        targets,
+        crate::room_bus::group_intent(&gid, chrono::Utc::now().timestamp_millis() as u64),
+    );
     Json(serde_json::json!({ "ok": true, "group_id": gid }))
 }
 
@@ -2022,7 +2132,13 @@ pub async fn room_guide(
                 fs.room_last_speaker.insert(gid.clone(), first.clone());
                 fs.save(&data_dir());
             }
-            crate::room_bus::spawn_reports(st.clone(), gid.clone(), text.clone(), targets);
+            crate::room_bus::spawn_reports(
+        st.clone(),
+        gid.clone(),
+        text.clone(),
+        targets,
+        crate::room_bus::group_intent(&gid, chrono::Utc::now().timestamp_millis() as u64),
+    );
             Json(serde_json::json!({
             "hash": entry.hash,
             "kind": kind,

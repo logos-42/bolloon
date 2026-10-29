@@ -2588,6 +2588,10 @@ mod tests {
     use super::*;
 
     /// 测试会话: 目录形如 `<base>/chat` (与生产 `<root>/chat` 同构, parent 才是共享的 root)
+    /// `BOLLOON_VISION` 是**进程级环境变量**: 一个用例设/清它时, 另一个视觉用例若并发跑
+    /// 就会读到别人的值 ⇒ 断言拒绝的那条时灵时不灵。这两个用例共用一把锁串行。
+    static VISION_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn sess() -> ChatSession {
         let base = std::env::temp_dir().join(format!(
             "bolloon-chat-test-{}-{}",
@@ -2872,6 +2876,7 @@ mod tests {
     /// 附件**真进模型**: build_user_message 把 png 读成 base64 data URL 塞进 images
     #[tokio::test]
     async fn attachments_become_data_urls_in_the_message() {
+        let _env = VISION_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut s = sess();
         s.model = "gpt-4o".into(); // 已知视觉模型, 闸放行
         let png = s.dir.join("t.png");
@@ -2894,6 +2899,7 @@ mod tests {
     /// 视觉闸: 默认纯文本模型 + 附件 ⇒ 拦下且**附件保留** (换模型后可直接重试)
     #[tokio::test]
     async fn vision_gate_keeps_attachments_on_refusal() {
+        let _env = VISION_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut s = sess(); // deepseek-chat
         let png = s.dir.join("t.png");
         std::fs::write(&png, b"PNG").unwrap();

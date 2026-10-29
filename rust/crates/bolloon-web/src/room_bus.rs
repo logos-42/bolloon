@@ -130,16 +130,29 @@ pub fn elect(
 }
 
 /// 起后台任务: 每个目标智能体各跑一轮, 结束后把汇报写回群里。
-pub fn spawn_reports(st: AppState, gid: String, trigger: String, targets: Vec<AgentView>) {
+/// 群内一轮的**根意图 id**：一条人类消息（或一次自驱）触发的所有 agent 调用共用它。
+/// 这样"一条群消息总共花了多少、哪几个 agent 各花了多少"能从账本按 intent 直接查出来。
+pub fn group_intent(gid: &str, ts_ms: u64) -> String {
+    format!("group:{gid}:{ts_ms}")
+}
+
+pub fn spawn_reports(
+    st: AppState,
+    gid: String,
+    trigger: String,
+    targets: Vec<AgentView>,
+    intent_id: String,
+) {
     for agent in targets {
         let st = st.clone();
         let gid = gid.clone();
         let trigger = trigger.clone();
+        let intent_id = intent_id.clone();
         tokio::spawn(async move {
             if !st.room_bus.begin(&gid, &agent.id) {
                 return;
             }
-            let text = match agent_turn(&st, &gid, &agent, &trigger).await {
+            let text = match agent_turn(&st, &gid, &agent, &trigger, &intent_id).await {
                 Ok(t) if !t.trim().is_empty() => t.trim().to_string(),
                 Ok(_) => format!("（{} 这一轮没有产出内容）", agent.name),
                 Err(e) => format!("⚠ {} 没能完成这次汇报: {e}", agent.name),
@@ -197,6 +210,7 @@ pub fn spawn_reports(st: AppState, gid: String, trigger: String, targets: Vec<Ag
                         gid.clone(),
                         format!("（任务分配）{} 交给你：{}", agent.name, desc),
                         vec![t],
+                        group_intent(&gid, chrono::Utc::now().timestamp_millis() as u64),
                     );
                 }
             }
@@ -246,7 +260,8 @@ pub async fn continue_round(st: AppState, gid: String) {
         return;
     }
     let trigger = "（系统）请继续推进本群议题：可继续发言、分配任务，或若已无共识空间则用 [[terminate]] 宣布散会。".to_string();
-    spawn_reports(st, gid, trigger, targets);
+    let intent = group_intent(&gid, chrono::Utc::now().timestamp_millis() as u64);
+    spawn_reports(st, gid, trigger, targets, intent);
 }
 
 /// 单轮群内回复: 用**这个智能体自己的身份**(名字/persona 覆盖) + 群最近上下文
@@ -255,6 +270,7 @@ async fn agent_turn(
     gid: &str,
     agent: &AgentView,
     trigger: &str,
+    intent_id: &str,
 ) -> Result<String, String> {
     let hist = st.groups.history(gid, 16).unwrap_or_default();
     let group_name = st
@@ -293,7 +309,19 @@ async fn agent_turn(
         tool_calls: None,
         images: vec![],
     }];
-    crate::native::call_model(st, &system, messages).await
+    // 走**计量咽喉**：一条人类消息触发的多个 agent 调用共用同一个根意图
+    crate::native::call_model_metered(
+        st,
+        &system,
+        messages,
+        Some(crate::native::EconCtx {
+            intent_id: intent_id.to_string(),
+            group_id: Some(gid.to_string()),
+            agent_id: Some(agent.id.clone()),
+            surface: "web-room".to_string(),
+        }),
+    )
+    .await
 }
 
 /// 解析汇报里的控制标记（纯函数）。返回 (去掉标记后的正文, 是否终止, 派发的任务列表)。

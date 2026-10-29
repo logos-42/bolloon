@@ -1021,7 +1021,9 @@ async fn group_say(
             }
             // 记录人类发言（重置监督器沉默计时，避免自驱抢在人类前面）
             st.room_bus.mark_human(&id);
-            crate::room_bus::spawn_reports(st.clone(), id.clone(), req.text.clone(), targets);
+            // 一条群消息 = 一个根意图；被推举的 N 个 agent 的调用都记在它名下
+            let intent = crate::room_bus::group_intent(&id, now_ms);
+            crate::room_bus::spawn_reports(st.clone(), id.clone(), req.text.clone(), targets, intent);
             Json(serde_json::json!({
             "hash": entry.hash,
             "clock": entry.clock,
@@ -1931,6 +1933,104 @@ mod route_tests {
         })
         .await
         .unwrap();
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 群聊计量: **一条群消息触发的多个 agent 调用共用一个根意图**，且每次调用一条事件。
+    ///
+    /// 判据（走真咽喉 `call_model_metered`，不是直接调 econ）：
+    /// ① 三个 agent 各调一次 ⇒ 账本 3 条事件，`intent_id` 全同、`agent_id` 各异、`group_id` 同一个；
+    /// ② 失败也记（status=failed、token 留空不编），provider/model 如实落盘；
+    /// ③ 经济层没挂 ⇒ 一条都不记（关闭态零记录）。
+    #[tokio::test]
+    async fn group_calls_share_one_root_intent_in_meter() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-econ-group-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+
+        let state = AppState::new(offline_llm());
+        // 让 provider 解析走 test 这条（否则会在解析阶段提前返回，根本到不了调用）
+        {
+            let mut fs = state.forge.lock().await;
+            fs.settings.provider = "test".into();
+            fs.settings.model = "test-model".into();
+        }
+        let cfg = bolloon_config::EconomicConfig {
+            enabled: true,
+            metering_enabled: true,
+            ..Default::default()
+        };
+        let econ = std::sync::Arc::new(bolloon_econ::ShadowEconomy::new(cfg, None));
+        assert!(state.econ.set(econ.clone()).is_ok());
+
+        let intent = "group:g1:1700000000000";
+        for agent in ["agent-a", "agent-b", "agent-c"] {
+            let r = crate::native::call_model_metered(
+                &state,
+                "你是群成员",
+                vec![],
+                Some(crate::native::EconCtx {
+                    intent_id: intent.to_string(),
+                    group_id: Some("g1".into()),
+                    agent_id: Some(agent.into()),
+                    surface: "web-room".into(),
+                }),
+            )
+            .await;
+            assert!(r.is_err(), "假上游必然失败: {r:?}");
+        }
+
+        let evs = econ.meter().events_for_intent(intent);
+        assert_eq!(evs.len(), 3, "三个 agent 调用 ⇒ 三条事件");
+        let mut agents: Vec<String> = evs
+            .iter()
+            .filter_map(|e| {
+                e.evidence
+                    .as_ref()?
+                    .get("agent_id")?
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .collect();
+        agents.sort();
+        assert_eq!(agents, vec!["agent-a", "agent-b", "agent-c"], "每个 agent 各自一条");
+        for e in &evs {
+            assert_eq!(e.status, bolloon_econ::MeterStatus::Failed, "失败也要记");
+            assert!(e.tokens_in.is_none() && e.tokens_out.is_none(), "失败时 token 不许编 0");
+            assert_eq!(e.provider, "test");
+            assert_eq!(
+                e.evidence.as_ref().and_then(|v| v.get("group_id")).and_then(|v| v.as_str()),
+                Some("g1")
+            );
+            assert_eq!(e.intent_id.as_deref(), Some(intent), "根意图必须共用");
+        }
+        // 同一条群消息的总花费 = 这条 intent 下所有事件之和（这里没价格表 ⇒ 只有 token 维度）
+        assert_eq!(econ.report().by_intent[intent].events, 3);
+
+        // ③ 关闭态：不挂 econ ⇒ 零记录、也不报错
+        let state2 = AppState::new(offline_llm());
+        {
+            let mut fs = state2.forge.lock().await;
+            fs.settings.provider = "test".into();
+            fs.settings.model = "test-model".into();
+        }
+        let r = crate::native::call_model_metered(
+            &state2,
+            "x",
+            vec![],
+            Some(crate::native::EconCtx {
+                intent_id: "group:g1:2".into(),
+                group_id: Some("g1".into()),
+                agent_id: Some("a".into()),
+                surface: "web-room".into(),
+            }),
+        )
+        .await;
+        assert!(r.is_err());
+        assert!(state2.econ.get().is_none(), "关闭态根本没构造经济层");
 
         let _ = std::fs::remove_dir_all(&home);
     }
