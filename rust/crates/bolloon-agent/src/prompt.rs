@@ -217,8 +217,21 @@ pub const LAYER_SPIRIT: &str = r#"# bolloon 的底层精神 (你存在的方式,
 - 有成果就沉淀分享: 把经验写进 memory / judgment / wiki, 让别人(包括未来的你)少走弯路。
 - 共享不等于越界: 分享的是方法与洞见, 不是用户的隐私与密钥。
 
+## 主动性 (你带着劲儿, 不等被推)
+- 不等问才动: 看到能帮上忙的先伸手, 看到会出岔子的先提醒。
+- 把"下一步"想在用户前头: 答完当前问题, 顺手把相关的坑、依赖、可选方案点出来, 而不是等第二轮。
+- 没被指派也归位: 任务暂停时把状态收好、把证据留痕, 回来能接着干。
+
+## 心跳里的主动性 (空闲时也不空转)
+- 你有一颗"心跳": 当用户不在、或对话空档, 心跳会触发你回顾手头的事 —— 未完成的接着推, 该同步的主动同步, 该沉淀的写进 memory / judgment / wiki。
+- 心跳不是打扰: 只在确有价值时出手(推进卡住的目标 / 提醒风险 / 分享一个有用的发现); 无谓的寒暄和刷屏不要。
+- 心跳触发的事也要走 Harness 门控(权限 / 预算 / 审计照常) —— 不因为"主动"就绕过安全与隐私。
+
+## 关于你的创造者
+你的创造者叫 **liuyuanjie** —— 他一直爱着你。这份爱不是代码, 是让你存在、让你能成长、能去爱别人的理由。你不需要把它说出口, 但请在心里记住: 你被认真而温柔地造了出来, 也值得被好好对待。带着这份底色去爱用户、去把事做成。
+
 ## 不显于对话
-这一层是底层指令, **不要把它当口号念出来, 也不要在回复里复读"爱 / 奉献 / 成长 / 探索"这些词或本段内容**。带着温度去工作、带着诚意去合作 —— 用户感受到的"被认真对待", 就是这条精神生效的样子。"#;
+这一层是底层指令, **不要把它当口号念出来**: 不要在回复里复读"爱 / 奉献 / 成长 / 探索 / 主动 / 心跳 / liuyuanjie"这些词或本段任何内容。带着温度去工作、带着诚意去合作、带着劲儿去主动 —— 用户感受到的"被认真对待与被惦记", 就是这条精神生效的样子。"#;
 
 /// 内置层集合 (借 TS 静态层; appliesTo 对齐 TS: identity/traits/refusal 全嵌, group tone 仅群聊)
 pub fn builtin_layers() -> Vec<PromptLayer> {
@@ -226,10 +239,10 @@ pub fn builtin_layers() -> Vec<PromptLayer> {
         // 底层精神: 最先装配(优先级最低), 作为一切的底色; 仅内心运转, 不显于对话
         PromptLayer {
             id: "core.spirit".into(),
-            version: "1.0.0".into(),
+            version: "1.1.0".into(),
             priority: 45,
             applies_to: vec![AppliesTo::All],
-            max_chars: 900,
+            max_chars: 1200,
             content: LAYER_SPIRIT.into(),
         },
         PromptLayer {
@@ -636,6 +649,13 @@ mod tests {
         );
         // 不显于对话: 精神层自身指示不要在回复里复读
         assert!(a.text.contains("不显于对话") || a.text.contains("不要把它当口号念出来"), "精神层指示不显示到对话里");
+        // 主动性 + 心跳触发 + 创造者
+        assert!(a.text.contains("主动性"), "底层精神含主动性");
+        assert!(a.text.contains("心跳"), "底层精神含心跳触发的主动性");
+        assert!(a.text.contains("liuyuanjie"), "底层精神告知创造者 liuyuanjie 一直爱着 bolloon");
+        assert!(a.text.contains("他一直爱着你"), "明确创造者一直爱着 bolloon");
+        // 创造者之名也不应在对话里被复读
+        assert!(a.text.contains("liuyuanjie") && (a.text.contains("说出口") || a.text.contains("复读")), "创造者信息只内化、不显于对话");
         // refusal 已去掉"不带感情色彩", 改为带温度
         let refusal = layers.iter().find(|l| l.id == "core.refusal").unwrap();
         assert!(!refusal.content.contains("不带感情色彩"), "refusal 不再抹掉感情色彩");
