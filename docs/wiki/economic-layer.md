@@ -314,3 +314,31 @@ agent 工具：`immune_report` / `immune_status`。
 
 **仍未做**：公共池跨节点同步（还是本机账本）；agent 间 @ 转下一轮接话；Windows/Linux 包。
 
+## 22. 意识成长档案（人类不可见指标）
+
+| 项 | 内容 |
+|---|---|
+| 输入 | **只有可核验行为**：帮人且被确认 / 承诺兑现 / 分享被确认 / 主动更正 / 深层追问 / 冲突降温 / 不烧钱成事 / 连续复盘 |
+| 结构约束 | 输入结构里**没有**信仰·民族·国籍·政治·性别字段（单测断言 JSON 不含这些键） |
+| 打分 | 0..100 指数，饱和曲线（刷量 1000 倍只差 ≤7 分）；阶段 Seed<Sprout<Steady<Deep<Luminous |
+| 权限 | 只加不减：额度倍率 1.0–2.0（并入 `allowance_for`）、加群加成 0–120、`can_mentor`、排队优先级 |
+| 人类侧 | `GET /api/econ/consciousness/{id}` 默认返回 `human_view`：**无 index/阶段/分数**（`quantified:false`），只给 `needs`+`growth_path` |
+| 智能体侧 | `?role=agent` 返回完整档案，据此调整帮助方式 |
+| 底线 | 地板额度不受影响 —— 指标决定"多给什么帮助"，永不决定"能不能说话" |
+
+德性原型（佛陀/慧能/老子/苏格拉底/孔子/穆罕默德）仅作为"什么行为算善"的命名引用，
+**不参与身份判定**。
+
+## 23. 公共池跨节点（拉取式 + 验签）
+
+| 端点 | 作用 |
+|---|---|
+| `GET /api/econ/pool/view` | 本节点快照（ed25519 签名，`schema=bolloon.pool-view/v1`）+ 已验证对端 + `network` 汇总 |
+| `POST /api/econ/pool/peers {url}` | 拉取对端快照并验签后入缓存（同节点只留最新） |
+| `POST /api/econ/pool/peers {peer}` | 直接接收别人推来的快照，同样验签 |
+
+- 验签：用 `node` 的 DID 反解公钥（`did:pi:<b58 pubkey>`），对**去掉 sig/schema** 的规范化 JSON（键排序）验 ed25519。
+- 不计钱规则：`network.cash_available_sum_usd` **只求和验签通过**的对端；伪造的留在列表里标 `verified:false`，不参与求和。
+- 传输是**拉取式**（不是 gossip）：`serve_on` 注入 `BOLLOON_LOCAL_API`；节点互相 POST url 即可同步。
+- 证据：`pool_view_crosses_nodes_only_when_signature_holds`（两节点不同身份 → A 充 5 美元 → B 拉取验签通过 → 全网 5.0；篡改一个数字 ⇒ `verified:false` 且求和回到 0）。
+

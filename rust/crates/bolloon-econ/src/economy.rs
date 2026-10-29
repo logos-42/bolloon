@@ -573,6 +573,29 @@ impl ShadowEconomy {
             &self.allowance_policy(),
             intent_kind,
         );
+        // 意识成长档案只**加**不减：倍率来自可核验行为（兑现承诺/分享/零现金成事），
+        // 上限仍是日上限；指数本身不给人类看（见 consciousness::human_view）。
+        let sig = crate::consciousness::Signals {
+            promises_kept: h.successful_intents,
+            shares_verified: h.verified_contributions,
+            zero_cost_successes: h.zero_cost_intents,
+            ..Default::default()
+        };
+        let prof = crate::consciousness::assess(principal, &sig);
+        if prof.permissions.allowance_multiplier > 1.0 {
+            let before = a.calls;
+            a.calls = ((a.calls as f64) * prof.permissions.allowance_multiplier).round() as u32;
+            a.reasons.push(format!(
+                "成长加成 ×{:.2}（{} → {}；来自兑现承诺 {} 次、分享 {} 次、零现金成事 {} 次）",
+                prof.permissions.allowance_multiplier,
+                before,
+                a.calls,
+                h.successful_intents,
+                h.verified_contributions,
+                h.zero_cost_intents
+            ));
+            a.remaining = a.calls.saturating_sub(a.used);
+        }
         let used = *self
             .principal_used
             .lock()

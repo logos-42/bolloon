@@ -7,6 +7,7 @@ license.workspace = true
 description = "Bolloon Web — Web UI (hushforge 布局) + HTTP API"
 
 [dependencies]
+bs58 = "0.5"
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -408,6 +408,7 @@ dependencies = [
  "bolloon-llm",
  "bolloon-p2p",
  "bolloon-x402",
+ "bs58",
  "chrono",
  "futures",
  "hashavatar",

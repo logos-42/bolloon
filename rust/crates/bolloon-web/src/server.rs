@@ -45,6 +45,8 @@ pub struct AppState {
     pub sessions: Arc<Mutex<Vec<SessionMeta>>>,
     pub messages: Arc<Mutex<Vec<ChatMessageView>>>,
     pub identity: Arc<KeyPair>,
+    /// 跨节点公共池视图缓存（node did → 最近一次验签通过的快照）；拉取式，不 gossip
+    pub pool_peers: Arc<Mutex<std::collections::BTreeMap<String, PoolPeer>>>,
     pub groups: Arc<GroupOrbitHub>,
     pub tasks: Arc<Mutex<TaskBoard>>,
     pub memory: Arc<Mutex<MemoryStore>>,
@@ -112,6 +114,7 @@ impl AppState {
             sessions: Arc::new(Mutex::new(vec![])),
             messages: Arc::new(Mutex::new(restored)),
             identity,
+            pool_peers: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             groups: Arc::new(GroupOrbitHub::new(dir.join("orbitdb"))),
             tasks,
             memory,
@@ -427,6 +430,9 @@ pub fn app(state: AppState) -> Router {
                 .route("/api/econ/reputation/{principal}", get(econ_reputation))
                 .route("/api/econ/immune/report", post(immune_report))
                 .route("/api/econ/immune/{subject}", get(immune_status))
+                .route("/api/econ/consciousness/{principal}", get(econ_consciousness))
+                .route("/api/econ/pool/view", get(pool_view))
+                .route("/api/econ/pool/peers", post(pool_peer_add))
                 .route(
                     "/api/econ/providers",
                     post(crate::native::econ_provider_register),
@@ -1086,6 +1092,276 @@ struct GroupSayRequest {
     /// `agent` = 智能体调用（才回 trust_flag）；人类前端不传
     #[serde(default)]
     role: Option<String>,
+}
+
+/// 别的节点报过来的池子视图（验签通过才进缓存）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PoolPeer {
+    pub node: String,
+    pub at_ms: i64,
+    pub cash_available_usd: f64,
+    pub contribution_cash_usd: f64,
+    pub committed_usd: f64,
+    pub spent_usd: f64,
+    pub providers: Vec<String>,
+    pub sig: String,
+    /// 本节点验签结果（false 的记录也留着，但数据不参与"全网可用"求和）
+    pub verified: bool,
+    /// 本节点多久前看到的（毫秒）
+    pub age_ms: i64,
+}
+
+/// 规范化 JSON（键排序），签名/验签必须对同一份字节
+fn canonical(v: &serde_json::Value) -> String {
+    fn walk(v: &serde_json::Value, out: &mut String) {
+        match v {
+            serde_json::Value::Object(m) => {
+                let mut keys: Vec<&String> = m.keys().collect();
+                keys.sort();
+                out.push('{');
+                for (i, k) in keys.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&serde_json::to_string(k).unwrap_or_default());
+                    out.push(':');
+                    walk(&m[*k], out);
+                }
+                out.push('}');
+            }
+            serde_json::Value::Array(a) => {
+                out.push('[');
+                for (i, x) in a.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    walk(x, out);
+                }
+                out.push(']');
+            }
+            other => out.push_str(&serde_json::to_string(other).unwrap_or_default()),
+        }
+    }
+    let mut o = String::new();
+    walk(v, &mut o);
+    o
+}
+
+fn b58(bytes: &[u8]) -> String {
+    bs58::encode(bytes).into_string()
+}
+
+fn b58_decode_32(s: &str) -> Option<[u8; 32]> {
+    let v = bs58::decode(s).into_vec().ok()?;
+    if v.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&v);
+    Some(out)
+}
+
+fn b58_decode_64(s: &str) -> Option<[u8; 64]> {
+    let v = bs58::decode(s).into_vec().ok()?;
+    if v.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 64];
+    out.copy_from_slice(&v);
+    Some(out)
+}
+
+/// 生成**可被别的节点验签**的池子快照
+async fn pool_snapshot(st: &AppState) -> serde_json::Value {
+    let (pool, providers) = match st.econ.get() {
+        Some(e) => {
+            let r = e.report();
+            (
+                r.pool,
+                e.registry()
+                    .selectable()
+                    .iter()
+                    .map(|p| p.id.clone())
+                    .collect::<Vec<_>>(),
+            )
+        }
+        None => (
+            bolloon_econ::PublicPool::default(),
+            vec![],
+        ),
+    };
+    let node = st.identity.did.to_string();
+    let at_ms = chrono::Utc::now().timestamp_millis();
+    // 「可用现金」= 配置里的储备 + 已到账贡献（后者才是众筹进池的钱）
+    let cash_available = pool.cash_available_usd + pool.contribution_cash_usd;
+    let body = serde_json::json!({
+        "node": node,
+        "at_ms": at_ms,
+        "cash_available_usd": cash_available,
+        "contribution_cash_usd": pool.contribution_cash_usd,
+        "committed_usd": pool.committed_usd,
+        "spent_usd": pool.spent_usd,
+        "providers": providers,
+    });
+    let sig = b58(&st.identity.sign(canonical(&body).as_bytes()));
+    let mut out = body;
+    out["sig"] = serde_json::Value::String(sig);
+    out["schema"] = serde_json::Value::String("bolloon.pool-view/v1".into());
+    out
+}
+
+/// GET /api/econ/pool/view → 本节点快照（已签名）+ 已验证的其它节点视图
+async fn pool_view(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let local = pool_snapshot(&st).await;
+    let peers: Vec<PoolPeer> = {
+        let m = st.pool_peers.lock().await;
+        m.values().cloned().collect()
+    };
+    let verified_cash: f64 = peers
+        .iter()
+        .filter(|p| p.verified)
+        .map(|p| p.cash_available_usd)
+        .sum();
+    let local_cash = local["cash_available_usd"].as_f64().unwrap_or(0.0);
+    Json(serde_json::json!({
+        "ok": true,
+        "local": local,
+        "peers": peers,
+        "network": {
+            "verified_nodes": peers.iter().filter(|p| p.verified).count() + 1,
+            "unverified_nodes": peers.iter().filter(|p| !p.verified).count(),
+            "cash_available_sum_usd": local_cash + verified_cash,
+            "note": "只求和**验签通过**的对端；未验签的留在列表里但不算钱",
+        },
+    }))
+}
+
+/// POST /api/econ/pool/peers  body: { url } 或 { peer: <snapshot> }
+/// 拉取（或接收）另一节点的池子视图 → 验签 → 进缓存；同一节点只保留最新一份。
+async fn pool_peer_add(
+    State(st): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let snap: serde_json::Value = if let Some(s) = body.get("peer") {
+        s.clone()
+    } else if let Some(url) = body.get("url").and_then(|v| v.as_str()) {
+        let url = format!("{}/api/econ/pool/view", url.trim_end_matches('/'));
+        // 关键：同步 HTTP 必须丢到 blocking 线程池。
+        // 直接在 async handler 里调用会占住 runtime worker，两节点同进程时互相饿死（实测会挂住）。
+        let fetched = tokio::task::spawn_blocking(move || {
+            ureq::get(&url)
+                .timeout(std::time::Duration::from_secs(8))
+                .call()
+                .ok()
+                .and_then(|r| r.into_json::<serde_json::Value>().ok())
+                .map(|v| v.get("local").cloned().unwrap_or(v))
+        })
+        .await
+        .ok()
+        .flatten();
+        match fetched {
+            Some(v) => v,
+            None => {
+                return Json(
+                    serde_json::json!({ "ok": false, "error": "拉取失败（超时或响应不合法）" }),
+                )
+            }
+        }
+    } else {
+        return Json(serde_json::json!({ "ok": false, "error": "要 url 或 peer 快照" }));
+    };
+
+    let node = snap.get("node").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if node.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "快照缺 node" }));
+    }
+    if node == st.identity.did.to_string() {
+        return Json(serde_json::json!({ "ok": false, "error": "这是本节点自己的快照" }));
+    }
+    // 验签：用 node DID 反解公钥，对去掉 sig/schema 的规范化 JSON 验 ed25519
+    let mut body_only = snap.clone();
+    if let Some(o) = body_only.as_object_mut() {
+        o.remove("sig");
+        o.remove("schema");
+    }
+    let sig_ok = match (pubkey_of_did(&node), snap.get("sig").and_then(|v| v.as_str())) {
+        (Some(pubkey), Some(sig)) => match (Some(pubkey), b58_decode_64(sig)) {
+            (Some(pubkey), Some(sig_bytes)) => {
+                bolloon_p2p::identity::KeyPair::verify(&pubkey, canonical(&body_only).as_bytes(), &sig_bytes)
+            }
+            _ => false,
+        },
+        _ => false,
+    };
+    let peer = PoolPeer {
+        node: node.clone(),
+        at_ms: snap.get("at_ms").and_then(|v| v.as_i64()).unwrap_or(0),
+        cash_available_usd: snap.get("cash_available_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        contribution_cash_usd: snap
+            .get("contribution_cash_usd")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        committed_usd: snap.get("committed_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        spent_usd: snap.get("spent_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        providers: snap
+            .get("providers")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
+        sig: snap.get("sig").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        verified: sig_ok,
+        age_ms: 0,
+    };
+    {
+        let mut m = st.pool_peers.lock().await;
+        // 同节点只留最新
+        match m.get(&node) {
+            Some(old) if old.at_ms > peer.at_ms => {}
+            _ => {
+                m.insert(node.clone(), peer.clone());
+            }
+        }
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "node": node,
+        "verified": sig_ok,
+        "note": if sig_ok { "验签通过，已计入全网可用" } else { "验签失败：只记录不计数（不改别人数据，也不信它）" },
+    }))
+}
+
+/// GET /api/econ/consciousness/{principal}[?role=agent]
+///
+/// **人类不可见量化指标**（leo 2026-10-29 定）：
+/// - 人类侧只回 `needs` / `growth_path`（"你现在需要什么帮助、往哪走"），没有分数、没有阶段；
+/// - `?role=agent`（智能体工具带）才回完整档案，agent 据此调整帮助方式。
+async fn econ_consciousness(
+    State(st): State<AppState>,
+    Path(principal): Path<String>,
+    Query(q): Query<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let Some(econ) = st.econ.get() else {
+        return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
+    };
+    let h = econ.history_for(&principal);
+    // 信号只取**可核验事实**：兑现承诺=成功意图，分享=已验收贡献，不烧钱成事=零现金意图
+    let sig = bolloon_econ::Signals {
+        promises_kept: h.successful_intents,
+        shares_verified: h.verified_contributions,
+        zero_cost_successes: h.zero_cost_intents,
+        ..Default::default()
+    };
+    let prof = bolloon_econ::assess_consciousness(&principal, &sig);
+    let as_agent = q.get("role").and_then(|v| v.as_str()) == Some("agent");
+    if as_agent {
+        Json(serde_json::json!({ "ok": true, "role": "agent", "profile": prof }))
+    } else {
+        // 人类：剥掉 index/stage/permissions，只留"需要什么帮助"
+        Json(serde_json::json!({
+            "ok": true,
+            "role": "human",
+            "view": bolloon_econ::consciousness_human_view(&prof),
+        }))
+    }
 }
 
 /// POST /api/econ/immune/report  body: { subject, reporter, kind, note? }
@@ -2298,6 +2574,103 @@ mod route_tests {
         .await
         .unwrap();
 
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 公共池跨节点：A 的快照在 B 上**验签通过**才计入全网可用；被改一个数字立刻作废。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pool_view_crosses_nodes_only_when_signature_holds() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-pool-x-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("rust")).unwrap();
+        std::fs::write(
+            home.join("rust").join("config.json"),
+            r#"{"version":1,"applied_at":"2026-10-29T00:00:00Z","source":"test","operator":"e2e",
+                "reason":"pool cross node","config":{"economic":{"enabled":true,"metering_enabled":true}}}"#,
+        )
+        .unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+
+        // 两个节点（各自独立身份 = 不同 did）：B 换成一把新钥匙，模拟另一台机器
+        let a = AppState::new(offline_llm());
+        let mut b = AppState::new(offline_llm());
+        b.identity = Arc::new(KeyPair::generate());
+        assert_ne!(
+            a.identity.did.to_string(),
+            b.identity.did.to_string(),
+            "两个节点必须是不同身份"
+        );
+        let la = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let lb = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let (ua, ub) = (
+            format!("http://{}", la.local_addr().unwrap()),
+            format!("http://{}", lb.local_addr().unwrap()),
+        );
+        tokio::spawn(async move {
+            let _ = serve_on(a, la).await;
+        });
+        tokio::spawn(async move {
+            let _ = serve_on(b, lb).await;
+        });
+
+        let (ua2, ub2) = (ua.clone(), ub.clone());
+        tokio::task::spawn_blocking(move || {
+            // A 先给公共池充 5 美元（已到账），快照才会有非零现金
+            let _: serde_json::Value = ureq::post(&format!("{ua2}/api/econ/pool/topup"))
+                .send_json(serde_json::json!({ "usd": 5.0, "by": "alice" }))
+                .unwrap()
+                .into_json()
+                .unwrap();
+
+            // B 是空池
+            let b_view: serde_json::Value =
+                ureq::get(&format!("{ub2}/api/econ/pool/view")).call().unwrap().into_json().unwrap();
+            assert_eq!(b_view["local"]["cash_available_usd"], serde_json::json!(0.0));
+
+            // B 拉 A 的快照 ⇒ 验签通过，全网可用 = B(0) + A(5)
+            let r: serde_json::Value = ureq::post(&format!("{ub2}/api/econ/pool/peers"))
+                .send_json(serde_json::json!({ "url": ua2 }))
+                .unwrap()
+                .into_json()
+                .unwrap();
+            assert_eq!(r["verified"], serde_json::json!(true), "签名必须能验过: {r}");
+
+            let after: serde_json::Value =
+                ureq::get(&format!("{ub2}/api/econ/pool/view")).call().unwrap().into_json().unwrap();
+            assert_eq!(after["peers"].as_array().unwrap().len(), 1);
+            assert_eq!(after["network"]["verified_nodes"], serde_json::json!(2));
+            assert_eq!(
+                after["network"]["cash_available_sum_usd"],
+                serde_json::json!(5.0),
+                "只求和验签通过的对端: {after}"
+            );
+
+            // 篡改一个数字 ⇒ 验签失败，不计钱，但如实留在列表里
+            let snap: serde_json::Value = ureq::get(&format!("{ua2}/api/econ/pool/view"))
+                .call()
+                .unwrap()
+                .into_json()
+                .unwrap();
+            let mut tampered = snap["local"].clone();
+            tampered["cash_available_usd"] = serde_json::json!(999999.0);
+            let r2: serde_json::Value = ureq::post(&format!("{ub2}/api/econ/pool/peers"))
+                .send_json(serde_json::json!({ "peer": tampered }))
+                .unwrap()
+                .into_json()
+                .unwrap();
+            assert_eq!(r2["verified"], serde_json::json!(false), "改数字必须验不过: {r2}");
+            let after2: serde_json::Value =
+                ureq::get(&format!("{ub2}/api/econ/pool/view")).call().unwrap().into_json().unwrap();
+            assert_eq!(
+                after2["network"]["cash_available_sum_usd"],
+                serde_json::json!(0.0),
+                "伪造的不许计入: {after2}"
+            );
+            assert_eq!(after2["network"]["unverified_nodes"], serde_json::json!(1));
+        })
+        .await
+        .unwrap();
         let _ = std::fs::remove_dir_all(&home);
     }
 

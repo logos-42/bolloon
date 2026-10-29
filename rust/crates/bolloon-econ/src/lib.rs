@@ -13,6 +13,7 @@
 
 pub mod allowance;
 pub mod budget;
+pub mod consciousness;
 pub mod contribution;
 pub mod economy;
 pub mod error;
@@ -30,6 +31,10 @@ pub use allowance::{
 pub use budget::{
     BudgetDecision, BudgetGuard, BudgetLimits, ExhaustionPolicy, IntentBudget, Payer, PayerKind,
     PrivacyPolicy,
+};
+pub use consciousness::{
+    assess as assess_consciousness, human_view as consciousness_human_view, HumanView, Need,
+    Permissions as ConsciousnessPermissions, Profile as ConsciousnessProfile, Signals, Stage,
 };
 pub use contribution::{
     Contribution, ContributionKind, ContributionLedger, ContributionState, ContributionTotals,
