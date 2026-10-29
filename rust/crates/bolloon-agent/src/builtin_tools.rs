@@ -21,7 +21,7 @@
 //!      依据决策 2: **无法验证的结果不得报告为已验证成功**。
 
 use async_trait::async_trait;
-use bolloon_harness::{EffectKind, ToolCall, ToolDef, ToolExecutor, ToolRegistry, ToolResult};
+use bolloon_harness::{Budget, EffectKind, Harness, ToolCall, ToolDef, ToolExecutor, ToolRegistry, ToolResult};
 use bolloon_llm::{FunctionSchema, ToolSchema};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -181,6 +181,7 @@ pub fn builtin_tool_defs() -> Vec<ToolDef> {
     defs.extend(crate::net_tools::net_tool_defs());
     defs.extend(crate::domain_tools::domain_tool_defs());
     defs.extend(crate::updater_tools::updater_tool_defs());
+    defs.extend(crate::scratch_tools::scratch_tool_defs());
     defs
 }
 
@@ -197,12 +198,18 @@ pub struct BuiltinExecutor {
     domain: Arc<crate::domain_tools::DomainExecutor>,
     updater: Arc<crate::updater_tools::UpdaterExecutor>,
     shell: Arc<ShellExecutor>,
+    scratch: Arc<crate::scratch_tools::ScratchExecutor>,
 }
 
 impl BuiltinExecutor {
     /// `cancel` = 会话级取消标志（Ctrl+C 置位 ⇒ shell 当前/下一条命令被 kill）
     /// `bypass` = 完全访问（所有权限开放；超时/取消/预算/审计不撤）
-    pub fn new(cancel: Arc<AtomicBool>, bypass: bool) -> Self {
+    /// `script_run` = scratch 子系统执行端口 (宿主注入真执行器; 默认 noop)
+    pub fn new(
+        cancel: Arc<AtomicBool>,
+        bypass: bool,
+        script_run: crate::scratch::ScriptRunPort,
+    ) -> Self {
         Self {
             read_file: Arc::new(ReadFileExecutor),
             file: Arc::new(crate::file_tools::FileExecutor),
@@ -212,6 +219,7 @@ impl BuiltinExecutor {
             domain: Arc::new(crate::domain_tools::DomainExecutor),
             updater: Arc::new(crate::updater_tools::UpdaterExecutor),
             shell: Arc::new(ShellExecutor::with_mode(cancel, bypass)),
+            scratch: Arc::new(crate::scratch_tools::ScratchExecutor::new(script_run)),
         }
     }
 }
@@ -232,6 +240,7 @@ impl ToolExecutor for BuiltinExecutor {
             | "recall" | "task_list" => self.domain.execute(call).await,
             "check_update" => self.updater.execute(call).await,
             "shell" => self.shell.execute(call).await,
+            "run_scratch_script" => self.scratch.execute(call).await,
             // 已注册但没接执行器 ⇒ **如实说没接线**, 绝不返回空成功
             other => ToolResult {
                 ok: false,
@@ -264,6 +273,26 @@ pub fn tool_defs_to_schemas(defs: &[ToolDef]) -> Vec<ToolSchema> {
             },
         })
         .collect()
+}
+
+/// 生产即用: 注册全部内置工具 + 产出模型 schema + 建好 Harness (带九步门控)
+///
+/// `calls` = 工具调用预算上限; `budget_ms` = 工具执行总预算(毫秒);
+/// `cancel` = 会话级取消标志; `bypass` = 完全访问(所有权限开放; 超时/取消/预算/审计不撤)。
+/// 调用方据此把 `KernelLoop` 真正接进对话 —— 此前生产零接线, 工具从未发给模型。
+pub async fn builtin_harness(
+    calls: u32,
+    budget_ms: u64,
+    cancel: Arc<AtomicBool>,
+    bypass: bool,
+) -> (Arc<Harness>, Vec<ToolSchema>) {
+    let budget = Budget::new(calls, budget_ms);
+    let reg = Arc::new(ToolRegistry::new());
+    register_builtin_tools(&reg).await;
+    let exec = Arc::new(BuiltinExecutor::new(cancel, bypass, crate::scratch::ScriptRunPort::noop()));
+    let h = Arc::new(Harness::new(reg, exec, budget));
+    let schemas = tool_defs_to_schemas(&builtin_tool_defs());
+    (h, schemas)
 }
 
 #[cfg(test)]
@@ -433,8 +462,11 @@ mod tests {
         let reg = Arc::new(ToolRegistry::new());
         register_builtin_tools(&reg).await;
         let exec = || {
-            Arc::new(BuiltinExecutor::new(Arc::new(AtomicBool::new(false)), false))
-                as Arc<dyn ToolExecutor>
+            Arc::new(BuiltinExecutor::new(
+                Arc::new(AtomicBool::new(false)),
+                false,
+                crate::scratch::ScriptRunPort::noop(),
+            )) as Arc<dyn ToolExecutor>
         };
 
         // ① 未授予 ⇒ permission 门拒，零执行

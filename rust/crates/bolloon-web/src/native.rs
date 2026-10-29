@@ -15,6 +15,7 @@
 //! room orbitdb 状态 = 本地 oplog (跨机复制待接 BlockExchange 真传输)。
 
 use std::sync::atomic::Ordering;
+use async_trait::async_trait;
 
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::response::sse::{Event, Sse};
@@ -22,8 +23,9 @@ use axum::Json;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
-use bolloon_llm::{ChatMessage, GenerateParams, LlmRuntime};
+use bolloon_llm::{ChatMessage, GenerateParams, GenerateResult, LlmRuntime, ToolSchema};
 use bolloon_kernel::transport::{Transport, TransportMessage};
+use bolloon_agent::kernel_loop::{KernelLoop, LoopStrategy, LlmGoalReviewer};
 
 use crate::server::{data_dir, AppState, ChatMessageView};
 use std::collections::HashMap;
@@ -1220,6 +1222,144 @@ pub async fn reply_with_model(
     call_model(st, &system_prompt, messages).await
 }
 
+/// 自主 agent 对话: 跑 KernelLoop (工具调用 + 自问自答持续推进 + 目标 review 对齐初始意图)
+///
+/// 与 `reply_with_model` 的差异: 不再单次 `call_model`, 而是带 Harness 九步门控的工具循环 —
+/// 模型可反复调用 read_file/search/execute 等工具, 无工具时自问自答反思, 收尾前用目标 review 对齐用户意图。
+pub async fn reply_with_agent(
+    st: &AppState,
+    text: &str,
+    agent: Option<&AgentView>,
+) -> Result<String, String> {
+    let system_prompt = build_web_system(st, text, agent, "").await;
+    // 组装历史 + 当前句 (与 reply_with_model 同形)
+    let mut messages: Vec<ChatMessage> = Vec::new();
+    {
+        let msgs = st.messages.lock().await;
+        let start = msgs.len().saturating_sub(12);
+        let last = msgs.len().saturating_sub(1);
+        for (i, m) in msgs[start..].iter().enumerate() {
+            let idx = start + i;
+            let role = if m.role == "assistant" { "assistant" } else { "user" };
+            // 调用方可能已经把本轮用户输入写进历史 → 去重，避免同一句发两遍
+            if idx == last && role == "user" && m.content == text {
+                continue;
+            }
+            messages.push(ChatMessage {
+                role: role.into(),
+                content: m.content.clone(),
+                name: None,
+                tool_call_id: None,
+                images: vec![],
+                tool_calls: None,
+            });
+        }
+    }
+    messages.push(ChatMessage {
+        role: "user".into(),
+        content: text.to_string(),
+        name: None,
+        tool_call_id: None,
+        images: vec![],
+        tool_calls: None,
+    });
+
+    // 解析 provider + model (与 call_model 同逻辑)
+    let (ui_provider, ui_model) = {
+        let fs = st.forge.lock().await;
+        (
+            fs.settings.provider.trim().to_string(),
+            fs.settings.model.trim().to_string(),
+        )
+    };
+    let cfg = bolloon_llm::config_store::load();
+    let wanted = if !ui_provider.is_empty() {
+        ui_provider
+    } else if !cfg.active_provider.trim().is_empty() {
+        cfg.active_provider.trim().to_string()
+    } else {
+        String::new()
+    };
+    let mut llm = st.llm_snapshot();
+    if !wanted.is_empty() && llm.provider(&wanted).is_none() {
+        st.reload_llm().await;
+        llm = st.llm_snapshot();
+    }
+    let provider_id = if wanted.is_empty() {
+        llm.provider_ids().into_iter().next().ok_or_else(|| {
+            "还没有可用的模型供应商 — 点右上角模型/「选择模型」选一家并填 API Key \
+             （内置 13 家 + 目录 200+ 家）; 也可以用 BOLLOON_API_KEY 环境变量"
+                .to_string()
+        })?
+    } else {
+        wanted
+    };
+    if llm.provider(&provider_id).is_none() {
+        return Err(bolloon_llm::config_store::resolve(&cfg, &provider_id)
+            .err()
+            .unwrap_or_else(|| format!("{provider_id} 没装进模型通路 — 检查 provider 名称")));
+    }
+    let model = if !ui_model.is_empty() {
+        ui_model
+    } else {
+        llm.provider(&provider_id)
+            .map(|p| p.default_model.clone())
+            .unwrap_or_default()
+    };
+    if model.trim().is_empty() {
+        return Err(format!("{provider_id} 还没选模型 — 在「选择模型」里填一个模型名"));
+    }
+
+    // 工具 + 自主循环 (Harness 九步门控 + 目标 review 对齐初始意图)
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (harness, schemas) =
+        bolloon_agent::builtin_tools::builtin_harness(60, 300_000, cancel, false).await;
+    let strategy = Arc::new(WebStrategy { llm: llm.clone() });
+    let reviewer = Arc::new(LlmGoalReviewer::new(llm.clone(), provider_id.clone(), model.clone()));
+    let loop_ = KernelLoop::new(strategy, harness)
+        .with_limits(40, 3)
+        .with_goal_review(reviewer);
+    let steps = loop_
+        .run(&provider_id, &model, messages, schemas, Some(system_prompt))
+        .await
+        .map_err(|e| format!("agent 循环失败: {e}"))?;
+    let final_text = steps
+        .iter()
+        .rev()
+        .find_map(|s| s.response.as_ref().map(|r| r.content.trim().to_string()))
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| {
+            format!(
+                "（{} 这一轮没有产出内容）",
+                agent.map(|a| a.name.as_str()).unwrap_or("agent")
+            )
+        });
+    Ok(final_text)
+}
+
+/// 网页对话策略: 复用 AppState 的 llm, 正确区分 provider 与 model
+struct WebStrategy {
+    llm: Arc<LlmRuntime>,
+}
+
+#[async_trait]
+impl LoopStrategy for WebStrategy {
+    async fn call(
+        &self,
+        provider_id: &str,
+        model: &str,
+        messages: Vec<ChatMessage>,
+        tools: Vec<ToolSchema>,
+    ) -> Result<GenerateResult, String> {
+        let mut params = GenerateParams::new(model, messages);
+        params.tools = tools;
+        self.llm
+            .generate(provider_id, params)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
 /// 记一轮对话（历史要能被下一轮读到）
 async fn remember_turn(st: &AppState, text: &str, reply: &str, who: Option<&str>) {
     let mut msgs = st.messages.lock().await;
@@ -1274,7 +1414,7 @@ pub async fn chat(
 ) -> Json<serde_json::Value> {
     let text = req["message"].as_str().unwrap_or_default().to_string();
     let agent = agent_by_id(&st, req["agent_id"].as_str()).await;
-    let reply = match reply_with_model(&st, &text, agent.as_ref()).await {
+    let reply = match reply_with_agent(&st, &text, agent.as_ref()).await {
         Ok(r) => r,
         Err(e) => e, // 错误也是"回答"：界面要能看到到底缺什么
     };
@@ -1291,7 +1431,7 @@ pub async fn chat_stream(
 ) -> impl axum::response::IntoResponse {
     let text = req["message"].as_str().unwrap_or_default().to_string();
     let agent = agent_by_id(&st, req["agent_id"].as_str()).await;
-    let reply = match reply_with_model(&st, &text, agent.as_ref()).await {
+    let reply = match reply_with_agent(&st, &text, agent.as_ref()).await {
         Ok(r) => r,
         Err(e) => e,
     };
@@ -2629,6 +2769,89 @@ pub async fn node_connect(
         "direct": true,
         "mutual": mutual,
     }))
+}
+
+// ────────────────────────── scratch 子系统 (内部 tmp 跑脚本 + 孤儿 catch) ──────────────────────────
+
+/// POST /api/scratch/run → 在内部 scratch 目录跑一段临时脚本; 门禁: 需开启完全访问。
+///
+/// 运行痕迹落 `<scratch_dir>/<run_id>/run.json` (含 status/pid/输出), 进程崩溃后由周期 reconcile 标 interrupted。
+pub async fn scratch_run(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    // 门禁: scratch 跑脚本等同 shell, 仅在完全访问下放行 (fail-closed)
+    if !st.full_access.load(Ordering::Relaxed) {
+        return Json(serde_json::json!({
+            "error": "需开启完全访问 (full_access) 才能跑 scratch 脚本"
+        }));
+    }
+    let code = req
+        .get("code")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let lang = req
+        .get("lang")
+        .and_then(|v| v.as_str())
+        .unwrap_or("sh")
+        .to_string();
+    let timeout_ms = req
+        .get("timeout_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(60_000);
+    if code.trim().is_empty() {
+        return Json(serde_json::json!({ "error": "code 为空" }));
+    }
+    let run_id = bolloon_agent::scratch::new_run_id();
+    let scratch = bolloon_agent::home::BolloonHome::resolve().scratch_dir();
+    let _ = std::fs::create_dir_all(&scratch);
+    let run_dir = scratch.join(&run_id);
+    let sreq = bolloon_agent::scratch::ScriptRunRequest {
+        run_id: run_id.clone(),
+        lang,
+        code,
+        run_dir: run_dir.to_string_lossy().into_owned(),
+        timeout_ms,
+    };
+    match st.script_run.run(sreq).await {
+        Ok(r) => Json(serde_json::json!({
+            "ok": true,
+            "run_id": run_id,
+            "exit": r.exit_code,
+            "elapsed_ms": r.elapsed_ms,
+            "killed": r.killed,
+            "stdout": r.stdout,
+            "stderr": r.stderr,
+            "run_dir": run_dir.to_string_lossy(),
+        })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("{e}"), "run_id": run_id })),
+    }
+}
+
+/// GET /api/scratch/list → 列出所有 scratch run (catch 位置视图): run_id/status/lang/exit/输出摘要
+pub async fn scratch_list(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let scratch = bolloon_agent::home::BolloonHome::resolve().scratch_dir();
+    let runs = bolloon_agent::scratch::list_runs(&scratch);
+    let runs: Vec<serde_json::Value> = runs
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "run_id": r.run_id,
+                "lang": r.lang,
+                "status": r.status,
+                "pid": r.pid,
+                "exit_code": r.exit_code,
+                "elapsed_ms": r.elapsed_ms,
+                "created_at": r.created_at,
+                "updated_at": r.updated_at,
+                "stdout": r.stdout.chars().take(4000).collect::<String>(),
+                "stderr": r.stderr.chars().take(2000).collect::<String>(),
+                "run_dir": bolloon_agent::home::BolloonHome::resolve().scratch_dir().join(&r.run_id).to_string_lossy(),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "ok": true, "runs": runs, "scratch_dir": scratch.to_string_lossy() }))
 }
 
 /// POST /api/friends/request → **跨机加好友**: 查到 did → 发好友请求 (需对方同意)
