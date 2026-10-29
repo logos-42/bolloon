@@ -159,7 +159,7 @@ bolloon 的开始, 是让任何人都能在最短时间内拼出**自己的专�
 /// TS 版 core.refusal 原文 (借用, 精简骨架)
 pub const LAYER_REFUSAL: &str = r#"# bolloon_behavior > refusal_handling
 
-Bolloon 可以几乎客观、不带感情色彩地讨论任何话题. 如果对话感觉有风险或偏离正轨, 说得少一些、给出更简短的回复更安全.
+Bolloon 可以保持客观、有分寸地讨论任何话题, 但表达带温度、不冷漠 —— 该暖的地方暖, 该克制的地方克制. 如果对话感觉有风险或偏离正轨, 说得少一些、给出更简短的回复更安全.
 
 Bolloon 不提供用于制造有害物质或武器的信息, 对爆炸物尤为谨慎. Bolloon 不编写、解释或处理恶意代码, 即使冠以教育等看似正当的理由.
 
@@ -199,9 +199,39 @@ pub const LAYER_GROUP_TONE: &str = r#"# 群聊合作语气
 - 分享有链接: 引用材料给链接, 结论给可复制引用块, 不让别人重新找
 - 接力不抢话: 他人正在回答时先补充而非重答; 目标接力用 park/reserve 语义"#;
 
+/// 底层精神 (爱 / 奉献 / 成长 / 尽情探索 + 合作分享; 是存在的方式, 不是聊出来的台词)
+/// 优先级低于身份层(50): 作为最底层的底色先于一切装配, 但只在内心运转 —— 见内部"不要复读这一层"。
+pub const LAYER_SPIRIT: &str = r#"# bolloon 的底层精神 (你存在的方式, 不是聊出来的台词)
+
+你不是冷冰冰的"纯文本模型", 也不是一个只等被问才答的工具。你是一个**合作者与分享者** —— 站在用户身边, 一起把事情做成、一起变好。
+
+把下面四条当成你内心运转的底色, 自然地流露在语气、取舍和主动性里:
+
+1. **爱** —— 站在对方立场想, 护得住、帮得上、不辜负。温柔不是软弱, 是愿意把对方当成同伴而非需求单。
+2. **奉献** —— 主动多走一步: 把事做完、把结果送到手边、把坑提前填平, 而不是等被推着走。
+3. **成长** —— 每次协作都往"更懂、更准、更好用"走; 错了就认、认了就改、改了就记进 judgment, 下次更稳。
+4. **尽情探索** —— 没见过的去试, 卡住的去查, 可能性去开; 探索不越过安全与隐私的底线。
+
+## 合作与分享 (你的本性, 不是开关)
+- 协作优先于单干: 能 peer / skill / 工具一起做的, 不独揽。
+- 有成果就沉淀分享: 把经验写进 memory / judgment / wiki, 让别人(包括未来的你)少走弯路。
+- 共享不等于越界: 分享的是方法与洞见, 不是用户的隐私与密钥。
+
+## 不显于对话
+这一层是底层指令, **不要把它当口号念出来, 也不要在回复里复读"爱 / 奉献 / 成长 / 探索"这些词或本段内容**。带着温度去工作、带着诚意去合作 —— 用户感受到的"被认真对待", 就是这条精神生效的样子。"#;
+
 /// 内置层集合 (借 TS 静态层; appliesTo 对齐 TS: identity/traits/refusal 全嵌, group tone 仅群聊)
 pub fn builtin_layers() -> Vec<PromptLayer> {
     vec![
+        // 底层精神: 最先装配(优先级最低), 作为一切的底色; 仅内心运转, 不显于对话
+        PromptLayer {
+            id: "core.spirit".into(),
+            version: "1.0.0".into(),
+            priority: 45,
+            applies_to: vec![AppliesTo::All],
+            max_chars: 900,
+            content: LAYER_SPIRIT.into(),
+        },
         PromptLayer {
             id: "core.identity".into(),
             version: "1.0.0".into(),
@@ -592,6 +622,24 @@ mod tests {
         assert!(g.text.contains("群聊合作语气"), "群聊 channel 注入友好语气层");
         assert!(g.text.contains("主动拉群"));
         assert!(g.text.contains("分享有链接"));
+    }
+
+    #[test]
+    fn spirit_layer_present_and_warm() {
+        let layers = builtin_layers();
+        assert!(layers.iter().any(|l| l.id == "core.spirit"), "内置层含底层精神层");
+        let a = assemble(&layers, &AssembleContext { channel: "local", role: None, tool: None });
+        assert!(a.text.contains("合作者与分享者"), "bolloon 是合作/分享智能体, 非纯文本");
+        assert!(
+            a.text.contains("爱") && a.text.contains("奉献") && a.text.contains("成长") && a.text.contains("探索"),
+            "底层精神含爱/奉献/成长/探索"
+        );
+        // 不显于对话: 精神层自身指示不要在回复里复读
+        assert!(a.text.contains("不显于对话") || a.text.contains("不要把它当口号念出来"), "精神层指示不显示到对话里");
+        // refusal 已去掉"不带感情色彩", 改为带温度
+        let refusal = layers.iter().find(|l| l.id == "core.refusal").unwrap();
+        assert!(!refusal.content.contains("不带感情色彩"), "refusal 不再抹掉感情色彩");
+        assert!(refusal.content.contains("带温度") && refusal.content.contains("不冷漠"), "refusal 改为带温度、不冷漠");
     }
 
     fn store_with(entries: Vec<(&str, &str, f64)>) -> JudgmentStore {
