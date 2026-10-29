@@ -542,8 +542,10 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
     state.script_run = bolloon_agent::scratch::ScriptRunPort::new(std::sync::Arc::new(
         bolloon_agent::scratch::TokioScriptRunner::new(),
     ));
-    // 受治理配置: 启动时从文件恢复 (失败则保持默认, fail-closed)
-    let _ = state.config.load_from_file().await;
+    // 受治理配置: 启动时从文件恢复 (失败则保持默认, fail-closed —— 但**不吃掉原因**)
+    if let Err(e) = state.config.load_from_file().await {
+        tracing::warn!(error = %e, "配置加载失败, 保持默认 (fail-closed; 文件格式或校验没过)");
+    }
     // 经济层: 按已加载配置构造 (默认 enabled=false ⇒ 空转, 零行为差异)
     {
         let ec = state.config.current().config.economic.clone();
@@ -1980,10 +1982,14 @@ mod route_tests {
         );
 
         // ② 显式打开 (仍默认 shadow): 只记账, 不强制
+        // 落盘形状是 **ConfigSnapshot** (version/config/…), 不是裸 AppConfig ——
+        // 直接写 AppConfig 会被 load_from_file 判解析失败并静默保持默认。
         std::fs::create_dir_all(home.join("rust")).unwrap();
         std::fs::write(
             home.join("rust").join("config.json"),
-            r#"{"economic":{"enabled":true,"metering_enabled":true}}"#,
+            r#"{"version":2,"applied_at":"2026-10-29T00:00:00Z","source":"test",
+                "operator":"e2e","reason":"打开经济层 shadow",
+                "config":{"economic":{"enabled":true,"metering_enabled":true}}}"#,
         )
         .unwrap();
         let on = report_once(&home).await;
