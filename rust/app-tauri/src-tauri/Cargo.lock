@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-agent"
-version = "0.6.13"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "bolloon-config",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-config"
-version = "0.6.13"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -293,19 +293,20 @@ dependencies = [
 
 [[package]]
 name = "bolloon-econ"
-version = "0.6.13"
+version = "0.7.0"
 dependencies = [
  "bolloon-config",
  "chrono",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "tracing",
 ]
 
 [[package]]
 name = "bolloon-harness"
-version = "0.6.13"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "bolloon-config",
@@ -321,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-kernel"
-version = "0.6.13"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -339,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-llm"
-version = "0.6.13"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -356,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-p2p"
-version = "0.6.13"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -398,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-web"
-version = "0.6.13"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -411,6 +412,7 @@ dependencies = [
  "bolloon-llm",
  "bolloon-p2p",
  "bolloon-x402",
+ "bs58",
  "chrono",
  "futures",
  "hashavatar",
@@ -428,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-x402"
-version = "0.6.13"
+version = "0.7.0"
 dependencies = [
  "bolloon-p2p",
  "hex",

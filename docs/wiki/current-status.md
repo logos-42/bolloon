@@ -341,3 +341,5 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 | 2026-10-01 | `/channel` 切智能体后身份文档不切换 (用户报) | **已修** —— `onSessionStart` 的 5s 节流原先只按时间, 被节流即返回空 persona; 而切 channel 重建 agent 只要几毫秒 ⇒ 新 agent 拿到空身份文档。改为**按身份键 (agentId + channelId) 节流**, 身份变了必重算。新门修前 3 failed → 修后 3 passed; 既有门 8/8 · 12/12; tsc 0 错 · **第二步 ✅** 内核控制面 `kernel/control.ts` (submitRunControl + 审计 + portRefusal) · **第三步 ✅ 欠账归零 (3→0)**: 三条越权写 (setContinuation · setRunStatus×2 · recordRecovery) 全部改走控制面, `web/server.ts` 零裸调用 · `AUTHORITY_DEBT` 清空 (`FROZEN_AT = 0`) · **K6 ✅ 收口 (能力 9/9 · stage: capabilities-done)**: 台账+门 (11 调用点冻结) · 只读骨架 · 并发+退避 · 熔断+能力检查 · **fallback+usage**|
 
 > 经济层闸口已接通（2026-10-29）：原子预留 + 节点日闸 + web 真消费判定，默认仍全关；群聊接话默认 >10 人只 5 人（警长可设）；共享池 6 个 HTTP 端点可用，但公共池仍是本机账本、无 P2P 同步。详见 `economic-layer.md` §13-15。
+
+> 0.7.0 Rust 正式版（2026-10-29）：内核整体迁到 `rust/crates/`，Node 只剩薄入口；npm 0.7.0 / Tauri 0.7.0-1 / tag v0.7.0.1。详见 `log.md` 当日 release 行。

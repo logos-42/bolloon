@@ -77,6 +77,31 @@ docker run -d --name bolloon -p 127.0.0.1:54188:54188 \
 
 ---
 
+## 0.7.0：Rust 正式版重构
+
+0.6.x 的运行时是 TypeScript。0.7.0 把内核整体换成 Rust（`rust/crates/`），Node 只剩一层薄入口。
+
+| 原来是 | 现在是 |
+|---|---|
+| TS 运行时 + 进程内调度 | `bolloon-kernel` 机制层（队列 / 租约 / 取消 / 生命周期）+ `bolloon-harness` 门控（允许·拒绝·记录·fail-closed） |
+| TS 工具循环 | `bolloon-agent`（工具族 + 九步门控 + 技能库 / 判断力库） |
+| TS 模型适配 | `bolloon-llm`（provider 注册表、并发闸、重试、流式） |
+| TS P2P | `bolloon-p2p`（DID / ed25519、orbit 群、发现与委派） |
+| — | `bolloon-econ` 经济层（计量 / 预算闸 / 贡献 / 结算 / 诚信 / 免疫） |
+
+**为什么换**：单机跑十个智能体时，TS 的调度与内存会先撑不住。Rust 版把每个 agent 的生命周期、
+工具权限、模型调用都放进可审计的类型边界，长跑（几小时、几十个 agent）不会越跑越飘。
+
+**兼容**：命令行、`--web`、配置文件、`~/.bolloon` 数据目录、DID 身份都没变。
+`npm i -g @bolloon/bolloon-agent@0.7.0` 升级后直接用；桌面版（dmg）内置同一份运行时，
+0.6.13 起支持应用内自动更新。
+
+**这一版新增的经济层默认是关的**（`economic.enabled=false`）：打开后先跑影子模式，只记账、
+不拦不换；要真拦必须 `mode=enforce` + `budget_enforcement_enabled=true` 双开关。规则与验收见
+[docs/wiki/economic-layer.md](./docs/wiki/economic-layer.md)。
+
+---
+
 ## 它长什么样
 
 **终端**：正文是**一条一条的消息**，工具调用显示成「这一步在做什么」（`🔧 查看 git 状态 · git_status 327ms`），
@@ -158,6 +183,32 @@ be discovered, delegated to and paid. You only have to state the goal.
 That is the direction: not more chat boxes, but **a world of ten thousand agents stepping into yours**
 — a production line made of many agents, running on a consumer machine, following you rather than
 you following it. I use it every day for **controlled nuclear fusion** research.
+
+## 0.7.0: the Rust rewrite
+
+0.6.x ran on TypeScript. 0.7.0 moves the whole core to Rust (`rust/crates/`); Node is only a thin entry.
+
+| Before | Now |
+|---|---|
+| TS runtime + in-process scheduling | `bolloon-kernel` (queues / leases / cancel / lifecycle) + `bolloon-harness` (allow · deny · record · fail-closed) |
+| TS tool loop | `bolloon-agent` (tool families + nine-step gate + skill/judgment stores) |
+| TS model adapters | `bolloon-llm` (provider registry, concurrency gate, retries, streaming) |
+| TS P2P | `bolloon-p2p` (DID / ed25519, orbit groups, discovery & delegation) |
+| — | `bolloon-econ` economics (metering / budget gate / contribution / settlement / reputation / immunity) |
+
+**Why**: ten agents on one machine is where TypeScript scheduling and memory give out first.
+The Rust core puts every agent's lifecycle, tool permissions and model calls behind auditable
+type boundaries, so long runs (hours, dozens of agents) don't drift.
+
+**Compatibility**: CLI, `--web`, config files, the `~/.bolloon` data dir and DID identity are unchanged.
+`npm i -g @bolloon/bolloon-agent@0.7.0` and you're up; the desktop build (dmg) ships the same runtime
+and has supported in-app auto-update since 0.6.13.
+
+**The new economics layer is off by default** (`economic.enabled=false`). When enabled it starts in
+shadow mode — it records but never blocks or re-routes; blocking needs both `mode=enforce` and
+`budget_enforcement_enabled=true`. Rules and acceptance: [docs/wiki/economic-layer.md](./docs/wiki/economic-layer.md).
+
+---
 
 ## What works today
 
