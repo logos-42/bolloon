@@ -1151,16 +1151,6 @@ fn b58(bytes: &[u8]) -> String {
     bs58::encode(bytes).into_string()
 }
 
-fn b58_decode_32(s: &str) -> Option<[u8; 32]> {
-    let v = bs58::decode(s).into_vec().ok()?;
-    if v.len() != 32 {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&v);
-    Some(out)
-}
-
 fn b58_decode_64(s: &str) -> Option<[u8; 64]> {
     let v = bs58::decode(s).into_vec().ok()?;
     if v.len() != 64 {
