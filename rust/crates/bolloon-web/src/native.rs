@@ -1641,7 +1641,7 @@ pub async fn room_start(
         .unwrap_or_default();
     // 解析选中者 → AgentView; 没匹配/没选则退回前两个内部智能体 (保证"已进来的两个"能开口)
     let targets: Vec<AgentView> = {
-        let fs = st.forge.lock().await;
+        let mut fs = st.forge.lock().await;
         let mut chosen: Vec<String> = if requested.is_empty() {
             fs.agents.iter().take(2).map(|a| a.id.clone()).collect()
         } else {
