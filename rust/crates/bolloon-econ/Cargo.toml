@@ -7,6 +7,7 @@ license.workspace = true
 description = "Bolloon 旁路经济层: 用量计量 / 意图预算 / 供给登记 / 贡献账本 / 结算账本 (shadow 优先, 默认全关)"
 
 [dependencies]
+sha2 = "0.10"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

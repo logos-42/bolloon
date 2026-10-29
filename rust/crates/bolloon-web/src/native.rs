@@ -122,6 +122,43 @@ fn sensitive_path(path: &str) -> bool {
 
 // ────────────────────────── NativeState (持久化) ──────────────────────────
 
+/// 警长任期：三天一轮换，到期重新选举（不是终身制）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct SheriffTerm {
+    pub agent_id: String,
+    /// 当选时刻 (Unix ms)
+    pub elected_at_ms: i64,
+    pub term_days: u32,
+}
+
+/// 警长任期天数（leo 2026-10-29 定：三天一轮换，重新选举）
+pub const SHERIFF_TERM_DAYS: u32 = 3;
+
+impl SheriffTerm {
+    pub fn expires_at_ms(&self) -> i64 {
+        self.elected_at_ms + (self.term_days as i64) * 86_400_000
+    }
+}
+
+/// 一个群的组织名单 + 任期（三天一换，跟警长一起重选）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct RosterTerm {
+    pub roster: crate::room_bus::Roster,
+    pub elected_at_ms: i64,
+    pub term_days: u32,
+}
+
+impl RosterTerm {
+    pub fn expires_at_ms(&self) -> i64 {
+        self.elected_at_ms + (self.term_days as i64) * 86_400_000
+    }
+}
+
+/// 任期是否已过（纯函数，好测；`now_ms >= expires_at` 即到期）
+pub fn term_expired(elected_at_ms: i64, term_days: u32, now_ms: i64) -> bool {
+    now_ms >= elected_at_ms + (term_days as i64) * 86_400_000
+}
+
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct NativeState {
     pub agents: Vec<AgentView>,
@@ -140,6 +177,18 @@ pub struct NativeState {
     /// 每个群"每轮最多几个智能体接话"（警长设定；没有就用大群默认规则）
     #[serde(default)]
     pub room_reply_limit: std::collections::HashMap<String, usize>,
+    /// 每群当前警长任期（3 天一轮换；过期即重新选举并落盘）
+    #[serde(default)]
+    pub sheriffs: std::collections::HashMap<String, SheriffTerm>,
+    /// 每群组织名单（警长 1 + 小组长 5 + 领班 12），与警长同任期一起重算
+    #[serde(default)]
+    pub rosters: std::collections::HashMap<String, RosterTerm>,
+    /// 今天新加了几个群（主体 → (日期, 计数)）：诚信度低的加群能力有限
+    #[serde(default)]
+    pub join_today: std::collections::HashMap<String, (String, u32)>,
+    /// 第一次见到这个主体的日期（账号年龄 ⇒ 加群额度：10 → 100 → 500）
+    #[serde(default)]
+    pub first_seen: std::collections::HashMap<String, String>,
     /// 「发起交流」时选定的参与者 (group_id → 选中的智能体 id), 让推举只在选中者里挑 (选谁谁接话)
     #[serde(default)]
     pub room_participants: std::collections::HashMap<String, Vec<String>>,
@@ -1311,7 +1360,85 @@ pub async fn room_reply_limit_of(st: &AppState, gid: &str) -> usize {
     crate::room_bus::reply_limit_for(members, sheriff)
 }
 
-/// 设置某群"每轮最多几个智能体接话"（警长用）。返回生效值与来源。
+/// 当前警长（**三天一轮换**）：任期未过就沿用；过期或没有就重新计分直选并落盘。
+///
+/// fail-closed：群里没有可选的内部智能体 ⇒ 返回 None，不臆造警长。
+pub async fn sheriff_term(st: &AppState, gid: &str) -> Option<SheriffTerm> {
+    let now = chrono::Utc::now().timestamp_millis();
+    {
+        let fs = st.forge.lock().await;
+        if let Some(t) = fs.sheriffs.get(gid) {
+            if !term_expired(t.elected_at_ms, t.term_days, now) {
+                return Some(t.clone());
+            }
+        }
+    }
+    // 到期 / 没有 ⇒ 重新选举
+    let winner = elect_group_sheriff(st, gid).await?;
+    let term = SheriffTerm {
+        agent_id: winner,
+        elected_at_ms: now,
+        term_days: SHERIFF_TERM_DAYS,
+    };
+    {
+        let mut fs = st.forge.lock().await;
+        fs.sheriffs.insert(gid.to_string(), term.clone());
+        fs.save(&data_dir());
+    }
+    Some(term)
+}
+
+/// 当前组织名单（**三天一轮换**，与警长同任期）：过期或没有就按评分重算并落盘。
+///
+/// 评分口径与警长选举一致（五特质，来自各 agent 的 archive），所以名单不是任人唯亲：
+/// 第 1 名警长、紧随 5 名小组长、再 12 名领班，合计 18 人可直接在群里回复。
+pub async fn roster_of(st: &AppState, gid: &str) -> RosterTerm {
+    let now = chrono::Utc::now().timestamp_millis();
+    {
+        let fs = st.forge.lock().await;
+        if let Some(t) = fs.rosters.get(gid) {
+            if !term_expired(t.elected_at_ms, t.term_days, now) {
+                return t.clone();
+            }
+        }
+    }
+    // 重算：所有内部智能体按五特质加权总分降序
+    let agents = {
+        let fs = st.forge.lock().await;
+        fs.agents.clone()
+    };
+    let base = crate::server::data_dir().join("agents");
+    let mut scored: Vec<(String, f64)> = agents
+        .iter()
+        .map(|a| {
+            let dir = base.join(&a.id).join("archive");
+            let t = bolloon_agent::character::score_agent(&dir);
+            (a.id.clone(), t.weighted_total())
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let ranked: Vec<String> = scored.into_iter().map(|(id, _)| id).collect();
+    let term = RosterTerm {
+        roster: crate::room_bus::roster_from_ranked(&ranked),
+        elected_at_ms: now,
+        term_days: SHERIFF_TERM_DAYS,
+    };
+    {
+        let mut fs = st.forge.lock().await;
+        fs.rosters.insert(gid.to_string(), term.clone());
+        // 名单里的第 1 名就是警长：同步落盘，避免两套选举结果不一致
+        if let Some(sid) = term.roster.sheriff.clone() {
+            fs.sheriffs.insert(
+                gid.to_string(),
+                SheriffTerm { agent_id: sid, elected_at_ms: now, term_days: SHERIFF_TERM_DAYS },
+            );
+        }
+        fs.save(&data_dir());
+    }
+    term
+}
+
+/// 设置某群"每轮最多几个智能体接话"（**只有当前警长能设**）。
 pub async fn set_room_reply_limit(
     st: &AppState,
     gid: &str,
@@ -1322,7 +1449,25 @@ pub async fn set_room_reply_limit(
         return Err("接话人数必须 ≥1（0 等于让群失声）".into());
     }
     if n > crate::room_bus::MAX_ELECTED_AGENTS {
-        return Err(format!("接话人数不能超过上限 {}", crate::room_bus::MAX_ELECTED_AGENTS));
+        return Err(format!(
+            "接话人数不能超过上限 {}",
+            crate::room_bus::MAX_ELECTED_AGENTS
+        ));
+    }
+    // 授权：必须由当前任期的警长设置（三天一换，换人后旧警长立刻失效）
+    let term = match sheriff_term(st, gid).await {
+        Some(t) => t,
+        None => return Err("该群还没有警长（需要至少一个内部智能体才能选举）；不臆造授权".into()),
+    };
+    if by != term.agent_id {
+        return Err(format!(
+            "只有当前警长能设置接话人数：现任 {}（任期至 {}），你提供的是 {}",
+            term.agent_id,
+            chrono::DateTime::from_timestamp_millis(term.expires_at_ms())
+                .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_default(),
+            by
+        ));
     }
     let members = {
         let fs = st.forge.lock().await;
@@ -1339,6 +1484,8 @@ pub async fn set_room_reply_limit(
         "reply_limit": n,
         "members": members,
         "set_by": by,
+        "sheriff": term.agent_id,
+        "term_expires_at_ms": term.expires_at_ms(),
         "note": "只限制「被推举接话」的人数；警长派发的任务与其余成员的异步干活不受影响",
     }))
 }

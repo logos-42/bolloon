@@ -182,6 +182,9 @@ pub fn builtin_tool_defs() -> Vec<ToolDef> {
     defs.extend(crate::domain_tools::domain_tool_defs());
     defs.extend(crate::updater_tools::updater_tool_defs());
     defs.extend(crate::scratch_tools::scratch_tool_defs());
+    // 经济层工具：只有注入了 econ 上下文才真正可用（否则执行时如实说未启用）
+    defs.extend(crate::econ_tools::econ_tool_defs());
+    defs.extend(crate::invite_tools::invite_tool_defs());
     defs
 }
 
@@ -199,6 +202,8 @@ pub struct BuiltinExecutor {
     updater: Arc<crate::updater_tools::UpdaterExecutor>,
     shell: Arc<ShellExecutor>,
     scratch: Arc<crate::scratch_tools::ScratchExecutor>,
+    /// 经济层工具上下文（None = 未接线，执行时如实说"未启用"）
+    econ: Option<crate::econ_tools::EconTools>,
 }
 
 impl BuiltinExecutor {
@@ -220,7 +225,14 @@ impl BuiltinExecutor {
             updater: Arc::new(crate::updater_tools::UpdaterExecutor),
             shell: Arc::new(ShellExecutor::with_mode(cancel, bypass)),
             scratch: Arc::new(crate::scratch_tools::ScratchExecutor::new(script_run)),
+            econ: None,
         }
+    }
+
+    /// 注入经济层工具上下文（agent 侧 `econ_probe` / `econ_claim` 才有数据可看）
+    pub fn with_econ(mut self, tools: crate::econ_tools::EconTools) -> Self {
+        self.econ = Some(tools);
+        self
     }
 }
 
@@ -241,6 +253,26 @@ impl ToolExecutor for BuiltinExecutor {
             "check_update" => self.updater.execute(call).await,
             "shell" => self.shell.execute(call).await,
             "run_scratch_script" => self.scratch.execute(call).await,
+            "group_invite" | "group_join" | "group_members" | "group_read" | "immune_report"
+            | "immune_status" => {
+                crate::invite_tools::execute_sync(&call)
+            }
+            "econ_probe" | "econ_claim" => match self.econ.as_ref() {
+                Some(t) => crate::econ_tools::try_execute(t, &call).unwrap_or_else(|| ToolResult {
+                    ok: false,
+                    output: "econ 工具分派失败".into(),
+                    elapsed_ms: 0,
+                    verified: Some(false),
+                    evidence: None,
+                }),
+                None => ToolResult {
+                    ok: false,
+                    output: "经济层未启用：这次会话没有注入 econ 上下文，所以查不到额度/池子（不是 0，是没接线）".into(),
+                    elapsed_ms: 0,
+                    verified: Some(false),
+                    evidence: Some(serde_json::json!({ "econ": "not_wired" })),
+                },
+            },
             // 已注册但没接执行器 ⇒ **如实说没接线**, 绝不返回空成功
             other => ToolResult {
                 ok: false,
@@ -290,6 +322,29 @@ pub async fn builtin_harness(
     let reg = Arc::new(ToolRegistry::new());
     register_builtin_tools(&reg).await;
     let exec = Arc::new(BuiltinExecutor::new(cancel, bypass, crate::scratch::ScriptRunPort::noop()));
+    let h = Arc::new(Harness::new(reg, exec, budget));
+    let schemas = tool_defs_to_schemas(&builtin_tool_defs());
+    (h, schemas)
+}
+
+/// 同 `builtin_harness`，但把经济层工具接上（principal 决定算谁的额度）。
+pub async fn builtin_harness_with_econ(
+    calls: u32,
+    budget_ms: u64,
+    cancel: Arc<AtomicBool>,
+    bypass: bool,
+    econ: Arc<bolloon_econ::ShadowEconomy>,
+    principal: String,
+    group: Option<String>,
+) -> (Arc<Harness>, Vec<ToolSchema>) {
+    let budget = Budget::new(calls, budget_ms);
+    let reg = Arc::new(ToolRegistry::new());
+    register_builtin_tools(&reg).await;
+    let exec = Arc::new(
+        BuiltinExecutor::new(cancel, bypass, crate::scratch::ScriptRunPort::noop()).with_econ(
+            crate::econ_tools::EconTools { econ, principal, group },
+        ),
+    );
     let h = Arc::new(Harness::new(reg, exec, budget));
     let schemas = tool_defs_to_schemas(&builtin_tool_defs());
     (h, schemas)

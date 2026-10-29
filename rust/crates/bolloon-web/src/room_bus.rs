@@ -108,6 +108,95 @@ pub const GROUP_LARGE_THRESHOLD: usize = 10;
 /// 大群里每条消息默认允许接话的人数
 pub const DEFAULT_REPLIES_WHEN_LARGE: usize = 5;
 
+/// 大群组织：警长 1 + 小组长 5 + 领班 12 = 18 个"可直接回复"的成员（leo 2026-10-29 定）。
+///
+/// - 小组长：警长选出（同一套五特质评分），每条消息最多 5 个接话；
+/// - 领班：由 5 个小组长一起选出（当前实现：评分排序后紧随小组长的 12 人），
+///   负责把活派给其余成员；
+/// - 其余成员**不直接刷群**，只接任务干活，重要结论才回群（异步协作）。
+pub const LEADS_PER_GROUP: usize = 5;
+pub const FOREMEN_PER_GROUP: usize = 12;
+/// 可直接回复的总人数上限：1(警长) + 5(小组长) + 12(领班)
+pub const DIRECT_REPLY_MAX: usize = 1 + LEADS_PER_GROUP + FOREMEN_PER_GROUP;
+
+/// 一个群的组织名单（按评分排序切出来，三天随警长换届一起重算）
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Roster {
+    #[serde(default)]
+    pub sheriff: Option<String>,
+    #[serde(default)]
+    pub leads: Vec<String>,
+    #[serde(default)]
+    pub foremen: Vec<String>,
+}
+
+impl Roster {
+    /// 可以直接在群里发言的成员（警长 + 小组长 + 领班）
+    pub fn eligible(&self) -> std::collections::BTreeSet<String> {
+        let mut s = std::collections::BTreeSet::new();
+        if let Some(x) = &self.sheriff {
+            s.insert(x.clone());
+        }
+        s.extend(self.leads.iter().cloned());
+        s.extend(self.foremen.iter().cloned());
+        s
+    }
+
+    pub fn direct_reply_count(&self) -> usize {
+        self.eligible().len()
+    }
+
+    /// 领班（派活的层）——其余成员由他们细分任务
+    pub fn foreman_list(&self) -> &[String] {
+        &self.foremen
+    }
+}
+
+/// 从"已按分数降序排好的成员 id"切出组织名单：第 1 名警长，接着 5 小组长，再 12 领班。
+pub fn roster_from_ranked(ranked: &[String]) -> Roster {
+    let sheriff = ranked.first().cloned();
+    let leads: Vec<String> = ranked
+        .iter()
+        .skip(1)
+        .take(LEADS_PER_GROUP)
+        .cloned()
+        .collect();
+    let foremen: Vec<String> = ranked
+        .iter()
+        .skip(1 + LEADS_PER_GROUP)
+        .take(FOREMEN_PER_GROUP)
+        .cloned()
+        .collect();
+    Roster { sheriff, leads, foremen }
+}
+
+/// 从组织名单里选出这一轮真正接话的人：@ 命中优先，其余按轮转补齐，且**只在名单内**。
+///
+/// 名单外的人不会因为被 @ 就直接刷群 —— 他们只能接任务（由领班派活）。
+pub fn elect_from_roster(
+    agents: &[AgentView],
+    addressed: &[String],
+    roster: &Roster,
+    cursor: usize,
+    limit: usize,
+) -> Vec<AgentView> {
+    let eligible = roster.eligible();
+    if eligible.is_empty() {
+        // 没有名单（人数不足 / 还没选举）⇒ 退回原逻辑
+        return elect_limited(agents, addressed, None, cursor, limit);
+    }
+    let limit = limit.max(1).min(MAX_ELECTED_AGENTS);
+    let inside: Vec<AgentView> = agents
+        .iter()
+        .filter(|a| eligible.contains(&a.id) || eligible.contains(&a.name))
+        .cloned()
+        .collect();
+    if inside.is_empty() {
+        return elect_limited(agents, addressed, None, cursor, limit);
+    }
+    elect_limited(&inside, addressed, None, cursor, limit)
+}
+
 /// 本次一条消息允许几个智能体接话。
 ///
 /// - 警长显式设定（`sheriff_limit`）优先，并夹到 `MAX_ELECTED_AGENTS`；
@@ -419,6 +508,53 @@ fn short(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 大群组织：警长 1 + 小组长 5 + 领班 12 = 18 人可直接回复，其余只接任务。
+    #[test]
+    fn roster_splits_into_one_five_twelve() {
+        let ranked: Vec<String> = (0..100).map(|i| format!("a{i}")).collect();
+        let r = roster_from_ranked(&ranked);
+        assert_eq!(r.sheriff.as_deref(), Some("a0"), "第 1 名当警长");
+        assert_eq!(r.leads.len(), 5, "5 个小组长");
+        assert_eq!(r.foremen.len(), 12, "12 个领班");
+        assert_eq!(r.direct_reply_count(), 18, "合计 18 人可直接回复");
+        assert_eq!(r.direct_reply_count(), DIRECT_REPLY_MAX);
+        assert_eq!(r.leads[0], "a1");
+        assert_eq!(r.foremen[0], "a6", "领班紧跟小组长之后");
+
+        // 小群/人不齐：只切得出几个人就几个人，不凭空造
+        let few = roster_from_ranked(&ranked[..3]);
+        assert_eq!(few.sheriff.as_deref(), Some("a0"));
+        assert_eq!(few.leads.len(), 2);
+        assert!(few.foremen.is_empty());
+        assert_eq!(few.direct_reply_count(), 3);
+    }
+
+    /// 名单外的人被 @ 也不能直接刷群（他们只接领班派的任务）。
+    #[test]
+    fn addressed_outside_roster_do_not_speak() {
+        let ranked: Vec<String> = (0..40).map(|i| format!("a{i}")).collect();
+        let roster = roster_from_ranked(&ranked);
+        let agents: Vec<AgentView> = (0..40).map(|i| agent(&format!("a{i}"), &format!("名字{i}"))).collect();
+
+        // @ 一个名单外的 id（a30）
+        let picked = elect_from_roster(&agents, &["a30".into()], &roster, 0, 5);
+        assert!(
+            picked.iter().all(|p| p.id != "a30"),
+            "名单外的人不许因为被 @ 就开口: {:?}",
+            picked.iter().map(|p| &p.id).collect::<Vec<_>>()
+        );
+        assert!(!picked.is_empty(), "但名单内的人仍要接话");
+
+        // @ 名单内的领班（a10 = 第 11 名 ⇒ 领班）
+        let picked2 = elect_from_roster(&agents, &["a10".into()], &roster, 0, 5);
+        assert_eq!(picked2.len(), 1);
+        assert_eq!(picked2[0].id, "a10", "名单内被 @ 的人必须优先接话");
+
+        // 名单为空的群退回旧逻辑（不因名单缺失而失声）
+        let empty = Roster::default();
+        assert!(!elect_from_roster(&agents, &[], &empty, 0, 5).is_empty());
+    }
 
     /// 大群默认只让 5 个小组长接话（leo 2026-10-29 定），小群按需全开，警长可覆盖。
     #[test]

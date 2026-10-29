@@ -122,6 +122,9 @@ pub struct EconomicConfig {
     pub daily_model_calls: Option<u32>,
     /// 节点级：每日最多花多少 USD (跨意图; 需要价格表才真正生效; None = 不限)
     pub daily_cash_usd: Option<f64>,
+    /// 按主体给"诚信日常额度"并据此限流 (default false)。
+    /// 开启后：贡献者额度更高、白嫖者衰减到地板 —— **地板恒 >0, 不封号**。
+    pub allowance_enabled: bool,
 }
 
 impl Default for EconomicConfig {
@@ -140,6 +143,7 @@ impl Default for EconomicConfig {
             price_table_file: None,
             daily_model_calls: None,
             daily_cash_usd: None,
+            allowance_enabled: false,
         }
     }
 }

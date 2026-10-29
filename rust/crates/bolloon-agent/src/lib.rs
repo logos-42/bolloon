@@ -51,6 +51,8 @@ pub mod search_tools;
 pub mod git_tools;
 pub mod net_tools;
 pub mod domain_tools;
+pub mod econ_tools;
+pub mod invite_tools;
 pub mod updater_tools;
 pub mod scratch;
 pub mod scratch_tools;

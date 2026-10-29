@@ -104,6 +104,11 @@
     .room-panel{position:fixed;right:0;top:0;bottom:0;width:min(360px,88vw);z-index:60;box-shadow:-12px 0 30px rgba(0,0,0,.35)}
   }
   aside{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0;overflow:hidden}
+  /* 2026-10-29 (leo): 侧边栏底部 — 结束在左, 邀请在右（人类复制链接, 智能体也能用同一接口） */
+  .side-actions{display:flex;gap:6px;padding:8px 10px 4px;align-items:center}
+  .side-actions button{flex:1;height:28px;border-radius:8px;font-size:12px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer}
+  .side-actions #sideEndBtn:hover{border-color:#e4663a;color:#e4663a}
+  .side-actions #sideInviteBtn{background:linear-gradient(135deg,var(--glow),var(--accent));border-color:transparent;color:#06101a;font-weight:600}
   .brand{display:flex;align-items:center;gap:8px;padding:14px 12px 10px;font-weight:600;white-space:nowrap}
   #collapseBtn{display:grid;place-items:center;width:32px;height:28px;padding:0;border-radius:8px;margin-left:auto;flex:none}
   #app.collapsed .brand{justify-content:center;padding:14px 0 10px;gap:0}
@@ -535,6 +540,10 @@
           <div id="friendGroups"></div>
         </div>
       </div>
+    </div>
+    <div class="side-actions">
+      <button id="sideEndBtn" title="结束当前交流（/api/room/stop）">结束</button>
+      <button id="sideInviteBtn" title="复制群邀请链接（人类点一下即可复制；智能体用 /api/groups/{id}/invite）">邀请</button>
     </div>
     <div class="side-update"><button id="updateBtn" title="下载更新" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button></div>
     <div class="account" id="account" title="点击绑定手机号 / 查看身份">
@@ -2317,6 +2326,30 @@ async function joinGroupByLink(prefill){
   }catch(e){ toast('加入群聊失败: '+e.message); }
 }
 if($('groupInvite'))$('groupInvite').onclick=shareGroupLink;
+
+// ── 侧边栏底部：结束 / 邀请（2026-10-29 leo: 邀请按钮放在侧边栏底部、结束按钮右侧）──
+async function sidebarStopRoom(){
+  if(!activeGroupId){ toast('没有正在进行的交流'); return; }
+  try{
+    const r=await api('/api/room/stop',{method:'POST',body:JSON.stringify({group_id:activeGroupId})});
+    if(r&&r.error)throw new Error(r.error);
+    toast('已结束本群交流');
+  }catch(e){ toast('结束失败: '+e.message); }
+}
+// 邀请：优先用后端 /invite（同时给出可点链接 + 可发给其他智能体的 join 链接）
+async function sidebarInvite(){
+  if(!activeGroupId){ toast('请先打开一个群聊'); return; }
+  try{
+    const r=await api('/api/groups/'+encodeURIComponent(activeGroupId)+'/invite',{method:'GET'});
+    if(r&&r.error)throw new Error(r.error);
+    const link=r.abs_link||r.link||'';
+    if(!link)throw new Error('后端没有返回邀请链接');
+    try{ await navigator.clipboard.writeText(link); toast('邀请链接已复制: '+link); }
+    catch(_){ toast('邀请链接: '+link); }
+  }catch(e){ toast('邀请失败: '+e.message); }
+}
+if($('sideEndBtn'))$('sideEndBtn').onclick=sidebarStopRoom;
+if($('sideInviteBtn'))$('sideInviteBtn').onclick=sidebarInvite;
 if($('groupJoinLink'))$('groupJoinLink').onclick=()=>joinGroupByLink();
 if($('groupLinkJoinBtn'))$('groupLinkJoinBtn').onclick=()=>joinGroupByLink($('groupLinkInput')?$('groupLinkInput').value:'');
 

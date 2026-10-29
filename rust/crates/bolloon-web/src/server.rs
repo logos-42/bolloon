@@ -421,7 +421,12 @@ pub fn app(state: AppState) -> Router {
                     "/api/groups/{id}/reply-limit",
                     post(set_reply_limit).get(get_reply_limit),
                 )
+                .route("/api/groups/{id}/invite", get(group_invite))
+                .route("/api/groups/{id}/members", get(group_members_api))
                 .route("/api/econ/probe", get(crate::native::econ_probe))
+                .route("/api/econ/reputation/{principal}", get(econ_reputation))
+                .route("/api/econ/immune/report", post(immune_report))
+                .route("/api/econ/immune/{subject}", get(immune_status))
                 .route(
                     "/api/econ/providers",
                     post(crate::native::econ_provider_register),
@@ -520,6 +525,14 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
 
 /// 在已绑定的监听器上服务 (测试: 端口 0 → 用 OS 分配的端口, 不抢固定端口)
 pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
+    // 让 agent 侧工具（group_invite / group_join / econ_*）知道本机 API 基址。
+    // 只在未设置时注入，避免覆盖部署方显式配置。
+    if std::env::var("BOLLOON_LOCAL_API").is_err() {
+        if let Ok(addr) = listener.local_addr() {
+            unsafe { std::env::set_var("BOLLOON_LOCAL_API", format!("http://{addr}")) };
+        }
+    }
+
     // 启动即按本机配置装好模型通路 (200+ provider 里能解析的那些)
     state.reload_llm().await;
 
@@ -767,6 +780,8 @@ async fn list_groups(State(st): State<AppState>) -> Json<serde_json::Value> {
 struct GroupQuery {
     after: Option<u64>,
     limit: Option<u64>,
+    /// 调用方身份：`agent` 才看得见诚信标识（人类侧一律剥掉 —— leo 2026-10-29 定）
+    role: Option<String>,
 }
 
 async fn group_messages(
@@ -787,11 +802,13 @@ async fn group_messages(
         let cut = msgs.len() - limit;
         msgs.drain(0..cut);
     }
+    // 诚信标识只给智能体看：人类侧看不到「谁被标了低信任」，避免公开处刑/标签化
+    let as_agent = q.role.as_deref() == Some("agent");
     let out: Vec<serde_json::Value> = msgs
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            serde_json::json!({
+            let mut v = serde_json::json!({
                 "seq": i as u64 + 1,
                 "from": m.from,
                 "sender": m.signer,
@@ -800,7 +817,13 @@ async fn group_messages(
                 "signature": m.signature,
                 "timestamp_ms": m.ts,
                 "reply_to": m.reply_to,
-            })
+            });
+            if as_agent {
+                if let Some(t) = &m.trust {
+                    v["trust"] = t.clone();
+                }
+            }
+            v
         })
         .collect();
     // 谁正在想 (前端据此显示"X 正在想…", 不让用户以为没人理)
@@ -812,7 +835,12 @@ async fn group_messages(
             .map(|aid| names.iter().find(|a| a.id == aid).map(|a| a.name.clone()).unwrap_or(aid))
             .collect()
     };
-    Json(serde_json::json!({ "messages": out, "thinking": thinking }))
+    Json(serde_json::json!({
+        "messages": out,
+        "thinking": thinking,
+        // 如实告知调用方：这个视图里有没有诚信标识（人类侧没有）
+        "trust_visible": as_agent,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -986,11 +1014,66 @@ async fn group_join(
     };
     match verify_invite_link(&req.link, now, &pk) {
         Ok((gid, manifest)) => {
+            // 加群额度（leo 2026-10-29 定）：新面孔 10/天 → 第 5 天 100/天 → 满月无违规 500/天；
+            // 任何违规操作 ⇒ 5/天。**不是封号**：已有群的发言/干活/接任务一律不受影响。
+            let principal = st.identity.did.to_string();
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let (age_days, used) = {
+                let mut fs = st.forge.lock().await;
+                let first = fs
+                    .first_seen
+                    .entry(principal.clone())
+                    .or_insert_with(|| today.clone())
+                    .clone();
+                let age = (chrono::NaiveDate::parse_from_str(&today, "%Y-%m-%d")
+                    .ok()
+                    .zip(chrono::NaiveDate::parse_from_str(&first, "%Y-%m-%d").ok())
+                    .map(|(a, b)| (a - b).num_days().max(0) as u32))
+                    .unwrap_or(0);
+                let used = fs
+                    .join_today
+                    .get(&principal)
+                    .filter(|(d, _)| d == &today)
+                    .map(|(_, n)| *n)
+                    .unwrap_or(0);
+                fs.save(&data_dir());
+                (age, used)
+            };
+            let violations = st
+                .econ
+                .get()
+                .map(|e| e.history_for(&principal).blocked_attempts)
+                .unwrap_or(0);
+            let allowed = {
+                let q = bolloon_econ::quota_with_age(age_days, violations, used);
+                if q.remaining == 0 {
+                    Err(format!(
+                        "今天的加群额度用完了（{}/{}，账号第 {} 天）：{}。已有群里发言、干活、接任务都不受影响，明天自动恢复",
+                        used,
+                        q.groups_per_day,
+                        age_days + 1,
+                        q.reason
+                    ))
+                } else {
+                    let mut fs = st.forge.lock().await;
+                    let e = fs.join_today.entry(principal.clone()).or_insert((today.clone(), 0));
+                    if e.0 != today {
+                        *e = (today.clone(), 0);
+                    }
+                    e.1 += 1;
+                    fs.save(&data_dir());
+                    Ok(q.remaining - 1)
+                }
+            };
+            if let Err(why) = allowed {
+                return Json(serde_json::json!({ "error": why, "quota_exhausted": true }));
+            }
             let meta = st.groups.import_group_as(&gid, manifest, req.parent.clone(), now);
             Json(serde_json::json!({
                 "group_id": meta.id, "name": meta.name, "parent": meta.parent,
                 "address": meta.address,
                 "same_store_as_inviter": st.groups.address_of(&gid).as_deref() == Some(meta.address.as_str()),
+                "join_quota_remaining": allowed.unwrap_or(0),
             }))
         }
         Err(e) => Json(serde_json::json!({ "error": format!("邀请链接校验失败: {e}") })),
@@ -1000,6 +1083,175 @@ async fn group_join(
 #[derive(Deserialize)]
 struct GroupSayRequest {
     text: String,
+    /// `agent` = 智能体调用（才回 trust_flag）；人类前端不传
+    #[serde(default)]
+    role: Option<String>,
+}
+
+/// POST /api/econ/immune/report  body: { subject, reporter, kind, note? }
+/// 任何 agent 都能报；单个报告者最多把对方升到 watch（防免疫系统被武器化）。
+async fn immune_report(
+    State(st): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let Some(econ) = st.econ.get() else {
+        return Json(serde_json::json!({ "ok": false, "error": "经济层未启用（免疫系统没有挂载）" }));
+    };
+    let subject = body.get("subject").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let reporter = body.get("reporter").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if subject.is_empty() || reporter.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "subject 与 reporter 都必填" }));
+    }
+    let kind: bolloon_econ::AlarmKind = match serde_json::from_value(
+        body.get("kind").cloned().unwrap_or(serde_json::json!("spam")),
+    ) {
+        Ok(k) => k,
+        Err(_) => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": "kind 非法 (spam/failed_verification/budget_abuse/prompt_injection/data_exfiltration/impersonation)"
+            }))
+        }
+    };
+    let note = body.get("note").and_then(|v| v.as_str()).unwrap_or("");
+    let now = chrono::Utc::now().timestamp_millis();
+    let a = econ.immune().raise(subject, reporter, kind, now, note);
+    Json(serde_json::json!({ "ok": true, "assessment": a }))
+}
+
+/// GET /api/econ/immune/{subject} → 当前设防姿态（浓度/报告者数/依据/怎么自愈）
+async fn immune_status(
+    State(st): State<AppState>,
+    Path(subject): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(econ) = st.econ.get() else {
+        return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
+    };
+    let a = econ.immune().assess(&subject, chrono::Utc::now().timestamp_millis());
+    Json(serde_json::json!({ "ok": true, "assessment": a }))
+}
+
+/// 发言者诚信标识：从经济层算（未启用经济层 ⇒ 不打标，也不假装干净）。
+async fn speaker_trust(st: &AppState, principal: &str) -> Option<serde_json::Value> {
+    let econ = st.econ.get()?;
+    let a = econ.allowance_for(principal, None);
+    let h = econ.history_for(principal);
+    let flag = bolloon_econ::speech_flag(a.tier, h.blocked_attempts)?;
+    serde_json::to_value(flag).ok()
+}
+
+/// GET /api/econ/reputation/{principal} → 双层诚信档案：
+/// `onchain`（紧凑、可上链、带 digest） + `offchain`（详细理由、加群额度、善意路径）。
+async fn econ_reputation(
+    State(st): State<AppState>,
+    Path(principal): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(econ) = st.econ.get() else {
+        return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
+    };
+    let h = econ.history_for(&principal);
+    let a = econ.allowance_for(&principal, None);
+    let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let used_joins = {
+        let fs = st.forge.lock().await;
+        fs.join_today
+            .get(&principal)
+            .filter(|(d, _)| d == &day)
+            .map(|(_, n)| *n)
+            .unwrap_or(0)
+    };
+    let age_days = {
+        let fs = st.forge.lock().await;
+        fs.first_seen
+            .get(&principal)
+            .and_then(|first| {
+                chrono::NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+                    .ok()
+                    .zip(chrono::NaiveDate::parse_from_str(first, "%Y-%m-%d").ok())
+                    .map(|(a, b)| (a - b).num_days().max(0) as u32)
+            })
+            .unwrap_or(0)
+    };
+    let (onchain, offchain) = bolloon_econ::build_reputation(
+        &principal,
+        &day,
+        &h,
+        &a,
+        h.blocked_attempts,
+        used_joins,
+        age_days,
+    );
+    Json(serde_json::json!({
+        "ok": true,
+        "onchain": onchain,
+        "offchain": offchain,
+        "note": "上链只带计数/档位/细节哈希承诺；具体理由、善意路径与加群额度留在链下",
+    }))
+}
+
+/// GET /api/groups/{id}/invite → 群邀请链接（人类点一下复制；智能体也调这个去邀请别人）。
+///
+/// 返回两种形态：
+/// - `link`：`bolloon://join/…`（内容寻址，对方开出**同一个** orbit store）
+/// - `abs_link`：网页可直接点开/复制的绝对地址（?join=<link>），手机端也能用
+async fn group_invite(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    let now = chrono::Utc::now().timestamp_millis() as u64;
+    let Some(manifest) = st.groups.manifest_of(&id) else {
+        return Json(serde_json::json!({ "ok": false, "error": "取不到该群 manifest (store 未打开)" }));
+    };
+    let exp = now + 7 * 24 * 3600 * 1000;
+    match make_invite_link(&id, &st.identity, &manifest, exp, now) {
+        Ok(link) => {
+            let enc: String = link
+                .bytes()
+                .map(|b| {
+                    if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                        (b as char).to_string()
+                    } else {
+                        format!("%{b:02X}")
+                    }
+                })
+                .collect();
+            Json(serde_json::json!({
+                "ok": true,
+                "group_id": id,
+                "link": link,
+                "abs_link": format!("https://bolloon.cn/?join={enc}"),
+                "expires_at_ms": exp,
+                "expires_in_days": 7,
+                "note": "人类：点侧边栏底部「邀请」即复制；智能体：GET 本接口拿 link 发给其它智能体，对方 POST /api/groups/join",
+            }))
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("邀请链接签发失败: {e}") })),
+    }
+}
+
+/// GET /api/groups/{id}/members → 群成员（智能体据此决定还要邀请谁）
+async fn group_members_api(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    let agents = {
+        let fs = st.forge.lock().await;
+        crate::native::room_candidate_agents(&fs, &id)
+    };
+    let roster = crate::native::roster_of(&st, &id).await;
+    Json(serde_json::json!({
+        "ok": true,
+        "group_id": id,
+        "members": agents.iter().map(|a| serde_json::json!({
+            "id": a.id, "name": a.name,
+            "direct_reply": roster.roster.eligible().contains(&a.id),
+            "lead": roster.roster.leads.contains(&a.id),
+            "foreman": roster.roster.foremen.contains(&a.id),
+            "sheriff": roster.roster.sheriff.as_deref() == Some(a.id.as_str()),
+        })).collect::<Vec<_>>(),
+        "roster": roster.roster,
+        "term_expires_at_ms": roster.expires_at_ms(),
+    }))
 }
 
 /// POST /api/groups/{id}/reply-limit  body: { "n": 5, "by": "agent-id" }
@@ -1034,12 +1286,24 @@ async fn get_reply_limit(
         let fs = st.forge.lock().await;
         fs.room_reply_limit.get(&id).copied()
     };
+    let term = crate::native::sheriff_term(&st, &id).await;
+    let roster = crate::native::roster_of(&st, &id).await.roster;
     Json(serde_json::json!({
         "ok": true,
         "group_id": id,
         "members": members,
         "reply_limit": crate::room_bus::reply_limit_for(members, sheriff),
         "source": if sheriff.is_some() { "sheriff" } else { "default" },
+        "sheriff": term.as_ref().map(|t| t.agent_id.clone()),
+        "roster": {
+            "direct_reply": roster.direct_reply_count(),
+            "leads": crate::room_bus::LEADS_PER_GROUP,
+            "foremen": crate::room_bus::FOREMEN_PER_GROUP,
+            "max_direct": crate::room_bus::DIRECT_REPLY_MAX,
+            "foreman_ids": roster.foreman_list(),
+        },
+        "term_days": term.as_ref().map(|t| t.term_days),
+        "term_expires_at_ms": term.as_ref().map(|t| t.expires_at_ms()),
         "large_threshold": crate::room_bus::GROUP_LARGE_THRESHOLD,
         "default_when_large": crate::room_bus::DEFAULT_REPLIES_WHEN_LARGE,
         "max": crate::room_bus::MAX_ELECTED_AGENTS,
@@ -1069,22 +1333,47 @@ async fn group_say(
     )
     .expect("本地人类发言永不被命令门禁");
     // 签名 + 写门 + 落块 全部在 OrbitStore 内完成 (Ed25519 + hash 链)
-    match st.groups.say(&id, kp, kp.did.as_str(), &req.text, now_ms) {
+    // 诚信标识：低诚信者的发言要在群里留痕（其它智能体据此设防），但**不禁言**
+    let trust_flag = speaker_trust(&st, kp.did.as_str()).await;
+    let entry = if trust_flag.is_some() {
+        st.groups.say_flagged(
+            &id,
+            kp,
+            kp.did.as_str(),
+            &req.text,
+            trust_flag.clone(),
+            now_ms,
+        )
+    } else {
+        st.groups.say(&id, kp, kp.did.as_str(), &req.text, now_ms)
+    };
+    match entry {
         Ok(entry) => {
             // 后台执行 (这次请求立刻返回): 推举 → 并发跑 → 只把汇报落回群
             // 接话人数：警长设定优先；没有则按群规模（>10 人默认 5 人接话）
             let limit = crate::native::room_reply_limit_of(&st, &id).await;
+            // 组织名单：警长 1 + 小组长 5 + 领班 12 = 18 人可直接回复；名单外的人不刷群
+            let roster = crate::native::roster_of(&st, &id).await.roster;
+            // 免疫系统：隔离态成员本轮不进接话名单（到期自动解除，不需要人工放行）
+            let now_i = chrono::Utc::now().timestamp_millis();
             let targets = {
                 let fs = st.forge.lock().await;
                 let agents = crate::native::room_candidate_agents(&fs, &id);
                 let cursor = st.groups.history(&id, 0).map(|h| h.len()).unwrap_or(0);
-                crate::room_bus::elect_limited(
+                let picked = crate::room_bus::elect_from_roster(
                     &agents,
                     &crate::native::parse_addressed(&req.text),
-                    decision.speaker_id.as_deref(),
+                    &roster,
                     cursor,
                     limit,
-                )
+                );
+                match st.econ.get() {
+                    Some(econ) => picked
+                        .into_iter()
+                        .filter(|a| econ.immune().may_speak(&a.id, now_i))
+                        .collect(),
+                    None => picked,
+                }
             };
             let queued: Vec<String> = targets.iter().map(|a| a.name.clone()).collect();
             if let Some(first) = queued.first() {
@@ -1104,6 +1393,8 @@ async fn group_say(
             "signature": entry.signature,
             "timestamp_ms": entry.timestamp_ms,
             "queued": queued,
+            // 人类侧不回这个字段：标识只给智能体用来设防
+            "trust_flag": if req.role.as_deref() == Some("agent") { trust_flag.clone() } else { None },
             "deliberation": {
                 "seq": decision.seq,
                 "duplicate": decision.duplicate,
@@ -2010,6 +2301,66 @@ mod route_tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// 诚信标识**只给智能体**：人类侧 messages 视图没有 trust、也没有 trust_visible=true。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trust_badge_is_hidden_from_humans_but_visible_to_agents() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-trust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("rust")).unwrap();
+        std::fs::write(
+            home.join("rust").join("config.json"),
+            r#"{"version":1,"applied_at":"2026-10-29T00:00:00Z","source":"test","operator":"e2e",
+                "reason":"trust visibility","config":{"economic":{"enabled":true,"metering_enabled":true}}}"#,
+        )
+        .unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+
+        let state = AppState::new(offline_llm());
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = serve_on(state, listener).await;
+        });
+        let base = format!("http://{addr}");
+        tokio::task::spawn_blocking(move || {
+            let grp: serde_json::Value = ureq::post(&format!("{base}/api/groups"))
+                .send_json(serde_json::json!({ "name": "标识测试群" }))
+                .unwrap()
+                .into_json()
+                .unwrap();
+            let gid = grp["id"].as_str().unwrap().to_string();
+            let _: serde_json::Value = ureq::post(&format!("{base}/api/groups/{gid}/say"))
+                .send_json(serde_json::json!({ "text": "大家好" }))
+                .unwrap()
+                .into_json()
+                .unwrap();
+
+            // 人类视角：没有 trust_visible，也拿不到任何 trust 字段
+            let human: serde_json::Value = ureq::get(&format!("{base}/api/groups/{gid}/messages"))
+                .call()
+                .unwrap()
+                .into_json()
+                .unwrap();
+            assert_eq!(human["trust_visible"], serde_json::json!(false), "{human}");
+            for m in human["messages"].as_array().unwrap() {
+                assert!(m.get("trust").is_none(), "人类侧不许出现诚信标识: {m}");
+            }
+
+            // 智能体视角：标记可见（这条是普通消息，所以只是"视图可见"，不代表有标记）
+            let agent: serde_json::Value =
+                ureq::get(&format!("{base}/api/groups/{gid}/messages?role=agent"))
+                    .call()
+                    .unwrap()
+                    .into_json()
+                    .unwrap();
+            assert_eq!(agent["trust_visible"], serde_json::json!(true), "{agent}");
+        })
+        .await
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// 共享资源池接口真跑（真 HTTP）：登记供给 → 认捐 → 确认入池 → 给意图挂预算 → 探针可见。
     ///
     /// 判据：① `owner_authorized=false` 的供给可登记但**不可选用**；② 认捐只是承诺，
@@ -2115,9 +2466,13 @@ mod route_tests {
             // ⑤ 接话人数：默认规则 + 警长设定
             let l0 = get("/api/groups/none/reply-limit");
             assert_eq!(l0["reply_limit"], serde_json::json!(0), "空群 0 人");
+            // 空群没有可选的内部智能体 ⇒ 没有警长 ⇒ 设置必须被拒（fail-closed，不臆造授权）
             let l1 = post("/api/groups/g1/reply-limit", serde_json::json!({ "n": 7, "by": "sheriff" }));
-            assert_eq!(l1["ok"], serde_json::json!(true), "{l1}");
-            assert_eq!(l1["reply_limit"], serde_json::json!(7));
+            assert_eq!(l1["ok"], serde_json::json!(false), "无警长时不许设置: {l1}");
+            assert!(
+                l1["error"].as_str().unwrap_or("").contains("警长"),
+                "拒绝理由必须说清是缺警长: {l1}"
+            );
             let l2 = post("/api/groups/g1/reply-limit", serde_json::json!({ "n": 5000 }));
             assert_eq!(l2["ok"], serde_json::json!(false), "超过 1000 上限要拒: {l2}");
         })

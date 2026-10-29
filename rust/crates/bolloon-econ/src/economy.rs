@@ -125,6 +125,10 @@ pub struct ShadowEconomy {
     /// 每个 provider|model 最近一次的真实成本 —— 调用前拿它当"预扣金额"的代理。
     /// 没有历史（第一次调用 / 无价格表）就返回 None ⇒ 只占调用次数，不虚报金额。
     last_cost: Mutex<BTreeMap<String, f64>>,
+    /// 每主体当日已用额度（`allowance_enabled` 才用于拦截；关了只观察）
+    principal_used: Mutex<BTreeMap<String, u32>>,
+    /// 免疫系统（quorum sensing：同轮定级，单点不定罪，停手自愈）
+    immune: crate::immune::ImmuneSystem,
 }
 
 impl ShadowEconomy {
@@ -179,6 +183,8 @@ impl ShadowEconomy {
             day_micro_usd: AtomicU64::new(0),
             day_lock: Mutex::new(()),
             last_cost: Mutex::new(BTreeMap::new()),
+            principal_used: Mutex::new(BTreeMap::new()),
+            immune: crate::immune::ImmuneSystem::default(),
         }
     }
 
@@ -496,6 +502,93 @@ impl ShadowEconomy {
         out
     }
 
+    /// 免疫系统：谁都可以报警，但单点不能定罪（≥3 限制 / ≥5 隔离），停手自动衰减
+    pub fn immune(&self) -> &crate::immune::ImmuneSystem {
+        &self.immune
+    }
+
+    /// 从**可核验事实**汇总一个主体的历史（不接受自我申报）：
+    /// 成功/失败意图、零现金意图、已验收贡献、已到账现金、被拦次数、近期调用。
+    pub fn history_for(&self, principal: &str) -> crate::allowance::PrincipalHistory {
+        use std::collections::BTreeMap as M;
+        let mut intents: M<String, (bool, bool, f64)> = M::new(); // (has_ok, has_fail, cost)
+        let mut calls = 0u32;
+        for e in self.meter.events() {
+            // 只认明确归属：无主调用（requester 为空）不计入任何人的历史（不白送额度）
+            if e.requester.is_empty() || e.requester != principal {
+                continue;
+            }
+            let key = e.intent_id.clone().unwrap_or_else(|| e.task_id.clone());
+            let entry = intents.entry(key).or_insert((false, false, 0.0));
+            match e.status {
+                crate::meter::MeterStatus::Ok => entry.0 = true,
+                crate::meter::MeterStatus::Failed => entry.1 = true,
+                _ => {}
+            }
+            if let Some(c) = e.cost_usd_estimated {
+                entry.2 += c;
+            }
+            calls += 1;
+        }
+        let mut h = crate::allowance::PrincipalHistory {
+            recent_calls: calls,
+            ..Default::default()
+        };
+        for (_, (ok, fail, cost)) in intents {
+            if ok {
+                h.successful_intents += 1;
+                if cost <= 0.0 {
+                    h.zero_cost_intents += 1;
+                }
+            } else if fail {
+                h.failed_intents += 1;
+            }
+        }
+        for c in self.contributions.list() {
+            if c.contributor == principal
+                && matches!(c.state, crate::contribution::ContributionState::Confirmed)
+            {
+                h.verified_contributions += 1;
+                h.confirmed_cash_usd += c.cash_usd.unwrap_or(0.0);
+            }
+        }
+        h.blocked_attempts = *self
+            .principal_used
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&format!("blocked:{principal}"))
+            .unwrap_or(&0);
+        h
+    }
+
+    /// 今天这个主体有多少额度（含理由），以及已用/剩余。
+    pub fn allowance_for(&self, principal: &str, intent_kind: Option<&str>) -> crate::allowance::Allowance {
+        self.roll_day();
+        let day = self.day.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let h = self.history_for(principal);
+        let mut a = crate::allowance::daily_allowance(
+            principal,
+            &day,
+            &h,
+            &self.allowance_policy(),
+            intent_kind,
+        );
+        let used = *self
+            .principal_used
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(principal)
+            .unwrap_or(&0);
+        a.used = used;
+        a.remaining = a.calls.saturating_sub(used);
+        a
+    }
+
+    /// 额度策略：配置里没写就用默认（公开、可替换）
+    fn allowance_policy(&self) -> crate::allowance::AllowancePolicy {
+        crate::allowance::AllowancePolicy::default()
+    }
+
     /// 调用前可用的金额估算 = 该 provider|model 最近一次的真实成本（没有就是 None）。
     /// 这是"预扣"的代理值：宁可这次不预扣，也不用拍脑袋的常数把用户挡在外面。
     pub fn estimate_cost(&self, provider: &str, model: &str) -> Option<f64> {
@@ -548,6 +641,39 @@ impl ShadowEconomy {
                     return d;
                 }
             }
+            // 诚信额度闸（按主体；开启后生效）：白嫖只限流到地板，永不封号
+            if self.cfg.allowance_enabled {
+                let principal = if ctx.requester.is_empty() {
+                    "local".to_string()
+                } else {
+                    ctx.requester.clone()
+                };
+                let a = self.allowance_for(&principal, None);
+                let used = *self
+                    .principal_used
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&principal)
+                    .unwrap_or(&0);
+                if used >= a.calls {
+                    let d = BudgetDecision::WouldBlock {
+                        rule: "daily_allowance",
+                        detail: format!(
+                            "{} 今日额度已用完（{} / {}，档位 {}）；地板额度不会归零，明天自动恢复",
+                            principal,
+                            used,
+                            a.calls,
+                            a.tier.as_str()
+                        ),
+                    };
+                    {
+                        let mut m = self.principal_used.lock().unwrap_or_else(|e| e.into_inner());
+                        *m.entry(format!("blocked:{principal}")).or_insert(0) += 1;
+                    }
+                    self.note_block(ctx, &d);
+                    return d;
+                }
+            }
             // 日闸通过 ⇒ 当场占一个名额
             let d = self.guard_for_ctx(ctx).try_reserve_model_call(provider, est_cost);
             if d.is_block() {
@@ -556,6 +682,15 @@ impl ShadowEconomy {
                 return d;
             }
             self.day_calls.fetch_add(1, Ordering::Relaxed);
+            if self.cfg.allowance_enabled {
+                let principal = if ctx.requester.is_empty() {
+                    "local".to_string()
+                } else {
+                    ctx.requester.clone()
+                };
+                let mut m = self.principal_used.lock().unwrap_or_else(|e| e.into_inner());
+                *m.entry(principal).or_insert(0) += 1;
+            }
             if let Some(c) = est_cost {
                 if c.is_finite() && c > 0.0 {
                     self.day_micro_usd

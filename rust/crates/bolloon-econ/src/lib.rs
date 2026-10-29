@@ -11,15 +11,22 @@
 //!    不编金额。
 //! 5. **密钥不进账本** —— 账本只记 provider id / model 名, 绝不记 key、prompt 原文。
 
+pub mod allowance;
 pub mod budget;
 pub mod contribution;
 pub mod economy;
 pub mod error;
 pub mod meter;
+pub mod immune;
 pub mod price;
+pub mod reputation;
 pub mod provider;
 pub mod settlement;
 
+pub use allowance::{
+    copy_group_goodwill, daily_allowance, intent_multiplier, Allowance, AllowancePolicy,
+    AllowanceTier, PrincipalHistory,
+};
 pub use budget::{
     BudgetDecision, BudgetGuard, BudgetLimits, ExhaustionPolicy, IntentBudget, Payer, PayerKind,
     PrivacyPolicy,
@@ -32,7 +39,15 @@ pub use error::EconError;
 pub use meter::{
     MeterEvent, MeterStatus, MeterTotals, RecordOutcome, ResourceKind, SCHEMA_VERSION, UsageMeter,
 };
+pub use immune::{AlarmKind, Assessment, ImmuneSystem, Policy as ImmunePolicy, Posture};
 pub use price::{PriceEntry, PriceTable, PriceVersion};
+pub use reputation::{
+    attestation_digest, build as build_reputation, detail_digest, goodwill_path, join_quota_by_age,
+    join_quota_for, quota_with_age, quota_with_usage, speech_flag, verify as verify_attestation,
+    JoinQuota, OffChainProfile, OnChainAttestation, SpeechFlag, JOIN_QUOTA_DAY5,
+    JOIN_QUOTA_MATURED, JOIN_QUOTA_MATURE_DAYS, JOIN_QUOTA_NEW_DAY, JOIN_QUOTA_PENALTY,
+    JOIN_QUOTA_RELAX_DAY,
+};
 pub use provider::{
     ModelCapability, ProviderKind, ProviderRegistry, ProviderSpec, ProviderStatus, RoutingDecision,
     RoutingPolicy, RoutingStrategy,

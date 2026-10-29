@@ -104,6 +104,10 @@ pub struct GroupPayload {
     /// 回复锚点 (entry hash)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
+    /// 发言者诚信标识（`watch` / `low_trust`）；空 = 正常。
+    /// 记录在群里让**其它智能体看得见并设防**，不是禁言。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<serde_json::Value>,
 }
 
 /// 群消息视图 (读出来的一条)
@@ -122,6 +126,9 @@ pub struct GroupMessage {
     pub signer: String,
     /// 写入者 Ed25519 签名 (b58)
     pub signature: String,
+    /// 发言者诚信标识（**只对智能体可见**；人类侧 API 会剥掉）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<serde_json::Value>,
 }
 
 // ────────────────────────── 错误 ──────────────────────────
@@ -507,6 +514,22 @@ impl GroupOrbitHub {
         self.append(group_id, kp, "message", from, text, None, now_ms)
     }
 
+    /// 发言并带诚信标识（低诚信者的发言会留痕，供群内其它智能体设防）
+    pub fn say_flagged(
+        &self,
+        group_id: &str,
+        kp: &KeyPair,
+        from: &str,
+        text: &str,
+        trust: Option<serde_json::Value>,
+        now_ms: u64,
+    ) -> Result<OpEntry, GroupOrbitError> {
+        if text.trim().is_empty() {
+            return Err(GroupOrbitError::EmptyText);
+        }
+        self.append_with_trust(group_id, kp, "message", from, text, None, trust, now_ms)
+    }
+
     /// 回复某条 (reply_to = entry hash)
     pub fn reply(
         &self,
@@ -531,6 +554,22 @@ impl GroupOrbitHub {
         reply_to: Option<String>,
         now_ms: u64,
     ) -> Result<OpEntry, GroupOrbitError> {
+        self.append_with_trust(group_id, kp, kind, from, text, reply_to, None, now_ms)
+    }
+
+    /// 带信任标记的追加（`trust=None` 与 `append` 等价）
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_with_trust(
+        &self,
+        group_id: &str,
+        kp: &KeyPair,
+        kind: &str,
+        from: &str,
+        text: &str,
+        reply_to: Option<String>,
+        trust: Option<serde_json::Value>,
+        now_ms: u64,
+    ) -> Result<OpEntry, GroupOrbitError> {
         if text.trim().is_empty() {
             return Err(GroupOrbitError::EmptyText);
         }
@@ -539,6 +578,7 @@ impl GroupOrbitHub {
             from: from.to_string(),
             text: text.to_string(),
             reply_to,
+            trust,
         })?;
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let store = inner
@@ -570,6 +610,7 @@ impl GroupOrbitHub {
                     ts: e.timestamp_ms,
                     signer: e.signer,
                     signature: e.signature,
+                    trust: p.trust,
                 })
             })
             .collect();
