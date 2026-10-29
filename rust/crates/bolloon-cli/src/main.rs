@@ -180,6 +180,17 @@ async fn main() -> anyhow::Result<()> {
         ),
     ));
 
+    // scratch 子系统: 孤儿 catch 周期任务 —— 进程崩溃/被杀后未收尾的 run 标 interrupted
+    {
+        let scratch_dir = bolloon_agent::home::BolloonHome::resolve().scratch_dir();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                bolloon_agent::scratch::reconcile_scratch_runs(&scratch_dir).await;
+            }
+        });
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -846,15 +857,22 @@ async fn send_one(
             // git: 本地写（add/commit）授予；git_push（不可逆外部）**不默认授予**
             "git_add".to_string(),
             "git_commit".to_string(),
+            // scratch 跑临时脚本与 shell 同级高风险 ⇒ 默认显式授予 (也可走完全访问)
+            "run_scratch_script".to_string(),
         ]
     };
     let granted_refs: Vec<&str> = granted.iter().map(|s| s.as_str()).collect();
+    // scratch 子系统: 注入真执行器 (tokio::process); 默认 noop
+    let script_run = bolloon_agent::scratch::ScriptRunPort::new(std::sync::Arc::new(
+        bolloon_agent::scratch::TokioScriptRunner::new(),
+    ));
     let harness = std::sync::Arc::new(
         bolloon_harness::Harness::new(
             registry.clone(),
             std::sync::Arc::new(bolloon_agent::builtin_tools::BuiltinExecutor::new(
                 cancel.clone(),
                 bypass,
+                script_run,
             )),
             bolloon_harness::Budget::new(MAX_TOOL_CALLS_PER_TURN, 120_000),
         )

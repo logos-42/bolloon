@@ -74,6 +74,8 @@ pub struct AppState {
     /// QUIC 端对端直连传输 (feature 门控; 默认启用): 好友对话的直连底座, 不经 HTTP 中继
     #[cfg(feature = "quic-transport")]
     pub quic: Option<Arc<bolloon_p2p::quic_transport::QuicTransport>>,
+    /// scratch 子系统执行端口 (宿主注入真执行器; 默认 noop)
+    pub script_run: bolloon_agent::scratch::ScriptRunPort,
 }
 
 impl AppState {
@@ -125,6 +127,7 @@ impl AppState {
             version: "0.6.10",
             #[cfg(feature = "quic-transport")]
             quic: None,
+            script_run: bolloon_agent::scratch::ScriptRunPort::noop(),
         }
     }
 
@@ -384,6 +387,8 @@ pub fn app(state: AppState) -> Router {
                 .delete(crate::native::directory_peers_remove),
                 )
                 .route("/api/node/connect", post(crate::native::node_connect))
+                .route("/api/scratch/run", post(crate::native::scratch_run))
+                .route("/api/scratch/list", get(crate::native::scratch_list))
                 .route("/api/friends/request", post(crate::native::friend_request))
         .route("/api/friends/accept", post(crate::native::friend_accept))
         .route("/api/friends/reject", post(crate::native::friend_reject))
@@ -503,6 +508,20 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
         }
         state
     };
+
+    // scratch 子系统: 注入真执行器 (tokio::process); 默认 noop, 这里装上
+    let mut state = state;
+    state.script_run = bolloon_agent::scratch::ScriptRunPort::new(std::sync::Arc::new(
+        bolloon_agent::scratch::TokioScriptRunner::new(),
+    ));
+    // 孤儿 catch: 周期 reconcile scratch 运行 (crash 后未收尾的 run 标 interrupted)
+    let scratch_dir = bolloon_agent::home::BolloonHome::resolve().scratch_dir();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            bolloon_agent::scratch::reconcile_scratch_runs(&scratch_dir).await;
+        }
+    });
 
     axum::serve(listener, app(state))
         .await
@@ -942,7 +961,8 @@ async fn group_say(
         Ok(entry) => {
             // 后台执行 (这次请求立刻返回): 推举 → 并发跑 → 只把汇报落回群
             let targets = {
-                let agents = st.forge.lock().await.agents.clone();
+                let fs = st.forge.lock().await;
+                let agents = crate::native::room_candidate_agents(&fs, &id);
                 let cursor = st.groups.history(&id, 0).map(|h| h.len()).unwrap_or(0);
                 crate::room_bus::elect(
                     &agents,

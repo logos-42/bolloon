@@ -42,6 +42,8 @@ pub enum EffectKind {
     Shell,
     Network,
     Payment,
+    /// 内部 scratch 目录跑临时脚本 (与 Shell 同级的高风险, 默认不放开)
+    Scratch,
 }
 
 /// 结构化拒绝（permission 门返回）

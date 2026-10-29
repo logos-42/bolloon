@@ -50,6 +50,8 @@ pub mod git_tools;
 pub mod net_tools;
 pub mod domain_tools;
 pub mod updater_tools;
+pub mod scratch;
+pub mod scratch_tools;
 pub mod tool_contract;
 pub mod updater;
 pub use kernel_loop::*;

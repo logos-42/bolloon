@@ -137,6 +137,9 @@ pub struct NativeState {
     /// 上次推举的接话人 (group_id → 名字), 让"推举"在面板上留痕
     #[serde(default)]
     pub room_last_speaker: std::collections::HashMap<String, String>,
+    /// 「发起交流」时选定的参与者 (group_id → 选中的智能体 id), 让推举只在选中者里挑 (选谁谁接话)
+    #[serde(default)]
+    pub room_participants: std::collections::HashMap<String, Vec<String>>,
     // ── 世界模式 (对齐 TS routes-world: 意图 / 机会流 / 校准环 / 信箱) ──
     /// 意图标签 (世界按意图重打分)
     pub intents: Vec<String>,
@@ -1593,13 +1596,87 @@ pub async fn room_new(State(st): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "id": info.id, "address": info.address }))
 }
 
-/// POST /api/room/start
+/// 群内推举候选: 若「发起交流」时选定了参与者 (room_participants), 只在其中挑 (选谁谁接话);
+/// 否则退回全部内部智能体 (兼容旧群 / 没点过发起交流的群)。选中项都不存在时不静默断流, 退回全部。
+pub fn room_candidate_agents(fs: &NativeState, gid: &str) -> Vec<AgentView> {
+    let chosen = fs.room_participants.get(gid).cloned().unwrap_or_default();
+    if chosen.is_empty() {
+        return fs.agents.clone();
+    }
+    let mut out: Vec<AgentView> = fs
+        .agents
+        .iter()
+        .filter(|a| chosen.iter().any(|c| c == &a.id))
+        .cloned()
+        .collect();
+    if out.is_empty() {
+        return fs.agents.clone();
+    }
+    out.sort_by_key(|a| chosen.iter().position(|c| c == &a.id).unwrap_or(usize::MAX));
+    out
+}
+
+/// POST /api/room/start —— 真正发起交流: 记录所选参与者, 并让选中的智能体立刻开场 (后台并发)。
+/// 根因: 之前这里只把 `room_running` 置 true, 不发任何消息 ⇒ 点「发起交流」群里毫无反应。
 pub async fn room_start(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let gid = req["group_id"].as_str().unwrap_or_default().to_string();
-    st.forge.lock().await.room_running.insert(gid.clone(), true);
+    // 前端芯片选中的智能体 (至少两个; 前端已拦 <2)
+    let requested: Vec<String> = req["agent_ids"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let group_name = st
+        .groups
+        .list_groups()
+        .iter()
+        .find(|g| g.id == gid)
+        .map(|g| g.name.clone())
+        .unwrap_or_default();
+    // 解析选中者 → AgentView; 没匹配/没选则退回前两个内部智能体 (保证"已进来的两个"能开口)
+    let targets: Vec<AgentView> = {
+        let fs = st.forge.lock().await;
+        let mut chosen: Vec<String> = if requested.is_empty() {
+            fs.agents.iter().take(2).map(|a| a.id.clone()).collect()
+        } else {
+            requested
+                .into_iter()
+                .filter(|r| fs.agents.iter().any(|a| &a.id == r))
+                .collect()
+        };
+        if chosen.is_empty() {
+            chosen = fs.agents.iter().take(2).map(|a| a.id.clone()).collect();
+        }
+        let mut out: Vec<AgentView> = fs
+            .agents
+            .iter()
+            .filter(|a| chosen.contains(&a.id))
+            .cloned()
+            .collect();
+        out.sort_by_key(|a| chosen.iter().position(|c| c == &a.id).unwrap_or(usize::MAX));
+        // 持久化参与者, 让后续 group_say / room_guide 只在选中者里推举 (选谁谁接话)
+        fs.room_participants.insert(gid.clone(), chosen);
+        fs.room_running.insert(gid.clone(), true);
+        out
+    };
+    if targets.is_empty() {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "本机没有可发起交流的内部智能体"
+        }));
+    }
+    let trigger = format!(
+        "（系统）本群「{}」的交流已发起，请各位成员先互相打招呼，并围绕本群主题主动展开讨论。",
+        group_name
+    );
+    // 立刻让选中的智能体后台开场 (不阻塞本次请求)
+    crate::room_bus::spawn_reports(st.clone(), gid.clone(), trigger, targets);
     Json(serde_json::json!({ "ok": true, "group_id": gid }))
 }
 
@@ -1625,6 +1702,7 @@ pub async fn room_close(
     let closed: Vec<String> = {
         let mut fs = st.forge.lock().await;
         fs.room_running.remove(&gid);
+        fs.room_participants.remove(&gid);
         if !fs.room_closed.contains(&gid) {
             fs.room_closed.push(gid.clone());
         }
@@ -1785,7 +1863,8 @@ pub async fn room_guide(
         Ok(entry) => {
             // 同一条消息也驱动后台汇报: 群聊/商议共用一套 (推举 → 并发 → 只落汇报)
             let targets = {
-                let agents = st.forge.lock().await.agents.clone();
+                let fs = st.forge.lock().await;
+                let agents = room_candidate_agents(&fs, &gid);
                 let cursor = st.groups.history(&gid, 0).map(|h| h.len()).unwrap_or(0);
                 crate::room_bus::elect(
                     &agents,

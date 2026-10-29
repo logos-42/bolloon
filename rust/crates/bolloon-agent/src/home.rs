@@ -116,6 +116,12 @@ impl BolloonHome {
         self.persona_dir().join("persona.json")
     }
 
+    /// scratch 子系统目录 (`~/.bolloon/rust/scratch`): 内部 tmp 目录, 跑临时脚本;
+    /// 每个 run 落 `<run_id>/run.json`, 供孤儿恢复 catch。
+    pub fn scratch_dir(&self) -> PathBuf {
+        self.root.join("scratch")
+    }
+
     /// 建 agent 目录族 (幂等)
     pub fn ensure_agent(&self, agent_id: &str) -> Result<PathBuf, HomeError> {
         let dir = self.agent_dir(agent_id)?;
