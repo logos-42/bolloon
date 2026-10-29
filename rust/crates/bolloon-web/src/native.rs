@@ -2114,8 +2114,13 @@ fn update_candidates(file: &str) -> Vec<String> {
         }
     }
     vec![
+        // 自有域名 (Cloudflare Pages, 国内直连通常可用)
+        format!("https://bolloon.cn/update/{file}"),
+        // jsDelivr CDN (读同一个仓库的 main 分支)
         format!("https://cdn.jsdelivr.net/gh/logos-42/bolloon-UI@main/update/{file}"),
+        // GitHub Pages 原站
         format!("https://logos-42.github.io/bolloon-UI/update/{file}"),
+        // GitHub 加速代理 → GitHub 直连 (最后的兜底)
         format!("https://ghfast.top/https://github.com/logos-42/bolloon/releases/latest/download/{file}"),
         format!("https://github.com/logos-42/bolloon/releases/latest/download/{file}"),
     ]

@@ -16,11 +16,12 @@
   "plugins": {
     "updater": {
       "endpoints": [
+        "https://bolloon.cn/update/latest.json",
         "https://cdn.jsdelivr.net/gh/logos-42/bolloon-UI@main/update/latest.json",
         "https://logos-42.github.io/bolloon-UI/update/latest.json",
-        "https://github.com/logos-42/bolloon/releases/latest/download/latest.json"
+        "https://ghfast.top/https://github.com/logos-42/bolloon/releases/latest/download/latest.json"
       ],
-      "pubkey": "RWQBnxMhCRvlpuwdQnwgZPCjhr57S1T9fiv3GH+RFlebHkdjnxq+69+F"
+      "pubkey": "RWRgnzIsaANY05fuOgEsBygUQ5DAHOHSnbxccK/VCVZ+l84KLaJBqD1M"
     }
   },
   "bundle": {

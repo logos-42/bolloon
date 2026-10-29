@@ -253,6 +253,8 @@ name = "bolloon-agent"
 version = "0.6.13"
 dependencies = [
  "async-trait",
+ "bolloon-config",
+ "bolloon-econ",
  "bolloon-harness",
  "bolloon-kernel",
  "bolloon-llm",
@@ -275,10 +277,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "bolloon-config"
+version = "0.6.13"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "bolloon-econ"
+version = "0.6.13"
+dependencies = [
+ "bolloon-config",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "bolloon-harness"
 version = "0.6.13"
 dependencies = [
  "async-trait",
+ "bolloon-config",
  "bolloon-kernel",
  "dashmap",
  "serde",
@@ -375,6 +405,8 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bolloon-agent",
+ "bolloon-config",
+ "bolloon-econ",
  "bolloon-kernel",
  "bolloon-llm",
  "bolloon-p2p",
