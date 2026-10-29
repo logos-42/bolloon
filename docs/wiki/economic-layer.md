@@ -192,3 +192,61 @@ F 账本无 api_key/Bearer/sk- · 无 prompt 原文 · report JSON 无密钥材�
 2. **成本闸只能设在意图预算上**：`default_max_model_calls = 20` 时，一条消息的现金上限是
    A ¥0.068 · B ¥0.284 · C ¥2.13 —— 这才是把 1000 上限变得可控的那个旋钮。
 3. 缓存前缀能把 N 倍压到 ~1.4 倍（N=1000 时 ¥14.20 → ¥3.81），但**省不掉排队**。
+
+## 13. 闸口：从"只记账"变成"真能拦"（2026-10-29）
+
+之前 `call_model_metered` 拿到 `BudgetDecision` 就丢掉了 —— 意图预算只是算了个判定。现在三层：
+
+| 层 | 实现 | 生效条件 |
+|---|---|---|
+| 原子预留 | `BudgetGuard::try_reserve_model_call` 在 `reserve_lock` 内做「判定 + 计数」 | 总是（并发扇出下上限才准） |
+| 节点日闸 | `ShadowEconomy::begin_model_call` 的 `daily_model_calls` / `daily_cash_usd`，跨意图计数、跨天自动清零 | 配了日上限 |
+| 意图闸 | `guard_for_ctx(ctx)` 的 `max_model_calls` / `max_cash_usd` / 委托深度 | 配了意图预算 |
+| 拦截动作 | `call_model_metered` 在 `decision.is_block() && enforcement()` 时**直接返回错误**，不发起调用 | `enabled && mode==Enforce && budget_enforcement_enabled` |
+
+**为什么必须原子**：`check` 读计数、`record` 在响应回来后才 `fetch_add`。1000 个 agent 并发时它们
+会在同一瞬间都读到 `calls=0`，全部判允许 ⇒ `max_model_calls=20` 实际能跑出 1000 次。
+`reservation_is_atomic_under_fanout`（1000 线程抢 20 名额 ⇒ 恰好 20 通过）钉住这条；把预扣去掉，
+该用例立刻红（已做变异验证）。
+
+**金额怎么预扣**：`estimate_cost(provider, model)` = 该 provider|model **最近一次真实成本**；没有历史
+就 `None`（只占调用次数，不用拍脑袋的常数把用户挡在门外）。响应回来用 `reconcile_model_call` 按实际补/退差额。
+
+**不许假装有现金闸**：没有价格表时 `report.cash_gate_enabled=false`，`daily_cash_usd`/`max_cash_usd`
+都是装饰字段 —— 报告如实说，而不是显示一个永远不会触发的 0。
+
+## 14. 接话预算：大群默认 5 个小组长（leo 2026-10-29 定）
+
+| 参数 | 值 | 位置 |
+|---|---|---|
+| 群聊智能体产品上限 | 1000 | `room_bus::MAX_ELECTED_AGENTS` |
+| 大群阈值 | >10 人 | `room_bus::GROUP_LARGE_THRESHOLD` |
+| 大群每轮接话数 | 5 | `room_bus::DEFAULT_REPLIES_WHEN_LARGE` |
+| 警长设定 | `POST /api/groups/{id}/reply-limit {n, by}` | 夹到 1..=1000，持久化在 `ForgeState.room_reply_limit` |
+| 只读 | `GET /api/groups/{id}/reply-limit` | 回 `reply_limit` / `source`(sheriff\|default) / `members` |
+
+规则：`reply_limit_for(members, sheriff)` —— 警长显式值优先；否则 ≤10 人按命中数，>10 人只放 5 个。
+**只限"被推举接话"**：警长派发的 `[[task:id:desc]]` 与其余成员的异步干活不受限，重要结论才回群。
+
+效果：12 人全员被 @ 时只推 5 个（`reply_limit_follows_size_and_sheriff`），一条消息成本从 12× 降到 5×。
+
+## 15. 共享资源池接口（真 HTTP，2026-10-29 接上）
+
+| 端点 | 作用 |
+|---|---|
+| `GET /api/econ/probe` | 只读探针：可选用供给 / 公共池 / 日账 / 接话规则（给 agent 与前端看） |
+| `POST /api/econ/providers` | 登记或更新供给（**登记 ≠ 授权**：`owner_authorized=false` 只能被看见） |
+| `POST /api/econ/providers/{id}/revoke` | 所有者撤销授权，立即退出可选用集合 |
+| `POST /api/econ/contributions` | 认捐（`cash_sponsor` / `api_credit` / `local_inference` / `tool_service` …） |
+| `POST /api/econ/contributions/{id}/confirm` | 独立验收确认（`by == contributor` 一律拒） |
+| `POST /api/econ/pool/topup` | 补**已到账**现金进公共池（记 Confirmed 贡献） |
+| `POST /api/econ/intent/{id}/budget` | 给意图挂 `max_model_calls` / `max_cash_usd` |
+
+`econ_shared_pool_endpoints_e2e` 真 HTTP 跑通：未授权供给 `selectable=false` → 授权后 `true` →
+认捐后池子仍 0.0（承诺 ≠ 到账）→ 独立确认后 5.0 → 自己验收自己 `ok=false` → 意图预算回读一致。
+
+**已知缺口（诚实）**：
+1. `reply-limit` 端点**没有校验 caller 是不是警长**（警长选举结果未按群持久化）—— 现在谁调谁生效，只在响应里记 `set_by`。
+2. 公共池跨节点不可见：`econ-*.json/jsonl` 是本机文件，没有 P2P 同步；"互相共享"目前 = 同一节点内的多方供给。
+3. 没有 agent 侧工具（`econ_probe` 只在 HTTP 层）—— 智能体自己还不能申领共享额度。
+

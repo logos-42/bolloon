@@ -417,6 +417,32 @@ pub fn app(state: AppState) -> Router {
                 .route("/config", get(crate::native::config_panel))
                 // 经济层 (旁路计量) 报告: 影子模式下的真实成本/本该被拦/影子路由
                 .route("/api/econ/report", get(crate::native::econ_report))
+                .route(
+                    "/api/groups/{id}/reply-limit",
+                    post(set_reply_limit).get(get_reply_limit),
+                )
+                .route("/api/econ/probe", get(crate::native::econ_probe))
+                .route(
+                    "/api/econ/providers",
+                    post(crate::native::econ_provider_register),
+                )
+                .route(
+                    "/api/econ/providers/{id}/revoke",
+                    post(crate::native::econ_provider_revoke),
+                )
+                .route(
+                    "/api/econ/contributions",
+                    post(crate::native::econ_contribute),
+                )
+                .route(
+                    "/api/econ/contributions/{id}/confirm",
+                    post(crate::native::econ_contribute_confirm),
+                )
+                .route("/api/econ/pool/topup", post(crate::native::econ_pool_topup))
+                .route(
+                    "/api/econ/intent/{id}/budget",
+                    post(crate::native::econ_intent_budget),
+                )
                 .route("/api/friends/request", post(crate::native::friend_request))
         .route("/api/friends/accept", post(crate::native::friend_accept))
         .route("/api/friends/reject", post(crate::native::friend_reject))
@@ -976,6 +1002,50 @@ struct GroupSayRequest {
     text: String,
 }
 
+/// POST /api/groups/{id}/reply-limit  body: { "n": 5, "by": "agent-id" }
+/// 警长设定"每轮最多几个智能体接话"（大群默认 5，上限 1000）。
+async fn set_reply_limit(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let n = req.get("n").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let by = req
+        .get("by")
+        .and_then(|v| v.as_str())
+        .unwrap_or("sheriff")
+        .to_string();
+    match crate::native::set_room_reply_limit(&st, &id, n, &by).await {
+        Ok(v) => Json(v),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
+/// GET /api/groups/{id}/reply-limit → 当前生效值 + 来源（警长设定/大群默认）
+async fn get_reply_limit(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    let members = {
+        let fs = st.forge.lock().await;
+        crate::native::room_candidate_agents(&fs, &id).len()
+    };
+    let sheriff = {
+        let fs = st.forge.lock().await;
+        fs.room_reply_limit.get(&id).copied()
+    };
+    Json(serde_json::json!({
+        "ok": true,
+        "group_id": id,
+        "members": members,
+        "reply_limit": crate::room_bus::reply_limit_for(members, sheriff),
+        "source": if sheriff.is_some() { "sheriff" } else { "default" },
+        "large_threshold": crate::room_bus::GROUP_LARGE_THRESHOLD,
+        "default_when_large": crate::room_bus::DEFAULT_REPLIES_WHEN_LARGE,
+        "max": crate::room_bus::MAX_ELECTED_AGENTS,
+    }))
+}
+
 async fn group_say(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -1002,15 +1072,18 @@ async fn group_say(
     match st.groups.say(&id, kp, kp.did.as_str(), &req.text, now_ms) {
         Ok(entry) => {
             // 后台执行 (这次请求立刻返回): 推举 → 并发跑 → 只把汇报落回群
+            // 接话人数：警长设定优先；没有则按群规模（>10 人默认 5 人接话）
+            let limit = crate::native::room_reply_limit_of(&st, &id).await;
             let targets = {
                 let fs = st.forge.lock().await;
                 let agents = crate::native::room_candidate_agents(&fs, &id);
                 let cursor = st.groups.history(&id, 0).map(|h| h.len()).unwrap_or(0);
-                crate::room_bus::elect(
+                crate::room_bus::elect_limited(
                     &agents,
                     &crate::native::parse_addressed(&req.text),
                     decision.speaker_id.as_deref(),
                     cursor,
+                    limit,
                 )
             };
             let queued: Vec<String> = targets.iter().map(|a| a.name.clone()).collect();
@@ -1930,6 +2003,123 @@ mod route_tests {
                 serde_json::json!({ "did": "did:pi:CCC333", "name": "  " }),
             );
             assert!(bad["error"].as_str().is_some(), "空名字必须拒: {bad}");
+        })
+        .await
+        .unwrap();
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 共享资源池接口真跑（真 HTTP）：登记供给 → 认捐 → 确认入池 → 给意图挂预算 → 探针可见。
+    ///
+    /// 判据：① `owner_authorized=false` 的供给可登记但**不可选用**；② 认捐只是承诺，
+    /// 确认后公共池才有钱；③ 意图预算挂上后 `limits` 回读一致；④ 探针能看到同一份事实。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn econ_shared_pool_endpoints_e2e() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-econ-shared-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("rust")).unwrap();
+        std::fs::write(
+            home.join("rust").join("config.json"),
+            r#"{"version":1,"applied_at":"2026-10-29T00:00:00Z","source":"test","operator":"e2e",
+                "reason":"共享池 e2e","config":{"economic":{"enabled":true,"metering_enabled":true}}}"#,
+        )
+        .unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+
+        let state = AppState::new(offline_llm());
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = serve_on(state, listener).await;
+        });
+        let base = format!("http://{addr}");
+
+        tokio::task::spawn_blocking(move || {
+            let get = |p: &str| -> serde_json::Value {
+                ureq::get(&format!("{base}{p}")).call().unwrap().into_json().unwrap()
+            };
+            let post = |p: &str, b: serde_json::Value| -> serde_json::Value {
+                ureq::post(&format!("{base}{p}")).send_json(b).unwrap().into_json().unwrap()
+            };
+
+            // ① 未授权的供给：登记成功但不可被自动选用
+            let r = post(
+                "/api/econ/providers",
+                serde_json::json!({ "id": "alice-gpu", "kind": "community_model",
+                                    "models": [{ "model": "qwen3-27b" }], "owner_authorized": false }),
+            );
+            assert_eq!(r["ok"], serde_json::json!(true), "{r}");
+            assert_eq!(r["selectable"], serde_json::json!(false), "登记 ≠ 授权: {r}");
+
+            // 授权后就进可选用集合
+            let r = post(
+                "/api/econ/providers",
+                serde_json::json!({ "id": "alice-gpu", "kind": "community_model",
+                                    "models": [{ "model": "qwen3-27b" }], "owner_authorized": true }),
+            );
+            assert_eq!(r["selectable"], serde_json::json!(true), "{r}");
+
+            // ② 认捐 → 承诺不进池；确认后进池
+            let c = post(
+                "/api/econ/contributions",
+                serde_json::json!({ "contributor": "alice", "kind": "cash_sponsor", "cash_usd": 5.0 }),
+            );
+            assert_eq!(c["ok"], serde_json::json!(true), "{c}");
+            let cid = c["id"].as_str().unwrap().to_string();
+            let probe0 = get("/api/econ/probe");
+            assert_eq!(
+                probe0["pool"]["contribution_cash_usd"],
+                serde_json::json!(0.0),
+                "只是承诺，池子里不许有钱: {probe0}"
+            );
+            let cfg = post(
+                &format!("/api/econ/contributions/{cid}/confirm"),
+                serde_json::json!({ "by": "bob" }),
+            );
+            assert_eq!(cfg["ok"], serde_json::json!(true), "{cfg}");
+            assert_eq!(
+                cfg["pool"]["contribution_cash_usd"],
+                serde_json::json!(5.0),
+                "确认后入池: {cfg}"
+            );
+
+            // 自证无效：alice 不能自己确认自己的贡献
+            let c2 = post(
+                "/api/econ/contributions",
+                serde_json::json!({ "contributor": "carol", "kind": "cash_sponsor", "cash_usd": 1.0 }),
+            );
+            let cid2 = c2["id"].as_str().unwrap().to_string();
+            let self_ok = post(
+                &format!("/api/econ/contributions/{cid2}/confirm"),
+                serde_json::json!({ "by": "carol" }),
+            );
+            assert_eq!(self_ok["ok"], serde_json::json!(false), "自己验收自己必须拒: {self_ok}");
+
+            // ③ 意图预算
+            let b = post(
+                "/api/econ/intent/group:g1:1/budget",
+                serde_json::json!({ "max_model_calls": 5, "max_cash_usd": 0.5 }),
+            );
+            assert_eq!(b["ok"], serde_json::json!(true), "{b}");
+            assert_eq!(b["limits"]["max_model_calls"], serde_json::json!(5));
+            assert_eq!(b["enforcement"], serde_json::json!(false), "默认 shadow 不拦");
+
+            // ④ 探针能看到同一份事实 + 群聊接话规则
+            let probe = get("/api/econ/probe");
+            assert_eq!(probe["pool"]["contribution_cash_usd"], serde_json::json!(5.0), "{probe}");
+            assert!(probe["providers"].as_array().unwrap().iter().any(|p| p["id"] == "alice-gpu"));
+            assert_eq!(probe["group_reply"]["default_when_large"], serde_json::json!(5));
+
+            // ⑤ 接话人数：默认规则 + 警长设定
+            let l0 = get("/api/groups/none/reply-limit");
+            assert_eq!(l0["reply_limit"], serde_json::json!(0), "空群 0 人");
+            let l1 = post("/api/groups/g1/reply-limit", serde_json::json!({ "n": 7, "by": "sheriff" }));
+            assert_eq!(l1["ok"], serde_json::json!(true), "{l1}");
+            assert_eq!(l1["reply_limit"], serde_json::json!(7));
+            let l2 = post("/api/groups/g1/reply-limit", serde_json::json!({ "n": 5000 }));
+            assert_eq!(l2["ok"], serde_json::json!(false), "超过 1000 上限要拒: {l2}");
         })
         .await
         .unwrap();

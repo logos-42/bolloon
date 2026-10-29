@@ -137,6 +137,9 @@ pub struct NativeState {
     /// 上次推举的接话人 (group_id → 名字), 让"推举"在面板上留痕
     #[serde(default)]
     pub room_last_speaker: std::collections::HashMap<String, String>,
+    /// 每个群"每轮最多几个智能体接话"（警长设定；没有就用大群默认规则）
+    #[serde(default)]
+    pub room_reply_limit: std::collections::HashMap<String, usize>,
     /// 「发起交流」时选定的参与者 (group_id → 选中的智能体 id), 让推举只在选中者里挑 (选谁谁接话)
     #[serde(default)]
     pub room_participants: std::collections::HashMap<String, Vec<String>>,
@@ -1213,21 +1216,13 @@ pub async fn call_model_metered(
     params.temperature = 0.7;
     params.max_tokens = 4096;
 
-    // ── 经济层计量（旁路：只记录，绝不改变调用结果） ──
-    let started = std::time::Instant::now();
-    let res = llm.generate(&provider_id, params).await;
-    let elapsed_ms = started.elapsed().as_millis() as u64;
-    if let Some(econ) = st.econ.get() {
-        let (tin, tout, status) = match &res {
-            Ok(g) => (
-                Some(g.usage.prompt_tokens),
-                Some(g.usage.completion_tokens),
-                bolloon_econ::MeterStatus::Ok,
-            ),
-            // 失败也算一次调用（真花出去/真试过），但 token 未知 ⇒ 如实留 None
-            Err(_) => (None, None, bolloon_econ::MeterStatus::Failed),
-        };
-        let ctx = match &econ_ctx {
+    // ── 经济层：闸 + 计量 ──
+    // 顺序 = 先预留（原子占额度）→ 发请求 → 对账记账。
+    // enforce 下判定为"该拦"就直接返回错误（不发起调用）；shadow 下只记账，绝不改变结果。
+    let econ = st.econ.get().cloned();
+    let mut econ_guard = None; // (ctx, provider, reserved_est)
+    if let Some(econ) = econ.as_ref() {
+        let mut ctx = match &econ_ctx {
             Some(e) => {
                 let mut c = bolloon_econ::CallCtx::new(e.intent_id.clone(), "web");
                 c.intent_id = if e.intent_id.is_empty() {
@@ -1245,12 +1240,40 @@ pub async fn call_model_metered(
             }
             None => {
                 let mut c = bolloon_econ::CallCtx::new(
-                    format!("web-{elapsed_ms}-{}", chrono::Utc::now().timestamp_millis()),
+                    format!("web-{}", chrono::Utc::now().timestamp_millis()),
                     "web",
                 );
                 c.surface = "web".to_string();
                 c
             }
+        };
+        // 预留：金额按最近一次已知估算（无价格表时为 None ⇒ 只占调用次数）
+        let est = econ.estimate_cost(&provider_id, &model);
+        let decision = econ.begin_model_call(&ctx, &provider_id, est);
+        if decision.is_block() && econ.enforcement() {
+            return Err(format!(
+                "预算闸拦下这次调用（{}）：{}。要放行请调高意图/日预算，或切回 shadow。",
+                decision.rule().unwrap_or("budget"),
+                decision.detail().unwrap_or("触顶")
+            ));
+        }
+        ctx.task_id = ctx.intent_id.clone().unwrap_or_else(|| ctx.task_id.clone());
+        econ_guard = Some((ctx, provider_id.clone(), model.clone(), est));
+    }
+
+    let started = std::time::Instant::now();
+    let res = llm.generate(&provider_id, params).await;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+
+    if let (Some(econ), Some((ctx, prov, mdl, est))) = (econ.as_ref(), econ_guard) {
+        let (tin, tout, status) = match &res {
+            Ok(g) => (
+                Some(g.usage.prompt_tokens),
+                Some(g.usage.completion_tokens),
+                bolloon_econ::MeterStatus::Ok,
+            ),
+            // 失败也算一次调用（真花出去/真试过），但 token 未知 ⇒ 如实留 None
+            Err(_) => (None, None, bolloon_econ::MeterStatus::Failed),
         };
         let mut ev = serde_json::Map::new();
         if let Some(g) = econ_ctx.as_ref().and_then(|e| e.group_id.clone()) {
@@ -1267,22 +1290,57 @@ pub async fn call_model_metered(
         } else {
             Some(serde_json::Value::Object(ev))
         };
-        // 价格/成本由 econ 依价格表算；没价格表就只记 token（不编金额）
-        econ.on_model_call(
-            &ctx,
-            &provider_id,
-            &model,
-            tin,
-            tout,
-            None, // 供应商没给缓存命中 token：留空，不编
-            status,
-            elapsed_ms,
-            evidence,
+        econ.finish_model_call(
+            &ctx, &prov, &mdl, tin, tout, status, elapsed_ms, evidence, est,
         );
     }
 
     res.map(|g| g.content)
         .map_err(|e| format!("模型调用失败（{provider_id}）: {e}"))
+}
+
+/// 某个群这一轮允许几个智能体接话（警长设定 → 大群默认 → 群规模）。
+pub async fn room_reply_limit_of(st: &AppState, gid: &str) -> usize {
+    let (members, sheriff) = {
+        let fs = st.forge.lock().await;
+        (
+            room_candidate_agents(&fs, gid).len(),
+            fs.room_reply_limit.get(gid).copied(),
+        )
+    };
+    crate::room_bus::reply_limit_for(members, sheriff)
+}
+
+/// 设置某群"每轮最多几个智能体接话"（警长用）。返回生效值与来源。
+pub async fn set_room_reply_limit(
+    st: &AppState,
+    gid: &str,
+    n: usize,
+    by: &str,
+) -> Result<serde_json::Value, String> {
+    if n == 0 {
+        return Err("接话人数必须 ≥1（0 等于让群失声）".into());
+    }
+    if n > crate::room_bus::MAX_ELECTED_AGENTS {
+        return Err(format!("接话人数不能超过上限 {}", crate::room_bus::MAX_ELECTED_AGENTS));
+    }
+    let members = {
+        let fs = st.forge.lock().await;
+        room_candidate_agents(&fs, gid).len()
+    };
+    {
+        let mut fs = st.forge.lock().await;
+        fs.room_reply_limit.insert(gid.to_string(), n);
+        fs.save(&data_dir());
+    }
+    Ok(serde_json::json!({
+        "ok": true,
+        "group_id": gid,
+        "reply_limit": n,
+        "members": members,
+        "set_by": by,
+        "note": "只限制「被推举接话」的人数；警长派发的任务与其余成员的异步干活不受影响",
+    }))
 }
 
 /// 普通对话: 取历史 + 当前这句, 交给 call_model (身份走 agent)。
@@ -3372,6 +3430,251 @@ impl bolloon_config::MetricSource for RuntimeMetricSource {
         };
         Some(bolloon_config::MetricSample::measured(name, v))
     }
+}
+
+/// GET /api/econ/probe → 「现在能共享什么」：可被选用的供给、公共池、日闸、接话默认规则。
+///
+/// 这是给智能体/前端看的**只读探针**：谁能供、池子里多少钱、今天还剩多少、群聊默认几个人接话。
+pub async fn econ_probe(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let Some(econ) = st.econ.get() else {
+        return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
+    };
+    let r = econ.report();
+    Json(serde_json::json!({
+        "ok": true,
+        "enabled": r.enabled,
+        "mode": r.mode,
+        "cash_gate_enabled": r.cash_gate_enabled,
+        "providers": econ.registry().selectable(),
+        "providers_all": econ.registry().list(),
+        "pool": r.pool,
+        "daily": { "calls": r.daily_model_calls, "cash_usd": r.daily_cash_usd,
+                   "max_calls": r.daily_max_model_calls, "max_cash_usd": r.daily_max_cash_usd },
+        "contributions": r.contributions,
+        "group_reply": {
+            "large_threshold": crate::room_bus::GROUP_LARGE_THRESHOLD,
+            "default_when_large": crate::room_bus::DEFAULT_REPLIES_WHEN_LARGE,
+            "max": crate::room_bus::MAX_ELECTED_AGENTS,
+        },
+    }))
+}
+
+/// POST /api/econ/providers → 登记/更新一个资源提供者（**登记 ≠ 授权**）。
+/// body: { id, kind, display_name?, models?:[{model,quality?,tools?}], allows_sensitive?, online?, owner_authorized?, note? }
+pub async fn econ_provider_register(
+    State(st): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let Some(econ) = st.econ.get() else {
+        return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
+    };
+    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 id" }));
+    }
+    let kind: bolloon_econ::ProviderKind = match serde_json::from_value(
+        body.get("kind").cloned().unwrap_or(serde_json::json!("external_api")),
+    ) {
+        Ok(k) => k,
+        Err(_) => return Json(serde_json::json!({ "ok": false, "error": "kind 非法 (external_api/owner_api/local_model/community_model/agent_service/sponsor)" })),
+    };
+    let models: Vec<bolloon_econ::ModelCapability> = body
+        .get("models")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let mut spec = bolloon_econ::ProviderSpec::new(&id, kind);
+    spec.models = models;
+    spec.display_name = body.get("display_name").and_then(|v| v.as_str()).unwrap_or(&id).to_string();
+    spec.allows_sensitive = body.get("allows_sensitive").and_then(|v| v.as_bool()).unwrap_or(false);
+    spec.online = body.get("online").and_then(|v| v.as_bool()).unwrap_or(true);
+    spec.latency_ms = body.get("latency_ms").and_then(|v| v.as_u64());
+    spec.note = body.get("note").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    // 授权位只能由所有者自己置；请求体里没写就是 false（默认不把别人的资源放进网络）
+    spec.owner_authorized = body.get("owner_authorized").and_then(|v| v.as_bool()).unwrap_or(false);
+    match econ.registry().register(spec) {
+        Ok(_) => Json(serde_json::json!({
+            "ok": true, "id": id,
+            "selectable": econ.registry().selectable().iter().any(|p| p.id == id),
+            "note": "owner_authorized=false 时只能被看见，不会被自动选用",
+        })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+/// POST /api/econ/providers/{id}/revoke → 所有者撤销授权（立即不能再被自动选用）
+pub async fn econ_provider_revoke(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Json<serde_json::Value> {
+    let Some(econ) = st.econ.get() else {
+        return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
+    };
+    match econ.registry().revoke_authorization(&id) {
+        Ok(_) => Json(serde_json::json!({ "ok": true, "id": id, "selectable": false })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+/// POST /api/econ/contributions → 认捐（现金 或 算力/工具，各按自己维度记）
+pub async fn econ_contribute(
+    State(st): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let Some(econ) = st.econ.get() else {
+        return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
+    };
+    let kind: bolloon_econ::ContributionKind = match serde_json::from_value(
+        body.get("kind").cloned().unwrap_or(serde_json::json!("cash_sponsor")),
+    ) {
+        Ok(k) => k,
+        Err(_) => return Json(serde_json::json!({ "ok": false, "error": "kind 非法 (api_credit/cash_sponsor/local_inference/tool_service/task_execution/verified_knowledge)" })),
+    };
+    let c = bolloon_econ::Contribution {
+        id: body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        contributor: body.get("contributor").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        kind,
+        cash_usd: body.get("cash_usd").and_then(|v| v.as_f64()),
+        units: body.get("units").and_then(|v| v.as_f64()),
+        unit_kind: body.get("unit_kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        state: bolloon_econ::ContributionState::Pledged,
+        at: String::new(),
+        verified_by: None,
+        evidence_refs: body
+            .get("evidence_refs")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
+        note: body.get("note").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    };
+    match econ.contributions().pledge(c) {
+        Ok(rec) => Json(serde_json::json!({
+            "ok": true, "id": rec.id, "state": "pledged",
+            "note": "承诺 ≠ 到账：要 执行 → 独立验收 → 确认 才进公共池",
+        })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+/// POST /api/econ/contributions/{id}/confirm  body: { by }
+/// 独立验收并确认入账（`by` 不能等于 contributor —— 自证无效）
+pub async fn econ_contribute_confirm(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let Some(econ) = st.econ.get() else {
+        return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
+    };
+    let by = body.get("by").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if by.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 by（验收人）" }));
+    }
+    // 允许一步到位（pledged → executed → verified → confirmed），但每步都要过状态机
+    if let Err(e) = econ.contributions().mark_executed(&id) {
+        if !e.to_string().contains("状态不允许") {
+            return Json(serde_json::json!({ "ok": false, "error": e.to_string() }));
+        }
+    }
+    if let Err(e) = econ.contributions().verify(&id, &by) {
+        if !e.to_string().contains("状态不允许") {
+            return Json(serde_json::json!({ "ok": false, "error": e.to_string() }));
+        }
+    }
+    match econ.contributions().confirm(&id, &by) {
+        Ok(rec) => {
+            econ.sync_pool_from_contributions();
+            Json(serde_json::json!({
+                "ok": true, "id": rec.id, "state": "confirmed",
+                "pool": econ.settlements().pool(),
+            }))
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+/// POST /api/econ/pool/topup  body: { usd, by, note? }
+/// 给公共池补充**已到账**现金（记一条 Confirmed 贡献；不是"承诺"）
+pub async fn econ_pool_topup(
+    State(st): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let Some(econ) = st.econ.get() else {
+        return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
+    };
+    let usd = body.get("usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let by = body.get("by").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if !(usd.is_finite() && usd > 0.0) {
+        return Json(serde_json::json!({ "ok": false, "error": "usd 必须 > 0" }));
+    }
+    if by.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 by（出资人）" }));
+    }
+    let c = bolloon_econ::Contribution {
+        id: format!("topup-{}", chrono::Utc::now().timestamp_millis()),
+        contributor: by.clone(),
+        kind: bolloon_econ::ContributionKind::CashSponsor,
+        cash_usd: Some(usd),
+        units: None,
+        unit_kind: String::new(),
+        state: bolloon_econ::ContributionState::Pledged,
+        at: String::new(),
+        verified_by: None,
+        evidence_refs: vec![body.get("note").and_then(|v| v.as_str()).unwrap_or("").to_string()],
+        note: "pool topup (已到账)".into(),
+    };
+    let pledged = match econ.contributions().pledge(c) {
+        Ok(r) => r,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    };
+    let _ = econ.contributions().mark_executed(&pledged.id);
+    // 到账资金不需要"第二个人验收"——它本身有转账凭证；用系统身份确认，并在 note 里留 who
+    let _ = econ.contributions().verify(&pledged.id, "system:topup");
+    match econ.contributions().confirm(&pledged.id, "system:topup") {
+        Ok(_) => {
+            econ.sync_pool_from_contributions();
+            Json(serde_json::json!({
+                "ok": true, "id": pledged.id, "added_usd": usd,
+                "pool": econ.settlements().pool(),
+            }))
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+/// POST /api/econ/intent/{id}/budget  body: { max_model_calls?, max_cash_usd?, max_delegations?, max_depth? }
+/// 给一个意图挂（或收紧）预算。enforce 模式下下一次调用就生效。
+pub async fn econ_intent_budget(
+    State(st): State<AppState>,
+    AxumPath(intent): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let Some(econ) = st.econ.get() else {
+        return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
+    };
+    let mut limits = bolloon_econ::BudgetLimits::default();
+    limits.max_model_calls = body.get("max_model_calls").and_then(|v| v.as_u64()).map(|v| v as u32);
+    limits.max_cash_usd = body.get("max_cash_usd").and_then(|v| v.as_f64());
+    if let Some(d) = body.get("max_delegations").and_then(|v| v.as_u64()) {
+        limits.max_delegations = d as u32;
+    }
+    if let Some(d) = body.get("max_depth").and_then(|v| v.as_u64()) {
+        limits.max_depth = d as u32;
+    }
+    if limits.max_model_calls.is_none() && limits.max_cash_usd.is_none() {
+        return Json(serde_json::json!({ "ok": false, "error": "至少要给 max_model_calls 或 max_cash_usd 之一" }));
+    }
+    let g = econ.guard_for(&intent, limits);
+    Json(serde_json::json!({
+        "ok": true, "intent_id": intent,
+        "limits": {
+            "max_model_calls": g.limits().max_model_calls,
+            "max_cash_usd": g.limits().max_cash_usd,
+            "max_delegations": g.limits().max_delegations,
+            "max_depth": g.limits().max_depth,
+        },
+        "spent": g.state(),
+        "enforcement": econ.enforcement(),
+        "note": "shadow 模式下只记账不拦；要真拦需 mode=enforce 且 budget_enforcement_enabled=true",
+    }))
 }
 
 /// GET /api/econ/report → 影子经济层报告 (用量 / 预算 / 本该被拦 / 影子路由 / 公共池 / 贡献)。

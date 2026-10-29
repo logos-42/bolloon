@@ -115,8 +115,13 @@ pub struct EconomicConfig {
     pub default_max_model_calls: Option<u32>,
     /// 最大委托深度 (子任务再委托的层数上限)
     pub default_max_delegation_depth: u32,
-    /// 价格表文件 (相对 BOLLOON_HOME; None = 无价格表 ⇒ 只记 token 不记金额)
+    /// 价格表文件 (相对 BOLLOON_HOME; None = 无价格表 ⇒ 只记 token 不记金额,
+    /// 且**现金类上限一律不生效** —— 报告里会如实标 cash_gate_enabled=false)
     pub price_table_file: Option<String>,
+    /// 节点级：每日最多多少次模型调用 (跨意图的总闸; None = 不限)
+    pub daily_model_calls: Option<u32>,
+    /// 节点级：每日最多花多少 USD (跨意图; 需要价格表才真正生效; None = 不限)
+    pub daily_cash_usd: Option<f64>,
 }
 
 impl Default for EconomicConfig {
@@ -133,6 +138,8 @@ impl Default for EconomicConfig {
             default_max_model_calls: None,
             default_max_delegation_depth: 3,
             price_table_file: None,
+            daily_model_calls: None,
+            daily_cash_usd: None,
         }
     }
 }

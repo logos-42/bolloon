@@ -1243,3 +1243,94 @@ fn exhaustion_policy_defaults_to_stop() {
         "敏感内容默认不许外发"
     );
 }
+
+// ──────────────── G. 闸口真拦得住 (并发 / 日预算 / 现金闸前提) ────────────────
+
+#[test]
+fn reservation_is_atomic_under_fanout() {
+    // 1000 个并发调用抢 20 个名额：判定+计数同锁 ⇒ 恰好 20 个通过（不是 1000 个都看到 0）
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    let g = Arc::new(guard(BudgetLimits {
+        max_model_calls: Some(20),
+        ..Default::default()
+    }));
+    let allowed = Arc::new(AtomicU32::new(0));
+    let mut hs = vec![];
+    for _ in 0..1000 {
+        let g = g.clone();
+        let allowed = allowed.clone();
+        hs.push(std::thread::spawn(move || {
+            if matches!(g.try_reserve_model_call("api", None), BudgetDecision::Allow) {
+                allowed.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+    for h in hs {
+        h.join().unwrap();
+    }
+    assert_eq!(allowed.load(Ordering::Relaxed), 20, "上限必须精确生效");
+    assert_eq!(g.state().model_calls, 20, "预扣也恰好 20 次");
+}
+
+#[test]
+fn reservation_refunds_on_reconcile() {
+    let g = guard(BudgetLimits {
+        max_cash_usd: Some(1.0),
+        ..Default::default()
+    });
+    // 预扣 0.5，实际只花 0.2 ⇒ 退 0.3
+    assert!(matches!(g.try_reserve_model_call("api", Some(0.5)), BudgetDecision::Allow));
+    assert!((g.spent_usd() - 0.5).abs() < 1e-9);
+    let d = g.reconcile_model_call(Some(0.5), Some(0.2)).unwrap();
+    assert!((d + 0.3).abs() < 1e-9, "差额应为 -0.3, 实得 {d}");
+    assert!((g.spent_usd() - 0.2).abs() < 1e-9, "对账后按实际算");
+    // 拿不到实际值 ⇒ 保持预扣, 不猜
+    assert!(g.reconcile_model_call(Some(0.2), None).is_none());
+}
+
+#[test]
+fn daily_gate_blocks_across_intents() {
+    let mut cfg = metering_cfg();
+    cfg.daily_model_calls = Some(3);
+    let econ = ShadowEconomy::new(cfg, None);
+    // 三个不同意图各调一次 ⇒ 第 4 次（哪怕又是新意图）被节点日闸拦下
+    for i in 0..3 {
+        let c = ctx(&format!("intent-{i}"), &format!("t{i}"));
+        assert!(matches!(econ.begin_model_call(&c, "api", None), BudgetDecision::Allow));
+    }
+    let c = ctx("intent-new", "t-new");
+    let d = econ.begin_model_call(&c, "api", None);
+    assert_eq!(d.rule(), Some("daily_max_model_calls"), "换意图也绕不过日闸");
+    assert_eq!(econ.daily().0, 3, "日计数 = 3");
+}
+
+#[test]
+fn cash_gate_is_reported_as_disabled_without_prices() {
+    let econ = ShadowEconomy::new(metering_cfg(), None);
+    let r = econ.report();
+    assert!(!r.cash_gate_enabled, "没有价格表 ⇒ 现金闸不可能生效, 必须如实报");
+    assert_eq!(r.daily_model_calls, 0);
+}
+
+#[test]
+fn begin_and_finish_record_actual_cost() {
+    let tmp = Tmp::new("beginfinish");
+    std::fs::write(
+        tmp.path().join("prices.json"),
+        r#"{"version":"v-bf","entries":[{"provider":"api","model":"m","usd_per_mtok_in":1.0,"usd_per_mtok_out":1.0}]}"#,
+    )
+    .unwrap();
+    let mut cfg = metering_cfg();
+    cfg.price_table_file = Some("prices.json".into());
+    let econ = ShadowEconomy::new(cfg, Some(tmp.path()));
+    let c = ctx("i-bf", "t-bf");
+    assert!(econ.estimate_cost("api", "m").is_none(), "第一次调用没有历史金额可预扣");
+    assert!(matches!(econ.begin_model_call(&c, "api", None), BudgetDecision::Allow));
+    econ.finish_model_call(&c, "api", "m", Some(1_000_000), Some(0), MeterStatus::Ok, 5, None, None);
+    let ev = &econ.meter().events()[0];
+    assert!((ev.cost_usd_estimated.unwrap() - 1.0).abs() < 1e-9);
+    assert!((econ.report().daily_cash_usd - 1.0).abs() < 1e-9, "日账跟着实际成本走");
+    // 下一次调用就能拿上次的真实成本当预扣
+    assert!((econ.estimate_cost("api", "m").unwrap() - 1.0).abs() < 1e-9);
+}

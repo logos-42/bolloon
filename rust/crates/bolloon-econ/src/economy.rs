@@ -93,6 +93,13 @@ pub struct EconomyReport {
     /// 成功且零现金成本的意图占比 (免费任务完成率; None = 还没有样本)
     pub free_task_completion_rate: Option<f64>,
     pub meter_failures: u64,
+    /// 节点当日：已用调用数 / 已用现金；以及是否设了日上限
+    pub daily_model_calls: u64,
+    pub daily_cash_usd: f64,
+    pub daily_max_model_calls: Option<u32>,
+    pub daily_max_cash_usd: Option<f64>,
+    /// **现金闸是否真的能生效**（没价格表 ⇒ 金额维度根本不存在, 不许假装有闸）
+    pub cash_gate_enabled: bool,
 }
 
 /// 影子经济层 (可开关; 关闭时是零成本空对象)。
@@ -110,6 +117,14 @@ pub struct ShadowEconomy {
     tasks_ok: AtomicU64,
     meter_failures: AtomicU64,
     dir: Option<PathBuf>,
+    /// 节点级"当天"预算（跨意图的总闸；意图预算挡不住"换意图绕闸"）
+    day: Mutex<String>,
+    day_calls: AtomicU64,
+    day_micro_usd: AtomicU64,
+    day_lock: Mutex<()>,
+    /// 每个 provider|model 最近一次的真实成本 —— 调用前拿它当"预扣金额"的代理。
+    /// 没有历史（第一次调用 / 无价格表）就返回 None ⇒ 只占调用次数，不虚报金额。
+    last_cost: Mutex<BTreeMap<String, f64>>,
 }
 
 impl ShadowEconomy {
@@ -159,6 +174,11 @@ impl ShadowEconomy {
             tasks_ok: AtomicU64::new(0),
             meter_failures: AtomicU64::new(0),
             dir: dir.map(|d| d.to_path_buf()),
+            day: Mutex::new(chrono::Local::now().format("%Y-%m-%d").to_string()),
+            day_calls: AtomicU64::new(0),
+            day_micro_usd: AtomicU64::new(0),
+            day_lock: Mutex::new(()),
+            last_cost: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -476,6 +496,181 @@ impl ShadowEconomy {
         out
     }
 
+    /// 调用前可用的金额估算 = 该 provider|model 最近一次的真实成本（没有就是 None）。
+    /// 这是"预扣"的代理值：宁可这次不预扣，也不用拍脑袋的常数把用户挡在外面。
+    pub fn estimate_cost(&self, provider: &str, model: &str) -> Option<f64> {
+        self.last_cost
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&format!("{provider}|{model}"))
+            .copied()
+    }
+
+    /// 当天日期（跨天自动清零日计数）
+    fn roll_day(&self) {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let mut d = self.day.lock().unwrap_or_else(|e| e.into_inner());
+        if *d != today {
+            *d = today;
+            self.day_calls.store(0, Ordering::Relaxed);
+            self.day_micro_usd.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// **调用前**：全局日闸 + 意图闸，原子预留。返回判定（enforce 下拦，shadow 下只记）。
+    ///
+    /// 顺序：先日闸（跨意图），再意图闸（本意图）。任一触顶都**不预留**，直接返回该判定。
+    pub fn begin_model_call(&self, ctx: &CallCtx, provider: &str, est_cost: Option<f64>) -> BudgetDecision {
+        if !self.metering() {
+            return BudgetDecision::Allow;
+        }
+        self.roll_day();
+        {
+            let _g = self.day_lock.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(max) = self.cfg.daily_model_calls {
+                if self.day_calls.load(Ordering::Relaxed) >= max as u64 {
+                    let d = BudgetDecision::WouldBlock {
+                        rule: "daily_max_model_calls",
+                        detail: format!("今日模型调用已达节点上限 {max}"),
+                    };
+                    self.note_block(ctx, &d);
+                    return d;
+                }
+            }
+            if let Some(max) = self.cfg.daily_cash_usd {
+                let spent = self.day_micro_usd.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+                if spent >= max {
+                    let d = BudgetDecision::WouldBlock {
+                        rule: "daily_max_cash",
+                        detail: format!("今日现金已用 {spent:.4} ≥ 节点上限 {max:.4}"),
+                    };
+                    self.note_block(ctx, &d);
+                    return d;
+                }
+            }
+            // 日闸通过 ⇒ 当场占一个名额
+            let d = self.guard_for_ctx(ctx).try_reserve_model_call(provider, est_cost);
+            if d.is_block() {
+                self.note_block(ctx, &d);
+                self.guard_for_ctx(ctx).note_would_block(d.rule().unwrap_or("unknown"), d.detail().unwrap_or(""));
+                return d;
+            }
+            self.day_calls.fetch_add(1, Ordering::Relaxed);
+            if let Some(c) = est_cost {
+                if c.is_finite() && c > 0.0 {
+                    self.day_micro_usd
+                        .fetch_add((c * 1_000_000.0).round() as u64, Ordering::Relaxed);
+                }
+            }
+            d
+        }
+    }
+
+    /// **调用后**：记事件 + 用实际成本对账（预扣的是估算，实际未知就保持预扣）。
+    pub fn finish_model_call(
+        &self,
+        ctx: &CallCtx,
+        provider: &str,
+        model: &str,
+        tokens_in: Option<u32>,
+        tokens_out: Option<u32>,
+        status: MeterStatus,
+        elapsed_ms: u64,
+        extra_evidence: Option<serde_json::Value>,
+        reserved_cost: Option<f64>,
+    ) -> BudgetDecision {
+        if !self.metering() {
+            return BudgetDecision::Allow;
+        }
+        let actual = self
+            .prices
+            .estimate(provider, model, tokens_in, tokens_out, None);
+        // 日账对账：有预扣就补差额；没预扣过（首次/无历史）就按实际记全额
+        let day_delta = match (reserved_cost, actual) {
+            (Some(r), Some(a)) => Some(a - r),
+            (None, Some(a)) => Some(a),
+            _ => None,
+        };
+        if let Some(delta) = day_delta {
+            if delta > 0.0 {
+                self.day_micro_usd
+                    .fetch_add((delta * 1_000_000.0).round() as u64, Ordering::Relaxed);
+            } else if delta < 0.0 {
+                let back = ((-delta) * 1_000_000.0).round() as u64;
+                let mut cur = self.day_micro_usd.load(Ordering::Relaxed);
+                loop {
+                    let next = cur.saturating_sub(back);
+                    match self.day_micro_usd.compare_exchange_weak(
+                        cur, next, Ordering::Relaxed, Ordering::Relaxed,
+                    ) {
+                        Ok(_) => break,
+                        Err(c) => cur = c,
+                    }
+                }
+            }
+        }
+        if let Some(a) = actual {
+            self.last_cost
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(format!("{provider}|{model}"), a);
+        }
+        self.guard_for_ctx(ctx)
+            .reconcile_model_call(reserved_cost, actual);
+        self.on_model_call_record(ctx, provider, model, tokens_in, tokens_out, actual, status, elapsed_ms, extra_evidence)
+    }
+
+    /// 内部：只记账不再做预算判定（判定已在 begin 阶段做完）
+    #[allow(clippy::too_many_arguments)]
+    fn on_model_call_record(
+        &self,
+        ctx: &CallCtx,
+        provider: &str,
+        model: &str,
+        tokens_in: Option<u32>,
+        tokens_out: Option<u32>,
+        cost: Option<f64>,
+        status: MeterStatus,
+        elapsed_ms: u64,
+        extra_evidence: Option<serde_json::Value>,
+    ) -> BudgetDecision {
+        let mut e = MeterEvent::new(
+            format!(
+                "m-{}-{}",
+                ctx.task_id,
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            ),
+            ResourceKind::ModelCall,
+            ctx.task_id.clone(),
+            provider,
+        );
+        e.intent_id = ctx.intent_id.clone();
+        e.parent_task_id = ctx.parent_task_id.clone();
+        e.requester = ctx.requester.clone();
+        e.executor = ctx.executor.clone();
+        e.model = Some(model.to_string());
+        e.tokens_in = tokens_in;
+        e.tokens_out = tokens_out;
+        e.elapsed_ms = elapsed_ms;
+        e.status = status;
+        if self.prices.has_prices() {
+            e.price_version = Some(self.prices.version.clone());
+            e.cost_usd_estimated = cost;
+        }
+        e.evidence = extra_evidence;
+        let _ = self.meter.record(e);
+        BudgetDecision::Allow
+    }
+
+    /// 当前节点日账（给 /api/econ/report 与 UI 显示"今天还能花多少"）
+    pub fn daily(&self) -> (u64, f64) {
+        self.roll_day();
+        (
+            self.day_calls.load(Ordering::Relaxed),
+            self.day_micro_usd.load(Ordering::Relaxed) as f64 / 1_000_000.0,
+        )
+    }
+
     pub fn report(&self) -> EconomyReport {
         let meter = self.meter.totals();
         let tasks_total = self.tasks_total.load(Ordering::Relaxed);
@@ -523,6 +718,11 @@ impl ShadowEconomy {
             tasks_succeeded,
             free_task_completion_rate: free_rate,
             meter_failures: self.meter_failures.load(Ordering::Relaxed),
+            daily_model_calls: self.daily().0,
+            daily_cash_usd: self.daily().1,
+            daily_max_model_calls: self.cfg.daily_model_calls,
+            daily_max_cash_usd: self.cfg.daily_cash_usd,
+            cash_gate_enabled: self.prices.has_prices(),
         }
     }
 }

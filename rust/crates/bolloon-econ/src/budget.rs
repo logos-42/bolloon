@@ -201,6 +201,9 @@ pub struct BudgetGuard {
     /// 未定价事件数 (没有金额的调用不算进现金, 但会计数)
     unpriced_calls: AtomicU32,
     noted: Mutex<Vec<String>>,
+    /// 预留锁: 「判定 + 计数」必须在同一把锁里 —— 否则 N 个并发调用会同时
+    /// 读到 calls=0 全部判"允许", 一条 @N 的群消息就能把上限击穿 N 倍。
+    reserve_lock: Mutex<()>,
 }
 
 impl BudgetGuard {
@@ -213,6 +216,7 @@ impl BudgetGuard {
             delegations: AtomicU32::new(0),
             unpriced_calls: AtomicU32::new(0),
             noted: Mutex::new(vec![]),
+            reserve_lock: Mutex::new(()),
         }
     }
 
@@ -302,6 +306,51 @@ impl BudgetGuard {
             };
         }
         BudgetDecision::Allow
+    }
+
+    /// **原子预留**：判定通过就当场计数（不是等响应回来再补）。
+    ///
+    /// 并发扇出下这是唯一能让 `max_model_calls` 真正生效的写法：
+    /// 先占额度再发请求；请求失败/被取消时用 `reconcile_model_call` 退还。
+    pub fn try_reserve_model_call(&self, provider: &str, est_cost: Option<f64>) -> BudgetDecision {
+        let _g = self.reserve_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let d = self.check_model_call(provider, est_cost);
+        if !d.is_block() {
+            self.record_model_call(est_cost);
+        }
+        d
+    }
+
+    /// 用实际用量对账：返回需要补记/退还的现金差额（正=补记, 负=退）。
+    ///
+    /// 承接 `try_reserve_model_call` 预扣的估算值；`actual=None` 表示这次拿不到金额
+    /// （失败或无价格表），预扣原样留下，不猜。
+    pub fn reconcile_model_call(&self, reserved: Option<f64>, actual: Option<f64>) -> Option<f64> {
+        let (Some(r), Some(a)) = (reserved, actual) else {
+            return None;
+        };
+        if !(r.is_finite() && a.is_finite()) {
+            return None;
+        }
+        let delta = a - r;
+        if delta >= 0.0 {
+            self.spent_micro_usd
+                .fetch_add((delta * 1_000_000.0).round() as u64, Ordering::Relaxed);
+        } else {
+            let back = ((-delta) * 1_000_000.0).round() as u64;
+            // 用 CAS 退，避免把别人预扣的额度退成负数
+            let mut cur = self.spent_micro_usd.load(Ordering::Relaxed);
+            loop {
+                let next = cur.saturating_sub(back);
+                match self.spent_micro_usd.compare_exchange_weak(
+                    cur, next, Ordering::Relaxed, Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(c) => cur = c,
+                }
+            }
+        }
+        Some(delta)
     }
 
     pub fn record_model_call(&self, cost_usd: Option<f64>) {

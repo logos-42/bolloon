@@ -103,12 +103,49 @@ impl RoomBus {
 /// (`default_max_model_calls`) 才有意义；没有预算闸就等于没有闸。
 pub const MAX_ELECTED_AGENTS: usize = 1000;
 
+/// 群成员超过这个数就进入"小组长接话"模式（leo 2026-10-29 定：默认 >10 ⇒ 每轮 5 人）
+pub const GROUP_LARGE_THRESHOLD: usize = 10;
+/// 大群里每条消息默认允许接话的人数
+pub const DEFAULT_REPLIES_WHEN_LARGE: usize = 5;
+
+/// 本次一条消息允许几个智能体接话。
+///
+/// - 警长显式设定（`sheriff_limit`）优先，并夹到 `MAX_ELECTED_AGENTS`；
+/// - 否则按群规模：成员 ≤10 就按命中数，>10 只放 `DEFAULT_REPLIES_WHEN_LARGE` 个（默认 5）。
+///
+/// 目的：大群里"人人都接话"会把成本和延迟都放大 N 倍，改成警长选出的几个小组长接话，
+/// 其余成员只接任务干活、有重要结论才回群 —— 异步协作，不刷屏。
+pub fn reply_limit_for(members: usize, sheriff_limit: Option<usize>) -> usize {
+    match sheriff_limit {
+        Some(n) if n > 0 => n.min(MAX_ELECTED_AGENTS),
+        _ => {
+            if members > GROUP_LARGE_THRESHOLD {
+                DEFAULT_REPLIES_WHEN_LARGE.min(members)
+            } else {
+                members.min(MAX_ELECTED_AGENTS)
+            }
+        }
+    }
+}
+
 pub fn elect(
     agents: &[AgentView],
     addressed: &[String],
     speaker: Option<&str>,
     cursor: usize,
 ) -> Vec<AgentView> {
+    elect_limited(agents, addressed, speaker, cursor, MAX_ELECTED_AGENTS)
+}
+
+/// 同 `elect`，但把"这一轮最多几个人接话"外置（警长设定 / 大群默认 5）。
+pub fn elect_limited(
+    agents: &[AgentView],
+    addressed: &[String],
+    speaker: Option<&str>,
+    cursor: usize,
+    limit: usize,
+) -> Vec<AgentView> {
+    let limit = limit.max(1).min(MAX_ELECTED_AGENTS);
     if agents.is_empty() {
         return vec![];
     }
@@ -128,7 +165,7 @@ pub fn elect(
             // 注意：这是**产品上限**，不是成本上限 —— 1000 个 agent 各自一次模型调用，
             // 一条消息的现金成本就是单次的 1000 倍。真正的成本闸在意图预算
             // (`economic.default_max_model_calls`) 上，两者必须一起用。
-            return hit.into_iter().take(MAX_ELECTED_AGENTS).collect();
+            return hit.into_iter().take(limit).collect();
         }
     }
     if let Some(sp) = speaker {
@@ -382,6 +419,23 @@ fn short(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 大群默认只让 5 个小组长接话（leo 2026-10-29 定），小群按需全开，警长可覆盖。
+    #[test]
+    fn reply_limit_follows_size_and_sheriff() {
+        assert_eq!(reply_limit_for(3, None), 3, "小群：命中几个就几个");
+        assert_eq!(reply_limit_for(10, None), 10, "刚好 10 人仍算小群");
+        assert_eq!(reply_limit_for(11, None), DEFAULT_REPLIES_WHEN_LARGE, ">10 默认 5");
+        assert_eq!(reply_limit_for(1000, None), 5, "再大也只 5 个接话");
+        assert_eq!(reply_limit_for(1000, Some(7)), 7, "警长可放大/缩小");
+        assert_eq!(reply_limit_for(5, Some(2000)), MAX_ELECTED_AGENTS, "警长也不能越过产品上限");
+        assert_eq!(reply_limit_for(5, Some(0)), 5, "0 视为未设定, 回落默认");
+
+        // 12 个成员都被 @：限 5 时只推 5 个（不刷屏、不炸成本）
+        let many: Vec<AgentView> = (0..12).map(|i| agent(&format!("m{i}"), "小星")).collect();
+        let picked = elect_limited(&many, &["小星".to_string()], None, 0, reply_limit_for(12, None));
+        assert_eq!(picked.len(), 5);
+    }
 
     /// 群聊智能体上限 = 1000（leo 2026-10-29 定）：@ 到一大批人时推举数不许被截成 3。
     /// 同时钉住"不超过上限"—— 上限本身也是成本闸的前提。
