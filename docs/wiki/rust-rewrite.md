@@ -590,3 +590,21 @@ DID 片段可搜 → 手机号形状**真的去做了跨机尝试**(`cross_machi
 **拾遗（只有真跑才校正得了的）**: 群消息的 HTTP 形状字段是 `content` / `sender` / `seq` / `timestamp_ms`，**不是** `text` / `signer` / `ts` —— 按印象写断言会得到空列表。
 
 **诚实边界**: ① 子讨论的访问控制是**谁能写**的 scope，**不是读隐私**（拿到底层 block 复制权限的人仍读得到 ⇒ 要"内部才能读"需另做加密或不分发，本批未做）；② `Whitelist` 改成员 ⇒ manifest 变 ⇒ **address 变**，本批**未**提供"就地修改子讨论成员"的迁移路径；③ 邀请链接只校**签名与过期**，不校"邀请者此刻是否仍是被授权的人"（策略取舍，未收紧）；④ 传输层**仍未切到 iroh**（Rust 侧跨机仍是 HTTP 点到点），本批的分享/邀请是逻辑指针层 ⇒ 换传输不改语义，但**没有**在真 iroh 上跑过；⑤ 只读快照页复用会话分享的通用渲染（按 `role` 显示"我"/"智能体"），未为群聊定制视图。
+
+---
+
+## 2026-10-30 第二十六批 (群内子讨论 + 统一分享/邀请 接入 web / CLI / 桌面 App)
+
+**动机**: leo「web，cli，App 都接入，同步」—— 把上一轮做好的三端点（`/api/groups/{id}/topics` · `/api/groups/{id}/share` · `/api/groups/join`，整群与子讨论同源同判据）接到三个前端面，再提交同步。
+
+**先摸清三面的真实接线点（不是猜）**: ① Web UI 是 `bolloon-web/assets/index.html`（内联 JS，编译进 `bolloon_web`）；② CLI `bolloon-cli/src/main.rs` 走 `ureq` HTTP 调本地 `bolloon web` 节点（范式见 `glass_login`），无现成群命令；③ 桌面 App `app-tauri` 壳只 `bolloon_web::serve` 并加载其内嵌 HTML（`?app=desktop` 走三栏），**业务全在 index.html** ⇒ 改 web 即同时覆盖桌面；`app-tauri/ui/index.html` 是**未被加载的陈旧副本**（行号偏离、运行时不引用），勿碰。
+
+| 面 | 落地 |
+| --- | --- |
+| **Web UI** (`assets/index.html`) | 群面板新增**子讨论面板**（群头「子讨论」按钮切换 `#topicPanel`：名称/成员输入 + 「新建子讨论」；`#topicList` 渲染）；`openGroup(id, fallbackName)` 加 `fallbackName`，点子讨论走 `openTopic(id)`（从 `topicNames` 映射取名字，**不把名字塞进 JS 字符串字面量** ⇒ 无引号破坏）；群头新增「分享只读」按钮发 `mode:'read'` 取 `r.url` 复制只读快照。消息渲染字段对齐后端 `content`/`sender`/`kind`（**不是** `text`）。子讨论本身是群 id ⇒ 发言/读史/分享全复用 |
+| **CLI** (`bolloon-cli/src/main.rs`) | 新增 `Group` 子命令（`create`/`list`/`share`/`join`），`ureq` 调本地节点（默认 54188）；`share` 的 `join` 打印带 manifest 的 `bolloon://join/…`，`read` 打印 `http://127.0.0.1:<port>/share/<token>` 只读快照；`join` 打印「开出与邀请方同一个 store」判定。`bolloon group --help` 已验证注册 |
+| **桌面 App** (`app-tauri`) | 壳不写业务 ⇒ **自动复用** web UI，改 index.html 即受益；`app-tauri/ui/index.html` 是未加载陈旧副本（已在设计页标注勿改） |
+
+**门禁（真跑）**: `cargo build -p bolloon-cli` **0 error** · `cargo build -p bolloon-web`（重嵌新 HTML）**0 error** · `cargo test -p bolloon-web` **32/0**（无回归）· `bolloon group --help` 与 `group create --help` 子命令参数正确 · wiki `wiki_check` / `wiki_lint --strict=v2` OK。
+
+**诚实边界**: ① `app-tauri/ui/index.html` 仍是不被加载的陈旧副本，仅在 `tauri.conf.json` 里做编译期校验，运行时用 External URL 加载内嵌服务 ⇒ 它若被人误改不会生效，反而造成漂移（已在设计页标注）；② 只读快照页复用会话分享那套通用渲染，未为群聊定制；③ 子讨论**读隐私**仍未做（拿到底层 block 复制权限仍可读，同上一轮）；④ CLI 子命令依赖本地节点在跑（`bolloon web`），节点没起时给明确报错而非静默。详见 [group-subtopic-sharing.md](./group-subtopic-sharing.md) 第 6 节「前端接入」。

@@ -83,7 +83,17 @@ tags: [group-chat, orbitdb, sub-topic, subgroup, sharing, invite, transport, iro
 
 **拾遗**：群消息的 HTTP 形状字段是 `content` / `sender` / `seq` / `timestamp_ms`（**不是** `text`）—— 这条是 e2e 真跑后才校正的，勿按印象写。
 
-## 6. 诚实边界
+## 6. 前端接入（web / CLI / 桌面 App）
+
+后端三端点（`/api/groups/{id}/topics` · `/api/groups/{id}/share` · `/api/groups/join`）**同一套语义**已接到三个端：
+
+- **Web UI**（`bolloon-web/assets/index.html`，被编译进 `bolloon_web` 二进制）：
+  - 群面板新增**子讨论面板**（群头「子讨论」按钮切换 `#topicPanel`，内含名称/成员输入 + 「新建子讨论」；`#topicList` 渲染子讨论列表）。`openGroup(id, fallbackName)` 增加了 `fallbackName`，点子讨论条目走 `openTopic(id)`（从 `topicNames` 映射取名字，避免把名字塞进 JS 字符串字面量引发引号破坏）——**子讨论本身就是群 id，发言 / 读史 / 分享全复用既有 `say`/`messages`/`share` 路径**。
+  - 群头新增「分享只读」按钮，发 `mode:'read'` 取 `r.url` 复制只读快照链接到剪贴板；原「邀请」按钮仍是 `mode:'join'`，两模式同入口。**消息渲染字段已对齐后端**（`content`/`sender`/`kind`），不是 `text`。
+- **CLI**（`bolloon-cli/src/main.rs`）：新增 `Group` 子命令（`create`/`list`/`share`/`join`），走 `ureq` 调本地 `bolloon web` 节点（默认端口 54188，范式照搬 `glass_login` 的「节点没在跑先 `bolloon web`」报错）。`share` 的 `join` 打印带 manifest 的 `bolloon://join/…` 链接，`read` 打印 `http://127.0.0.1:<port>/share/<token>` 只读快照链接；`join` 打印「开出与邀请方同一个 store」判定。已 `bolloon group --help` 验证子命令注册。
+- **桌面 App**（`app-tauri`）：壳 `main.rs` 只 `bolloon_web::serve` 并加载其内嵌 HTML（`?app=desktop` 走三栏），**业务 UI 全在 `bolloon-web/assets/index.html`**，故 Web 一改 App 自动受益，**壳不写业务分支**。注意 `app-tauri/ui/index.html` 是**未被加载的陈旧副本**（行号偏离、运行时不引用），勿误改。
+
+## 7. 诚实边界
 
 1. **子讨论的访问控制是"谁能写"的 scope，不是读隐私**：非成员写不进去，但若对人拿到了底层 block 复制权限，仍然读得到内容。要"只有内部能读"需要加密或不分发，本批未做。
 2. **成员变更意味着新 manifest ⇒ 新 address**：`Whitelist` 改成员会改变 store 寻址（manifest 参与寻址），本批**未提供**"就地修改子讨论成员"的迁移 / 换 store 路径。

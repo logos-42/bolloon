@@ -15,7 +15,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use serde_json::json;
 use tauri::Emitter;
-use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 
 /// 安装互斥: 同一应用只允许一条安装流 (重复点击/并发 invoke 不重复下载替换)

@@ -643,7 +643,17 @@
         <span class="grow"></span>
         <button id="groupInvite" class="mini" title="生成 orbit 邀请链接（内容寻址，对方开出同一个群）">邀请</button>
         <button id="groupJoinLink" class="mini" title="用 orbit 邀请链接加入群聊">加入</button>
+        <button id="groupTopicsBtn" class="mini" title="子讨论 / 小组内部分组讨论（组织内部）">子讨论</button>
+        <button id="groupShareRead" class="mini" title="生成只读分享快照链接（不加入也能看）">分享只读</button>
         <button id="groupClose" class="mini" title="关闭群聊">✕</button>
+      </div>
+      <div id="topicPanel" style="display:none;border-bottom:1px solid var(--btn-border);padding:8px;background:var(--bg2)">
+        <div style="display:flex;gap:6px;margin-bottom:6px">
+          <input id="topicName" placeholder="子讨论名称（组织内部讨论）" style="flex:1.2;min-width:0;padding:4px 6px" />
+          <input id="topicMembers" placeholder="可发言成员 DID，逗号分隔（留空=仅创建者）" style="flex:1.6;min-width:0;padding:4px 6px" />
+          <button id="topicCreate" class="mini" title="在群里开一个子讨论（小组讨论 / 组织内部）">新建子讨论</button>
+        </div>
+        <div id="topicList" style="display:flex;flex-direction:column;gap:4px"></div>
       </div>
       <div id="groupMessages"></div>
       <div class="group-composer">
@@ -2228,7 +2238,7 @@ if (isDesktopShell) initDesktopThreeCol();
 // ── 2026-10-27 (用户): 通讯录模块 (第一栏 📒 → 第二栏: 好友 / 好友请求 / 群聊) ──
 //   点好友钻取 = 「外部好友 × 外部智能体」, 布局与默认第二栏同款 (.sec + .item),
 //   但后端**暂无跨机智能体共享端点** ⇒ 列表位置显示诚实空态, 不造假数据 (端点落地后替换这两行)。
-let contacts=null, contactGroups=null, activeFriendDid='', activeGroupId='', groupTimer=null;
+let contacts=null, contactGroups=null, activeFriendDid='', activeGroupId='', groupTimer=null, topicNames={};
 const shortDid=(d)=>{const s=String(d||'');return s.length>18?s.slice(0,16)+'…':s;};
 
 async function loadContacts(){
@@ -2373,16 +2383,58 @@ if($('sideInviteBtn'))$('sideInviteBtn').onclick=sidebarInvite;
 if($('groupJoinLink'))$('groupJoinLink').onclick=()=>joinGroupByLink();
 if($('groupLinkJoinBtn'))$('groupLinkJoinBtn').onclick=()=>joinGroupByLink($('groupLinkInput')?$('groupLinkInput').value:'');
 
+// ── 子讨论 (小组讨论 / 组织内部) + 统一分享只读快照 ──
+async function loadGroupTopics(){
+  if(!activeGroupId)return;
+  try{
+    const j=await api('/api/groups/'+encodeURIComponent(activeGroupId)+'/topics');
+    const topics=(j.topics)||[];
+    topicNames={};
+    $('topicList').innerHTML=topics.length?topics.map(t=>{topicNames[t.id]=t.name;return `
+      <div class="item topic-item" onclick="openTopic('${t.id}')">
+        <div class="ava">🗂️</div>
+        <div class="txt"><b>${escapeHTML(t.name)}</b><small>${shortDid(t.address)}</small></div>
+      </div>`;}).join(''):'<div class="hint">(还没有子讨论，建一个组织内部讨论)</div>';
+  }catch(_){}
+}
+async function createTopic(){
+  const name=$('topicName').value.trim();
+  if(!name||!activeGroupId){return;}
+  const members=$('topicMembers').value.split(',').map(s=>s.trim()).filter(Boolean);
+  try{
+    const r=await api('/api/groups/'+encodeURIComponent(activeGroupId)+'/topics',{method:'POST',body:JSON.stringify({name,members})});
+    if(r.error)throw new Error(r.error);
+    $('topicName').value=''; $('topicMembers').value='';
+    await loadGroupTopics();
+    toast('已建子讨论：'+name);
+  }catch(e){ toast('建子讨论失败: '+e.message); }
+}
+async function shareGroupRead(){
+  if(!activeGroupId){ toast('请先打开一个群聊'); return; }
+  try{
+    const r=await api('/api/groups/'+encodeURIComponent(activeGroupId)+'/share',{method:'POST',body:JSON.stringify({mode:'read'})});
+    if(r.error)throw new Error(r.error);
+    const url=(location.origin||'http://127.0.0.1:54188')+r.url;
+    try{ await navigator.clipboard.writeText(url); toast('只读分享链接已复制（不加入也能看）'); }
+    catch(_){ toast('只读分享链接: '+url); }
+  }catch(e){ toast('生成只读分享失败: '+e.message); }
+}
+if($('groupTopicsBtn'))$('groupTopicsBtn').onclick=()=>{const p=$('topicPanel');if(p)p.style.display=p.style.display==='none'?'block':'none';};
+if($('groupShareRead'))$('groupShareRead').onclick=shareGroupRead;
+if($('topicCreate'))$('topicCreate').onclick=createTopic;
+function openTopic(id){ openGroup(id, topicNames[id]||id); }
+
 // ── 群聊 (主区): 真收发 (/api/groups/{id}/messages · /say, Ed25519 签名) + 4s 轮询 ──
-async function openGroup(id){
+async function openGroup(id, fallbackName){
   activeGroupId=id;
   const g=((contactGroups&&contactGroups.groups)||[]).find(x=>x.id===id)||{};
   const m=document.querySelector('main');
   m.classList.remove('world-mode');              // 与世界面板互斥
   m.classList.add('group-mode');
-  $('groupName').textContent=g.name||id;
+  $('groupName').textContent=g.name||fallbackName||id;
   $('groupMeta').textContent=[shortDid(g.owner),g.address?('orbit '+String(g.address).slice(0,12)):''].filter(Boolean).join(' · ');
   await loadGroupMessages();
+  await loadGroupTopics();
   if(groupTimer)clearInterval(groupTimer);
   groupTimer=setInterval(loadGroupMessages,2500);
   renderContacts();

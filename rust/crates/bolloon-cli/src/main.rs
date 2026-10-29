@@ -103,6 +103,11 @@ enum Commands {
         #[arg(long, default_value = "all")]
         domain: String,
     },
+    /// 群 / 子讨论 / 统一分享 (建子讨论 · 列子讨论 · 分享 join|read · 凭链接加入)
+    Group {
+        #[command(subcommand)]
+        action: GroupAction,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -208,6 +213,7 @@ async fn main() -> anyhow::Result<()> {
             GlassAction::Login { port, once } => glass_login(port, once),
         },
         Some(Commands::Dream { topic, domain }) => run_dream(topic, &domain),
+        Some(Commands::Group { action }) => run_group(action),
     }
 }
 
@@ -221,8 +227,52 @@ enum GlassAction {
         /// 只把码打出来, 不等扫码结果
         #[arg(long)]
         once: bool,
-    },
-}
+        },
+        }
+
+        #[derive(Subcommand)]
+        enum GroupAction {
+        /// 在群里开一个子讨论（小组讨论 / 组织内部；只有 --members 能发言）
+        Create {
+            /// 父群 id
+            #[arg(long)]
+            group: String,
+            /// 子讨论名称
+            #[arg(long)]
+            name: String,
+            /// 可发言成员 DID（逗号分隔；留空=仅创建者）
+            #[arg(long, default_value = "")]
+            members: String,
+            /// 节点端口（与 `bolloon web` 一致）
+            #[arg(long, default_value_t = 54188)]
+            port: u16,
+        },
+        /// 列出某群的子讨论
+        List {
+            #[arg(long)]
+            group: String,
+            #[arg(long, default_value_t = 54188)]
+            port: u16,
+        },
+        /// 统一分享：join=签名邀请链接（内容寻址，对方开出同一个 store）；read=只读快照链接（不加入也能看）
+        Share {
+            #[arg(long)]
+            group: String,
+            /// join | read
+            #[arg(long, default_value = "join")]
+            mode: String,
+            #[arg(long, default_value_t = 54188)]
+            port: u16,
+        },
+        /// 凭 orbit 邀请链接加入（开出与邀请方同一个 store）
+        Join {
+            /// bolloon://join/… 邀请链接
+            #[arg(long)]
+            link: String,
+            #[arg(long, default_value_t = 54188)]
+            port: u16,
+        },
+        }
 
 /// 眼镜端登录: 终端出二维码 → 眼镜扫 → 节点签发令牌 (眼镜自己存, 终端只报结果)
 ///
@@ -285,6 +335,108 @@ fn glass_login(port: u16, once: bool) -> anyhow::Result<()> {
         }
     }
     anyhow::bail!("180 秒没扫 —— 码已过期，重新跑 `bolloon glass login`")
+}
+
+/// 群 / 子讨论 / 统一分享：全部走 HTTP 调本地节点（与 `bolloon web` 同一个进程）。
+/// 子讨论 = 独立 orbit store（自带 ACL，组织内部才可写）；统一分享 join/read 对整群与子讨论同源。
+fn run_group(action: GroupAction) -> anyhow::Result<()> {
+    match action {
+        GroupAction::Create { group, name, members, port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let members: Vec<String> = members
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let r: serde_json::Value = ureq::post(&format!("{base}/api/groups/{group}/topics"))
+                .send_json(serde_json::json!({ "name": name, "members": members }))
+                .map_err(|e| anyhow::anyhow!("节点没在跑（{base}）：先 `bolloon web`。\n{e}"))?
+                .into_json()?;
+            if let Some(err) = r["error"].as_str() {
+                anyhow::bail!("建子讨论失败: {err}");
+            }
+            println!(
+                "已建子讨论：id={} name={} parent={}",
+                r["id"].as_str().unwrap_or(""),
+                r["name"].as_str().unwrap_or(""),
+                r["parent"].as_str().unwrap_or("")
+            );
+            if let Some(m) = r["address"].as_str() {
+                println!("orbit address: {m}");
+            }
+        }
+        GroupAction::List { group, port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let r: serde_json::Value = ureq::get(&format!("{base}/api/groups/{group}/topics"))
+                .call()
+                .map_err(|e| anyhow::anyhow!("节点没在跑（{base}）：先 `bolloon web`。\n{e}"))?
+                .into_json()?;
+            if let Some(err) = r["error"].as_str() {
+                anyhow::bail!("列子讨论失败: {err}");
+            }
+            let topics = r["topics"].as_array().cloned().unwrap_or_default();
+            if topics.is_empty() {
+                println!("（该群还没有子讨论）");
+                return Ok(());
+            }
+            for t in topics {
+                let n = t["members"].as_array().map(|a| a.len()).unwrap_or(0);
+                println!(
+                    "- {}  {}  ({} 个可发言成员)",
+                    t["name"].as_str().unwrap_or(""),
+                    t["id"].as_str().unwrap_or(""),
+                    n
+                );
+            }
+        }
+        GroupAction::Share { group, mode, port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let r: serde_json::Value = ureq::post(&format!("{base}/api/groups/{group}/share"))
+                .send_json(serde_json::json!({ "mode": mode }))
+                .map_err(|e| anyhow::anyhow!("节点没在跑（{base}）：先 `bolloon web`。\n{e}"))?
+                .into_json()?;
+            if let Some(err) = r["error"].as_str() {
+                anyhow::bail!("分享失败: {err}");
+            }
+            match r["mode"].as_str() {
+                Some("join") => {
+                    let link = r["invite"].as_str().unwrap_or("");
+                    println!("orbit 邀请链接（内容寻址，对方开出同一个 store，默认 7 天有效）：");
+                    println!("{link}");
+                }
+                Some("read") => {
+                    let path = r["url"].as_str().unwrap_or("");
+                    println!("只读分享快照链接（不加入也能看）：");
+                    println!("{}{}", base, path);
+                }
+                _ => anyhow::bail!("未知分享模式: {r}"),
+            }
+        }
+        GroupAction::Join { link, port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let r: serde_json::Value = ureq::post(&format!("{base}/api/groups/join"))
+                .send_json(serde_json::json!({ "link": link }))
+                .map_err(|e| anyhow::anyhow!("节点没在跑（{base}）：先 `bolloon web`。\n{e}"))?
+                .into_json()?;
+            if let Some(err) = r["error"].as_str() {
+                anyhow::bail!("加入失败: {err}");
+            }
+            println!(
+                "已加入：id={} name={}",
+                r["group_id"].as_str().unwrap_or(""),
+                r["name"].as_str().unwrap_or("")
+            );
+            if let Some(p) = r["parent"].as_str() {
+                if !p.is_empty() {
+                    println!("（子讨论，父群 {p}）");
+                }
+            }
+            if let Some(same) = r["same_store_as_inviter"].as_bool() {
+                println!("开出与邀请方同一个 store: {same}");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 启动 web —— 启动期走**品牌仪表盘** (`tui::LoadingTui`, 复用 TS `LoadingTUI`)
