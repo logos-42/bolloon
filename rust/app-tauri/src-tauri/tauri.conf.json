@@ -1,20 +1,36 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Bolloon",
-  "version": "0.6.14",
+  "version": "0.6.13-1",
   "identifier": "cn.bolloon.desktop",
   "build": {
     "frontendDist": "../ui"
   },
   "app": {
     "windows": [],
+    "withGlobalTauri": true,
     "security": {
       "csp": "default-src 'self' http://127.0.0.1:*; connect-src 'self' http://127.0.0.1:* https:*"
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://cdn.jsdelivr.net/gh/logos-42/bolloon-UI@main/update/latest.json",
+        "https://logos-42.github.io/bolloon-UI/update/latest.json",
+        "https://github.com/logos-42/bolloon/releases/latest/download/latest.json"
+      ],
+      "pubkey": "RWQBnxMhCRvlpuwdQnwgZPCjhr57S1T9fiv3GH+RFlebHkdjnxq+69+F"
+    }
+  },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "app", "nsis", "appimage"],
+    "targets": [
+      "dmg",
+      "app",
+      "nsis",
+      "appimage"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

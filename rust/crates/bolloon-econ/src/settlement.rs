@@ -275,13 +275,16 @@ impl SettlementLedger {
     }
 
     pub fn total_settled_usd(&self) -> f64 {
-        self.records
+        let sum: f64 = self
+            .records
             .lock()
             .unwrap()
             .iter()
             .filter(|r| r.state != SettlementState::RolledBack)
             .map(|r| r.shares.iter().map(|s| s.amount_usd).sum::<f64>())
-            .sum()
+            .sum();
+        // `-0.0` 会让报告里出现"-0"这种吓人的读法; 归一到 0 (值没变)
+        sum + 0.0
     }
 
     pub fn by_payer(&self) -> std::collections::BTreeMap<String, f64> {

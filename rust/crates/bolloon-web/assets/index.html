@@ -954,12 +954,13 @@ function renderRoomMeta(st,members,orbit,channel){
       const names=think.map(id=>{const a=(state.agents||[]).find(x=>x.id===id);return (a&&a.name)||id;});
       base=`${names.join('、')} 正在想…（后台执行，出来会汇报）`;
     }else if(st&&st.running){
-      base='交流中 · 等待下一条消息';
+      base='持续交流中 · 警长统筹，全员并发';
     }else{
       base=(st&&st.id?'本群组已结束 · 点「发起交流」在原群组重新开始':'未在主动交流（点 ＋ 新建群组）');
       if(st&&st.elected)base+=` · 上次推举：${st.elected} 接话`;
     }
     if(channel)base+=` · orbitdb: ${orbit||'checking'}`;
+    if(st&&st.sheriff_name)base='👮 警长：'+st.sheriff_name+' · '+base;
     s.textContent=base;
   }
   const lead=(st&&st.leader_agent_id)||'';
@@ -974,6 +975,7 @@ function renderRoom(msgs,members){
   const labels={report:'汇报',discuss:'商议',invite:'邀请',guide:'指导'};
   const think=(members||[]).filter(x=>x.status==='thinking');
   box.innerHTML=rows.map(m=>{
+    if(m.kind==='system')return `<div class="room-sys" style="text-align:center;color:var(--muted,#8a8a8a);font-size:12px;margin:8px 0;opacity:.85">${escapeHTML(m.text||'')}</div>`;
     const me=(state&&state.profile&&state.profile.did)||'';
     const isMe=m.agent_id===me;
     const a=amap[m.agent_id];
@@ -1083,6 +1085,7 @@ $('roomInput').addEventListener('keydown',e=>{
 })();
 
 function renderSettingsUpdate(){
+  if(IN_TAURI){ renderTauriUpdate(); return; }
   const el=$('settingsUpdateStatus');
   if(!el||!update)return;
   if(update.available)el.textContent='发现新版本 '+update.latest+'，点击底部更新按钮安装。';
@@ -1091,6 +1094,7 @@ function renderSettingsUpdate(){
 // 2026-10-26: 桌面三栏第一栏的更新按钮 — 与侧栏 #updateBtn 同源同一份 update 数据,
 //   纪律同侧栏: **有更新才显示**, 没检测到更新 (或源不可达 unknown) 一律不显形, 绝不误报。
 function syncRailUpdate(){
+  if(IN_TAURI){ renderTauriUpdate(); return; }
   const rb=$('railUpdateBtn'); if(!rb)return;
   const tb=$('topUpdateBtn');
   if(update&&update.available){
@@ -1102,7 +1106,85 @@ function syncRailUpdate(){
     if(tb){tb.style.display='none';tb.classList.remove('available');}
   }
 }
+// ───────────────────────── Tauri 原生更新 (tauri-plugin-updater) ─────────────────────────
+// 仅在 Tauri 壳内 (withGlobalTauri 注入 window.__TAURI__) 启用; 否则走原 HTTP /api/update 兜底。
+const IN_TAURI = !!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
+// 状态机: idle → checking → up-to-date | update-available → downloading → verifying
+//        → installing → restart-required | failed (失败可重试)。UI 与执行逻辑分离:
+//        这里是 UI/状态机, 真正的下载/验签/安装/重启由 Rust 壳的 check_update/update_install/relaunch 命令完成。
+let tauriUpdate = { state:'idle', info:null, detail:null, progress:null, error:null };
+async function tauriCheckUpdate(){
+  if(!IN_TAURI) return null;
+  tauriUpdate.state='checking'; tauriUpdate.error=null; renderTauriUpdate();
+  try{
+    const r = await window.__TAURI__.core.invoke('check_update');
+    tauriUpdate.info = r || null;
+    tauriUpdate.state = (r && r.available) ? 'update-available' : 'up-to-date';
+    renderTauriUpdate();
+    return r;
+  }catch(e){
+    tauriUpdate.state='failed'; tauriUpdate.error=String((e&&e.message)||e); tauriUpdate.detail=null;
+    renderTauriUpdate();
+    return null;
+  }
+}
+async function tauriInstallUpdate(){
+  if(!IN_TAURI) return;
+  tauriUpdate.state='downloading'; tauriUpdate.progress={downloaded:0,total:0,percent:0};
+  tauriUpdate.error=null; tauriUpdate.detail=null; renderTauriUpdate();
+  let offP=null, offS=null;
+  try{
+    try{
+      offP = await window.__TAURI__.event.listen('update-progress', (e)=>{ tauriUpdate.progress=e.payload; renderTauriUpdate(); });
+      offS = await window.__TAURI__.event.listen('update-state', (e)=>{ tauriUpdate.state=e.payload.state; if(e.payload.detail)tauriUpdate.detail=e.payload.detail; renderTauriUpdate(); });
+    }catch(_){}
+    await window.__TAURI__.core.invoke('update_install');
+    // 成功: 状态由 update-state 事件推进到 restart-required/installing; 若后端直接返回则兜底
+    if(tauriUpdate.state!=='restart-required' && tauriUpdate.state!=='installing'){ tauriUpdate.state='restart-required'; renderTauriUpdate(); }
+  }catch(e){
+    if(tauriUpdate.state!=='failed'){ tauriUpdate.state='failed'; tauriUpdate.error=String((e&&e.message)||e); renderTauriUpdate(); }
+  }finally{ try{offP&&offP();}catch(_){} try{offS&&offS();}catch(_){} }
+}
+function tauriRelaunch(){
+  if(IN_TAURI){ window.__TAURI__.core.invoke('relaunch').catch(()=>{}); }
+}
+function renderTauriUpdate(){
+  if(!IN_TAURI) return;
+  const tu=tauriUpdate, b=$('updateBtn'), rb=$('railUpdateBtn'), el=$('settingsUpdateStatus');
+  const showBtn=(txt,title)=>{ if(b){b.style.display='block';b.classList.add('available');b.textContent=txt;b.title=title;} if(rb){rb.style.display='';rb.classList.add('available');rb.title=title;} };
+  const hideBtn=()=>{ if(b){b.style.display='none';b.classList.remove('available');} if(rb){rb.style.display='none';rb.classList.remove('available');} };
+  const ver=tu.info?tu.info.version:'', cur=tu.info?tu.info.current_version:'';
+  let html='';
+  switch(tu.state){
+    case 'idle': hideBtn(); if(el)el.textContent=''; break;
+    case 'checking': hideBtn(); if(el)el.textContent='正在检查更新…'; break;
+    case 'up-to-date': hideBtn(); if(el)el.textContent='当前已是最新 '+(cur||''); break;
+    case 'update-available': {
+      const notes=(tu.info&&tu.info.notes)?String(tu.info.notes).slice(0,500):'';
+      html='发现新版本 <b>'+ver+'</b>'+(notes?'<br><span style="white-space:pre-wrap;opacity:.85">'+notes+'</span>':'')+'<br><button class="mini" id="tuInstall">立即更新</button>';
+      if(el)el.innerHTML=html; showBtn('⟳ 更新 '+ver,'有新版本 '+ver+'，点击更新'); break;
+    }
+    case 'downloading': case 'verifying': case 'installing': {
+      const p=tu.progress||{percent:0}, pct=p.percent||0;
+      const label=tu.state==='downloading'?'下载中':(tu.state==='verifying'?'校验签名中':'安装中');
+      const sz=(p.total)?(' ('+((p.downloaded||0)/1048576).toFixed(1)+'/'+((p.total)/1048576).toFixed(1)+' MB)'):'';
+      html=label+' <b>'+pct+'%</b>'+sz+'<br><div style="height:6px;background:#333;border-radius:3px;overflow:hidden;margin-top:4px"><div style="width:'+pct+'%;height:100%;background:var(--accent)"></div></div>';
+      if(el)el.innerHTML=html; showBtn((tu.state==='downloading'?'⏳ ':'✓ ')+ver,label); break;
+    }
+    case 'restart-required':
+      html='更新已安装完成，请重启以生效。<br><button class="mini" id="tuRestart">立即重启</button>';
+      if(el)el.innerHTML=html; showBtn('⟳ 重启','更新完成，点击重启'); break;
+    case 'failed':
+      const sig=(tu.detail&&tu.detail.signature_failed)?'（签名验证失败，已拒绝安装）':'';
+      html='更新失败：'+((tu.error)||'未知错误')+sig+'<br><button class="mini" id="tuRetry">重试</button>';
+      if(el)el.innerHTML=html; showBtn('⚠ 更新失败','更新失败，点击重试'); break;
+  }
+  const bi=$('tuInstall'); if(bi)bi.onclick=()=>tauriInstallUpdate();
+  const br=$('tuRestart'); if(br)br.onclick=()=>tauriRelaunch();
+  const bf=$('tuRetry'); if(bf)bf.onclick=()=>tauriInstallUpdate();
+}
 function renderUpdate(){
+  if(IN_TAURI){ renderTauriUpdate(); return; }
   const b=$('updateBtn');
   if(b.dataset.busy==='1')return;
   if(update&&update.available){
@@ -1115,6 +1197,7 @@ function renderUpdate(){
   renderSettingsUpdate();
 }
 async function refreshUpdate(){
+  if(IN_TAURI){ await tauriCheckUpdate(); return; }
   try{
     const u=await api('/api/update');
     if(u){update=u;renderUpdate();}
@@ -1761,6 +1844,7 @@ function setUpdateStage(text,stage){
   }
 }
 async function runUpdateFlow(){
+  if(IN_TAURI){ await tauriInstallUpdate(); return; }
   const b=$('updateBtn');
   if(b.dataset.busy==='1')return; // 互斥: 一次只跑一条安装流
   b.dataset.busy='1';b.disabled=true;

@@ -1973,9 +1973,10 @@ mod route_tests {
         assert_eq!(off["enabled"], serde_json::json!(false), "{off}");
         assert_eq!(off["meter"]["events"], serde_json::json!(0), "{off}");
         assert!(off["would_block"].as_array().unwrap().is_empty());
-        assert!(
-            off.get("mode").is_none() || off["mode"].is_null(),
-            "关闭态不假装自己有模式: {off}"
+        assert_eq!(
+            off["meter"]["unpriced_events"],
+            serde_json::json!(0),
+            "关闭态不是'零成本', 是'没在计量': {off}"
         );
 
         // ② 显式打开 (仍默认 shadow): 只记账, 不强制

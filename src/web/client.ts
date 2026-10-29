@@ -3304,11 +3304,67 @@ function renderAvatarFromIdentity(identity: any): void {
   );
 }
 
+// ── Tauri 原生更新 (桌面壳): 当运行在 Tauri 内, 走 tauri-plugin-updater 的 IPC,
+//    不再用 npm 自更新 (对打包后的二进制无效)。UI 与执行逻辑分离: 这里只管状态机/进度展示。
+const IN_TAURI_UPDATE = !!(typeof window !== 'undefined' && (window as any).__TAURI__ && (window as any).__TAURI__.core);
+
+type TauriUpdateInfo = { available: boolean; version?: string; current_version?: string; notes?: string; date?: string };
+
+async function tauriCheckUpdateWeb(btn: HTMLElement | null, text: HTMLElement | null, dot: HTMLElement | null): Promise<void> {
+  try {
+    if (text) text.textContent = '检查中…';
+    const r = await ((window as any).__TAURI__.core.invoke('check_update') as Promise<TauriUpdateInfo>);
+    if (r && r.available) {
+      btn?.classList.add('has-update');
+      if (dot) dot.style.display = '';
+      if (text) text.textContent = `更新到 v${r.version}`;
+      if (btn) (btn as HTMLElement).dataset.latest = String(r.version || '');
+    } else {
+      btn?.classList.remove('has-update');
+      if (dot) dot.style.display = 'none';
+      if (text) text.textContent = '已是最新';
+      setTimeout(() => { const t = document.getElementById('update-text'); if (t && btn && !btn.classList.contains('has-update')) t.textContent = '检查更新'; }, 2500);
+    }
+  } catch {
+    btn?.classList.remove('has-update');
+    if (text) text.textContent = '检查失败';
+  }
+}
+
+async function tauriInstallUpdateWeb(btn: HTMLElement | null, text: HTMLElement | null, dot: HTMLElement | null): Promise<void> {
+  if (text) text.textContent = '下载中 0%';
+  btn?.classList.add('updating');
+  let offP: any = null, offS: any = null;
+  try {
+    try {
+      offP = await (window as any).__TAURI__.event.listen('update-progress', (e: any) => {
+        const p = e.payload || {}; if (text) text.textContent = `下载中 ${p.percent || 0}%`;
+      });
+      offS = await (window as any).__TAURI__.event.listen('update-state', (e: any) => {
+        const s = (e.payload && e.payload.state) || '';
+        if (text) {
+          if (s === 'verifying') text.textContent = '校验签名中…';
+          else if (s === 'installing') text.textContent = '安装中…';
+          else if (s === 'restart-required') text.textContent = '点击重启以生效';
+          else if (s === 'failed') text.textContent = '更新失败，点击重试';
+        }
+      });
+    } catch { /* events 可能不可用 */ }
+    await (window as any).__TAURI__.core.invoke('update_install');
+  } catch {
+    if (text) text.textContent = '更新失败，点击重试';
+  } finally {
+    try { if (offP) offP(); } catch { /* ignore */ }
+    try { if (offS) offS(); } catch { /* ignore */ }
+  }
+}
+
 async function checkUpdateStatus(showBusy = false): Promise<void> {
   const btn = document.getElementById('update-btn');
   const text = document.getElementById('update-text');
   const dot = document.getElementById('update-dot');
   if (!btn) return;
+  if (IN_TAURI_UPDATE) { await tauriCheckUpdateWeb(btn as HTMLElement, text as HTMLElement, dot as HTMLElement); return; }
   try {
     if (showBusy && text) text.textContent = '检查中…';
     const res = await fetch('/api/update/check');
@@ -3333,6 +3389,7 @@ async function applyUpdateFlow(): Promise<void> {
   const text = document.getElementById('update-text');
   const dot = document.getElementById('update-dot');
   if (!btn) return;
+  if (IN_TAURI_UPDATE) { await tauriInstallUpdateWeb(btn as HTMLElement, text as HTMLElement, dot as HTMLElement); return; }
   if (!btn.classList.contains('has-update')) { await checkUpdateStatus(true); return; }
   if (text) text.textContent = '更新中…';
   btn.classList.add('updating');

@@ -307,16 +307,21 @@ fn native_update_info(st: &AppState) -> serde_json::Value {
     struct Src;
     impl bolloon_agent::updater::UpdateSource for Src {
         fn latest_version(&self) -> Result<String, String> {
-            let body: serde_json::Value = ureq::get(
-                "https://api.github.com/repos/logos-42/bolloon/releases/latest",
-            )
-            .timeout(std::time::Duration::from_secs(5))
-            .set("User-Agent", "bolloon-updater")
-            .call()
-            .map_err(|e| e.to_string())?
-            .into_json()
-            .map_err(|e| e.to_string())?;
-            body["tag_name"].as_str().map(|s| s.to_string()).ok_or_else(|| "无 tag".into())
+            // 走镜像链读我们自己的 latest.json (Tauri 清单格式, 带 version 字段):
+            // 不用 GitHub API —— 它有限流且国内常不可达。
+            fetch_first("latest.json", |url| {
+                let body: serde_json::Value = ureq::get(url)
+                    .timeout(std::time::Duration::from_secs(5))
+                    .set("User-Agent", "bolloon-updater")
+                    .call()
+                    .map_err(|e| e.to_string())?
+                    .into_json()
+                    .map_err(|e| e.to_string())?;
+                body["version"]
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| "清单缺 version".to_string())
+            })
         }
         fn download(&self) -> Result<Vec<u8>, String> {
             Err("install 走 install()".into())
@@ -2094,6 +2099,57 @@ pub async fn auth_decide(
     Json(serde_json::json!({ "ok": true, "status": r.status }))
 }
 
+
+// ────────────────────── 更新源 (国内可达优先) ──────────────────────
+//
+// GitHub 直连在国内经常超时/限速, 所以更新走**镜像链**: 站点清单 (jsDelivr CDN)
+// → 站点本体 (GitHub Pages) → GitHub 加速代理 → GitHub 直连。
+// 任一命中即用; 全挂才如实报"更新源不可用"(不假装已是最新)。
+// `BOLLOON_UPDATE_MIRROR=<前缀>` 可整体覆盖 (自建镜像/内网)。
+fn update_candidates(file: &str) -> Vec<String> {
+    if let Ok(m) = std::env::var("BOLLOON_UPDATE_MIRROR") {
+        let m = m.trim().trim_end_matches('/');
+        if !m.is_empty() {
+            return vec![format!("{m}/{file}")];
+        }
+    }
+    vec![
+        format!("https://cdn.jsdelivr.net/gh/logos-42/bolloon-UI@main/update/{file}"),
+        format!("https://logos-42.github.io/bolloon-UI/update/{file}"),
+        format!("https://ghfast.top/https://github.com/logos-42/bolloon/releases/latest/download/{file}"),
+        format!("https://github.com/logos-42/bolloon/releases/latest/download/{file}"),
+    ]
+}
+
+/// 当前平台的可执行文件名 (与发布产物同名; 老资产名 `bolloon-bin` 作为兜底)
+fn update_binary_assets() -> Vec<&'static str> {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    match (os, arch) {
+        ("macos", "aarch64") => vec!["bolloon-darwin-arm64", "bolloon-bin"],
+        ("macos", "x86_64") => vec!["bolloon-darwin-x64", "bolloon-bin"],
+        ("linux", "x86_64") => vec!["bolloon-linux-x64", "bolloon-bin"],
+        ("linux", "aarch64") => vec!["bolloon-linux-arm64", "bolloon-bin"],
+        ("windows", "x86_64") => vec!["bolloon-windows-x64.exe", "bolloon-bin"],
+        _ => vec!["bolloon-bin"],
+    }
+}
+
+/// 依次尝试镜像链, 返回第一个成功的结果
+fn fetch_first<F, T>(file: &str, mut f: F) -> Result<T, String>
+where
+    F: FnMut(&str) -> Result<T, String>,
+{
+    let mut errs: Vec<String> = vec![];
+    for url in update_candidates(file) {
+        match f(&url) {
+            Ok(v) => return Ok(v),
+            Err(e) => errs.push(format!("{url} → {e}")),
+        }
+    }
+    Err(format!("更新源全部不可用: {}", errs.join(" | ")))
+}
+
 // ────────────────────────── 更新 (前端 /api/update + apply) ──────────────────────────
 
 /// GET /api/update → {available,latest,current} (前端 updateBtn 读)
@@ -2121,16 +2177,29 @@ pub async fn update_apply(State(st): State<AppState>) -> Json<serde_json::Value>
             Ok("latest".into())
         }
         fn download(&self) -> Result<Vec<u8>, String> {
-            let bytes = ureq::get(
-                "https://github.com/logos-42/bolloon/releases/latest/download/bolloon-bin",
-            )
-            .timeout(std::time::Duration::from_secs(120))
-            .call()
-            .map_err(|e| e.to_string())?;
-            let mut out = Vec::new();
-            use std::io::Read;
-            bytes.into_reader().read_to_end(&mut out).map_err(|e| e.to_string())?;
-            Ok(out)
+            let mut last = String::from("没有可用的下载源");
+            for asset in update_binary_assets() {
+                let r = fetch_first(asset, |url| {
+                    let resp = ureq::get(url)
+                        .timeout(std::time::Duration::from_secs(180))
+                        .call()
+                        .map_err(|e| e.to_string())?;
+                    let mut out = Vec::new();
+                    use std::io::Read;
+                    resp.into_reader()
+                        .read_to_end(&mut out)
+                        .map_err(|e| e.to_string())?;
+                    if out.is_empty() {
+                        return Err("空文件".into());
+                    }
+                    Ok(out)
+                });
+                match r {
+                    Ok(b) => return Ok(b),
+                    Err(e) => last = e,
+                }
+            }
+            Err(last)
         }
     }
     let Ok(self_path) = std::env::current_exe() else {

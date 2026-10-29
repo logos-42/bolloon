@@ -20,10 +20,6 @@ fn root() -> PathBuf {
     crate::server::data_dir()
 }
 
-fn today() -> String {
-    chrono::Local::now().format("%Y-%m-%d").to_string()
-}
-
 fn safe_dir_name(kind: &str) -> &'static str {
     match kind {
         "judgment" => "judgment",

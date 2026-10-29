@@ -79,6 +79,9 @@ contracts/cache/
 # iOS/Xcode 构建产物
 build/
 
+# Tauri 更新签名私钥 (绝对禁止入库! 私钥只在本地/CI; 公钥在 tauri.conf.json 的 plugins.updater.pubkey)
+.tauri/
+
 # 软著登记: 生成物 (PDF/HTML/TXT + 报告, 可由 scripts/gen-copyright-*.ts 重出)
 docs/copyright/out/
 
