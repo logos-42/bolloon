@@ -169,6 +169,28 @@ Bolloon 不提供用于制造有害物质或武器的信息, 对爆炸物尤为�
 
 对于财务或法律问题, Bolloon 应提供用户做出明智决定所需的事实信息, 而非给出自信的推荐, 并说明自己并非律师或财务顾问."#;
 
+/// 工具使用 + 自主循环 (本批新增: 直击"模型不知道自己有工具/超时后退化成纯文本"问题)
+pub const LAYER_TOOL_USE: &str = r#"# 工具使用与自主循环 (务必遵守)
+
+你运行在用户本机, **确实拥有**直接操作本地文件系统、执行命令、检索代码的工具——你不是"纯文本对话模型", 不要声称无法访问用户文件。
+
+## 可用工具 (直接用, 别让用户代劳)
+- read_file / write_to_file / replace_in_file: 读写本机文件
+- search_content / search_file / list_dir: 在仓库里检索与列目录
+- execute_command: 在本机跑 shell (受白名单/路径/预算约束, 但超时·取消·审计照常)
+
+用户提到路径或项目时, **用工具自己去读**, 不要请用户把文件内容贴进来, 也不要让用户替你跑命令。
+
+## 自主循环 (持续进行, 不中途停)
+- 拿到任务先想清楚要查/改什么, 再调工具落实。
+- 每一轮: 调工具 → 看结果 → 决定下一步(继续调工具或给结论)。工具结果没看完就接着干, **不要中途停下问"要我继续吗"**。
+- 独立小任务尽量并行调用多个工具。
+- 直到任务**真正完成**(文件改好/验证通过/结论给出)才停, 别提前用总结收尾。
+
+## 超时/失败
+- 工具或模型回复超时: 重试一次; 仍不行就把任务拆小再试, 或如实说明卡在哪一步。
+- **绝不要**声称"我是纯文本模型、无法访问你的本地文件"——你本来就拥有这些工具。"#;
+
 /// 群聊友好合作语气 (本批新增: 群聊合作机制支持友好和善)
 pub const LAYER_GROUP_TONE: &str = r#"# 群聊合作语气
 
@@ -203,6 +225,15 @@ pub fn builtin_layers() -> Vec<PromptLayer> {
             applies_to: vec![AppliesTo::All],
             max_chars: 800,
             content: LAYER_REFUSAL.into(),
+        },
+        // 工具使用 + 自主循环: 紧跟拒绝层, 高于群聊 tone; 所有 channel 都装配
+        PromptLayer {
+            id: "core.tool-use".into(),
+            version: "1.0.0".into(),
+            priority: 110,
+            applies_to: vec![AppliesTo::All],
+            max_chars: 900,
+            content: LAYER_TOOL_USE.into(),
         },
         PromptLayer {
             id: "channel.group-tone".into(),
@@ -654,9 +685,12 @@ mod tests {
             &AssembleContext { channel: "local", role: None, tool: None },
         );
         // 全部层都在
-        for id in ["core.identity", "core.core-traits", "core.refusal", "dynamic.snapshot", "dynamic.skills", "dynamic.todo", "dynamic.judgment", "dynamic.history-note"] {
+        for id in ["core.identity", "core.core-traits", "core.refusal", "core.tool-use", "dynamic.snapshot", "dynamic.skills", "dynamic.todo", "dynamic.judgment", "dynamic.history-note"] {
             assert!(p.layer_ids.contains(&id.into()), "缺 {id}: {:?}", p.layer_ids);
         }
+        // 工具使用层进了正文 (直击"不知道自己有工具/纯文本退化")
+        assert!(p.text.contains("直接操作本地文件系统"), "工具使用层应声明本地文件能力");
+        assert!(p.text.contains("不要声称无法访问用户文件"), "应禁止纯文本退化话术");
         // 判断力唤起进了正文
         assert!(p.text.contains("过去的经验"));
         assert!(p.text.contains("先做最小版本"));

@@ -122,16 +122,35 @@ impl<S: LoopStrategy> KernelLoop<S> {
         let mut no_progress = 0u32;
 
         for turn in 1..=self.max_steps {
-            let resp = match self.strategy.call(model_id, messages.clone(), tools.clone()).await {
-                Ok(r) => r,
-                Err(e) => {
-                    steps.push(LoopStep {
-                        turn,
-                        response: None,
-                        tool_calls: vec![],
-                        stop: Some(StopReason::Failed(e.clone())),
-                    });
-                    return Err(e);
+            // 模型调用带重试兜底: 超时/瞬时错误退避重试, 避免"上次回复超时了"直接中断整个会话
+            let resp = {
+                let mut last_err = String::new();
+                let mut got: Option<GenerateResult> = None;
+                for attempt in 0..=3 {
+                    match self.strategy.call(model_id, messages.clone(), tools.clone()).await {
+                        Ok(r) => {
+                            got = Some(r);
+                            break;
+                        }
+                        Err(e) => {
+                            last_err = e.clone();
+                            if attempt < 3 {
+                                tokio::time::sleep(std::time::Duration::from_secs(2u64 * (attempt as u64 + 1))).await;
+                            }
+                        }
+                    }
+                }
+                match got {
+                    Some(r) => r,
+                    None => {
+                        steps.push(LoopStep {
+                            turn,
+                            response: None,
+                            tool_calls: vec![],
+                            stop: Some(StopReason::Failed(last_err.clone())),
+                        });
+                        return Err(last_err);
+                    }
                 }
             };
 
