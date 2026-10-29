@@ -21,7 +21,7 @@
         "https://logos-42.github.io/bolloon-UI/update/latest.json",
         "https://ghfast.top/https://github.com/logos-42/bolloon/releases/latest/download/latest.json"
       ],
-      "pubkey": "RWRgnzIsaANY05fuOgEsBygUQ5DAHOHSnbxccK/VCVZ+l84KLaJBqD1M"
+      "pubkey": "RWS6WvRXeNqLu9+iUmKP9jlkaUN9fFPvod5PGG4XAggWPDNFDP9kB2Vi"
     }
   },
   "bundle": {
@@ -38,6 +38,7 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.png"
-    ]
+    ],
+    "createUpdaterArtifacts": true
   }
 }
