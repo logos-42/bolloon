@@ -671,7 +671,14 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
     ));
     // 受治理配置: 启动时从文件恢复 (失败则保持默认, fail-closed —— 但**不吃掉原因**)
     if let Err(e) = state.config.load_from_file().await {
-        tracing::warn!(error = %e, "配置加载失败, 保持默认 (fail-closed; 文件格式或校验没过)");
+        // 首次运行没有配置文件是**正常态**, 不是"配置坏了" —— 以前它每次都打一条 WARN,
+        // 让人以为配置被吃掉了 (而实际是默认值)。真正的坏文件/校验失败才 WARN。
+        let msg = e.to_string();
+        if msg.contains("No such file") || msg.contains("NotFound") {
+            tracing::info!("没有受治理配置文件 — 首次运行, 使用默认配置");
+        } else {
+            tracing::warn!(error = %msg, "配置加载失败, 保持默认 (fail-closed; 文件格式或校验没过)");
+        }
     }
     // 经济层: 按已加载配置构造 (默认 enabled=false ⇒ 空转, 零行为差异)
     {
