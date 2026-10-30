@@ -1128,7 +1128,7 @@ async fn group_messages(
                     .map(|a| a.name.clone())
                     .unwrap_or_default()
             };
-            let ends = t.elected_at_ms + t.term_days.max(0) as i64 * 86_400_000;
+            let ends = t.elected_at_ms + t.term_days as i64 * 86_400_000;
             (t.agent_id, name, ends)
         }
         None => (String::new(), String::new(), 0),

@@ -2145,9 +2145,6 @@ impl ChatRuns {
     }
 }
 
-/// 循环观察者 → 阶段事件（**只读**循环事实，不改执行语义）。
-/// 前端拿到的就是这里发出的「哪一轮 / 调了什么工具 / 工具成没成」。
-
 /// 某个会话的历史（**按会话取**，不是全局一份）——
 /// 不同智能体的会话因此可以并行跑，历史不串味。
 async fn chat_history(st: &AppState, session_id: &str, text: &str) -> Vec<ChatMessage> {
