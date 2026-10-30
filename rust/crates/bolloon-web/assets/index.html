@@ -375,6 +375,11 @@
   .composer-footer .ts:active input:checked + .ts__track .ts__thumb{transform:translateX(14px)}
   .composer-footer .ts__label{font-size:12px}
   .composer-footer .mini{padding:3px 8px;font-size:11px}
+  /* 2026-10-30: 模型名太长时和「Clarity 完全访问」压在一起 —— 模型按钮可缩、文字省略, 开关永不被挤 */
+  .composer-footer{align-items:center;flex-wrap:wrap;row-gap:6px;min-width:0}
+  .composer-footer #modelBtn{flex:0 1 auto;max-width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .composer-footer .ts{flex:0 0 auto;margin-left:auto}
+  .composer-footer .ts__label{white-space:nowrap;max-width:none}
   #imgPreview{display:flex;gap:6px;padding:0 16px 8px}
   #imgPreview img{height:44px;border-radius:8px;border:1px solid var(--line)}
   dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:16px;width:min(520px,92vw)}
