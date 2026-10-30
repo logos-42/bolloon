@@ -201,7 +201,7 @@ pub fn render_startup_dashboard(d: &DashboardData) -> Vec<String> {
     let w = crate::width::term_width().clamp(64, 120);
     let inner = w.saturating_sub(2);
     let sep = 1usize;
-    let left_w = ((inner.saturating_sub(sep)) * 2 / 5).max(20).min(40);
+    let left_w = ((inner.saturating_sub(sep)) * 2 / 5).clamp(20, 40);
     let right_w = inner.saturating_sub(sep).saturating_sub(left_w);
 
     let mut out: Vec<String> = Vec::new();

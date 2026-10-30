@@ -287,6 +287,9 @@ impl AiOptimizer {
         let mut stop_reason = "budget.rounds".to_string();
         let baseline_version = mgr.current().version;
 
+        // 单轮 fail-closed: 每一轮都以 apply → 事后测量 → (保留 | 回滚) 收尾, 没有"继续下一轮"的分支。
+        // 想做多轮, 得先有逐轮可信指标 —— 所以这里显式记下 never_loop 是**设计**而不是漏写。
+        #[allow(clippy::never_loop)]
         for round in 1..=obj.max_rounds {
             if started.elapsed().as_millis() as u64 > obj.max_wall_ms {
                 stop_reason = "budget.wall_ms".into();

@@ -345,7 +345,7 @@ pub fn inject_judgment_gate(
 ) -> InjectionResult {
     let conflict = already_injected
         .iter()
-        .find(|s| ["value-store", "situational", "injection-gate"].contains(&s.as_ref()));
+        .find(|s| ["value-store", "situational", "injection-gate"].contains(s));
     if let Some(c) = conflict {
         return InjectionResult {
             system_addition: String::new(),
@@ -460,6 +460,8 @@ pub fn inject_judgment_gate(
 /// **完整 system prompt 组装** (统一入口: 借 TS registry + 快照 + 判断力唤起 + skills + todo + history 提示)
 ///
 /// history 已由 compaction 压缩 (runtime), 这里只拼"历史注入说明"段 (真历史走 messages 数组)
+// 组装需要 8 份现成材料 (文档/技能/待办/判断力/历史/…); 拆结构体只是把同一批字段搬一遍
+#[allow(clippy::too_many_arguments)]
 pub fn build_system_prompt(
     docs: &crate::home::AgentDocs,
     skills_index: Option<&str>,

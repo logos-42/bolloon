@@ -244,12 +244,17 @@ impl RunLifecycle {
 
     pub async fn all(&self) -> Vec<RunRecord> {
         let mut v: Vec<RunRecord> = self.records.lock().await.values().cloned().collect();
-        v.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        // 新→旧 (Reverse 让 sort_by_key 与原 cmp(&b, &a) 同序)
+        v.sort_by_key(|r| std::cmp::Reverse(r.created_at));
         v
     }
 
     pub async fn len(&self) -> usize {
         self.records.lock().await.len()
+    }
+
+    pub async fn is_empty(&self) -> bool {
+        self.records.lock().await.is_empty()
     }
 }
 

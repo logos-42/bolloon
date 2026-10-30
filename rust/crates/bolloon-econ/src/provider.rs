@@ -256,8 +256,10 @@ impl ProviderRegistry {
 /// 四种可选路由策略 (+ 保持现状)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RoutingStrategy {
     /// 不改现状 (默认)
+    #[default]
     Baseline,
     /// 本地资源优先
     LocalFirst,
@@ -269,11 +271,6 @@ pub enum RoutingStrategy {
     CommunityFirst,
 }
 
-impl Default for RoutingStrategy {
-    fn default() -> Self {
-        Self::Baseline
-    }
-}
 
 /// 路由请求 (由意图预算 + 请求者选择共同约束)。
 #[derive(Debug, Clone, Default)]
@@ -353,14 +350,14 @@ impl RoutingPolicy for StandardRouter {
                 (None, _) => true,
             })
             .filter(|p| {
-                req.min_quality.map_or(true, |q| {
+                req.min_quality.is_none_or(|q| {
                     p.model_quality(req.model.as_deref().unwrap_or(""))
-                        .map_or(false, |pq| pq >= q)
+                        .is_some_and(|pq| pq >= q)
                 })
             })
             .filter(|p| {
                 req.max_cost_usd
-                    .map_or(true, |max| self.cost_of(p).map_or(false, |c| c <= max))
+                    .is_none_or(|max| self.cost_of(p).is_some_and(|c| c <= max))
             })
             .collect();
         if eligible.is_empty() {

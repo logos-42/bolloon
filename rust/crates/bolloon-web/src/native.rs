@@ -2775,6 +2775,8 @@ pub(crate) fn parse_addressed(text: &str) -> Vec<String> {
 /// 房间消息的「商议决策 + 命令门禁」纯计算（不碰 I/O；供 `room_guide`/`group_say` 调用，也可单测）。
 ///
 /// 流程：注册作者角色 → 解析 @提及 → 推选谁回应 → 控麦 → **命令门禁**（外部顾问不可下达指令）。
+// 入参是一次群消息的全部事实 (作者/角色/正文/是否命令/时序/推举模式); 拆结构体只是搬字段
+#[allow(clippy::too_many_arguments)]
 pub fn decide_room_message(
     hub: &DeliberationHub,
     group_id: &str,
@@ -3412,7 +3414,7 @@ pub async fn world_cards_share(
         fs.friends.friends().to_vec() // 好友模式的目标集 (公开模式用不到)
     };
     let (env, delivery) =
-        bolloon_agent::world::share_card(&*st.identity, card, &friends, now_ms());
+        bolloon_agent::world::share_card(&st.identity, card, &friends, now_ms());
     // QUIC 直连出站: 对**已登记 socket 地址**的好友, 经 QUIC 直发信封 (与 HTTP 跨机互补, best-effort)
     #[cfg(feature = "quic-transport")]
     if let Some(q) = &st.quic {
@@ -3581,7 +3583,7 @@ pub async fn directory_publish(
     let mut fs = st.forge.lock().await;
     let mut d = dir_view(&fs);
     // 「这个联系方式归我」这件事必须由**本机 DID 私钥**签字 —— 声明别人的 DID 会被拒
-    let published = d.publish_signed(&contact, &did, &pepper, name, pk, &*st.identity, now_ms());
+    let published = d.publish_signed(&contact, &did, &pepper, name, pk, &st.identity, now_ms());
     match published {
         Ok(e) => {
             let verified = bolloon_agent::directory::verify_entry(&e);
@@ -3863,9 +3865,9 @@ async fn fetch_remote_did(url: &str) -> Option<String> {
 
 /// POST /api/node/connect → 「搜索到的节点一键互加好友 + 直连」
 ///
-/// 发起方 (带 `url`): 登记对端基址 (→ 自动 QUIC 直连) + 拉对端 did + 把对端加为本地好友 (自动同意)
-///   + 回调对端 (带本机 did/url) 让对端也加本机为好友 ⇒ 双方互加。回调需本机对外可达基址
-///   (`BOLLOON_PUBLIC_URL`); 没配则降级为单向 (本机加对方 + 直连, 对方需也连本机才互加)。
+/// 发起方 (带 `url`): 登记对端基址 (→ 自动 QUIC 直连) + 拉对端 did + 把对端加为本地好友 (自动同意),
+/// 并回调对端 (带本机 did/url) 让对端也加本机为好友 ⇒ 双方互加。回调需本机对外可达基址
+/// (`BOLLOON_PUBLIC_URL`); 没配则降级为单向 (本机加对方 + 直连, 对方需也连本机才互加)。
 /// 回调方 (带 `did`, 由发起方打过来): 直接把对方 did 加为本地好友 (自动同意) + 登记对方 url (→ 直连)。
 #[derive(serde::Deserialize)]
 pub struct NodeConnectReq {
@@ -4358,9 +4360,11 @@ pub async fn econ_intent_budget(
     let Some(econ) = st.econ.get() else {
         return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
     };
-    let mut limits = bolloon_econ::BudgetLimits::default();
-    limits.max_model_calls = body.get("max_model_calls").and_then(|v| v.as_u64()).map(|v| v as u32);
-    limits.max_cash_usd = body.get("max_cash_usd").and_then(|v| v.as_f64());
+    let mut limits = bolloon_econ::BudgetLimits {
+        max_model_calls: body.get("max_model_calls").and_then(|v| v.as_u64()).map(|v| v as u32),
+        max_cash_usd: body.get("max_cash_usd").and_then(|v| v.as_f64()),
+        ..Default::default()
+    };
     if let Some(d) = body.get("max_delegations").and_then(|v| v.as_u64()) {
         limits.max_delegations = d as u32;
     }
@@ -5195,145 +5199,6 @@ fn urlencode(s: &str) -> String {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 分享快照: 写到盘上要能原样读回 (链接不是死链)
-    #[test]
-    fn share_snapshot_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("bolloon-share-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("shares")).unwrap();
-        let snap = serde_json::json!({
-            "token": "abcdef0123456789abcdef01",
-            "session_id": "sess-0001",
-            "title": "分享测试",
-            "messages": [{ "role": "user", "text": "你好", "time": "10:00" }],
-        });
-        let token = snap["token"].as_str().unwrap();
-        std::fs::write(
-            dir.join("shares").join(format!("{token}.json")),
-            serde_json::to_string_pretty(&snap).unwrap(),
-        )
-        .unwrap();
-        let got = load_share_in(&dir, token).expect("读回分享");
-        assert_eq!(got["title"], "分享测试");
-        assert_eq!(got["messages"][0]["text"], "你好");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 只认 hex token: 路径穿越 / 空 / 非 hex 一律读不到
-    #[test]
-    fn share_token_rejects_path_traversal() {
-        let dir = std::env::temp_dir();
-        assert!(load_share_in(&dir, "").is_none());
-        assert!(load_share_in(&dir, "../etc/passwd").is_none());
-        assert!(load_share_in(&dir, "abc/def").is_none());
-        assert!(load_share_in(&dir, "zzzz").is_none());
-        // 合法形状但文件不存在 → 仍 None (不冒充有内容)
-        assert!(load_share_in(&dir, "0123456789abcdef").is_none());
-    }
-
-    /// 分享页内容一律转义 (不执行外部脚本)
-    #[test]
-    fn share_page_escapes_html() {
-        let evil = "<script>alert(1)</script>";
-        let out = html_escape(evil);
-        assert!(!out.contains('<'), "{out}");
-        assert!(out.contains("&lt;script&gt;"));
-        assert_eq!(html_escape("a&b\"c'd"), "a&amp;b&quot;c&#39;d");
-    }
-
-    /// 安装互斥: 已在装时第二次 apply 必须被拒 (不并发替换同一二进制)
-    #[test]
-    fn update_gate_is_exclusive() {
-        let gate = std::sync::atomic::AtomicBool::new(false);
-        let first = gate
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok();
-        let second = gate
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok();
-        assert!(first && !second, "第二次申请必须被拒");
-        gate.store(false, Ordering::SeqCst); // 失败释放后可重试
-        let retry = gate
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok();
-        assert!(retry);
-    }
-
-    // ── 商议接线：房间消息的决策 + 命令门禁（不构造 AppState，直接驱动 decide_room_message）──
-    #[test]
-    fn room_advisor_advice_allowed_but_command_refused() {
-        let h = DeliberationHub::new(1500);
-        h.add_member("human", MemberRole::Human);
-        h.add_member("agent", MemberRole::Internal);
-        h.add_member("ext", MemberRole::Advisor);
-
-        // 外部顾问献策（建议）→ 放行（建议/发言不受门禁约束）
-        let ok = decide_room_message(
-            &h, "g", "ext", MemberRole::Advisor, "@agent 建议加个缓存", false, 1,
-            ElectionMode::AddressedFirst, 0,
-        )
-        .expect("建议应放行");
-        assert_eq!(ok.speaker_id.as_deref(), Some("agent")); // 被@的内部 agent 被推为发言者
-        assert!(ok.can_command); // can_command 反映"发言者"是否可被命令（此处是内部 agent）
-
-        // 外部顾问被直接点名献策（他是发言者）→ 其发言的 can_command=false（顾问不可被命令）
-        let ok_ext = decide_room_message(
-            &h, "g", "human", MemberRole::Human, "@ext 你怎么看", false, 2,
-            ElectionMode::AddressedFirst, 0,
-        )
-        .expect("点名顾问献策应放行");
-        assert_eq!(ok_ext.speaker_id.as_deref(), Some("ext"));
-        assert!(!ok_ext.can_command); // 顾问当发言者 ⇒ 不可被命令
-
-        // 外部顾问下达指令（command=true）→ 入口判据拒绝
-        let refused = decide_room_message(
-            &h, "g", "ext", MemberRole::Advisor, "@agent 立刻执行 X", true, 3,
-            ElectionMode::AddressedFirst, 0,
-        );
-        assert!(refused.is_err(), "外部顾问不可下达命令");
-
-        // 本机人类下达指令 → 放行
-        let ok2 = decide_room_message(
-            &h, "g", "human", MemberRole::Human, "@agent 帮我跑测试", true, 4,
-            ElectionMode::AddressedFirst, 0,
-        )
-        .expect("人类指令应放行");
-        assert!(ok2.can_command);
-    }
-
-    #[test]
-    fn room_concurrent_ingest_unique_seq() {
-        let h = std::sync::Arc::new(DeliberationHub::new(1500));
-        h.add_member("human", MemberRole::Human);
-        let mut handles = vec![];
-        for i in 0..24 {
-            let h = h.clone();
-            handles.push(std::thread::spawn(move || {
-                decide_room_message(
-                    &h,
-                    "g",
-                    "human",
-                    MemberRole::Human,
-                    &format!("msg {i}"),
-                    false,
-                    i as u64 + 1,
-                    ElectionMode::AddressedFirst,
-                    0,
-                )
-                .unwrap()
-                .seq
-            }));
-        }
-        let mut seqs: Vec<u64> = handles.into_iter().map(|hd| hd.join().unwrap()).collect();
-        seqs.sort_unstable();
-        assert_eq!(seqs, (1..=24).collect::<Vec<_>>());
-    }
-}
-
 // ──────────────────── 智能体 ⋯ 菜单 + 身份绑定 (2026-10-27) ────────────────────
 //
 // leo 要求: 智能体栏要有「三个点」, 里面是 改默认全局名称 / 授权钱包 / 固定 ping / 分享 / 删除
@@ -5540,8 +5405,8 @@ pub async fn phone_status(State(st): State<AppState>) -> Json<serde_json::Value>
     let did_ok = v["did"].as_str().unwrap_or_default() == st.identity.did.as_str();
     // 绑定时登记的 DID 必须就是这把公钥推出来的 DID (自洽性; 防止手改文件把两个身份拼一起)
     let key_did_ok = pubkey_from_hex(&pubkey_hex)
-        .map(|pk| bolloon_p2p::KeyPair::did_from_public(&pk).as_str().to_string()
-            == v["did"].as_str().unwrap_or_default().to_string())
+        .map(|pk| bolloon_p2p::KeyPair::did_from_public(&pk).as_str()
+            == v["did"].as_str().unwrap_or_default())
         .unwrap_or(false);
     Json(serde_json::json!({
         "bound": true,
@@ -5837,4 +5702,143 @@ pub async fn notify_count(State(st): State<AppState>) -> Json<serde_json::Value>
         "friends": friends,
         "topups": topups,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 分享快照: 写到盘上要能原样读回 (链接不是死链)
+    #[test]
+    fn share_snapshot_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("bolloon-share-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("shares")).unwrap();
+        let snap = serde_json::json!({
+            "token": "abcdef0123456789abcdef01",
+            "session_id": "sess-0001",
+            "title": "分享测试",
+            "messages": [{ "role": "user", "text": "你好", "time": "10:00" }],
+        });
+        let token = snap["token"].as_str().unwrap();
+        std::fs::write(
+            dir.join("shares").join(format!("{token}.json")),
+            serde_json::to_string_pretty(&snap).unwrap(),
+        )
+        .unwrap();
+        let got = load_share_in(&dir, token).expect("读回分享");
+        assert_eq!(got["title"], "分享测试");
+        assert_eq!(got["messages"][0]["text"], "你好");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 只认 hex token: 路径穿越 / 空 / 非 hex 一律读不到
+    #[test]
+    fn share_token_rejects_path_traversal() {
+        let dir = std::env::temp_dir();
+        assert!(load_share_in(&dir, "").is_none());
+        assert!(load_share_in(&dir, "../etc/passwd").is_none());
+        assert!(load_share_in(&dir, "abc/def").is_none());
+        assert!(load_share_in(&dir, "zzzz").is_none());
+        // 合法形状但文件不存在 → 仍 None (不冒充有内容)
+        assert!(load_share_in(&dir, "0123456789abcdef").is_none());
+    }
+
+    /// 分享页内容一律转义 (不执行外部脚本)
+    #[test]
+    fn share_page_escapes_html() {
+        let evil = "<script>alert(1)</script>";
+        let out = html_escape(evil);
+        assert!(!out.contains('<'), "{out}");
+        assert!(out.contains("&lt;script&gt;"));
+        assert_eq!(html_escape("a&b\"c'd"), "a&amp;b&quot;c&#39;d");
+    }
+
+    /// 安装互斥: 已在装时第二次 apply 必须被拒 (不并发替换同一二进制)
+    #[test]
+    fn update_gate_is_exclusive() {
+        let gate = std::sync::atomic::AtomicBool::new(false);
+        let first = gate
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+        let second = gate
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+        assert!(first && !second, "第二次申请必须被拒");
+        gate.store(false, Ordering::SeqCst); // 失败释放后可重试
+        let retry = gate
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+        assert!(retry);
+    }
+
+    // ── 商议接线：房间消息的决策 + 命令门禁（不构造 AppState，直接驱动 decide_room_message）──
+    #[test]
+    fn room_advisor_advice_allowed_but_command_refused() {
+        let h = DeliberationHub::new(1500);
+        h.add_member("human", MemberRole::Human);
+        h.add_member("agent", MemberRole::Internal);
+        h.add_member("ext", MemberRole::Advisor);
+
+        // 外部顾问献策（建议）→ 放行（建议/发言不受门禁约束）
+        let ok = decide_room_message(
+            &h, "g", "ext", MemberRole::Advisor, "@agent 建议加个缓存", false, 1,
+            ElectionMode::AddressedFirst, 0,
+        )
+        .expect("建议应放行");
+        assert_eq!(ok.speaker_id.as_deref(), Some("agent")); // 被@的内部 agent 被推为发言者
+        assert!(ok.can_command); // can_command 反映"发言者"是否可被命令（此处是内部 agent）
+
+        // 外部顾问被直接点名献策（他是发言者）→ 其发言的 can_command=false（顾问不可被命令）
+        let ok_ext = decide_room_message(
+            &h, "g", "human", MemberRole::Human, "@ext 你怎么看", false, 2,
+            ElectionMode::AddressedFirst, 0,
+        )
+        .expect("点名顾问献策应放行");
+        assert_eq!(ok_ext.speaker_id.as_deref(), Some("ext"));
+        assert!(!ok_ext.can_command); // 顾问当发言者 ⇒ 不可被命令
+
+        // 外部顾问下达指令（command=true）→ 入口判据拒绝
+        let refused = decide_room_message(
+            &h, "g", "ext", MemberRole::Advisor, "@agent 立刻执行 X", true, 3,
+            ElectionMode::AddressedFirst, 0,
+        );
+        assert!(refused.is_err(), "外部顾问不可下达命令");
+
+        // 本机人类下达指令 → 放行
+        let ok2 = decide_room_message(
+            &h, "g", "human", MemberRole::Human, "@agent 帮我跑测试", true, 4,
+            ElectionMode::AddressedFirst, 0,
+        )
+        .expect("人类指令应放行");
+        assert!(ok2.can_command);
+    }
+
+    #[test]
+    fn room_concurrent_ingest_unique_seq() {
+        let h = std::sync::Arc::new(DeliberationHub::new(1500));
+        h.add_member("human", MemberRole::Human);
+        let mut handles = vec![];
+        for i in 0..24 {
+            let h = h.clone();
+            handles.push(std::thread::spawn(move || {
+                decide_room_message(
+                    &h,
+                    "g",
+                    "human",
+                    MemberRole::Human,
+                    &format!("msg {i}"),
+                    false,
+                    i as u64 + 1,
+                    ElectionMode::AddressedFirst,
+                    0,
+                )
+                .unwrap()
+                .seq
+            }));
+        }
+        let mut seqs: Vec<u64> = handles.into_iter().map(|hd| hd.join().unwrap()).collect();
+        seqs.sort_unstable();
+        assert_eq!(seqs, (1..=24).collect::<Vec<_>>());
+    }
 }

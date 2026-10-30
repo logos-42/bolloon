@@ -10,6 +10,7 @@ pub const POLL_INTERVALS: [u64; 7] = [2, 4, 8, 10, 20, 100, 120];
 
 /// 轮询配置
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct PollConfig {
     pub max_retries: Option<u32>,
     pub verbose: bool,
@@ -17,16 +18,6 @@ pub struct PollConfig {
     pub once: bool,
 }
 
-impl Default for PollConfig {
-    fn default() -> Self {
-        Self {
-            max_retries: None,
-            verbose: false,
-            jitter: false,
-            once: false,
-        }
-    }
-}
 
 impl PollConfig {
     pub fn max_retries(mut self, n: u32) -> Self {
@@ -102,8 +93,8 @@ where
             let min = raw_sleep * 3 / 4;
             let max = raw_sleep * 5 / 4;
             let range = max - min + 1;
-            let jitter = min + (attempt as u64 * 7919) % range;
-            jitter
+            
+            min + (attempt as u64 * 7919) % range
         } else {
             raw_sleep
         };

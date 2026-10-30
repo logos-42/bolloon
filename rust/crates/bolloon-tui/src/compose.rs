@@ -398,7 +398,7 @@ pub fn editor_row(prompt: &str, buf: &str, cursor: usize, width: usize, show_cur
         String::new()
     };
 
-    let prompt_w = if line_idx == 0 { disp_width(prompt) } else { disp_width(prompt) };
+    let prompt_w = disp_width(prompt);
     let keep = width
         .saturating_sub(disp_width(&above))
         .saturating_sub(disp_width(&below))
@@ -436,12 +436,12 @@ pub fn editor_row(prompt: &str, buf: &str, cursor: usize, width: usize, show_cur
     if start > line_start {
         body.push('…');
     }
-    for i in start..end {
+    for (i, ch) in chars.iter().enumerate().take(end).skip(start) {
         if i == at && show_cursor {
             // 反显光标 (符号通道: 不靠颜色也看得出光标在哪)
-            body.push_str(&format!("\x1b[7m{}\x1b[0m", chars[i]));
+            body.push_str(&format!("\x1b[7m{ch}\x1b[0m"));
         } else {
-            body.push(chars[i]);
+            body.push(*ch);
         }
     }
     if at >= line_end && show_cursor {

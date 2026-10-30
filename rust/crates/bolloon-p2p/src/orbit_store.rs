@@ -196,7 +196,7 @@ impl OrbitStore {
             return Err(OrbitStoreError::BadType(manifest.store_type));
         }
         let actual = manifest.address();
-        if &actual != address {
+        if actual != address {
             return Err(OrbitStoreError::AddressMismatch { claimed: address.into(), actual });
         }
 

@@ -297,7 +297,7 @@ async fn optimizer_rolls_back_when_metric_degrades() {
         mgr.current().config.runtime.llm_retries, baseline_retries,
         "回滚后参数必须回到基线"
     );
-    assert_eq!(mgr.current().restored_from.is_some(), true);
+    assert!(mgr.current().restored_from.is_some());
     // 回滚点始终存在: 基线版本在历史里
     assert!(mgr.can_restore(rep.baseline_version));
 }

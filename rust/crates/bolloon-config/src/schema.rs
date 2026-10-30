@@ -23,7 +23,7 @@ pub enum ConfigAuth {
 }
 
 /// A 类: 安全紧急控制 (fail-closed, 默认全部关闭/保守)。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SafetyConfig {
     /// 完全访问总开关。仅安全路径可置位; 默认 false。
@@ -73,19 +73,14 @@ pub struct StartupConfig {
 }
 
 /// 经济层运行模式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EconomicMode {
     /// 影子模式: 只计量、只记录"本该被拦", **绝不阻断、绝不换供应商** (默认)
+    #[default]
     Shadow = 0,
     /// 强制模式: 预算/路由真的生效 (需显式开启, 默认禁止)
     Enforce = 1,
-}
-
-impl Default for EconomicMode {
-    fn default() -> Self {
-        Self::Shadow
-    }
 }
 
 /// F 类: 经济层 (旁路计量 / 意图预算 / 供给登记 / 结算)。
@@ -149,7 +144,7 @@ impl Default for EconomicConfig {
 }
 
 /// 顶层配置 (A-E 中 E 为编译期不变量, 不进入动态 schema)。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
     pub safety: SafetyConfig,
@@ -160,16 +155,7 @@ pub struct AppConfig {
     pub economic: EconomicConfig,
 }
 
-impl Default for SafetyConfig {
-    fn default() -> Self {
-        Self {
-            full_access: false,
-            granted_tools: vec![],
-            emergency_stop: false,
-            revoked_tools: vec![],
-        }
-    }
-}
+
 impl Default for TaskPolicyConfig {
     fn default() -> Self {
         Self {
@@ -181,7 +167,7 @@ impl Default for TaskPolicyConfig {
             // 提到 600 步 / 800 次工具 / 150 分钟, 仍然有界 (上限校验不变)。
             max_steps: 600,
             budget_calls: 800,
-            budget_ms: 9000_000,
+            budget_ms: 9_000_000,
         }
     }
 }
@@ -206,17 +192,7 @@ impl Default for StartupConfig {
         }
     }
 }
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            safety: SafetyConfig::default(),
-            task: TaskPolicyConfig::default(),
-            runtime: RuntimeConfig::default(),
-            startup: StartupConfig::default(),
-            economic: EconomicConfig::default(),
-        }
-    }
-}
+
 
 /// 不可变、带版本号的完整配置快照。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -2294,6 +2294,9 @@ const INDEX_HTML: &str = include_str!("../assets/index.html");
 
 #[cfg(test)]
 mod route_tests {
+    // 测试用 HOME_GUARD 串行化 BOLLOON_HOME 环境变量: guard 必须活到整个 async 测试结束,
+    // 否则并行测试会互相改 env —— 有意跨 await 持锁 (clippy 的警告在这里是误报)。
+    #![allow(clippy::await_holding_lock)]
     use super::*;
 
     fn offline_llm() -> LlmRuntime {

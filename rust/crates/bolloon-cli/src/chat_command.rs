@@ -722,7 +722,7 @@ impl ChatSession {
             let Ok(v) = serde_json::from_str::<Persisted>(&raw) else { continue };
             out.push((v.created_ms, v.id, v.title, v.messages.len()));
         }
-        out.sort_by(|a, b| b.0.cmp(&a.0));
+        out.sort_by_key(|r| std::cmp::Reverse(r.0));
         out.into_iter().map(|(_, id, t, n)| (id, t, n)).collect()
     }
 
@@ -1217,12 +1217,12 @@ impl ChatSession {
         }
         let focus = args.trim();
         let tail = self.transcript_for_llm(12, 8000);
+        // 先把"侧重"拼好再进 format!: 嵌套 format! 做参数会多一层分配, 也更难读
+        let focus_line = if focus.is_empty() { String::new() } else { format!("侧重: {focus}\n") };
         let ask = format!(
             "复盘以下对话, 提炼**最多 3 条**可复用经验 (给以后的会话用)。\n\
              要求: 每条一行, 一行就是一条完整经验, 不要编号不要寒暄不要解释格式。\n\
-             {focus}{tail}",
-            focus = if focus.is_empty() { String::new() } else { format!("侧重: {focus}\n") },
-            tail = format!("\n对话:\n{tail}")
+             {focus_line}\n对话:\n{tail}"
         );
         let msgs = vec![ChatMessage {
             role: "user".into(),
@@ -1771,7 +1771,7 @@ impl ChatSession {
 
     // ── 压缩 ──────────────────────────────────────────────
     async fn compress_cmd(&mut self, ctx: &ChatCtx<'_>, args: &str) -> Vec<String> {
-        let mut it = args.trim().split_whitespace();
+        let mut it = args.split_whitespace();
         let first = it.next().unwrap_or("");
         match first {
             "--preview" | "--dry-run" => {
@@ -2415,7 +2415,7 @@ fn git_worktree(args: &str) -> Vec<String> {
         }
         "prune" => {
             cmd.arg("prune");
-            if toks.iter().any(|t| *t == "--dry-run") {
+            if toks.contains(&"--dry-run") {
                 cmd.arg("--dry-run");
             }
         }

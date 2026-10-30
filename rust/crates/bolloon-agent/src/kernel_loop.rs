@@ -357,28 +357,27 @@ impl<S: LoopStrategy> KernelLoop<S> {
         let snap = self.config.as_ref().map(|v| v.read().unwrap().clone());
         let model = match snap
             .as_ref()
-            .and_then(|s| RuntimePolicy::model_override(&**s).0)
+            .and_then(|s| RuntimePolicy::model_override(s).0)
         {
             Some(m) => m,
             None => model.to_string(),
         };
         let max_steps = snap
             .as_ref()
-            .map(|s| RuntimePolicy::max_steps(&**s))
+            .map(|s| RuntimePolicy::max_steps(s))
             .unwrap_or(self.max_steps);
         let max_no_progress = snap
             .as_ref()
-            .map(|s| RuntimePolicy::max_no_progress(&**s))
+            .map(|s| RuntimePolicy::max_no_progress(s))
             .unwrap_or(self.max_no_progress);
         let max_reflect = snap
             .as_ref()
-            .map(|s| RuntimePolicy::max_reflect(&**s))
+            .map(|s| RuntimePolicy::max_reflect(s))
             .unwrap_or(self.max_reflect);
         let retries = snap
             .as_ref()
-            .map(|s| RuntimePolicy::llm_retries(&**s))
-            .unwrap_or(3) as u32;
-        let initial_context = initial_context;
+            .map(|s| RuntimePolicy::llm_retries(s))
+            .unwrap_or(3);
 
         if let Some(ctx) = initial_context {
             messages.insert(
@@ -400,7 +399,7 @@ impl<S: LoopStrategy> KernelLoop<S> {
         // 身份提示与覆盖段并存造成语义漂移 (审计里 operator/reason 已记录谁改的)。
         if let Some(p) = snap
             .as_ref()
-            .and_then(|s| RuntimePolicy::prompt_override(&**s))
+            .and_then(|s| RuntimePolicy::prompt_override(s))
         {
             match messages.iter_mut().find(|m| m.role == "system") {
                 Some(m) => m.content = p,

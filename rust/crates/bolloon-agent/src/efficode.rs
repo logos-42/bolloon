@@ -659,7 +659,7 @@ pub fn instructions_to_symbolic(instructions: &[Instruction]) -> String {
 /// 解析符号文本 → 指令 (前缀表达式四条写死规则; 非法 token 报错不猜)
 pub fn symbolic_to_instructions(text: &str) -> Result<Vec<Instruction>, EfficodeError> {
     let mut out: Vec<Instruction> = Vec::new();
-    for tok in text.trim().split_whitespace() {
+    for tok in text.split_whitespace() {
         if let Some(op) = Op::from_prefix_token(tok) {
             let arg = match op {
                 Op::AtDid => tok.strip_prefix("@DID:").map(|s| s.to_string()),

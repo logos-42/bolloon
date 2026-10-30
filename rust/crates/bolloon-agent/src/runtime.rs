@@ -240,6 +240,8 @@ pub async fn run_long_loop(
 /// - 每轮开始: ① stop 检查 (终止按钮) ② 历史压缩 (compress_history) ③ system 重组
 ///   (快照稳定层 + skills 索引 + todo 进度 + 动态层) ④ 心跳 beat
 /// - 每轮结束: interrupt 检查 (中断 = 本轮跑完即停, 回复保留)
+// 循环需要 8 个已装配好的零件 (端口/系统提示/任务/配置/驱动器/控制…); 打包成结构体只是搬字段
+#[allow(clippy::too_many_arguments)]
 pub async fn run_long_loop_controlled(
     llm: &dyn LlmPort,
     tools: &dyn ToolPort,
@@ -481,7 +483,7 @@ impl AgentRuntime {
             .cloned()
             .ok_or_else(|| RuntimeError::AgentNotFound(agent_id.into()))?;
         if st.docs.any_disk_drift(&self.home).map_err(|e| RuntimeError::AgentNotFound(e.to_string()))? {
-            self.register_agent(agent_id, "default", &self.home.root()).await?;
+            self.register_agent(agent_id, "default", self.home.root()).await?;
             return Ok(true);
         }
         Ok(false)
@@ -591,8 +593,8 @@ mod tests {
     #[tokio::test]
     async fn multi_agents_and_sessions_concurrent() {
         let rt = AgentRuntime::new(tmp_home("multi"));
-        rt.register_agent("alpha", "local", &rt.home().root()).await.unwrap();
-        rt.register_agent("beta", "local", &rt.home().root()).await.unwrap();
+        rt.register_agent("alpha", "local", rt.home().root()).await.unwrap();
+        rt.register_agent("beta", "local", rt.home().root()).await.unwrap();
         rt.open_session("s1", "alpha").await.unwrap();
         rt.open_session("s2", "alpha").await.unwrap();
         rt.open_session("s3", "beta").await.unwrap();
@@ -609,8 +611,8 @@ mod tests {
     #[tokio::test]
     async fn per_agent_dirs_isolated() {
         let rt = AgentRuntime::new(tmp_home("iso"));
-        rt.register_agent("a1", "local", &rt.home().root()).await.unwrap();
-        rt.register_agent("a2", "local", &rt.home().root()).await.unwrap();
+        rt.register_agent("a1", "local", rt.home().root()).await.unwrap();
+        rt.register_agent("a2", "local", rt.home().root()).await.unwrap();
         let m1 = rt.home().agent_memory_path("a1").unwrap();
         let m2 = rt.home().agent_memory_path("a2").unwrap();
         assert_ne!(m1, m2, "每 agent 独立 memory 路径");
@@ -621,7 +623,7 @@ mod tests {
         let rt = AgentRuntime::new(tmp_home("prompt"));
         rt.home().ensure_agent("a1").unwrap();
         std::fs::write(rt.home().agent_soul_path("a1").unwrap(), "灵魂: 极简").unwrap();
-        rt.register_agent("a1", "local", &rt.home().root()).await.unwrap();
+        rt.register_agent("a1", "local", rt.home().root()).await.unwrap();
         let sp1 = rt.system_for_round("a1", "第 1 轮动态").await.unwrap();
         let sp2 = rt.system_for_round("a1", "第 2 轮动态").await.unwrap();
         assert!(sp1.stable.contains("灵魂: 极简"), "每轮都注入快照稳定层");

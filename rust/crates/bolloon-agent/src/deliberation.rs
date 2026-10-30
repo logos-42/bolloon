@@ -119,7 +119,7 @@ pub fn select_next_speaker(
             if let Some(best) = candidates
                 .iter()
                 .filter(|c| c.role.can_moderate())
-                .max_by(|a, b| relevance_cmp(*a, *b))
+                .max_by(|a, b| relevance_cmp(a, b))
             {
                 return Some((best.id.clone(), SpeakReason::MostRelevant));
             }
@@ -162,7 +162,7 @@ fn best_by_relevance<'a, I>(iter: I) -> Option<&'a Candidate>
 where
     I: Iterator<Item = &'a Candidate>,
 {
-    iter.max_by(|a, b| relevance_cmp(*a, *b))
+    iter.max_by(|a, b| relevance_cmp(a, b))
 }
 
 // ────────────────────────── 发言（控麦）──────────────────────────
@@ -261,8 +261,11 @@ pub struct DeliberationHub {
     last_spoke: Mutex<HashMap<String, u64>>,
     cooldown_ms: u64,
     /// 副作用端口：真正让某成员发言 / 调 LLM。未注入 = fail-closed（只算决策不动作）
-    emit: Mutex<Option<Box<dyn Fn(&str, u64) + Send + Sync>>>,
+    emit: Mutex<Option<EmitPort>>,
 }
+
+/// 副作用端口: 真正让某成员发言 / 调 LLM 的出口 (未注入 = fail-closed)
+pub type EmitPort = Box<dyn Fn(&str, u64) + Send + Sync>;
 
 impl DeliberationHub {
     pub fn new(cooldown_ms: u64) -> Self {
@@ -278,7 +281,7 @@ impl DeliberationHub {
     }
 
     /// 注入副作用端口（真正发言 / 调 LLM 的出口）
-    pub fn set_emit(&self, f: Box<dyn Fn(&str, u64) + Send + Sync>) {
+    pub fn set_emit(&self, f: EmitPort) {
         *self.emit.lock().unwrap() = Some(f);
     }
 
@@ -352,6 +355,8 @@ impl DeliberationHub {
     ///
     /// 注意：获麦后**不自动释放**——发言轮次结束由运行时调用 [`DeliberationHub::release_floor`]
     /// 收尾，这样麦在整轮（含异步生成回复）期间都握在发言者手里，真正防止两人同时说。
+    // 入参就是这次消息的全部事实 (去重键/来源/相关度/被@/命令门/时序), 拆结构体只是搬一层
+    #[allow(clippy::too_many_arguments)]
     pub fn ingest(
         &self,
         msg_id: &str,
@@ -686,7 +691,7 @@ mod tests {
                 &format!("m{i}"),
                 "u",
                 &rel,
-                &[spk.clone()],
+                std::slice::from_ref(&spk),
                 1, // 同一时刻，靠 release 轮转而非冷却
                 ElectionMode::MostRelevant,
                 0,

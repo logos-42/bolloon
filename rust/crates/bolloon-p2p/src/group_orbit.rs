@@ -544,6 +544,9 @@ impl GroupOrbitHub {
     }
 
     /// 追加一条群事件 (kind: message | guide | member-join)
+    // 参数是这条事件的**全部事实** (谁的群/谁签的/什么类型/谁说的/说了什么/回谁/何时),
+    // 拆成结构体只会多一层包装, 不改语义 —— 显式记下"有意 8 参"。
+    #[allow(clippy::too_many_arguments)]
     pub fn append(
         &self,
         group_id: &str,

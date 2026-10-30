@@ -129,7 +129,7 @@ pub fn decode_order_nonce(nonce: &str) -> DecodedOrderNonce {
         _ => {
             return shell_detail(format!(
                 "nonce 形状不对 (要 32 字节 hex): {}",
-                &raw.chars().take(42).collect::<String>()
+                raw.chars().take(42).collect::<String>()
             ))
         }
     };
@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn uint256be_layout() {
         let v = uint256be(1);
-        assert_eq!(v[..31].iter().all(|&b| b == 0), true);
+        assert!(v[..31].iter().all(|&b| b == 0), "高位 31 字节必须全 0");
         assert_eq!(v[31], 1);
     }
 }

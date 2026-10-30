@@ -35,6 +35,8 @@ impl TrailKind {
             Self::Final => "final",
         }
     }
+    // 名字沿用 from_str (调用方/文档都这么叫); 没有实现 std::str::FromStr 是有意的
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         Some(match s {
             "announce" => Self::Announce,

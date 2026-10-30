@@ -6,6 +6,8 @@
 //! - `web_search` 依赖外部服务, 缺配置时返回 `config_required` 结构化错误（**诚实**: 工具真实存在,
 //!   只是运行时需配置；不是 unwired 假工具）。
 
+// 工具错误体 (ErrorCode + evidence) 是契约形状, 不做 Box 堆分配换来换去
+#![allow(clippy::result_large_err)]
 use std::time::Duration;
 
 use async_trait::async_trait;

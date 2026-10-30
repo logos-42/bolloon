@@ -188,10 +188,10 @@ mod tests {
     #[test]
     fn local_prefers_project_docs() {
         let h = crate::home::BolloonHome::at(
-            &std::env::temp_dir().join(format!("bolloon-id-local-{}", std::process::id())),
+            std::env::temp_dir().join(format!("bolloon-id-local-{}", std::process::id())),
         );
         let p = std::path::Path::new("/proj");
-        let v = identity_doc_paths("local", p, &h.root());
+        let v = identity_doc_paths("local", p, h.root());
         assert!(v[0].starts_with("/proj"), "local 项目内优先: {:?}", v[0]);
         assert_eq!(v[0].file_name().unwrap(), "Bolloon.md");
     }
@@ -199,10 +199,10 @@ mod tests {
     #[test]
     fn web_prefers_global_persona() {
         let h = crate::home::BolloonHome::at(
-            &std::env::temp_dir().join(format!("bolloon-id-web-{}", std::process::id())),
+            std::env::temp_dir().join(format!("bolloon-id-web-{}", std::process::id())),
         );
         let p = std::path::Path::new("/proj");
-        let v = identity_doc_paths("web", p, &h.root());
+        let v = identity_doc_paths("web", p, h.root());
         assert!(v[0].starts_with(h.root()), "web 全局优先: {:?}", v[0]);
         assert!(
             v.iter().any(|x| x.ends_with("persona.json")),

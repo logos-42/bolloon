@@ -725,6 +725,8 @@ impl ShadowEconomy {
     }
 
     /// **调用后**：记事件 + 用实际成本对账（预扣的是估算，实际未知就保持预扣）。
+    // 一次模型调用的全部事实 (ctx/供应商/模型/输入输出 token/状态/耗时/证据/估算) 都要落账, 少一个就说不清成本
+    #[allow(clippy::too_many_arguments)]
     pub fn finish_model_call(
         &self,
         ctx: &CallCtx,

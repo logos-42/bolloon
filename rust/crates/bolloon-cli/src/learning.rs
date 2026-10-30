@@ -244,6 +244,65 @@ pub fn report_line(r: &DreamReport) -> String {
     )
 }
 
+/// 扫本机已有的技能库 (`<dir>/SKILL.md` 的**目录名**就是技能名)。
+///
+/// 为什么要扫: 技能是**全局资产**, 不只活在某个会话的注册表里。用户机器上已经有
+/// Hermes / Claude / Codex 各自的 skill 库, 面板要如实把它们算进去 (多少个, 前几个是谁),
+/// 否则永远显示 "0 · 暂无" —— 那是不知道, 不是没有。
+///
+/// 成本控制: 只看目录 (不读 SKILL.md 内容), 深度 ≤ 4, 跳过隐藏目录与 node_modules,
+/// 上限 `cap` 条。1297 个目录实测 < 30ms。
+pub fn machine_skills(home: &Path, cap: usize) -> Vec<String> {
+    let user_home = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    let mut roots: Vec<std::path::PathBuf> = vec![
+        home.join("skills"),                  // ~/.bolloon/skills (本仓自己的)
+        user_home.join(".hermes/skills"),     // Hermes 技能库
+        user_home.join(".claude/skills"),     // Claude Code
+        user_home.join(".codex/skills"),      // Codex
+    ];
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd.join(".hermes/skills")); // 项目内的
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    for root in roots {
+        if !root.is_dir() {
+            continue;
+        }
+        // 迭代式遍历 (不递归调栈), 深度上限 4
+        let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(root, 0)];
+        while let Some((dir, depth)) = stack.pop() {
+            if out.len() >= cap {
+                break;
+            }
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                if !p.is_dir() {
+                    continue;
+                }
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') || name == "node_modules" || name == "target" {
+                    continue;
+                }
+                if p.join("SKILL.md").is_file() && !out.contains(&name) {
+                    out.push(name.clone());
+                    if out.len() >= cap {
+                        break;
+                    }
+                }
+                if depth < 3 {
+                    stack.push((p, depth + 1));
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,63 +384,4 @@ mod tests {
         let block = l.context_block("", 4000);
         assert!(block.contains("smoke"), "技能索引要进 prompt: {block}");
     }
-}
-
-/// 扫本机已有的技能库 (`<dir>/SKILL.md` 的**目录名**就是技能名)。
-///
-/// 为什么要扫: 技能是**全局资产**, 不只活在某个会话的注册表里。用户机器上已经有
-/// Hermes / Claude / Codex 各自的 skill 库, 面板要如实把它们算进去 (多少个, 前几个是谁),
-/// 否则永远显示 "0 · 暂无" —— 那是不知道, 不是没有。
-///
-/// 成本控制: 只看目录 (不读 SKILL.md 内容), 深度 ≤ 4, 跳过隐藏目录与 node_modules,
-/// 上限 `cap` 条。1297 个目录实测 < 30ms。
-pub fn machine_skills(home: &Path, cap: usize) -> Vec<String> {
-    let user_home = std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("/"));
-    let mut roots: Vec<std::path::PathBuf> = vec![
-        home.join("skills"),                  // ~/.bolloon/skills (本仓自己的)
-        user_home.join(".hermes/skills"),     // Hermes 技能库
-        user_home.join(".claude/skills"),     // Claude Code
-        user_home.join(".codex/skills"),      // Codex
-    ];
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd.join(".hermes/skills")); // 项目内的
-    }
-
-    let mut out: Vec<String> = Vec::new();
-    for root in roots {
-        if !root.is_dir() {
-            continue;
-        }
-        // 迭代式遍历 (不递归调栈), 深度上限 4
-        let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(root, 0)];
-        while let Some((dir, depth)) = stack.pop() {
-            if out.len() >= cap {
-                break;
-            }
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-            for e in rd.flatten() {
-                let p = e.path();
-                if !p.is_dir() {
-                    continue;
-                }
-                let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') || name == "node_modules" || name == "target" {
-                    continue;
-                }
-                if p.join("SKILL.md").is_file() && !out.contains(&name) {
-                    out.push(name.clone());
-                    if out.len() >= cap {
-                        break;
-                    }
-                }
-                if depth < 3 {
-                    stack.push((p, depth + 1));
-                }
-            }
-        }
-    }
-    out.sort();
-    out
 }

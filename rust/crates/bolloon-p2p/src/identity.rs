@@ -37,15 +37,12 @@ impl Did {
 pub fn pubkey_of_did(did: &str) -> Option<[u8; 32]> {
     let raw = if let Some(b58) = did.strip_prefix("did:pi:") {
         bs58::decode(b58).into_vec().ok()?
-    } else if let Some(b58) = did.strip_prefix("did:key:z") {
-        // did:key = multibase base58btc( multicodec 0xed01 ‖ 32B 公钥 )
-        let v = bs58::decode(b58).into_vec().ok()?;
-        if v.len() != 34 || v[0] != 0xed || v[1] != 0x01 {
-            return None;
-        }
-        v[2..].to_vec()
     } else {
-        return None;
+        // did:key = multibase base58btc( multicodec 0xed01 ‖ 32B 公钥 )
+        let b58 = did.strip_prefix("did:key:z")?;
+        let v = bs58::decode(b58).into_vec().ok()?;
+        // 前缀必须是多编解码 0xed01 (ed25519-pub) 且总长 34; 形状不对直接 None, 不猜
+        (v.len() == 34 && v[0] == 0xed && v[1] == 0x01).then(|| v[2..].to_vec())?
     };
     raw.try_into().ok()
 }

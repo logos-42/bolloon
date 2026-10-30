@@ -238,6 +238,11 @@ impl ChannelRegistry {
         self.channels.lock().await.len()
     }
 
+    /// 与 `len()` 配套 (clippy: 有 len 就该有 is_empty)
+    pub async fn is_empty(&self) -> bool {
+        self.channels.lock().await.is_empty()
+    }
+
     pub async fn ids(&self) -> Vec<ChannelId> {
         self.channels.lock().await.keys().cloned().collect()
     }

@@ -26,18 +26,15 @@ pub struct Intent {
 /// 卡片媒体类型 (enum 化, 对齐 TS `CardMediaType`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum CardMediaKind {
+    #[default]
     Text,
     Audio,
     Image,
     Video,
 }
 
-impl Default for CardMediaKind {
-    fn default() -> Self {
-        Self::Text
-    }
-}
 
 /// 卡片媒体项 (对齐 TS `CardMedia`: {type,url,mime,name})
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -70,17 +67,14 @@ pub struct CardCover {
 /// 验签结论 (**本地判定, 不进签名载荷**, 对齐 TS `verified|signature-invalid|unverified`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum CardVerification {
     Verified,
     SignatureInvalid,
+    #[default]
     Unverified,
 }
 
-impl Default for CardVerification {
-    fn default() -> Self {
-        Self::Unverified
-    }
-}
 
 /// 世界卡片 (文本/音频/图片/视频 多媒体)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -107,16 +101,13 @@ pub struct WorldCard {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum CardScope {
+    #[default]
     Private,
     Public,
 }
 
-impl Default for CardScope {
-    fn default() -> Self {
-        Self::Private
-    }
-}
 
 /// 机会 (世界流条目)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -638,7 +629,7 @@ mod tests {
         let mut priv_card = sample_card(&kp);
         priv_card.scope = CardScope::Private;
         priv_card.provider_did = friend_did.clone();
-        assert!(accept_card(&priv_card, &[friend_did.clone()]).is_ok(), "是好友 → 收");
+        assert!(accept_card(&priv_card, std::slice::from_ref(&friend_did)).is_ok(), "是好友 → 收");
         assert_eq!(
             accept_card(&priv_card, &["did:pi:other".into()]).unwrap_err(),
             CardError::NotFriend,

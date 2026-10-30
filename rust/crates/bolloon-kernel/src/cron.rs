@@ -59,6 +59,10 @@ impl CronScheduler {
         self.tasks.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+
     /// tick 判定 (纯函数): 到期 + enabled + 不在跑 + 不在 DND
     pub fn due_tasks(&self, now_ms: u64, now_minute_of_day: u16) -> Vec<String> {
         let mut due = Vec::new();

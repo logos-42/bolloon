@@ -215,7 +215,7 @@ pub fn rule_cells(width: usize) -> usize {
 
 /// 分隔线 —— 满宽实线 (见 `rule_char` / `rule_per`)
 pub fn rule(width: usize) -> String {
-    std::iter::repeat(rule_char()).take(rule_cells(width)).collect()
+    std::iter::repeat_n(rule_char(), rule_cells(width)).collect()
 }
 
 #[cfg(test)]

@@ -223,7 +223,7 @@ pub fn elect_from_roster(
         // 没有名单（人数不足 / 还没选举）⇒ 退回原逻辑
         return elect_limited(agents, addressed, None, cursor, limit);
     }
-    let limit = limit.max(1).min(MAX_ELECTED_AGENTS);
+    let limit = limit.clamp(1, MAX_ELECTED_AGENTS);
     let inside: Vec<AgentView> = agents
         .iter()
         .filter(|a| eligible.contains(&a.id) || eligible.contains(&a.name))
@@ -272,7 +272,7 @@ pub fn elect_limited(
     cursor: usize,
     limit: usize,
 ) -> Vec<AgentView> {
-    let limit = limit.max(1).min(MAX_ELECTED_AGENTS);
+    let limit = limit.clamp(1, MAX_ELECTED_AGENTS);
     if agents.is_empty() {
         return vec![];
     }
@@ -533,11 +533,10 @@ pub fn strip_tool_noise(text: &str) -> String {
             if let Some(b) = rest[a + 3..].find("```") {
                 let end = a + 3 + b + 3;
                 let block = &rest[a..end];
-                if block.contains("tool_call") || block.contains("tool_use") || block.contains("\"arguments\"") {
-                    if hit.map(|(s, _)| a < s).unwrap_or(true) {
+                if (block.contains("tool_call") || block.contains("tool_use") || block.contains("\"arguments\""))
+                    && hit.map(|(s, _)| a < s).unwrap_or(true) {
                         hit = Some((a, end));
                     }
-                }
             }
         }
         match hit {

@@ -65,9 +65,7 @@ pub fn guard_shell(command: &str) -> Result<(), GuardError> {
         }
     }
     // 管道远程执行: curl/wget 下载直接 pipe 进 shell (模式检测, 抓 URL 变体)
-    if let Err(e) = guard_pipe_to_shell(&squeezed) {
-        return Err(e);
-    }
+    guard_pipe_to_shell(&squeezed)?;
     Ok(())
 }
 

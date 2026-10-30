@@ -516,19 +516,17 @@ impl LlmRuntime {
             let raw = resp.text().await.unwrap_or_default();
 
             // 可重试：429 / 5xx（指数退避）
-            if status.as_u16() == 429 || status.as_u16() >= 500 {
-                if attempt < max_retries {
-                    attempt += 1;
-                    let exp: u32 = attempt.saturating_sub(1);
-                    let backoff = Duration::from_millis(300 * 2u64.pow(exp));
-                    tracing::warn!(
-                        status = status.as_u16(),
-                        backoff_ms = backoff.as_millis(),
-                        "llm retry after backoff"
-                    );
-                    tokio::time::sleep(backoff).await;
-                    continue;
-                }
+            if (status.as_u16() == 429 || status.as_u16() >= 500) && attempt < max_retries {
+                attempt += 1;
+                let exp: u32 = attempt.saturating_sub(1);
+                let backoff = Duration::from_millis(300 * 2u64.pow(exp));
+                tracing::warn!(
+                    status = status.as_u16(),
+                    backoff_ms = backoff.as_millis(),
+                    "llm retry after backoff"
+                );
+                tokio::time::sleep(backoff).await;
+                continue;
             }
             // 4xx 不重试（错误不是暂时的）
             if !status.is_success() {
@@ -696,11 +694,14 @@ impl StreamAccumulator {
     }
 }
 
+/// 一条 HTTP 请求的形状: (url, 请求头, JSON 请求体)
+pub type HttpRequestSpec = (String, Vec<(String, String)>, serde_json::Value);
+
 /// Anthropic: `POST {base}/messages` + `x-api-key` + `anthropic-version`
 fn anthropic_request(
     cfg: &ProviderConfig,
     params: &GenerateParams,
-) -> Result<(String, Vec<(String, String)>, serde_json::Value), LlmError> {
+) -> Result<HttpRequestSpec, LlmError> {
     let key = cfg
         .api_key
         .as_ref()
@@ -754,7 +755,7 @@ fn anthropic_request(
 fn gemini_request(
     cfg: &ProviderConfig,
     params: &GenerateParams,
-) -> Result<(String, Vec<(String, String)>, serde_json::Value), LlmError> {
+) -> Result<HttpRequestSpec, LlmError> {
     let key = cfg
         .api_key
         .as_ref()

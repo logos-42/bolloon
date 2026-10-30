@@ -239,6 +239,8 @@ impl HumanDirectory {
     ///
     /// - `did` 必须就是 `kp.did` (不许替别人签, attestation 层会拦)
     /// - 自验不过 ⇒ **拒入库** (与 TS address-binding 同范式)
+    // 入参是这条绑定声明的全部事实 (值/归属 did/pepper/显示名/公钥/有效期…), 拆结构体只会多一层
+    #[allow(clippy::too_many_arguments)]
     pub fn publish_signed(
         &mut self,
         value: &str,
@@ -807,7 +809,7 @@ mod tests {
 
         // 篡改签名 ⇒ 验不过
         let mut bad = e.clone();
-        let mut sig = Vec::from(hex::decode(&bad.owner_sig).unwrap());
+        let mut sig = hex::decode(&bad.owner_sig).unwrap();
         sig[0] ^= 0xff;
         bad.owner_sig = hex::encode(sig);
         assert!(!verify_entry(&bad), "签名被改 ⇒ 验不过");

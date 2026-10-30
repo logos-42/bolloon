@@ -156,7 +156,7 @@ impl BolloonHome {
 
 fn dirs_home() -> PathBuf {
     std::env::var("HOME")
-        .map(|h| PathBuf::from(h))
+        .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp"))
 }
 
@@ -254,7 +254,7 @@ impl AgentDocs {
     /// 旧签名: channel 默认 `default`(全局优先), project_root 默认 home 根 (退化为全局优先)。
     /// 真实 channel / 工程根走 `freeze_with`。
     pub fn freeze(home: &BolloonHome, agent_id: &str) -> Result<Self, HomeError> {
-        Self::freeze_with(home, agent_id, "default", &home.root())
+        Self::freeze_with(home, agent_id, "default", home.root())
     }
 
     /// 按 channel 区分**全局(home) / 项目内(project_root)** 身份文件来源:

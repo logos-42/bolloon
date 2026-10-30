@@ -128,7 +128,7 @@ pub fn validate_commit_subject(subject: &str) -> Result<(), String> {
     if scope.is_empty() {
         return Err("scope 不能为空".into());
     }
-    if desc.chars().all(|c| c.is_ascii()) {
+    if desc.is_ascii() {
         return Err("描述应为中文一句话".into());
     }
     Ok(())
@@ -145,9 +145,9 @@ pub struct DiffStat {
 pub fn parse_diff_stat_summary(out: &str) -> Option<DiffStat> {
     let last = out.lines().rev().find(|l| l.contains("changed"))?;
     // 格式: " 2 files changed, 10 insertions(+), 3 deletions(-)" — 数字都在词前
-    let files = extract_num_before(&last, "file")?;
-    let insertions = extract_num_before(&last, "insertion").or(Some(0));
-    let deletions = extract_num_before(&last, "deletion").or(Some(0));
+    let files = extract_num_before(last, "file")?;
+    let insertions = extract_num_before(last, "insertion").or(Some(0));
+    let deletions = extract_num_before(last, "deletion").or(Some(0));
     Some(DiffStat {
         files_changed: files,
         insertions: insertions.unwrap_or(0),

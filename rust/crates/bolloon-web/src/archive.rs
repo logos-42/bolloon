@@ -158,7 +158,7 @@ pub async fn summary(Query(q): Query<SummaryQuery>) -> Json<serde_json::Value> {
                 }
             }
         }
-        let take = q.limit.max(1).min(50);
+        let take = q.limit.clamp(1, 50);
         let start = recent.len().saturating_sub(take);
         out.insert(
             kind.to_string(),

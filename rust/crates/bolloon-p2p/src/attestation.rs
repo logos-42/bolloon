@@ -184,7 +184,7 @@ pub fn sign_ownership(
 ) -> Result<OwnershipAttestation, OwnershipError> {
     if statement.protocol != OWNERSHIP_PROTOCOL {
         return Err(OwnershipError::SelfCheckFailed {
-            reasons: format!("protocol 必须是 {OWNERSHIP_PROTOCOL}").into(),
+            reasons: format!("protocol 必须是 {OWNERSHIP_PROTOCOL}"),
         });
     }
     // 不许替别人签: 声明的 owner_did 必须就是这把钥匙

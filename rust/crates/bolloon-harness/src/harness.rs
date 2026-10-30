@@ -124,6 +124,10 @@ impl ToolRegistry {
         v
     }
 
+    pub async fn is_empty(&self) -> bool {
+        self.tools.lock().await.is_empty()
+    }
+
     pub async fn len(&self) -> usize {
         self.tools.lock().await.len()
     }
@@ -419,7 +423,7 @@ impl Harness {
         let timeout_ms = match &self.config {
             Some(v) => {
                 let g = v.read().unwrap();
-                RuntimePolicy::tool_timeout_ms(&**g)
+                RuntimePolicy::tool_timeout_ms(&g)
             }
             None => budget_max_ms,
         };

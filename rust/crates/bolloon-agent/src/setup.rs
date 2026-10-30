@@ -32,6 +32,7 @@ impl SetupLayer {
 
 /// 单层状态
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct LayerState {
     pub done: bool,
     /// 缺什么 (人话, 可操作)
@@ -41,11 +42,6 @@ pub struct LayerState {
     pub checked_at_ms: Option<u64>,
 }
 
-impl Default for LayerState {
-    fn default() -> Self {
-        Self { done: false, missing: vec![], config_hash: None, checked_at_ms: None }
-    }
-}
 
 /// 启动门禁结论
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

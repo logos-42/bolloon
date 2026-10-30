@@ -18,8 +18,10 @@ use crate::error::EconError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SettlementState {
     /// 草稿: 已记账但未经确认 (影子模式下都是这个)
+    #[default]
     Draft,
     Confirmed,
     Rejected,
@@ -27,11 +29,6 @@ pub enum SettlementState {
     RolledBack,
 }
 
-impl Default for SettlementState {
-    fn default() -> Self {
-        Self::Draft
-    }
-}
 
 /// 公共资源池现金视图 (现金与贡献**分开**记)。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

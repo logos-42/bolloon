@@ -51,6 +51,7 @@ pub enum LoopEndReason {
 
 /// 循环状态
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct PivotState {
     pub round: u32,
     pub done: bool,
@@ -61,11 +62,6 @@ pub struct PivotState {
     same_sig_rounds: u32,
 }
 
-impl Default for PivotState {
-    fn default() -> Self {
-        Self { round: 0, done: false, reason: None, last_tool_sig: None, same_sig_rounds: 0 }
-    }
-}
 
 /// 质量评估 (纯函数)
 ///
@@ -85,14 +81,10 @@ pub fn evaluate_quality(reply: &str) -> f64 {
     if trimmed.contains("1.") || trimmed.contains("- ") || trimmed.contains("•") {
         struct_score += 0.2;
     }
-    let concrete = trimmed
+    let concrete = (if trimmed
         .chars()
-        .any(|c| c.is_ascii_digit())
-        .then_some(0.1)
-        .unwrap_or(0.0)
-        + (trimmed.contains("http") || trimmed.contains(".rs") || trimmed.contains(".ts") || trimmed.contains(".md"))
-            .then_some(0.1)
-            .unwrap_or(0.0);
+        .any(|c| c.is_ascii_digit()) { 0.1 } else { 0.0 })
+        + if trimmed.contains("http") || trimmed.contains(".rs") || trimmed.contains(".ts") || trimmed.contains(".md") { 0.1 } else { 0.0 };
     (len_score + struct_score + concrete).min(1.0)
 }
 
@@ -146,7 +138,7 @@ pub fn tool_timed_out(elapsed_ms: u64, timeout_ms: u64) -> bool {
 pub fn canonicalize_tool_args(args: &str) -> Result<String, serde_json::Error> {
     let v: serde_json::Value = serde_json::from_str(args)?;
     let sorted = sort_json(&v);
-    Ok(serde_json::to_string(&sorted)?)
+    serde_json::to_string(&sorted)
 }
 
 fn sort_json(v: &serde_json::Value) -> serde_json::Value {

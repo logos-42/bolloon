@@ -36,7 +36,9 @@ pub fn status_symbol(status: &str) -> String {
  * 与 TS `wrapText` 同口径 —— 面板长过屏幕会把输入行顶出视野。
  */
 pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    if width <= 0 {
+    // width 是 usize: `<= 0` 恒等于 `== 0`(clippy absurd_extreme_comparisons)。
+    // 0 宽 = 不折行, 按原始换行切开。
+    if width == 0 {
         return text.split('\n').map(|s| s.to_string()).collect();
     }
     let mut out: Vec<String> = Vec::new();
@@ -446,8 +448,7 @@ fn is_added_or_removed_line(l: &str) -> bool {
         _ => return false,
     }
     rest.iter()
-        .skip_while(|c| c.is_whitespace())
-        .next()
+        .find(|c| !c.is_whitespace())
         .map(|c| !c.is_whitespace())
         .unwrap_or(false)
 }
@@ -530,6 +531,36 @@ pub fn render_tool_call(v: &ToolCallView) -> String {
 /** 加粗一段文字 (面板里强调用) */
 pub fn bold(s: &str) -> String {
     format!("{BOLD}{s}{RESET}")
+}
+/// 把工具输出里的 **diff 段落**渲染成终端行 (着色 + 限宽 + 封顶)。
+///
+/// leo 2026-10-27: 「编辑工具的结果要返回终端展示, 节选长度有限, 但是 diff 要展示出来」。
+/// 所以这里只认真 diff (以 `--- a/` 开头的那一段), 不做任何臆造; 超过 `max` 行如实截断。
+pub fn render_diff_excerpt(output: &str, cols: usize, max: usize) -> Vec<String> {
+    use crate::theme::{C_DIM, C_OK, C_WARN, RESET};
+    let lines: Vec<&str> = output.lines().collect();
+    let Some(start) = lines.iter().position(|l| l.starts_with("--- a/")) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for l in lines[start..].iter() {
+        if out.len() >= max {
+            out.push(format!("{C_DIM}… diff 已截断 (最多 {max} 行){RESET}"));
+            break;
+        }
+        if l.starts_with("+++") || l.starts_with("---") {
+            out.push(format!("  {C_DIM}{}{RESET}", crate::width::truncate(l, cols)));
+        } else if l.starts_with("@@") {
+            out.push(format!("  {C_WARN}{}{RESET}", crate::width::truncate(l, cols)));
+        } else if let Some(rest) = l.strip_prefix('+') {
+            out.push(format!("  {C_OK}+{}{RESET}", crate::width::truncate(rest, cols.saturating_sub(3))));
+        } else if let Some(rest) = l.strip_prefix('-') {
+            out.push(format!("  {C_WARN}-{}{RESET}", crate::width::truncate(rest, cols.saturating_sub(3))));
+        } else {
+            out.push(format!("  {}", crate::width::truncate(l, cols)));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -714,34 +745,4 @@ mod tests {
         assert!(!is_diff_output("just text"));
     }
 
-}
-/// 把工具输出里的 **diff 段落**渲染成终端行 (着色 + 限宽 + 封顶)。
-///
-/// leo 2026-10-27: 「编辑工具的结果要返回终端展示, 节选长度有限, 但是 diff 要展示出来」。
-/// 所以这里只认真 diff (以 `--- a/` 开头的那一段), 不做任何臆造; 超过 `max` 行如实截断。
-pub fn render_diff_excerpt(output: &str, cols: usize, max: usize) -> Vec<String> {
-    use crate::theme::{C_DIM, C_OK, C_WARN, RESET};
-    let lines: Vec<&str> = output.lines().collect();
-    let Some(start) = lines.iter().position(|l| l.starts_with("--- a/")) else {
-        return Vec::new();
-    };
-    let mut out: Vec<String> = Vec::new();
-    for l in lines[start..].iter() {
-        if out.len() >= max {
-            out.push(format!("{C_DIM}… diff 已截断 (最多 {max} 行){RESET}"));
-            break;
-        }
-        if l.starts_with("+++") || l.starts_with("---") {
-            out.push(format!("  {C_DIM}{}{RESET}", crate::width::truncate(l, cols)));
-        } else if l.starts_with("@@") {
-            out.push(format!("  {C_WARN}{}{RESET}", crate::width::truncate(l, cols)));
-        } else if let Some(rest) = l.strip_prefix('+') {
-            out.push(format!("  {C_OK}+{}{RESET}", crate::width::truncate(rest, cols.saturating_sub(3))));
-        } else if let Some(rest) = l.strip_prefix('-') {
-            out.push(format!("  {C_WARN}-{}{RESET}", crate::width::truncate(rest, cols.saturating_sub(3))));
-        } else {
-            out.push(format!("  {}", crate::width::truncate(l, cols)));
-        }
-    }
-    out
 }

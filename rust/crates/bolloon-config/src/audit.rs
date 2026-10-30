@@ -46,6 +46,8 @@ impl ConfigAuditLog {
     }
 
     /// 便捷构造并写入。
+    // 审计记录就是这 7 个字段 (动作/版本/基于/来源/操作者/理由/结果) 全量, 少一个就不完整
+    #[allow(clippy::too_many_arguments)]
     pub fn log(
         &self,
         action: &str,

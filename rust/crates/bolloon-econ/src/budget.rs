@@ -42,8 +42,10 @@ pub struct Payer {
 /// 预算耗尽后的行为。默认 `Stop`: 不偷偷换到用户自付费 API。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ExhaustionPolicy {
     /// 停下并如实报"预算耗尽"
+    #[default]
     Stop,
     /// 降级到更便宜的合格资源 (仍需满足隐私/质量)
     Degrade,
@@ -53,11 +55,6 @@ pub enum ExhaustionPolicy {
     AskAuthorization,
 }
 
-impl Default for ExhaustionPolicy {
-    fn default() -> Self {
-        Self::Stop
-    }
-}
 
 /// 隐私策略: 哪些数据可以离开本机。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

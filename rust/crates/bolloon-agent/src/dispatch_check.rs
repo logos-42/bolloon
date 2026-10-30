@@ -165,7 +165,7 @@ impl DispatchBoard {
             }
         }
         for id in recovered_ids {
-            self.inflight.retain(|d| &d.contract.contract_id != &id);
+            self.inflight.retain(|d| d.contract.contract_id != id);
             self.recovered.push((id, "escalated"));
         }
         out

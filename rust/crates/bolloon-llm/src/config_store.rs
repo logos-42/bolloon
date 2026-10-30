@@ -529,10 +529,10 @@ pub fn active_resolved(cfg: &LlmConfig) -> Result<Resolved, String> {
             format!("{e} (当前 activeProvider={})", cfg.active_provider)
         });
     }
-    for same in usable(cfg) {
-        return Ok(same);
-    }
-    Err("还没有可用的 provider — 跑 `bolloon model` 选一家并填 key".to_string())
+    usable(cfg)
+        .into_iter()
+        .next()
+        .ok_or_else(|| "还没有可用的 provider — 跑 `bolloon model` 选一家并填 key".to_string())
 }
 
 /// 全部**解析成功**的家 (key 齐/本机服务), 用来建 runtime 与列表标注

@@ -222,7 +222,7 @@ pub async fn prepare_resume(dir: &Path, run_id: &str) -> anyhow::Result<Option<R
         "action": "resume",
         "attempt": recovery.len() as u64 + 1,
         "checkpointBefore": steps.len(),
-        "changedPlan": steps.len() > 0,
+        "changedPlan": !steps.is_empty(),
     }));
     v["recovery"] = serde_json::Value::Array(recovery);
 

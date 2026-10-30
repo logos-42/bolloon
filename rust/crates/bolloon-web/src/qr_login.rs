@@ -305,7 +305,7 @@ pub struct ScanRequest {
 /// POST /api/auth/qr/scan {image_base64} —— 眼镜拍照，节点解二维码
 pub async fn qr_scan(Json(req): Json<ScanRequest>) -> Json<serde_json::Value> {
     use base64::Engine;
-    let raw = req.image_base64.split(',').last().unwrap_or(&req.image_base64).trim();
+    let raw = req.image_base64.split(',').next_back().unwrap_or(&req.image_base64).trim();
     let bytes = match base64::engine::general_purpose::STANDARD.decode(raw) {
         Ok(b) => b,
         Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("base64 解码失败: {e}") })),

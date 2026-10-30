@@ -88,7 +88,7 @@ fn write_canonical(v: &serde_json::Value, out: &mut String) {
 pub fn entry_hash(clock: u64, prev: &[String], signer: &str, payload: &serde_json::Value, ts: u64) -> String {
     let unsigned = OpEntryUnsigned { clock, prev, signer, payload, timestamp_ms: ts };
     let mut h = Sha256::new();
-    h.update(&canonical(&unsigned));
+    h.update(canonical(&unsigned));
     hex::encode(h.finalize())
 }
 
@@ -375,9 +375,9 @@ mod tests {
         let e1 = log.append(&kp, serde_json::json!({"text": "m1"}), 100).unwrap();
         let e2 = log.append(&kp, serde_json::json!({"text": "m2"}), 200).unwrap();
         assert_eq!(log.len(), 2);
-        assert_eq!(log.heads(), &[e2.hash.clone()], "e1 有后继, 不再是 head");
+        assert_eq!(log.heads(), std::slice::from_ref(&e2.hash), "e1 有后继, 不再是 head");
         assert!(e2.clock > e1.clock);
-        assert_eq!(e2.prev, vec![e1.hash.clone()], "prev 指向前驱");
+        assert_eq!(e2.prev, std::slice::from_ref(&e1.hash), "prev 指向前驱");
     }
 
     #[test]
@@ -460,7 +460,7 @@ mod tests {
 
         // 交换: A 收 B 的两条, B 收 A 的一条
         log_a.join(&[b1.clone(), b2.clone()]).unwrap();
-        log_b.join(&[a1.clone()]).unwrap();
+        log_b.join(std::slice::from_ref(&a1)).unwrap();
 
         // 两边收敛: 相同的 entry 集合与 heads
         assert_eq!(log_a.len(), 4);

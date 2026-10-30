@@ -1168,6 +1168,6 @@ mod tests {
         let _g = crate::width::test_lock().lock().unwrap();
         set_term_size(100, 42);
         assert_eq!(viewport_height(term_height()), 39);
-        let _ = crate::width::clear_term_size();
+        crate::width::clear_term_size();
     }
 }

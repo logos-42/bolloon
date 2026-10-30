@@ -47,11 +47,11 @@ pub fn detect(buf: &str) -> Option<(ComplKind, usize, String)> {
     let line_start = buf.rfind('\n').map(|i| i + 1).unwrap_or(0);
     let line = &buf[line_start..];
 
-    if line.starts_with('/') {
-        return Some((ComplKind::Slash, line_start, line[1..].to_string()));
+    if let Some(rest) = line.strip_prefix('/') {
+        return Some((ComplKind::Slash, line_start, rest.to_string()));
     }
-    if line.starts_with('!') {
-        return Some((ComplKind::Bang, line_start, line[1..].to_string()));
+    if let Some(rest) = line.strip_prefix('!') {
+        return Some((ComplKind::Bang, line_start, rest.to_string()));
     }
     // `@` 补全: 取最后一个 `@`, 其后不能有空白, 且 `@` 前必须是行首或空白 (整词起点)
     if let Some(at) = line.rfind('@') {

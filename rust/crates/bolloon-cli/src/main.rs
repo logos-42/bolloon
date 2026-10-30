@@ -426,12 +426,10 @@ fn glass_login(port: u16, once: bool) -> anyhow::Result<()> {
     anyhow::bail!("180 秒没扫 —— 码已过期，重新跑 `bolloon glass login`")
 }
 
-/// 群 / 子讨论 / 统一分享：全部走 HTTP 调本地节点（与 `bolloon web` 同一个进程）。
-/// 子讨论 = 独立 orbit store（自带 ACL，组织内部才可写）；统一分享 join/read 对整群与子讨论同源。
-
-/// 付费链路 (与 web/App 同一套端点, CLI 只是另一个客户端)
-
-/// 自查 (2026-10-30 用户): 智能体不必把长路径塞进上下文, 需要时跑一次即可。
+// 群 / 子讨论 / 统一分享：全部走 HTTP 调本地节点（与 `bolloon web` 同一个进程）。
+// 子讨论 = 独立 orbit store（自带 ACL，组织内部才可写）；统一分享 join/read 对整群与子讨论同源。
+// 付费链路 (与 web/App 同一套端点, CLI 只是另一个客户端)。
+// 自查 (2026-10-30 用户): 智能体不必把长路径塞进上下文, 需要时跑一次即可。
 fn run_self(json: bool, agent: &str) -> anyhow::Result<()> {
     let home = bolloon_agent::home::BolloonHome::resolve();
     let id = if agent.trim().is_empty() { "bolloon" } else { agent.trim() };
@@ -1083,7 +1081,7 @@ async fn run_chat(channel: &str, resume: Option<&str>) -> anyhow::Result<()> {
     //   cooked 行规程换成 `\n`。机制见 `tui::input::RawState`。
     let raw = tui::input::hold_raw_mode();
     // 毫秒时钟: 轮末 agent 循环判 loop 任务是否"到点"
-    let now_ms = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u128;
+    let now_ms = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
 
     // 完全访问 = 所有权限开放 ⇒ **必须让用户看见**（不能开着却没人知道）
     if bypass {
@@ -1168,11 +1166,10 @@ async fn run_chat(channel: &str, resume: Option<&str>) -> anyhow::Result<()> {
         if text.is_empty() {
             continue;
         }
-        if !is_auto {
-            if tui::append_input_history(&text, Some(channel)) && !history.contains(&text) {
+        if !is_auto
+            && tui::append_input_history(&text, Some(channel)) && !history.contains(&text) {
                 history.push(text.clone());
             }
-        }
 
         // ── 命令面 ──────────────────────────────────────────
         // `?` 是 `/help` 的快捷写法 (老习惯, 保留)
@@ -1554,6 +1551,8 @@ impl<'a> bolloon_agent::kernel_loop::LoopObserver for CliObserver<'a> {
 ///
 /// 循环本体是 `KernelLoop`（与 Web 同一条路径）, CLI 只提供策略（流式/中断）与观察者（TUI 渲染）。
 /// B 类受治理配置（模型/prompt/预算/步数）与 C 类（超时/重试/无进展）在循环里统一生效。
+// 一次发言需要的 8 个上下文 (终端/会话/学习/策略/配置…) 都是调用方已经装好的活对象
+#[allow(clippy::too_many_arguments)]
 async fn send_one(
     chrome: &mut tui::Chrome,
     full: bool,
@@ -1850,11 +1849,9 @@ async fn send_one(
         Some(u) => (u.prompt_tokens + u.completion_tokens, u.completion_tokens),
         None => (0, 0),
     };
-    let tps = if elapsed_ms > 0 {
-        (completion_tokens as u128 * 1000 / elapsed_ms) as u32
-    } else {
-        0
-    };
+    let tps = (completion_tokens as u128 * 1000)
+        .checked_div(elapsed_ms)
+        .unwrap_or(0) as u32;
     chrome.status.stats = tui::TurnStats {
         ctx_tokens,
         elapsed_ms,

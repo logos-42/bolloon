@@ -118,12 +118,11 @@ pub fn summarize(events: &[PayEvent]) -> (i64, i64, i64, i64) {
                 balance += e.amount_micro;
                 topped += e.amount_micro;
             }
-            "topup_pending" => {
+            "topup_pending"
                 // 已被 confirm 的那条不再算 pending
-                if !confirmed_refs.iter().any(|r| r == &e.id) {
+                if !confirmed_refs.iter().any(|r| r == &e.id) => {
                     pending += e.amount_micro;
                 }
-            }
             _ => {}
         }
     }

@@ -160,9 +160,7 @@ mod tests {
     use bolloon_config::EconomicConfig;
 
     fn econ() -> Arc<ShadowEconomy> {
-        let mut cfg = EconomicConfig::default();
-        cfg.enabled = true;
-        cfg.metering_enabled = true;
+        let cfg = EconomicConfig { enabled: true, metering_enabled: true, ..Default::default() };
         Arc::new(ShadowEconomy::new(cfg, None))
     }
 

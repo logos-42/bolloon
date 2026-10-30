@@ -275,7 +275,7 @@ pub fn clear_term_size() {
 }
 
 fn override_size() -> Option<(usize, usize)> {
-    OVERRIDE.get_or_init(|| Mutex::new(None)).lock().unwrap().clone()
+    *OVERRIDE.get_or_init(|| Mutex::new(None)).lock().unwrap()
 }
 
 /** 终端列数 (TS `termWidth`: 拿到且 > 24 才信, 否则 80) */

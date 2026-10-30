@@ -135,7 +135,7 @@ impl WalletTools {
         }
         let task_id = {
             let d = Sha256::digest(format!("{}|{}|{}", title, budget_atomic, now_ms).as_bytes());
-            format!("task-{}", &hex::encode(&d[..8]))
+            format!("task-{}", hex::encode(&d[..8]))
         };
         let unsigned = serde_json::json!({
             "contract": escrow_contract,

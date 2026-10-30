@@ -182,6 +182,10 @@ impl SellerPendingBook {
     pub fn len(&self) -> usize {
         self.pending.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
 }
 
 /// 服务器侧认证签名: HMAC(method ‖ path ‖ ts ‖ nonce ‖ bodyHash), 先验签再记 nonce
