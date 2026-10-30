@@ -798,6 +798,8 @@
         <button class="gear" id="settingsBtn" title="设置">⚙</button>
       </div>
       <div class="who"><b id="accountName">用户</b><small id="accountDid">did:…</small></div>
+      <!-- 2026-10-30 (leo: 网页端没有订阅栏按钮): 额度/订阅入口 (桌面壳在 #topBar, 网页端在这里) -->
+      <button id="payBtn" class="mini" title="额度 / 订阅（按量计费，先充值后使用）" style="margin-left:auto;padding:3px 8px;font-size:11px;white-space:nowrap">额度</button>
     </div>
   </aside>
   <main>
@@ -2154,6 +2156,7 @@ $('payBannerTopup').onclick=()=>openPayDialog();
 $('payBannerClose').onclick=()=>{ payBannerDismissed=true; $('payBanner').classList.add('hidden'); };
 $('dragonSubBtn').onclick=()=>openPayDialog();
 $('payClose').onclick=()=>$('payDlg').close();
+if($('payBtn'))$('payBtn').onclick=(e)=>{e.stopPropagation();openPayDialog();};
 $('paySubmit').onclick=async()=>{
   const amount=parseFloat($('payAmount').value||'0');
   const proof=$('payProof').value.trim();
