@@ -62,6 +62,8 @@ pub struct AppState {
     pub full_access: Arc<std::sync::atomic::AtomicBool>,
     /// 群聊/商议的"谁正在想"运行时 (内存态; 见 room_bus)
     pub room_bus: Arc<crate::room_bus::RoomBus>,
+    /// 每会话一轮对话的运行态 (流光阶段 / 停止 / 刷新续看; 见 native::ChatRuns)
+    pub chat_runs: Arc<crate::native::ChatRuns>,
     /// 更新安装互斥 (两个请求同时替换同一二进制会把自己装残)
     pub updating: Arc<std::sync::atomic::AtomicBool>,
     /// Forge 兼容层状态 (agents/sessions/profile/settings/auth 队列)
@@ -128,6 +130,7 @@ impl AppState {
             )),
             full_access: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             room_bus: Arc::new(crate::room_bus::RoomBus::default()),
+            chat_runs: Arc::new(crate::native::ChatRuns::default()),
             updating: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             forge: Arc::new(Mutex::new(crate::native::NativeState::load(&dir))),
             deliberation: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -818,6 +821,21 @@ struct CreateGroupRequest {
 /// 语义: **同名 = 同一个群组** —— 重复创建直接返回既有那个, 不再生成 `gw-xxxx` 技术 id,
 /// 也不会出现「项目群 2」这种自动编号。只有名字里会破坏 URL/路径的字符被替换成 `_`
 /// (展示层永远用 `name`, id 只是内部键)。
+/// 创建群组不弹名字框 ⇒ 服务器给一个人读的默认名:
+/// 「群聊」有空位就用它, 否则「群聊 2」「群聊 3」…（同名 = 同一个群, 所以必须避开已存在的）
+pub(crate) fn auto_group_name(st: &AppState, base: &str) -> String {
+    if st.groups.meta(&group_id_from_name(base)).is_none() {
+        return base.to_string();
+    }
+    for i in 2..500u32 {
+        let cand = format!("{base} {i}");
+        if st.groups.meta(&group_id_from_name(&cand)).is_none() {
+            return cand;
+        }
+    }
+    format!("{base} {}", chrono::Utc::now().timestamp())
+}
+
 pub(crate) fn group_id_from_name(name: &str) -> String {
     let cleaned: String = name
         .trim()
@@ -838,7 +856,11 @@ async fn create_group(
 ) -> Json<serde_json::Value> {
     let name = {
         let n = req.name.trim().to_string();
-        if n.is_empty() { "新群组".to_string() } else { n.chars().take(40).collect::<String>() }
+        if n.is_empty() {
+            auto_group_name(&st, "群聊")
+        } else {
+            n.chars().take(40).collect::<String>()
+        }
     };
     let id = group_id_from_name(&name);
     // 同名群组已存在 ⇒ 直接复用 (群组以名字为身份, 不做自动编号)
@@ -946,13 +968,21 @@ async fn group_messages(
             v
         })
         .collect();
-    // 谁正在想 (前端据此显示"X 正在想…", 不让用户以为没人理)
-    let thinking: Vec<String> = {
+    // 谁正在想 + 到哪一步 (前端据此显示「X 正在想 · 生成中」的流光, 不让用户以为没人理;
+    // 工具调用的细节**不进群**, 只在这一层做阶段标签)
+    let thinking: Vec<serde_json::Value> = {
         let names = st.forge.lock().await.agents.clone();
         st.room_bus
-            .thinking(&id)
+            .thinking_detail(&id)
             .into_iter()
-            .map(|aid| names.iter().find(|a| a.id == aid).map(|a| a.name.clone()).unwrap_or(aid))
+            .map(|(aid, stage)| {
+                let name = names
+                    .iter()
+                    .find(|a| a.id == aid)
+                    .map(|a| a.name.clone())
+                    .unwrap_or(aid.clone());
+                serde_json::json!({ "agent_id": aid, "name": name, "stage": stage })
+            })
             .collect()
     };
     Json(serde_json::json!({
@@ -1730,31 +1760,11 @@ async fn group_say(
     match entry {
         Ok(entry) => {
             // 后台执行 (这次请求立刻返回): 推举 → 并发跑 → 只把汇报落回群
-            // 接话人数：警长设定优先；没有则按群规模（>10 人默认 5 人接话）
-            let limit = crate::native::room_reply_limit_of(&st, &id).await;
-            // 组织名单：警长 1 + 小组长 5 + 领班 12 = 18 人可直接回复；名单外的人不刷群
-            let roster = crate::native::roster_of(&st, &id).await.roster;
-            // 免疫系统：隔离态成员本轮不进接话名单（到期自动解除，不需要人工放行）
-            let now_i = chrono::Utc::now().timestamp_millis();
-            let targets = {
-                let fs = st.forge.lock().await;
-                let agents = crate::native::room_candidate_agents(&fs, &id);
-                let cursor = st.groups.history(&id, 0).map(|h| h.len()).unwrap_or(0);
-                let picked = crate::room_bus::elect_from_roster(
-                    &agents,
-                    &crate::native::parse_addressed(&req.text),
-                    &roster,
-                    cursor,
-                    limit,
-                );
-                match st.econ.get() {
-                    Some(econ) => picked
-                        .into_iter()
-                        .filter(|a| econ.immune().may_speak(&a.id, now_i))
-                        .collect(),
-                    None => picked,
-                }
-            };
+            // 谁接话 = **唯一选举入口** (与商议 /api/room/guide 同一套):
+            // 参与者范围 → 组织名单 → 限额(小群全员, 大群 5) → 免疫过滤
+            let targets =
+                crate::native::elect_group_targets(&st, &id, &req.text, decision.speaker_id.as_deref())
+                    .await;
             let queued: Vec<String> = targets.iter().map(|a| a.name.clone()).collect();
             if let Some(first) = queued.first() {
                 let mut fs = st.forge.lock().await;
@@ -2298,6 +2308,77 @@ mod route_tests {
         )
     }
 
+
+    /// 2026-10-30 (leo): 「不同群组警长不同、没选中的智能体却进议程」。
+    ///
+    /// 纪律: **选谁进群, 谁才在议程里** ——
+    /// ① 警长只在本群参与者里选; ② 组织名单同理; ③ 接话目标不越出参与者;
+    /// ④ 创建群组不弹名字框 ⇒ 空名自动起「群聊 / 群聊 2」(不同群不撞名)。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sheriff_and_agenda_are_scoped_to_selected_members() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-web-agendatest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+
+        let state = AppState::new(offline_llm());
+        let mk = |id: &str, name: &str| crate::native::AgentView {
+            id: id.into(),
+            name: name.into(),
+            did: format!("did:pi:{id}"),
+            avatar: String::new(),
+            persona: String::new(),
+            workspace: String::new(),
+            global_dir: String::new(),
+            created_at_ms: 0,
+        };
+        {
+            let mut fs = state.forge.lock().await;
+            fs.agents = vec![mk("a1", "甲"), mk("a2", "乙"), mk("a3", "丙")];
+            // 这个群只选了甲、乙
+            fs.room_participants
+                .insert("g-scope".to_string(), vec!["a1".into(), "a2".into()]);
+            fs.save(&data_dir());
+        }
+
+        let inside = ["a1", "a2"];
+        let sheriff = crate::native::elect_group_sheriff(&state, "g-scope")
+            .await
+            .expect("有参与者就必须选得出警长");
+        assert!(inside.contains(&sheriff.as_str()), "警长必须是本群选中的成员, 实际 {sheriff}");
+
+        let roster = crate::native::roster_of(&state, "g-scope").await.roster;
+        for id in roster.eligible() {
+            assert!(inside.contains(&id.as_str()), "组织名单越出参与者: {id}");
+        }
+        assert_eq!(roster.sheriff.as_deref(), Some(sheriff.as_str()), "名单第 1 名与警长同源");
+
+        let targets = crate::native::elect_group_targets(&state, "g-scope", "大家聊聊", None).await;
+        assert!(!targets.is_empty(), "选中的成员要进交流");
+        for t in &targets {
+            assert!(inside.contains(&t.id.as_str()), "接话人越出参与者: {}", t.id);
+        }
+        // 小群（2 人）没人点名 ⇒ 全员并发接话
+        assert_eq!(targets.len(), 2, "2 人小群应并发接话");
+
+        // 另一个群只选丙 ⇒ 两个群的警长/议程互不串
+        {
+            let mut fs = state.forge.lock().await;
+            fs.room_participants
+                .insert("g-other".to_string(), vec!["a3".into()]);
+        }
+        let other = crate::native::elect_group_sheriff(&state, "g-other").await.unwrap();
+        assert_eq!(other, "a3");
+        assert_ne!(other, sheriff, "不同群按各自的成员选人");
+
+        // 创建群组不弹名字框: 空名 ⇒ 自动起名, 重名顺延
+        let n1 = auto_group_name(&state, "群聊");
+        assert_eq!(n1, "群聊");
+        let _ = state.groups.create_group(&group_id_from_name(&n1), &n1, "owner", GroupAcl::Open, 1);
+        let n2 = auto_group_name(&state, "群聊");
+        assert_eq!(n2, "群聊 2", "同名不能用两次 (同名=同一个群)");
+    }
 
     /// 2026-10-30 (leo): 群组以名字为身份 + 好友智能体跨机面 fail-closed + 界面真源门。
     ///

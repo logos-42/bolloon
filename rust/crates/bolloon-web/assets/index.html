@@ -197,6 +197,11 @@
   .msg{max-width:100%;padding:10px 12px;border-radius:12px;font-size:15px;line-height:1.55}
   .msg.user{background:var(--user-bg);color:var(--user-text);white-space:normal;padding:8px 14px;font-size:15px;line-height:1.4;border-radius:11px}
   .msg.bot{background:var(--panel2);border:1px solid var(--line);position:relative;white-space:normal}
+  /* 2026-10-30: 运行中的阶段行 (读文件 / 跑命令 / 整理结论…) —— 流光只给最后一行 */
+  .msg-stages{display:flex;flex-direction:column;gap:3px;margin:0 0 7px;font-size:12px;line-height:1.45;color:var(--muted,#8a8a8a)}
+  .msg-stages .stage-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-left:2px solid rgba(142,197,255,.28);padding-left:8px}
+  .msg-stages .stage-line.cur{color:var(--accent,#c4d640);border-left-color:var(--accent,#c4d640)}
+  .msg.bot:not(.streaming) .msg-stages{opacity:.55}
   .msg.bot.streaming::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:linear-gradient(110deg,transparent 30%,rgba(255,255,255,.12) 50%,transparent 70%);background-size:220% 100%;animation:shimmer 1.35s linear infinite}
   @media (prefers-color-scheme:light){.msg.bot.streaming::after{background:linear-gradient(110deg,transparent 30%,rgba(37,99,235,.12) 50%,transparent 70%)}}
   @keyframes shimmer{0%{background-position:180% 0}100%{background-position:-80% 0}}
@@ -1131,15 +1136,18 @@ function toggleRoomAgent(id){
 function renderRoomMeta(st,members,orbit,channel){
   const s=$('roomState'),m=$('roomMembers');
   if(s){
-    const think=(st&&st.participants)||[];
+    // participants = 本群选中的成员（议程）; thinking = 此刻在跑的人。两者以前混成了一个字段。
+    const think=(st&&st.thinking)||[];
+    const picked=(st&&st.participants)||[];
+    const stages=(st&&st.stages)||{};
     let base;
     if(think.length){
-      const names=think.map(id=>{const a=(state.agents||[]).find(x=>x.id===id);return (a&&a.name)||id;});
+      const names=think.map(id=>{const a=(state.agents||[]).find(x=>x.id===id);const n=(a&&a.name)||id;const sg=stages[id];return sg?`${n}（${sg}）`:n;});
       base=`${names.join('、')} 正在想…（后台执行，出来会汇报）`;
     }else if(st&&st.running){
       base='持续交流中 · 警长统筹，全员并发';
     }else{
-      base=(st&&st.id?'本群组已结束 · 点「发起交流」在原群组重新开始':'未在主动交流（点 ＋ 新建群组）');
+      base=(picked.length?`议程成员 ${picked.length} 人（底部选中的就是接话的人）`:'未选成员 · 点「发起交流」按当前选中开聊');
       if(st&&st.elected)base+=` · 上次推举：${st.elected} 接话`;
     }
     if(channel)base+=` · orbitdb: ${orbit||'checking'}`;
@@ -1147,7 +1155,7 @@ function renderRoomMeta(st,members,orbit,channel){
     s.textContent=base;
   }
   const lead=(st&&st.leader_agent_id)||'';
-  if(m)m.innerHTML=(members||[]).map(x=>`<span class="${x.status==='thinking'?'shimmer':''}"><span class="dot ${x.status||''}"></span>${lead&&lead===(x.agent_id||'')?'🎖️ ':''}${escapeHTML(x.agent_name||x.agent_id||'')}</span>`).join('');
+  if(m)m.innerHTML=(members||[]).map(x=>`<span class="${x.status==='thinking'?'shimmer':''}" title="${escapeHTML(x.stage||'')}"><span class="dot ${x.status||''}"></span>${lead&&lead===(x.agent_id||'')?'🎖️ ':''}${escapeHTML(x.agent_name||x.agent_id||'')}</span>`).join('');
 }
 function renderRoom(msgs,members){
   const box=$('roomMessages');
@@ -1201,13 +1209,13 @@ function renderRoomTabs(groups){
 }
 function switchRoomGroup(id){activeRoomGroup=id;roomPickedDirty=false;loadRoom();}
 async function newRoomGroup(){
-  // 2026-10-30 (用户): 群组按名字来, 不加数字 —— 新建商议群组时问名字; 同名会复用同一个群
-  const name=await askText('新建商议群组','群组名字','同名 = 同一个群组（不会自动编号）');
-  if(name===null)return;
+  // 2026-10-30 (用户): 创建过程不要名字弹窗 —— 直接建, 名字由服务端给（群聊/商议, 重名自动顺延）
   try{
-    const r=await api('/api/room/new',{method:'POST',body:JSON.stringify({name:String(name||'').trim()})});
+    const r=await api('/api/room/new',{method:'POST',body:JSON.stringify({name:''})});
+    if(r&&r.error)throw new Error(r.error);
     activeRoomGroup=r.id;await loadRoom();
-    if(r.reused)toast('已存在同名群组，直接打开');
+    if(r.reused)toast('已打开同名群组「'+(r.name||'')+'」');
+    else toast('已新建「'+(r.name||'商议')+'」');
   }catch(e){alert(e.message);}
 }
 async function closeRoomGroup(id){
@@ -1467,8 +1475,10 @@ function renderChat(){
     const retry=m.role==='assistant'?`<button title="重试" aria-label="重试" onclick="retryMessage(${i})">${iconRetry}</button>`:'';
     const edit=m.role==='user'?`<button title="编辑" aria-label="编辑" onclick="editMessage(${i})">${iconPencil}</button>`:'';
     const streaming=m.streaming?' streaming':'';
+    const stages=(m.role!=='user'&&Array.isArray(m.stages))?m.stages:[];
+    const stageBox=stages.length?`<div class="msg-stages">${stages.slice(-8).map((t,si,arr)=>`<div class="stage-line shimmer${(m.streaming&&si===arr.length-1)?' cur':''}">${escapeHTML(t)}</div>`).join('')}</div>`:'';
     return `<div class="msg-row ${role}" data-index="${i}">
-      <div class="msg ${role}${streaming}">${body}
+      <div class="msg ${role}${streaming}">${stageBox}${body}
         ${(m.images||[]).map(im=>`<img src="${im}" alt="">`).join('')}
       </div>
       <div class="msg-actions">
@@ -1481,12 +1491,15 @@ function renderChat(){
   }).join('');
   if(stick)chat.scrollTop=chat.scrollHeight;
 }
-function updateStreamingBubble(index,text){
+function updateStreamingBubble(index,text,stages){
   const chat=$('chat');
   const row=chat.querySelector(`.msg-row[data-index="${index}"]`);
   if(!row){renderChat();return;}
   const msg=row.querySelector('.msg.bot');
-  if(msg)msg.innerHTML=mdToHTML(text);
+  if(!msg)return;
+  const list=Array.isArray(stages)?stages:[];
+  const stageBox=list.length?`<div class="msg-stages">${list.slice(-8).map((t,si,arr)=>`<div class="stage-line shimmer${si===arr.length-1?' cur':''}">${escapeHTML(t)}</div>`).join('')}</div>`:'';
+  msg.innerHTML=stageBox+mdToHTML(text);
   if(nearBottom(chat))chat.scrollTop=chat.scrollHeight;
 }
 
@@ -1622,16 +1635,18 @@ async function resumeRunning(){
   setBusy(s.id,true);renderSidebar();
   let a=s.messages&&s.messages[s.messages.length-1];
   if(!a||a.role!=='assistant'||!a.streaming){
-    a={role:'assistant',text:st.text||'',streaming:true};
+    a={role:'assistant',text:st.text||'',stages:(st.stages||[]).slice(),streaming:true};
     s.messages.push(a);
   }else{
     a.text=st.text||a.text;
+    if(Array.isArray(st.stages)&&st.stages.length)a.stages=st.stages.slice();
   }
   renderChat();
   const timer=setInterval(async()=>{
     try{
       const q=await api('/api/chat/status?session_id='+encodeURIComponent(s.id));
       a.text=q.text||a.text;a.streaming=!!q.running;
+      if(Array.isArray(q.stages)&&q.stages.length)a.stages=q.stages.slice();
       if(state&&state.active_session_id===s.id)renderChat();
       if(!q.running){
         clearInterval(timer);resumeTimers.delete(s.id);
@@ -2264,7 +2279,7 @@ async function runUpdateFlow(){
 }
 $('updateBtn').onclick=runUpdateFlow;
 
-async function streamChat(payload,onDelta,signal){
+async function streamChat(payload,onDelta,signal,onStage){
   const r=await fetch('/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal});
   if(!r.ok){const t=await r.text();throw new Error(t||('HTTP '+r.status));}
   const reader=r.body.getReader(),dec=new TextDecoder();
@@ -2283,7 +2298,8 @@ async function streamChat(payload,onDelta,signal){
       });
       if(!data)continue;
       let obj={};try{obj=JSON.parse(data)}catch{obj={text:data}}
-      if(event==='delta'&&obj.text)onDelta(obj.text);
+      if(event==='stage'&&obj.text){if(onStage)onStage(obj.text);}
+      else if(event==='delta'&&obj.text)onDelta(obj.text);
       else if(event==='error'){const e=new Error(obj.error||'流式错误');e.sse=true;throw e;}
       else if(event==='done')final=obj.reply||'';
     }
@@ -2327,7 +2343,7 @@ async function submitMessage(text,images){
   setBusy(s.id,true);renderSidebar();
   s.messages=s.messages||[];
   s.messages.push({role:'user',text,images,time:new Date().toISOString()});
-  const assistant={role:'assistant',text:'',streaming:true,time:new Date().toISOString()};
+  const assistant={role:'assistant',text:'',stages:[],streaming:true,time:new Date().toISOString()};
   s.messages.push(assistant);
   const aiIndex=s.messages.length-1;
   renderChat();
@@ -2335,8 +2351,12 @@ async function submitMessage(text,images){
   try{
     const reply=await streamChat(payload,delta=>{
       assistant.text+=delta;
-      updateStreamingBubble(aiIndex,assistant.text);
-    },controller.signal);
+      updateStreamingBubble(aiIndex,assistant.text,assistant.stages);
+    },controller.signal,stage=>{
+      // 阶段行: 首个是「已收到，开始执行」, 之后是 轮次 / 工具调用 / 工具结果
+      assistant.stages.push(stage);
+      updateStreamingBubble(aiIndex,assistant.text,assistant.stages);
+    });
     if(reply)assistant.text=reply;
     if(!assistant.text)throw new Error('模型没有返回内容');
   }catch(e){
@@ -2344,7 +2364,7 @@ async function submitMessage(text,images){
       if(!assistant.text)assistant.text='（已停止）';
     }else if(e.sse){
       assistant.text='（错误）'+(e.message||'流式错误');
-    }else if(!assistant.text){
+    }else if(!assistant.text&&!(assistant.stages||[]).length){
       try{
         const j=await api('/api/chat',{method:'POST',body:JSON.stringify(payload),signal:controller.signal});
         if(j.error)throw new Error(j.error);
@@ -2742,13 +2762,13 @@ async function decideFriend(rid,act){
 $('friendBack').onclick=backToContacts;
 // 新建群聊: 复用页内 askText (Tauri 下 window.prompt 被禁, 不能用), 建完直接打开主区群聊面板
 async function createGroup(){
-  const name=await askText('创建群组','群组名字','群组以名字为身份（同名 = 同一个群组，不会自动编号）');
-  if(name===null)return;
+  // 2026-10-30 (用户): 创建过程不要名字弹窗 —— 直接建并打开, 名字由服务端给（群聊 / 群聊 2 …）
   try{
-    const g=await api('/api/groups',{method:'POST',body:JSON.stringify({name:(name||'').trim()||'新群聊'})});
+    const g=await api('/api/groups',{method:'POST',body:JSON.stringify({name:''})});
     if(g.error)throw new Error(g.error);
     await loadContacts();
     if(g.id)openGroup(g.id);
+    toast(g.reused?('已打开「'+(g.name||'群聊')+'」'):('已新建「'+(g.name||'群聊')+'」'));
   }catch(e){ toast('创建群聊失败: '+e.message); }
 }
 $('newGroupBtn').onclick=createGroup;
@@ -2900,13 +2920,16 @@ async function loadGroupMessages(){
     if(j.thinking&&j.thinking.length){
       const base=$('groupMeta').dataset.base||$('groupMeta').textContent;
       $('groupMeta').dataset.base=base;
-      $('groupMeta').textContent=base+' · '+j.thinking.join('、')+' 正在想…';
+      const who=j.thinking.map(t=>thinkingName(t)+(t.stage?'（'+t.stage+'）':'')).join('、');
+      $('groupMeta').textContent=base+' · '+who+' 正在想…';
     }else{
       const base=$('groupMeta').dataset.base;
       if(base){$('groupMeta').textContent=base;delete $('groupMeta').dataset.base;}
     }
   }catch(_){ /* 轮询失败静默, 下轮再试 */ }
 }
+function thinkingName(t){return typeof t==='string'?t:((t&&(t.name||t.agent_id))||'');}
+function thinkingStage(t){return (t&&typeof t==='object'&&t.stage)||'';}
 function renderGroupMessages(msgs,thinking){
   const box=$('groupMessages');
   if(!box)return;
@@ -2926,7 +2949,9 @@ function renderGroupMessages(msgs,thinking){
     </div>`;
   }).join(''):'<div class="hint">(还没有消息 — 说第一句)</div>';
   if(thinking&&thinking.length){
-    box.innerHTML+=`<div class="gmsg typing shimmer"><div class="gbody"><b>${thinking.map(escapeHTML).join('、')}</b> 正在想<span class="tdots">…</span></div></div>`;
+    // 只给「阶段性过程」: 谁 + 到哪一步 (流光), 工具细节留在后台
+    const who=thinking.map(t=>escapeHTML(thinkingName(t))+(thinkingStage(t)?` · ${escapeHTML(thinkingStage(t))}`:'')).join('、');
+    box.innerHTML+=`<div class="gmsg typing shimmer"><div class="gbody"><b>${who}</b> 正在想<span class="tdots">…</span></div></div>`;
   }
   if(stick)box.scrollTop=box.scrollHeight;
 }

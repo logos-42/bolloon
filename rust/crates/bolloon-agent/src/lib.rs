@@ -4,6 +4,8 @@
 //! 会话值：多人群聊中 agent 的参与逻辑（何时开口/冷却/幂等）
 
 pub mod econ_shadow;
+// 观察者/工具签名用到的 harness 基础类型: 让上层 (web/cli) 不必再直接依赖 harness crate
+pub use bolloon_harness::{GateOutcome, ToolCall};
 pub mod kernel_loop;
 pub mod group_chat;
 pub mod task_board;

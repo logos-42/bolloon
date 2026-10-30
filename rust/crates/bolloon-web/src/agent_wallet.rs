@@ -8,7 +8,6 @@
 //! 生成口径: secp256k1 私钥 → 未压缩公钥 (去掉 0x04) → keccak256 → 取后 20 字节 →
 //! 小写 `0x…` 地址 (与 EVM 一致)。宁可慢一步, 也不拿 ed25519 冒充 EVM 地址。
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use axum::{extract::State, Json};

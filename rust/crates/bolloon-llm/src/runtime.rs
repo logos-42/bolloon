@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use std::sync::Mutex; // 并发闸计数器: 同步锁 (凭证 Drop 里要能立刻归还, 不能 await)
 
 use crate::config_store::Resolved;
 use crate::provider_registry::Protocol;
@@ -148,6 +148,36 @@ pub enum LlmError {
 
 /// 并发闸：同 key 最多 N 个在途（key = provider|base_url）
 #[derive(Debug)]
+/// 并发闸的**槽位凭证**: 靠 Drop 归还。
+///
+/// 2026-10-30 (leo: 运行到一半就停止了 / 之后一句都回不了):
+/// 旧实现是「acquire 拿号 → await 完再手动 release」。只要这个 future 被丢掉
+/// (客户端断线、点了停止、请求超时), release 就永远不会执行 ⇒ 槽位**永久泄漏**。
+/// max=2 时泄漏两次之后, 之后每一次模型调用都会在 acquire 里无限轮询等待 ——
+/// 表现为「聊天卡死 / 运行到一半停住」, 而且重启前不会自愈。
+/// 现在归还由 RAII 保证 (计数器用同步锁, Drop 里能立刻还)。
+struct GatePermit<'a> {
+    gate: &'a ConcurrencyGate,
+    key: String,
+}
+
+impl Drop for GatePermit<'_> {
+    fn drop(&mut self) {
+        let mut map = self
+            .gate
+            .in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = map.get_mut(&self.key) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                map.remove(&self.key);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 struct ConcurrencyGate {
     max: usize,
     in_flight: Mutex<HashMap<String, usize>>,
@@ -161,28 +191,24 @@ impl ConcurrencyGate {
         }
     }
 
-    /// 尝试获取槽位；满则轮询等待（可 abort）
-    async fn acquire(&self, key: &str) -> bool {
+    /// 取一个槽位；满则轮询等待。凭证 drop 即归还（无论成功/失败/被丢弃）。
+    async fn acquire(&self, key: &str) -> GatePermit<'_> {
         loop {
             {
-                let mut map = self.in_flight.lock().await;
+                let mut map = self
+                    .in_flight
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 let n = map.entry(key.to_string()).or_insert(0);
                 if *n < self.max {
                     *n += 1;
-                    return true;
+                    return GatePermit {
+                        gate: self,
+                        key: key.to_string(),
+                    };
                 }
             }
             tokio::time::sleep(Duration::from_millis(120)).await;
-        }
-    }
-
-    async fn release(&self, key: &str) {
-        let mut map = self.in_flight.lock().await;
-        if let Some(n) = map.get_mut(key) {
-            *n = n.saturating_sub(1);
-            if *n == 0 {
-                map.remove(key);
-            }
         }
     }
 }
@@ -282,18 +308,32 @@ impl LlmRuntime {
 
         // 并发闸（唯一咽喉）
         let key = format!("{}|{}", slot.cfg.id, slot.cfg.base_url);
-        if !self.gate.acquire(&key).await {
-            return Err(LlmError::ConcurrencyQueueFull);
-        }
+        let _permit = self.gate.acquire(&key).await;
 
-        let result = self
-            .do_generate(slot, &params)
-            .await
-            .inspect_err(|e| {
-                tracing::debug!(provider = %slot.cfg.id, error = %e, "llm call failed");
-            });
-        self.gate.release(&key).await;
-        result
+        let mut result = self.do_generate(slot, &params).await;
+        if let Err(LlmError::Http { status: 400, body }) = &result {
+            if body.contains("reasoning_content") {
+                // ① 打补丁: 缺思维链的工具回合补空串再试
+                let mut p1 = params.clone();
+                fill_missing_reasoning(&mut p1.messages);
+                result = match self.do_generate(slot, &p1).await {
+                    Err(LlmError::Http { status: 400, body: b2 }) if b2.contains("reasoning_content") => {
+                        // ② 仍被拒: 本次把工具协议摊平成纯文本轨迹 (语义保留, 不再要求思维链)
+                        tracing::warn!(
+                            provider = %slot.cfg.id,
+                            "thinking 模式 reasoning_content 补不回来 — 本次降级为纯文本工具轨迹重试"
+                        );
+                        let mut p2 = params.clone();
+                        flatten_tool_protocol(&mut p2.messages);
+                        self.do_generate(slot, &p2).await
+                    }
+                    other => other,
+                };
+            }
+        }
+        result.inspect_err(|e| {
+            tracing::debug!(provider = %slot.cfg.id, error = %e, "llm call failed");
+        })
     }
 
     /// 流式生成 (SSE): 文本增量经 `on_delta` 逐段回调, 最终返回与 `generate`
@@ -315,17 +355,19 @@ impl LlmRuntime {
             return self.generate(provider_id, params).await;
         }
         let key = format!("{}|{}", slot.cfg.id, slot.cfg.base_url);
-        if !self.gate.acquire(&key).await {
-            return Err(LlmError::ConcurrencyQueueFull);
+        let _permit = self.gate.acquire(&key).await;
+        let mut result = self.do_generate_stream(slot, &params, &mut on_delta).await;
+        if let Err(LlmError::Http { status: 400, body }) = &result {
+            if body.contains("reasoning_content") {
+                // 同 generate: 缺思维链的工具回合补空串重试 (已吐出的增量不回滚, 只补发后续)
+                let mut p1 = params.clone();
+                fill_missing_reasoning(&mut p1.messages);
+                result = self.do_generate_stream(slot, &p1, &mut on_delta).await;
+            }
         }
-        let result = self
-            .do_generate_stream(slot, &params, &mut on_delta)
-            .await
-            .inspect_err(|e| {
-                tracing::debug!(provider = %slot.cfg.id, error = %e, "llm stream failed");
-            });
-        self.gate.release(&key).await;
-        result
+        result.inspect_err(|e| {
+            tracing::debug!(provider = %slot.cfg.id, error = %e, "llm stream failed");
+        })
     }
 
     async fn do_generate_stream(
@@ -793,6 +835,58 @@ fn ollama_request(
  *   · **有图**: `content` 换成 OpenAI 视觉数组 `[{type:text},{type:image_url,…}]`,
  *     其余字段 (role/name/tool_call_id/tool_calls) 原样带上。
  */
+/// DeepSeek 思考模式: **带 tool_calls 的 assistant 消息必须把 reasoning_content 原样带回**,
+/// 少一个就 400「must be passed back to the API」。有些回合模型/中转不返回思维链 ⇒ 我们手上没有。
+/// 第一步补丁: 缺的补成空串 (字段在场)。
+pub fn fill_missing_reasoning(messages: &mut [ChatMessage]) {
+    for m in messages.iter_mut() {
+        if m.role == "assistant" && m.tool_calls.is_some() && m.reasoning_content.is_none() {
+            m.reasoning_content = Some(String::new());
+        }
+    }
+}
+
+/// 第二步兜底: 空串也被拒时, 把「原生工具协议」摊平成纯文本轨迹 ——
+/// assistant 的工具调用写成一句话, tool 结果当 user 观察。语义不丢, 但不再要求 reasoning_content。
+pub fn flatten_tool_protocol(messages: &mut Vec<ChatMessage>) {
+    let old = std::mem::take(messages);
+    let mut out = Vec::with_capacity(old.len());
+    for m in old {
+        match m.role.as_str() {
+            "assistant" if m.tool_calls.is_some() => {
+                let names: Vec<String> = m
+                    .tool_calls
+                    .as_ref()
+                    .map(|t| t.iter().map(|c| c.function.name.clone()).collect())
+                    .unwrap_or_default();
+                let text = if m.content.trim().is_empty() {
+                    format!("（这一步调用了工具：{}）", names.join("、"))
+                } else {
+                    format!("{}\n（这一步调用了工具：{}）", m.content, names.join("、"))
+                };
+                out.push(ChatMessage {
+                    content: text,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning_content: None,
+                    ..m
+                });
+            }
+            "tool" => out.push(ChatMessage {
+                role: "user".into(),
+                content: format!("工具执行结果：{}", m.content),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+                images: m.images,
+                reasoning_content: None,
+            }),
+            _ => out.push(m),
+        }
+    }
+    *messages = out;
+}
+
 pub fn messages_payload(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
     messages
         .iter()
@@ -1349,21 +1443,81 @@ mod tests {
         assert!(long_timeout > short, "长上下文超时应更宽");
     }
 
+    /// DeepSeek 思考模式 400 的两级兜底: ① 缺思维链的工具回合补空串 ② 摊平成纯文本轨迹。
+    #[test]
+    fn reasoning_content_fallback_shapes() {
+        let base = ChatMessage {
+            role: "assistant".into(),
+            content: String::new(),
+            name: None,
+            tool_call_id: None,
+            images: vec![],
+            tool_calls: Some(vec![ToolCallMsg {
+                id: "call_1".into(),
+                call_type: "function".into(),
+                function: FunctionCall { name: "read_file".into(), arguments: "{}".into() },
+            }]),
+            reasoning_content: None,
+        };
+        let mut msgs = vec![base.clone()];
+        fill_missing_reasoning(&mut msgs);
+        assert_eq!(msgs[0].reasoning_content.as_deref(), Some(""), "缺的补成空串");
+        // 已有思维链不覆盖 (DeepSeek 要求原样传回)
+        let mut keep = vec![ChatMessage { reasoning_content: Some("想过了".into()), ..base.clone() }];
+        fill_missing_reasoning(&mut keep);
+        assert_eq!(keep[0].reasoning_content.as_deref(), Some("想过了"));
+
+        let mut flat = vec![
+            base,
+            ChatMessage {
+                role: "tool".into(),
+                content: "hello".into(),
+                name: None,
+                tool_call_id: Some("call_1".into()),
+                tool_calls: None,
+                images: vec![],
+                reasoning_content: None,
+            },
+        ];
+        flatten_tool_protocol(&mut flat);
+        assert!(flat.iter().all(|m| m.tool_calls.is_none() && m.tool_call_id.is_none()));
+        assert!(flat[0].content.contains("read_file"), "工具名要留在轨迹里");
+        assert_eq!(flat[1].role, "user");
+        assert!(flat[1].content.contains("hello"), "工具结果要留在轨迹里");
+    }
+
     #[tokio::test]
     async fn concurrency_gate_caps_inflight() {
         let gate = ConcurrencyGate::new(2);
         let key = "k1";
-        assert!(gate.acquire(key).await);
-        assert!(gate.acquire(key).await);
+        let p1 = gate.acquire(key).await;
+        let p2 = gate.acquire(key).await;
         // 第三个会阻塞——用 timeout 验证不会立刻放行
         let wait = tokio::time::timeout(Duration::from_millis(100), gate.acquire(key));
         assert!(wait.await.is_err(), "第 3 个并发应等待");
-        gate.release(key).await;
+        drop(p1);
         let got = tokio::time::timeout(Duration::from_secs(1), gate.acquire(key))
             .await
             .expect("释放后应能获取");
-        assert!(got);
-        gate.release(key).await;
+        drop(got);
+        drop(p2);
+    }
+
+    /// 槽位必须靠 Drop 归还: future 被丢弃 (客户端断线 / 停止 / 超时) 也不能泄漏。
+    /// 旧实现泄漏两次后 (max=2) 之后每一次模型调用都会在 acquire 里无限等待 ⇒「运行到一半就停住」。
+    #[tokio::test]
+    async fn concurrency_gate_returns_slot_when_future_dropped() {
+        let gate = ConcurrencyGate::new(1);
+        {
+            let fut = async {
+                let _p = gate.acquire("k").await;
+                std::future::pending::<()>().await;
+            };
+            let timed_out = tokio::time::timeout(Duration::from_millis(50), fut).await;
+            assert!(timed_out.is_err(), "前提: 这个 future 确实被超时丢弃");
+        }
+        let got = tokio::time::timeout(Duration::from_millis(400), gate.acquire("k")).await;
+        assert!(got.is_ok(), "丢弃的 future 必须归还槽位, 否则并发闸会被永久锁死");
     }
 
     #[tokio::test]

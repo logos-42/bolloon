@@ -20,12 +20,11 @@ use async_trait::async_trait;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::response::sse::{Event, Sse};
 use axum::Json;
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use bolloon_llm::{ChatMessage, GenerateParams, GenerateResult, LlmRuntime, ToolSchema};
 use bolloon_kernel::transport::{Transport, TransportMessage};
-use bolloon_agent::kernel_loop::{KernelLoop, LoopStrategy, LlmGoalReviewer, NoopObserver};
+use bolloon_agent::kernel_loop::{KernelLoop, LoopStrategy, LlmGoalReviewer};
 
 use crate::server::{data_dir, AppState, ChatMessageView};
 use std::collections::HashMap;
@@ -1450,10 +1449,11 @@ pub async fn roster_of(st: &AppState, gid: &str) -> RosterTerm {
             }
         }
     }
-    // 重算：所有内部智能体按五特质加权总分降序
+    // 重算：**本群参与者**按五特质加权总分降序
+    // (2026-10-30 leo: 不同群组警长不同、选中的智能体却没进交流 ⇒ 警长/名单必须在选人范围内选)
     let agents = {
         let fs = st.forge.lock().await;
-        fs.agents.clone()
+        room_candidate_agents(&fs, gid)
     };
     let base = crate::server::data_dir().join("agents");
     let mut scored: Vec<(String, f64)> = agents
@@ -1593,47 +1593,37 @@ pub async fn reply_with_model(
     .await
 }
 
+/// SSE 分块（阶段 / 正文 / 收尾）
+pub enum StreamChunk {
+    Stage(String),
+    Delta(String),
+    Done { reply: String, stop: String },
+}
+
 /// 自主 agent 对话: 跑 KernelLoop (工具调用 + 自问自答持续推进 + 目标 review 对齐初始意图)
 ///
 /// 与 `reply_with_model` 的差异: 不再单次 `call_model`, 而是带 Harness 九步门控的工具循环 —
 /// 模型可反复调用 read_file/search/execute 等工具, 无工具时自问自答反思, 收尾前用目标 review 对齐用户意图。
-pub async fn reply_with_agent(
+///
+/// `stages` 为 None 时不外发阶段事件（非流式调用）；`cancel` 置位即中止（工具门 + 轮次边界双检）。
+pub async fn reply_with_agent_stages(
     st: &AppState,
     text: &str,
     agent: Option<&AgentView>,
+    session_id: &str,
+    stages: Option<tokio::sync::mpsc::Sender<StreamChunk>>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<String, String> {
     let system_prompt = build_web_system(st, text, agent, "").await;
-    // 组装历史 + 当前句 (与 reply_with_model 同形)
-    let mut messages: Vec<ChatMessage> = Vec::new();
-    {
-        let msgs = st.messages.lock().await;
-        let start = msgs.len().saturating_sub(12);
-        let last = msgs.len().saturating_sub(1);
-        for (i, m) in msgs[start..].iter().enumerate() {
-            let idx = start + i;
-            let role = if m.role == "assistant" { "assistant" } else { "user" };
-            // 调用方可能已经把本轮用户输入写进历史 → 去重，避免同一句发两遍
-            if idx == last && role == "user" && m.content == text {
-                continue;
-            }
-            messages.push(ChatMessage {
-                role: role.into(),
-                content: m.content.clone(),
-                name: None,
-                tool_call_id: None,
-                images: vec![],
-                tool_calls: None,
-    reasoning_content: None,
-});
-        }
-    }
+    // 组装历史 + 当前句：**按会话取**（不同会话/不同智能体可并行，历史不串味）
+    let mut messages: Vec<ChatMessage> = chat_history(st, session_id, text).await;
     messages.push(ChatMessage {
         role: "user".into(),
         content: text.to_string(),
         name: None,
         tool_call_id: None,
-        images: vec![],
         tool_calls: None,
+        images: vec![],
     reasoning_content: None,
 });
 
@@ -1684,19 +1674,24 @@ pub async fn reply_with_agent(
     }
 
     // 工具 + 自主循环 (Harness 九步门控 + 目标 review 对齐初始意图)
-    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // 2026-10-30 (leo: 运行到一半就停止了 / 中间进展看不到):
+    //   ① 取消标志由调用方给 (前端「停止」直接置位) ⇒ 不再自己造一个没人能碰的
+    //   ② 工具预算放宽 (300 次调用 / 900s) —— 以前 60 次/300s 的长任务会中途被掐
     let (mut harness, schemas) =
-        bolloon_agent::builtin_tools::builtin_harness(60, 300_000, cancel, false).await;
+        bolloon_agent::builtin_tools::builtin_harness(300, 900_000, cancel.clone(), false).await;
     // 受治理配置: 安全紧急控制 + 超时覆盖 (harness)
     let harness = {
         let h = std::sync::Arc::get_mut(&mut harness).expect("harness Arc 应唯一");
         h.set_config(st.config.view());
         harness
     };
-    let strategy = Arc::new(WebStrategy { llm: llm.clone() });
+    let strategy = Arc::new(WebStrategy {
+        llm: llm.clone(),
+        cancel: cancel.clone(),
+    });
     let reviewer = Arc::new(LlmGoalReviewer::new(llm.clone(), provider_id.clone(), model.clone()));
     let loop_ = KernelLoop::new(strategy, harness)
-        .with_limits(40, 3)
+        .with_limits(120, 4)
         .with_goal_review(reviewer)
         // 真实测量计数: 供 AI 优化闭环读取 `llm.failure_rate`
         .with_health(st.llm_health.clone())
@@ -1726,15 +1721,23 @@ pub async fn reply_with_agent(
             model.clone(),
         )
     });
+    // 观察者链: 阶段事件(前端流光) + 经济计量(旁路) 同时收同一份事实
+    let sobs = StageObserver {
+        st,
+        sid: session_id.to_string(),
+        tx: stages.clone(),
+    };
     let chain = match econ_obs.as_ref() {
         Some(e) => bolloon_agent::kernel_loop::ObserverChain::new(vec![
-            &NoopObserver as &dyn bolloon_agent::kernel_loop::LoopObserver,
+            &sobs as &dyn bolloon_agent::kernel_loop::LoopObserver,
             e as &dyn bolloon_agent::kernel_loop::LoopObserver,
         ]),
         None => bolloon_agent::kernel_loop::ObserverChain::new(vec![
-            &NoopObserver as &dyn bolloon_agent::kernel_loop::LoopObserver,
+            &sobs as &dyn bolloon_agent::kernel_loop::LoopObserver,
         ]),
     };
+    // 取消: 前端「停止」置位 ⇒ 工具门立刻拒 + 策略在轮次边界不再发起调用。
+    // **不 select-drop**: 丢掉正在进行的 generate future 会漏掉并发闸槽位 (整个进程后来句句卡死)。
     let run = match loop_
         .run_observed(
             &chain,
@@ -1752,6 +1755,9 @@ pub async fn reply_with_agent(
                 .record_binding(bind.end(&format!("Failed({e})"), 0));
             if let Some(ec) = &econ_arc {
                 ec.end_task(&task_id, false);
+            }
+            if cancel.load(Ordering::SeqCst) {
+                return Err("（已停止）".to_string());
             }
             return Err(format!("agent 循环失败: {e}"));
         }
@@ -1772,7 +1778,13 @@ pub async fn reply_with_agent(
         );
     }
     let steps = run.steps;
-    let final_text = steps
+    let stop = run.stop.clone();
+    st.chat_runs.counters(
+        session_id,
+        steps.len() as u32,
+        steps.iter().map(|s| s.tool_calls.len() as u32).sum(),
+    );
+    let mut final_text = steps
         .iter()
         .rev()
         .find_map(|s| s.response.as_ref().map(|r| r.content.trim().to_string()))
@@ -1783,12 +1795,20 @@ pub async fn reply_with_agent(
                 agent.map(|a| a.name.as_str()).unwrap_or("agent")
             )
         });
+    // 步数上限不再是「静悄悄停住」: 如实告诉用户是到上限了, 并给出继续的路
+    if let Some(bolloon_agent::kernel_loop::StopReason::MaxTurns(n)) = stop {
+        final_text.push_str(&format!(
+            "\n\n（已到本轮 {n} 步上限，先把已有结论给你；说「继续」我接着做。）"
+        ));
+    }
     Ok(final_text)
 }
 
 /// 网页对话策略: 复用 AppState 的 llm, 正确区分 provider 与 model
 struct WebStrategy {
     llm: Arc<LlmRuntime>,
+    /// 用户中止标志: 置位后**不再发起下一次**模型调用 (在途那次不打断, 不丢并发槽)
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[async_trait]
@@ -1800,6 +1820,9 @@ impl LoopStrategy for WebStrategy {
         messages: Vec<ChatMessage>,
         tools: Vec<ToolSchema>,
     ) -> Result<GenerateResult, String> {
+        if self.cancel.load(Ordering::SeqCst) {
+            return Err("（已停止）".to_string());
+        }
         let mut params = GenerateParams::new(model, messages);
         params.tools = tools;
         // 2026-10-30 (用户: 超时/重试把回复打断了): 网络类错误改「再试一次」,
@@ -1916,82 +1939,399 @@ pub async fn turns(
     }))
 }
 
-/// POST /api/chat → {reply} (非流式降级)
+// ────────────────────────── 对话运行态 (阶段 / 取消 / 并发) ──────────────────────────
+
+/// 一轮对话的运行态。前端靠它显示**流光阶段**（读文件 / 跑命令 / 整理结论…），
+/// 也靠它「停止」；刷新页面后 `chat_status` 读同一份事实续上进度。
+///
+/// 每**会话**一份（不是全局一份）⇒ 不同智能体/不同会话可以同时跑，互不排队。
+#[derive(Default)]
+pub struct ChatRuns {
+    runs: std::sync::Mutex<HashMap<String, ChatRun>>,
+}
+
+#[derive(Clone)]
+pub struct ChatRun {
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
+    pub running: bool,
+    pub started_ms: u64,
+    pub stages: Vec<String>,
+    pub text: String,
+    /// "" | finished | aborted | failed | max_steps
+    pub stop: String,
+    pub turns: u32,
+    pub tools: u32,
+}
+
+impl Default for ChatRun {
+    fn default() -> Self {
+        Self {
+            cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            running: false,
+            started_ms: 0,
+            stages: vec![],
+            text: String::new(),
+            stop: String::new(),
+            turns: 0,
+            tools: 0,
+        }
+    }
+}
+
+impl ChatRuns {
+    /// 开跑。返回取消标志（同一会话重复开跑 ⇒ 旧的被顶掉，不排队）。
+    pub fn begin(&self, sid: &str) -> Arc<std::sync::atomic::AtomicBool> {
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        if m.len() > 32 {
+            // 只清已结束的: 运行中的条目是有用的状态, 不许被顺手删掉
+            m.retain(|_, r| r.running);
+        }
+        m.insert(
+            sid.to_string(),
+            ChatRun {
+                cancel: cancel.clone(),
+                running: true,
+                started_ms: chrono::Utc::now().timestamp_millis() as u64,
+                ..Default::default()
+            },
+        );
+        cancel
+    }
+
+    pub fn stage(&self, sid: &str, label: &str) {
+        let mut m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(r) = m.get_mut(sid) {
+            // 同一句连发不刷屏
+            if r.stages.last().map(|l| l == label).unwrap_or(false) {
+                return;
+            }
+            r.stages.push(label.to_string());
+            if r.stages.len() > 40 {
+                let cut = r.stages.len() - 40;
+                r.stages.drain(0..cut);
+            }
+        }
+    }
+
+    pub fn counters(&self, sid: &str, turns: u32, tools: u32) {
+        let mut m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(r) = m.get_mut(sid) {
+            r.turns = turns;
+            r.tools = tools;
+        }
+    }
+
+    pub fn set_text(&self, sid: &str, text: &str) {
+        let mut m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(r) = m.get_mut(sid) {
+            r.text = text.to_string();
+        }
+    }
+
+    pub fn finish(&self, sid: &str, stop: &str, text: &str) {
+        let mut m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(r) = m.get_mut(sid) {
+            r.running = false;
+            r.stop = stop.to_string();
+            if !text.is_empty() {
+                r.text = text.to_string();
+            }
+        }
+    }
+
+    pub fn cancel(&self, sid: &str) -> bool {
+        let m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        match m.get(sid) {
+            Some(r) => {
+                r.cancel.store(true, Ordering::SeqCst);
+                r.running
+            }
+            None => false,
+        }
+    }
+
+    /// 状态快照（前端 `/api/chat/status` 的唯一事实来源）
+    pub fn snapshot(&self, sid: &str) -> serde_json::Value {
+        let m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        match m.get(sid) {
+            Some(r) => serde_json::json!({
+                "running": r.running,
+                "text": r.text,
+                "stages": r.stages,
+                "stage": r.stages.last().cloned().unwrap_or_default(),
+                "stop": r.stop,
+                "turns": r.turns,
+                "tools": r.tools,
+                "elapsed_ms": if r.started_ms == 0 { 0 } else {
+                    (chrono::Utc::now().timestamp_millis() as u64).saturating_sub(r.started_ms)
+                },
+            }),
+            None => serde_json::json!({
+                "running": false, "text": "", "stages": [], "stage": "", "stop": "",
+                "turns": 0, "tools": 0, "elapsed_ms": 0,
+            }),
+        }
+    }
+
+    pub fn running(&self, sid: &str) -> bool {
+        let m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        m.get(sid).map(|r| r.running).unwrap_or(false)
+    }
+}
+
+/// 循环观察者 → 阶段事件（**只读**循环事实，不改执行语义）。
+/// 前端拿到的就是这里发出的「哪一轮 / 调了什么工具 / 工具成没成」。
+struct StageObserver<'a> {
+    st: &'a AppState,
+    sid: String,
+    tx: Option<tokio::sync::mpsc::Sender<StreamChunk>>,
+}
+
+impl StageObserver<'_> {
+    fn emit(&self, label: String) {
+        self.st.chat_runs.stage(&self.sid, &label);
+        if let Some(tx) = &self.tx {
+            let _ = tx.try_send(StreamChunk::Stage(label));
+        }
+    }
+}
+
+#[async_trait]
+impl bolloon_agent::kernel_loop::LoopObserver for StageObserver<'_> {
+    async fn on_turn_start(&self, turn: u32, max_steps: u32) {
+        self.emit(format!("第 {turn}/{max_steps} 轮 · 想下一步"));
+    }
+    async fn on_tool_begin(&self, _turn: u32, call: &bolloon_agent::ToolCall) {
+        let arg = one_line(&call.arguments.to_string(), 60);
+        self.emit(format!("调用 {} {}", call.name, arg));
+    }
+    async fn on_tool_result(
+        &self,
+        _turn: u32,
+        call: &bolloon_agent::ToolCall,
+        outcome: &bolloon_agent::GateOutcome,
+    ) {
+        match &outcome.denied {
+            Some(d) => self.emit(format!("{} 被拦: {}", call.name, one_line(&d.reason, 40))),
+            None => {
+                let ok = outcome.result.as_ref().map(|r| r.ok).unwrap_or(false);
+                self.emit(format!(
+                    "{} {} · {}ms",
+                    call.name,
+                    if ok { "完成" } else { "失败" },
+                    outcome.elapsed_ms
+                ));
+            }
+        }
+    }
+}
+
+/// 把一段文本压成一行（阶段行不换行、不刷屏）
+fn one_line(s: &str, max: usize) -> String {
+    let flat: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        flat
+    } else {
+        format!("{}…", flat.chars().take(max).collect::<String>())
+    }
+}
+
+/// 某个会话的历史（**按会话取**，不是全局一份）——
+/// 不同智能体的会话因此可以并行跑，历史不串味。
+async fn chat_history(st: &AppState, session_id: &str, text: &str) -> Vec<ChatMessage> {
+    let mut out: Vec<ChatMessage> = Vec::new();
+    let from_session: Vec<UiMessage> = if session_id.is_empty() {
+        Vec::new()
+    } else {
+        let fs = st.forge.lock().await;
+        fs.sessions
+            .iter()
+            .find(|s| s.id == session_id)
+            .map(|s| s.messages.clone())
+            .unwrap_or_default()
+    };
+    if !from_session.is_empty() {
+        let start = from_session.len().saturating_sub(12);
+        let last = from_session.len().saturating_sub(1);
+        for (i, m) in from_session[start..].iter().enumerate() {
+            let idx = start + i;
+            let role = if m.role == "assistant" { "assistant" } else { "user" };
+            if idx == last && role == "user" && m.text == text {
+                continue;
+            }
+            out.push(ChatMessage {
+                role: role.into(),
+                content: m.text.clone(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+                images: vec![],
+                reasoning_content: None,
+            });
+        }
+        return out;
+    }
+    // 老路径：会话还没落过消息时用进程内历史（重启后由 bootstrap 补种）
+    let msgs = st.messages.lock().await;
+    let start = msgs.len().saturating_sub(12);
+    let last = msgs.len().saturating_sub(1);
+    for (i, m) in msgs[start..].iter().enumerate() {
+        let idx = start + i;
+        let role = if m.role == "assistant" { "assistant" } else { "user" };
+        if idx == last && role == "user" && m.content == text {
+            continue;
+        }
+        out.push(ChatMessage {
+            role: role.into(),
+            content: m.content.clone(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+            images: vec![],
+            reasoning_content: None,
+        });
+    }
+    out
+}
+
+/// POST /api/chat → {reply} (非流式降级; 没有阶段事件, 前端只在 SSE 不可用时才走这条)
 pub async fn chat(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let text = req["message"].as_str().unwrap_or_default().to_string();
+    let sid = req["session_id"].as_str().unwrap_or_default().to_string();
     let agent = agent_by_id(&st, req["agent_id"].as_str()).await;
-    let reply = match reply_with_agent(&st, &text, agent.as_ref()).await {
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reply = match reply_with_agent_stages(&st, &text, agent.as_ref(), &sid, None, cancel).await {
         Ok(r) => r,
         Err(e) => e, // 错误也是"回答"：界面要能看到到底缺什么
     };
     if !reply.is_empty() {
         remember_turn(
-        &st,
-        &text,
-        &reply,
-        agent.as_ref().map(|a| a.name.as_str()),
-        req["session_id"].as_str(),
-    )
-    .await;
+            &st,
+            &text,
+            &reply,
+            agent.as_ref().map(|a| a.name.as_str()),
+            req["session_id"].as_str(),
+        )
+        .await;
     }
     Json(serde_json::json!({ "reply": reply }))
 }
 
-/// POST /api/chat/stream (SSE; 前端 streamChat 协议: event delta/done)
+/// POST /api/chat/stream (SSE; 事件: stage / delta / done)
+///
+/// 2026-10-30 修 **「（错误）Load failed」**：以前这里先把整轮 agent 循环 await 完才写第一个字节，
+/// 长任务期间 HTTP 连接一直空闲 ⇒ WebKit / Tauri 的 idle 超时把连接掐掉，前端只看到 Load failed、
+/// 中间进展也一个都看不到。现在：**请求一进来就先发一个 stage**，循环在后台任务里跑，
+/// 每个工具/轮次实时推 stage，另外带 SSE keep-alive 心跳 ⇒ 连接不再空闲。
 pub async fn chat_stream(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> impl axum::response::IntoResponse {
     let text = req["message"].as_str().unwrap_or_default().to_string();
+    let sid = req["session_id"].as_str().unwrap_or_default().to_string();
     let agent = agent_by_id(&st, req["agent_id"].as_str()).await;
-    let reply = match reply_with_agent(&st, &text, agent.as_ref()).await {
-        Ok(r) => r,
-        Err(e) => e,
-    };
-    if !reply.is_empty() {
-        remember_turn(
-        &st,
-        &text,
-        &reply,
-        agent.as_ref().map(|a| a.name.as_str()),
-        req["session_id"].as_str(),
-    )
-    .await;
-    }
-    let chunks: Vec<String> = {
-        let chars: Vec<char> = reply.chars().collect();
-        chars.chunks(24).map(|c| c.iter().collect()).collect()
-    };
-    let full = reply.clone();
-    let stream = futures::stream::iter(
-        chunks
-            .into_iter()
-            .map(|chunk| {
-                Ok::<_, std::convert::Infallible>(Event::default()
-                    .event("delta")
-                    .data(serde_json::json!({ "text": chunk }).to_string()))
-            })
-            .collect::<Vec<_>>(),
-    )
-    .chain(futures::stream::once(async move {
-        Ok::<_, std::convert::Infallible>(
-            Event::default().event("done").data(serde_json::json!({ "reply": full }).to_string()),
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<StreamChunk>(128);
+    let cancel = st.chat_runs.begin(&sid);
+    // 第一字节立刻走: 前端马上能显示「已收到，开始执行」的流光行
+    let _ = tx.try_send(StreamChunk::Stage("已收到，开始执行".to_string()));
+
+    let st2 = st.clone();
+    let sid2 = sid.clone();
+    tokio::spawn(async move {
+        let run = reply_with_agent_stages(
+            &st2,
+            &text,
+            agent.as_ref(),
+            &sid2,
+            Some(tx.clone()),
+            cancel.clone(),
         )
-    }));
-    Sse::new(stream)
+        .await;
+        let aborted = cancel.load(Ordering::SeqCst);
+        let (reply, stop, ok) = match run {
+            Ok(r) if !aborted => (r, "finished".to_string(), true),
+            Ok(r) => (r, "aborted".to_string(), false),
+            Err(e) if aborted || e.contains("已停止") => ("（已停止）".to_string(), "aborted".to_string(), false),
+            Err(e) => (e, "failed".to_string(), false),
+        };
+        // 中止的运行不写会话历史 (半截答案不该被下一轮当上下文)
+        if ok && !reply.is_empty() {
+            remember_turn(
+                &st2,
+                &text,
+                &reply,
+                agent.as_ref().map(|a| a.name.as_str()),
+                Some(&sid2),
+            )
+            .await;
+        }
+        st2.chat_runs.finish(&sid2, &stop, &reply);
+        // 正文分段吐 (前端照旧按 delta 累加)
+        let chars: Vec<char> = reply.chars().collect();
+        for chunk in chars.chunks(24) {
+            let piece: String = chunk.iter().collect();
+            if tx.send(StreamChunk::Delta(piece)).await.is_err() {
+                return; // 前端断开: 不再刷
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+        }
+        let _ = tx
+            .send(StreamChunk::Done { reply: reply.clone(), stop })
+            .await;
+    });
+
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        let chunk = rx.recv().await?;
+        let ev = match chunk {
+            StreamChunk::Stage(t) => Event::default()
+                .event("stage")
+                .data(serde_json::json!({ "text": t }).to_string()),
+            StreamChunk::Delta(t) => Event::default()
+                .event("delta")
+                .data(serde_json::json!({ "text": t }).to_string()),
+            StreamChunk::Done { reply, stop } => Event::default()
+                .event("done")
+                .data(serde_json::json!({ "reply": reply, "stop": stop }).to_string()),
+        };
+        Some((Ok::<_, std::convert::Infallible>(ev), rx))
+    });
+    Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(8))
+            .text("ping"),
+    )
 }
 
-/// GET /api/chat/status (前端 resumeRunning 轮询)
-pub async fn chat_status() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "running": false, "text": "" }))
+/// GET /api/chat/status?session_id=… (前端 resumeRunning 轮询 / 刷新后接着看进度)
+pub async fn chat_status(
+    State(st): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let sid = q.get("session_id").cloned().unwrap_or_default();
+    if sid.is_empty() {
+        return Json(serde_json::json!({
+            "running": false, "text": "", "stages": [], "stage": "", "stop": "",
+        }));
+    }
+    Json(st.chat_runs.snapshot(&sid))
 }
 
-/// POST /api/chat/stop
-pub async fn chat_stop() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": true }))
+/// POST /api/chat/stop {session_id} —— 真中止 (以前是空实现, 点了没用)
+pub async fn chat_stop(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let sid = req["session_id"].as_str().unwrap_or_default().to_string();
+    if sid.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺少 session_id" }));
+    }
+    let was_running = st.chat_runs.cancel(&sid);
+    Json(serde_json::json!({ "ok": true, "was_running": was_running }))
 }
 
 // ────────────────────────── room (群聊兼容层) ──────────────────────────
@@ -2043,7 +2383,10 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
             })
         })
         .collect();
-    let thinking = st.room_bus.thinking(&active);
+    // 谁在跑 + 跑到哪一步 (前端只显示阶段流光, 不显示工具细节)
+    let thinking_detail = st.room_bus.thinking_detail(&active);
+    let thinking: Vec<String> = thinking_detail.iter().map(|(id, _)| id.clone()).collect();
+    let stage_of: HashMap<String, String> = thinking_detail.into_iter().collect();
     let members: Vec<serde_json::Value> = st
         .forge
         .lock()
@@ -2054,6 +2397,7 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
             serde_json::json!({
                 "agent_id": a.id, "agent_name": a.name,
                 "status": if thinking.contains(&a.id) { "thinking" } else { "idle" },
+                "stage": stage_of.get(&a.id).cloned().unwrap_or_default(),
             })
         })
         .collect();
@@ -2077,23 +2421,13 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
         let fs = st.forge.lock().await;
         fs.room_last_speaker.get(&active).cloned().unwrap_or_default()
     };
-    // 警长（开页即算；缺失则补算并缓存；特质分不出行，仅返回当选者）
+    // 警长 = **本群参与者里**的任期选举（三天一换）。不再读跨群缓存:
+    // 缓存键虽按群分, 但选的是"全部智能体" ⇒ 出现了「别的群的/没进群的人当警长」。
     let (sheriff_id, sheriff_name) = {
-        let cached = {
-            let fs = st.forge.lock().await;
-            fs.sheriff_by_group.get(&active).cloned()
-        };
-        let id = match cached {
-            Some(i) => i,
-            None => match elect_group_sheriff(&st, &active).await {
-                Some(s) => {
-                    let mut fs = st.forge.lock().await;
-                    fs.sheriff_by_group.insert(active.clone(), s.clone());
-                    s
-                }
-                None => String::new(),
-            },
-        };
+        let id = sheriff_term(&st, &active)
+            .await
+            .map(|t| t.agent_id)
+            .unwrap_or_default();
         let name = {
             let fs = st.forge.lock().await;
             fs.agents
@@ -2104,6 +2438,16 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
         };
         (id, name)
     };
+    // 议程参与者 = 这个群真正选中的成员（没选过 ⇒ 全部内部智能体）
+    let participants: Vec<String> = {
+        let fs = st.forge.lock().await;
+        let chosen = fs.room_participants.get(&active).cloned().unwrap_or_default();
+        if chosen.is_empty() {
+            fs.agents.iter().map(|a| a.id.clone()).collect()
+        } else {
+            chosen
+        }
+    };
     Json(serde_json::json!({
         "messages": msgs,
         "members": members,
@@ -2113,7 +2457,10 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
         "state": {
             "running": running || !thinking.is_empty(),
             "turn": 0, "max_turns": 0, "topic": "",
-            "participants": thinking,
+            // 底部芯片读 participants (选中的成员); thinking 才是"此刻在跑的人"
+            "participants": participants,
+            "thinking": thinking.clone(),
+            "stages": stage_of.clone(),
             "elected": elected,
             "leader_agent_id": sheriff_id.clone(),
         },
@@ -2137,7 +2484,11 @@ pub async fn room_new(
 ) -> Json<serde_json::Value> {
     let name = {
         let n = req["name"].as_str().unwrap_or_default().trim().to_string();
-        if n.is_empty() { "商议".to_string() } else { n.chars().take(40).collect::<String>() }
+        if n.is_empty() {
+            crate::server::auto_group_name(&st, "商议")
+        } else {
+            n.chars().take(40).collect::<String>()
+        }
     };
     let id = crate::server::group_id_from_name(&name);
     let now_ms_local = now_ms();
@@ -2185,25 +2536,64 @@ pub fn room_candidate_agents(fs: &NativeState, gid: &str) -> Vec<AgentView> {
     out
 }
 
+/// 群内这一轮该谁接话 —— **唯一入口**。
+///
+/// 群聊面板 (`/api/groups/{id}/say`) 与商议 (`/api/room/guide`) 都走这里；
+/// 以前两处各写一套（一处看组织名单+限额, 一处不看），于是「底部选中」和「实际接话」
+/// 各算一套结果（leo 2026-10-30: 底部选中和交流议程没完成一致逻辑）。
+///
+/// 范围固定为：**本群参与者** ∩ **组织名单**（警长 1 + 小组长 5 + 领班 12）；
+/// 参与者少于等于 10 人时限额 = 参与人数 ⇒ 人少就全员并发, 人多才分小组接话。
+pub async fn elect_group_targets(
+    st: &AppState,
+    gid: &str,
+    text: &str,
+    speaker: Option<&str>,
+) -> Vec<AgentView> {
+    let limit = room_reply_limit_of(st, gid).await;
+    let roster = roster_of(st, gid).await.roster;
+    let now_i = chrono::Utc::now().timestamp_millis();
+    let fs = st.forge.lock().await;
+    let agents = room_candidate_agents(&fs, gid);
+    let cursor = st.groups.history(gid, 0).map(|h| h.len()).unwrap_or(0);
+    let addressed = parse_addressed(text);
+    let mut picked = crate::room_bus::elect_from_roster(
+        &agents,
+        &addressed,
+        &roster,
+        cursor,
+        limit,
+    );
+    // 智能体数量少（≤3）且没人被点名 ⇒ 选中的成员**一起接话**（并发, leo 2026-10-30）。
+    // 人多时仍按组织名单/限额轮转, 不刷屏。
+    if addressed.is_empty() && agents.len() <= crate::room_bus::SMALL_GROUP_ALL_REPLY {
+        picked = agents.iter().take(limit.max(agents.len())).cloned().collect();
+    }
+    // 商议中枢推举的 speaker 命中且该说话时, 让它排在最前 (不改变"谁能说话"的范围)
+    if let Some(sp) = speaker {
+        if let Some(pos) = picked.iter().position(|a| a.id == sp) {
+            let a = picked.remove(pos);
+            picked.insert(0, a);
+        }
+    }
+    match st.econ.get() {
+        Some(econ) => picked
+            .into_iter()
+            .filter(|a| econ.immune().may_speak(&a.id, now_i))
+            .collect(),
+        None => picked,
+    }
+}
+
 /// 计分直选某群警长（开页即算, 不在交流中重算）:
 /// 读每个内部智能体的 archive 历史 → 五特质(确定性主轴) → 加权总分最高者当选。
 /// 无内部智能体 → None（fail-closed, 不臆造警长）。特质分本身不出行, 仅存当选者 id。
-pub async fn elect_group_sheriff(st: &AppState, _gid: &str) -> Option<String> {
-    let agents = {
-        let fs = st.forge.lock().await;
-        fs.agents.clone()
-    };
-    if agents.is_empty() {
-        return None;
-    }
-    let base = crate::server::data_dir().join("agents");
-    let mut scored: Vec<(String, bolloon_agent::character::CharacterTraits)> =
-        Vec::with_capacity(agents.len());
-    for a in &agents {
-        let dir = base.join(&a.id).join("archive");
-        scored.push((a.id.clone(), bolloon_agent::character::score_agent(&dir)));
-    }
-    bolloon_agent::character::elect_sheriff(&scored)
+pub async fn elect_group_sheriff(st: &AppState, gid: &str) -> Option<String> {
+    // **唯一选举**: 警长 = 组织名单第 1 名。
+    // 以前这里用 `character::elect_sheriff` 自己排一遍, roster 用 weighted_total 再排一遍,
+    // 同分时两套排序不一致 ⇒ 面板上「警长 a2」而议程里第 1 名是 a1 (leo 2026-10-30 报的不一致)。
+    let term = roster_of(st, gid).await;
+    term.roster.sheriff
 }
 
 /// POST /api/room/start —— 真正发起交流: 记录所选参与者, 并让选中的智能体立刻开场 (后台并发)。
@@ -2251,8 +2641,14 @@ pub async fn room_start(
             .collect();
         out.sort_by_key(|a| chosen.iter().position(|c| c == &a.id).unwrap_or(usize::MAX));
         // 持久化参与者, 让后续 group_say / room_guide 只在选中者里推举 (选谁谁接话)
-        fs.room_participants.insert(gid.clone(), chosen);
+        fs.room_participants.insert(gid.clone(), chosen.clone());
         fs.room_running.insert(gid.clone(), true);
+        // 选人变了 ⇒ 警长 / 组织名单 / 上次推举都要按新范围重来 (否则老警长不在群里却还挂着)
+        fs.sheriffs.remove(&gid);
+        fs.rosters.remove(&gid);
+        fs.sheriff_by_group.remove(&gid);
+        fs.room_last_speaker.remove(&gid);
+        fs.save(&data_dir());
         out
     };
     // 计分直选警长（开页即算；特质分不出行，仅存当选者）
@@ -2465,18 +2861,10 @@ pub async fn room_guide(
         now_ms_local,
     ) {
         Ok(entry) => {
-            // 同一条消息也驱动后台汇报: 群聊/商议共用一套 (推举 → 并发 → 只落汇报)
-            let targets = {
-                let fs = st.forge.lock().await;
-                let agents = room_candidate_agents(&fs, &gid);
-                let cursor = st.groups.history(&gid, 0).map(|h| h.len()).unwrap_or(0);
-                crate::room_bus::elect(
-                    &agents,
-                    &parse_addressed(&text),
-                    decision.speaker_id.as_deref(),
-                    cursor,
-                )
-            };
+            // 同一条消息也驱动后台汇报: 群聊/商议共用**同一个选举入口**
+            // (以前这里 elect 全量+无限额, group_say 走组织名单+限额 ⇒ 选中/议程两套逻辑)
+            let targets =
+                elect_group_targets(&st, &gid, &text, decision.speaker_id.as_deref()).await;
             let queued: Vec<String> = targets.iter().map(|a| a.name.clone()).collect();
             if let Some(first) = queued.first() {
                 let mut fs = st.forge.lock().await;

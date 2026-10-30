@@ -36,6 +36,9 @@ pub struct RoomBus {
     inflight: Mutex<HashMap<String, BTreeSet<String>>>,
     /// 各群最近一次人类发言时间 (ms); 监督器据此判断"是否沉默可自驱"
     last_human_ms: Mutex<HashMap<String, u64>>,
+    /// 各群当前阶段 (group → agent → 人话阶段)。前端据此显示「谁 正在想 · 哪一步」的流光,
+    /// 工具调用/轮次这些细节只留在这里, 不进群消息正文。
+    stages: Mutex<HashMap<String, HashMap<String, String>>>,
 }
 
 impl RoomBus {
@@ -45,6 +48,37 @@ impl RoomBus {
             .lock()
             .map(|m| m.get(gid).map(|s| s.iter().cloned().collect()).unwrap_or_default())
             .unwrap_or_default()
+    }
+
+    /// 记录某成员当前的阶段 (如「想下一步」「整理结论」)。空串 = 清掉。
+    pub fn set_stage(&self, gid: &str, agent: &str, label: &str) {
+        if let Ok(mut m) = self.stages.lock() {
+            let e = m.entry(gid.to_string()).or_default();
+            if label.is_empty() {
+                e.remove(agent);
+            } else {
+                e.insert(agent.to_string(), label.to_string());
+            }
+            if e.is_empty() {
+                m.remove(gid);
+            }
+        }
+    }
+
+    /// 该群在跑的成员 + 各自阶段（顺序稳定：按 id）
+    pub fn thinking_detail(&self, gid: &str) -> Vec<(String, String)> {
+        let ids = self.thinking(gid);
+        let m = self.stages.lock().ok();
+        ids.into_iter()
+            .map(|id| {
+                let stage = m
+                    .as_ref()
+                    .and_then(|s| s.get(gid))
+                    .and_then(|e| e.get(&id).cloned())
+                    .unwrap_or_default();
+                (id, stage)
+            })
+            .collect()
     }
 
     pub fn is_thinking(&self, gid: &str, agent: &str) -> bool {
@@ -91,6 +125,7 @@ impl RoomBus {
                 }
             }
         }
+        self.set_stage(gid, agent, "");
     }
 }
 
@@ -102,6 +137,9 @@ impl RoomBus {
 /// 1000 上限下，一条消息在廉价档约 ¥3.4、旗舰档约 ¥106 —— 所以必须配合意图预算
 /// (`default_max_model_calls`) 才有意义；没有预算闸就等于没有闸。
 pub const MAX_ELECTED_AGENTS: usize = 1000;
+
+/// 小群（≤ 这个人数）没有点名也让全员接话: 人少时并发成本可接受 (leo 2026-10-30)
+pub const SMALL_GROUP_ALL_REPLY: usize = 3;
 
 /// 群成员超过这个数就进入"小组长接话"模式（leo 2026-10-29 定：默认 >10 ⇒ 每轮 5 人）
 pub const GROUP_LARGE_THRESHOLD: usize = 10;
@@ -288,6 +326,7 @@ pub fn spawn_reports(
             if !st.room_bus.begin(&gid, &agent.id) {
                 return;
             }
+            st.room_bus.set_stage(&gid, &agent.id, "准备上下文");
             let text = match agent_turn(&st, &gid, &agent, &trigger, &intent_id).await {
                 Ok(t) if !t.trim().is_empty() => t.trim().to_string(),
                 Ok(_) => format!("（{} 这一轮没有产出内容）", agent.name),
@@ -316,7 +355,9 @@ pub fn spawn_reports(
                 );
             }
 
-            // 汇报正文（去掉标记后）落群
+            // 汇报正文（去掉标记 + 工具调用噪声后）落群：
+            // 群里只放人话结论 —— 工具过程属于后台, 前端用阶段流光表达, 不刷群
+            let clean = strip_tool_noise(&clean);
             if !clean.is_empty() {
                 if let Err(e) = st.groups.append(
                     &gid,
@@ -430,7 +471,7 @@ async fn agent_turn(
          最近的消息：\n{transcript}\n\
          对方刚说：{trigger}\n\n\
          只输出你要发到群里的那段话：结论 / 汇报 / 直接回答。\n\
-         - 不要复述思考过程、不要输出工具调用或 JSON\n\
+         - 不要复述思考过程、不要输出工具调用或 JSON（不要写 <tool_call>/<tool_use>/函数调用块）\n\
          - 不要自称助手；用你自己的名字说话\n\
          - 没把握就直说不确定，不编造\n\
          - 若你认为本场已无共识空间，可在结尾写上 [[terminate]] 宣布散会\n\
@@ -460,6 +501,72 @@ async fn agent_turn(
         }),
     )
     .await
+}
+
+/// 去掉模型在群里"表演"出来的工具调用痕迹（纯函数）。
+///
+/// 群内回合**不提供工具**（只发言），但模型有时仍会输出 `<tool_call>{…}</tool_call>`、
+/// `<tool_use>` 或带 "tool_call" 的代码块 —— 这些进群就是噪声，且会让用户以为"它在群里调工具了"。
+/// 工具过程属于后台，前端用阶段流光表达。
+pub fn strip_tool_noise(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    loop {
+        // 成对标签: <tool_call>…</tool_call> / <tool_use>…</tool_use>
+        let mut hit: Option<(usize, usize)> = None;
+        for tag in ["tool_call", "tool_use", "function_call"] {
+            let open = format!("<{tag}>");
+            if let Some(a) = rest.find(&open) {
+                let close = format!("</{tag}>");
+                if let Some(b) = rest[a..].find(&close) {
+                    let end = a + b + close.len();
+                    if hit.map(|(s, _)| a < s).unwrap_or(true) {
+                        hit = Some((a, end));
+                    }
+                } else {
+                    hit = Some((a, rest.len())); // 没闭合: 从这里全丢
+                }
+            }
+        }
+        // 代码块: ```json … "tool_call" … ```
+        if let Some(a) = rest.find("```") {
+            if let Some(b) = rest[a + 3..].find("```") {
+                let end = a + 3 + b + 3;
+                let block = &rest[a..end];
+                if block.contains("tool_call") || block.contains("tool_use") || block.contains("\"arguments\"") {
+                    if hit.map(|(s, _)| a < s).unwrap_or(true) {
+                        hit = Some((a, end));
+                    }
+                }
+            }
+        }
+        match hit {
+            Some((a, b)) => {
+                out.push_str(&rest[..a]);
+                rest = &rest[b..];
+            }
+            None => {
+                out.push_str(rest);
+                break;
+            }
+        }
+    }
+    // 去掉剥离后留下的空行堆积
+    let lines: Vec<&str> = out.lines().collect();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut blank = 0;
+    for l in lines {
+        if l.trim().is_empty() {
+            blank += 1;
+            if blank > 1 {
+                continue;
+            }
+        } else {
+            blank = 0;
+        }
+        kept.push(l);
+    }
+    kept.join("\n").trim().to_string()
 }
 
 /// 解析汇报里的控制标记（纯函数）。返回 (去掉标记后的正文, 是否终止, 派发的任务列表)。
@@ -659,6 +766,20 @@ mod tests {
         assert_eq!(tasks[0].0, "agent-002");
         assert_eq!(tasks[0].1, "调研竞品定价");
         assert_eq!(clean, "请你去查一下资料，我同步整理结论。");
+    }
+
+    /// 群里不出现模型表演的工具调用块；正常正文原样保留。
+    #[test]
+    fn strip_tool_noise_keeps_prose() {
+        let raw = "我先查一下。\n<tool_call>{\"name\":\"read_file\"}</tool_call>\n结论：没问题。";
+        assert_eq!(strip_tool_noise(raw), "我先查一下。\n\n结论：没问题。");
+        let fenced = "看这个\n```json\n{\"tool_call\":{\"name\":\"shell\"}}\n```\n已处理完。";
+        let out = strip_tool_noise(fenced);
+        assert!(!out.contains("tool_call"), "工具块必须剥掉: {out}");
+        assert!(out.contains("已处理完。"));
+        // 普通代码块不是工具调用: 不动
+        let plain = "示例：\n```rust\nfn main() {}\n```";
+        assert!(strip_tool_noise(plain).contains("fn main"));
     }
 
     #[test]

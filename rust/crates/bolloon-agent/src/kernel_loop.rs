@@ -446,6 +446,10 @@ impl<S: LoopStrategy> KernelLoop<S> {
                         Err(e) => {
                             self.health.record_attempt(false);
                             last_err = e.clone();
+                            // 用户中止不是瞬时错误: 重试只会让他等更久
+                            if e.contains("已停止") {
+                                break;
+                            }
                             if attempt < retries {
                                 self.health.record_retry();
                                 tokio::time::sleep(std::time::Duration::from_secs(2u64 * (attempt as u64 + 1))).await;
@@ -725,6 +729,7 @@ mod tests {
                 finish_reason: if tools == 1 { "tool_calls".into() } else { "stop".into() },
                 usage: bolloon_llm::Usage::default(),
                 model: _provider_id.to_string(),
+                reasoning_content: None,
             })
         }
     }
@@ -790,6 +795,7 @@ mod tests {
                     finish_reason: "tool_calls".into(),
                     usage: bolloon_llm::Usage::default(),
                     model: "m".into(),
+                    reasoning_content: None,
                 })
             }
         }
@@ -845,6 +851,7 @@ mod tests {
                     finish_reason: if tools == 1 { "tool_calls".into() } else { "stop".into() },
                     usage: bolloon_llm::Usage::default(),
                     model: "m".into(),
+                    reasoning_content: None,
                 })
             }
         }
@@ -976,6 +983,7 @@ mod tests {
                     finish_reason: "stop".into(),
                     usage: bolloon_llm::Usage::default(),
                     model: "m".into(),
+                    reasoning_content: None,
                 })
             }
         }

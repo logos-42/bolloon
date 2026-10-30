@@ -176,9 +176,12 @@ impl Default for TaskPolicyConfig {
             default_model: None,
             default_base_url: None,
             system_prompt_override: None,
-            max_steps: 20,
-            budget_calls: 20,
-            budget_ms: 120_000,
+            // 2026-10-30 (leo: 运行到一半就停止了): 20 步对真任务是硬墙 ——
+            // 刚好在「读几个文件 + 改两处 + 跑测试」这种常规活的中段截断。
+            // 提到 600 步 / 800 次工具 / 150 分钟, 仍然有界 (上限校验不变)。
+            max_steps: 600,
+            budget_calls: 800,
+            budget_ms: 9000_000,
         }
     }
 }
