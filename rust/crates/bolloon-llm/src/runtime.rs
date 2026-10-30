@@ -959,9 +959,20 @@ pub fn messages_payload(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
                 // **出站边界兜底** (2026-10-30 实测): DeepSeek 思考模式只拒绝「assistant 带
                 // tool_calls 却整条没有 reasoning_content 字段」——传空串它接受, 字段缺失必 400。
                 // 所以这里补字段, 而不是只依赖上层填: 任何代码路径忘了填, 也不会把整轮打挂。
+                // `tool_calls: []` 也要拆掉: DeepSeek 只要看到 tool_calls 字段存在, 就要求
+                // 同一消息带 reasoning_content —— 空数组同样触发 400 (实测 4 连降级的根因之一)。
+                if o.get("tool_calls")
+                    .and_then(|t| t.as_array())
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false)
+                {
+                    if let Some(obj) = o.as_object_mut() {
+                        obj.remove("tool_calls");
+                    }
+                }
                 if m.role == "assistant"
-                    && m.tool_calls.as_ref().map(|c| !c.is_empty()).unwrap_or(false)
-                    && m.reasoning_content.is_none()
+                    && o.get("tool_calls").is_some()
+                    && o.get("reasoning_content").is_none()
                 {
                     o["reasoning_content"] = serde_json::Value::String(String::new());
                 }
