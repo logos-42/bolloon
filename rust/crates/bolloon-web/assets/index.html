@@ -528,6 +528,10 @@
   .pay-target{margin:4px 18px 0;padding:12px;border:1px dashed var(--line);border-radius:12px;font-size:12px;line-height:1.6;word-break:break-all}
   .pay-target .pay-addr{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--text)}
   .pay-target .pay-copy{margin-left:6px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:11px;cursor:pointer}
+  .pay-chain{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)}
+  .pay-chain:last-of-type{border-bottom:none}
+  .pay-chain-label{flex:none;font-size:11px;color:var(--muted);min-width:92px}
+  .pay-chain .pay-addr{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .pay-form{display:flex;flex-direction:column;gap:8px;padding:12px 18px 6px}
   .pay-form input{padding:9px 11px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px}
   .pay-pricing{padding:8px 18px 0;font-size:12px;color:var(--muted)}
@@ -1649,7 +1653,7 @@ function renderPay(){
   // 通道: 只把本机**真配了收款信息**的通道点亮, 没配的禁用并写清原因 (不假装能用)
   document.querySelectorAll('#payChannels button').forEach(b=>{
     const ch=b.dataset.ch, c=cfg[ch]||{};
-    const ready=(ch==='crypto'&&c.address)||(ch==='alipay'&&c.qr)||(ch==='wechat'&&c.qr)||(ch==='paypal'&&c.link);
+    const ready=(ch==='crypto'&&(c.address||(c.chains||[]).length))||(ch==='alipay'&&c.qr)||(ch==='wechat'&&c.qr)||(ch==='paypal'&&c.link);
     b.classList.toggle('on', ch===payChannel);
     b.disabled=!ready;
     b.title=ready?'':'本机还没配置 '+PAY_LABEL[ch]+' 的收款信息 (data_dir/pay/config.json)';
@@ -1657,12 +1661,20 @@ function renderPay(){
   const c=cfg[payChannel]||{};
   const t=$('payTarget');
   if(payChannel==='crypto'){
-    t.innerHTML = c.address
-      ? `<div>转到 <b>${PAY_CHAIN_LABEL[c.chain]||c.chain||'链上'}</b> · ${c.asset||'USDC'} 地址：</div>
-         <div><span class="pay-addr">${c.address}</span><button class="pay-copy" id="payCopy">复制</button></div>
-         <div class="hint" style="margin-top:6px">${c.note||''}</div>`
-      : `<span class="hint">还没配置收款地址：在 data_dir/pay/config.json 填 crypto.address，或用环境变量 BOLLOON_PAY_USDC_ADDRESS。</span>`;
-    const cp=$('payCopy'); if(cp) cp.onclick=()=>{ try{navigator.clipboard.writeText(c.address);toast('地址已复制');}catch(_){toast('复制失败，请手动选中');} };
+    // 多链: config.crypto.chains 有几条就列几条 (ETH/BASE · Solana · Bitcoin · Tron)
+    const chains=(c.chains&&c.chains.length)?c.chains:[{label:PAY_CHAIN_LABEL[c.chain]||c.chain||'链上',asset:c.asset,address:c.address}];
+    const rows=chains.filter(x=>x&&x.address).map((x,i)=>`
+      <div class="pay-chain">
+        <span class="pay-chain-label">${x.label||x.chain}${x.asset?` · ${x.asset}`:''}</span>
+        <span class="pay-addr">${x.address}</span>
+        <button class="pay-copy" data-addr="${x.address}">复制</button>
+      </div>`).join('');
+    t.innerHTML = rows
+      ? `<div>任选一条链转账，转完把交易哈希填到下面：</div>${rows}<div class="hint" style="margin-top:6px">${c.note||''}</div>`
+      : `<span class="hint">还没配置收款地址：在 data_dir/pay/config.json 填 crypto.address 或 crypto.chains。</span>`;
+    t.querySelectorAll('.pay-copy').forEach(b=>b.onclick=()=>{
+      const a=b.dataset.addr||''; try{navigator.clipboard.writeText(a);toast('地址已复制');}catch(_){toast('复制失败，请手动选中');}
+    });
   } else if(payChannel==='paypal'){
     t.innerHTML = c.link
       ? `<div>PayPal 收款链接：</div><div><span class="pay-addr">${c.link}</span></div><div class="hint" style="margin-top:6px">${c.note||''}</div>`
@@ -1671,7 +1683,7 @@ function renderPay(){
     const label=PAY_LABEL[payChannel];
     t.innerHTML = c.qr
       ? `<div>扫${label}收款码转账，然后填写交易号提交。</div>
-         <div style="margin-top:8px"><img src="${c.qr}" alt="${label}收款码" style="width:170px;border-radius:10px;border:1px solid var(--line)" /></div>
+         <div style="margin-top:8px"><img src="/api/pay/qr/${encodeURIComponent(c.qr)}" alt="${label}收款码" style="width:170px;border-radius:10px;border:1px solid var(--line)" /></div>
          <div class="hint" style="margin-top:6px">${c.note||''}</div>`
       : `<span class="hint">还没配置${label}收款码（config.${payChannel}.qr 填图片地址或 data URL）</span>`;
   }

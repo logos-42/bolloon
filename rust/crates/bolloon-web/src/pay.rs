@@ -36,6 +36,13 @@ pub struct PayEvent {
     /// 归属账户: 用户 DID (空 = 本机主人自己)
     #[serde(default)]
     pub account: String,
+    /// 模型 id (usage/charge 事件才有)
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub tokens_in: u64,
+    #[serde(default)]
+    pub tokens_out: u64,
     /// 针对哪条 pending 的确认 (kind=topup_confirmed 时)
     #[serde(default)]
     pub ref_id: String,
@@ -228,6 +235,9 @@ pub async fn pay_claim(
         note: req["note"].as_str().unwrap_or("").to_string(),
         ts_ms: now_ms(),
         account: req["account"].as_str().unwrap_or("").trim().to_string(),
+        model: String::new(),
+        tokens_in: 0,
+        tokens_out: 0,
         ref_id: String::new(),
     };
     let path = ledger_path(&st);
@@ -274,6 +284,9 @@ pub async fn pay_confirm(
         note: format!("人工核销: {}", req["note"].as_str().unwrap_or("")),
         ts_ms: now_ms(),
         account: target.account.clone(),
+        model: String::new(),
+        tokens_in: 0,
+        tokens_out: 0,
         ref_id: target.id.clone(),
     };
     if let Err(e) = append(&path, &ev) {
@@ -319,6 +332,9 @@ pub fn charge_for(st: &AppState, account: &str, micro_usd: i64, note: &str) -> R
         note: note.to_string(),
         ts_ms: now_ms(),
         account: account.to_string(),
+        model: String::new(),
+        tokens_in: 0,
+        tokens_out: 0,
         ref_id: String::new(),
     };
     append(&path, &ev).map_err(|e| e.to_string())?;
@@ -394,25 +410,35 @@ pub fn charge_model(
         "model={model} in={tokens_in} out={tokens_out} did={}",
         if did.is_empty() { "local" } else { did }
     );
-    if micro == 0 {
-        // 免费额度 (本人/朋友 0 价): 只记用量, 不扣钱 —— 但事件要留痕, 否则统计里查不到
-        let path = ledger_path(st);
-        let ev = PayEvent {
-            id: format!("usage-{}", now_ms()),
-            kind: "usage".into(),
-            amount_micro: 0,
-            channel: String::new(),
-            proof: String::new(),
-            note,
-            ts_ms: now_ms(),
-            account: did.to_string(),
-            ref_id: String::new(),
-        };
-        append(&path, &ev).map_err(|e| e.to_string())?;
-        let events = for_account(&read_events(&path), did);
-        return Ok(summarize(&events).0);
+    let path = ledger_path(st);
+    // 余额闸: 要扣钱却没余额 ⇒ 拒绝 (fail-closed)
+    if micro > 0 {
+        let (bal, _, _, _) = summarize(&for_account(&read_events(&path), did));
+        if bal < micro {
+            return Err(format!(
+                "余额不足: 需要 {} 美元, 当前 {} 美元",
+                micro as f64 / MICRO as f64,
+                bal as f64 / MICRO as f64
+            ));
+        }
     }
-    charge_for(st, did, micro, &note)
+    let ev = PayEvent {
+        id: format!("{}-{}", if micro > 0 { "charge" } else { "usage" }, now_ms()),
+        kind: if micro > 0 { "charge".into() } else { "usage".into() },
+        amount_micro: -micro,
+        channel: String::new(),
+        proof: String::new(),
+        note,
+        ts_ms: now_ms(),
+        account: did.to_string(),
+        model: model.to_string(),
+        tokens_in,
+        tokens_out,
+        ref_id: String::new(),
+    };
+    append(&path, &ev).map_err(|e| e.to_string())?;
+    let (bal, _, _, _) = summarize(&for_account(&read_events(&path), did));
+    Ok(bal)
 }
 
 /// GET /api/pay/pricing → 两款模型单价 + 等级 + 用户覆盖 (给官网/控制台展示用)
@@ -463,6 +489,118 @@ pub async fn pay_set_user(Json(req): Json<serde_json::Value>) -> Json<serde_json
 }
 
 
+/// 今日 (本地时区零点起) 的用量与花费, 按模型分。**金额单位 micro-USD。**
+pub fn today_summary(events: &[PayEvent], account: &str) -> serde_json::Value {
+    use chrono::{Local, TimeZone};
+    let midnight = Local::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|t| Local.from_local_datetime(&t).single())
+        .map(|d| d.timestamp_millis() as u64)
+        .unwrap_or(0);
+    let mut calls = 0u64;
+    let mut tin = 0u64;
+    let mut tout = 0u64;
+    let mut cost = 0i64;
+    let mut by_model: std::collections::BTreeMap<String, (u64, u64, u64, i64)> =
+        Default::default();
+    for e in events.iter().filter(|e| e.account == account && e.ts_ms >= midnight) {
+        if e.kind != "charge" && e.kind != "usage" {
+            continue;
+        }
+        calls += 1;
+        tin += e.tokens_in;
+        tout += e.tokens_out;
+        cost += -e.amount_micro;
+        let slot = by_model
+            .entry(if e.model.is_empty() { "unknown".into() } else { e.model.clone() })
+            .or_default();
+        slot.0 += 1;
+        slot.1 += e.tokens_in;
+        slot.2 += e.tokens_out;
+        slot.3 += -e.amount_micro;
+    }
+    let models: Vec<serde_json::Value> = by_model
+        .into_iter()
+        .map(|(m, (c, i, o, usd))| {
+            serde_json::json!({
+                "model": m, "calls": c, "tokens_in": i, "tokens_out": o,
+                "cost_usd": usd as f64 / MICRO as f64,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "calls": calls,
+        "tokens_in": tin,
+        "tokens_out": tout,
+        "cost_usd": cost as f64 / MICRO as f64,
+        "models": models,
+    })
+}
+
+/// GET /api/pay/summary?account= → 今日用量 + 余额 + 是否该提醒
+pub async fn pay_summary(
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let account = q.get("account").cloned().unwrap_or_default();
+    let path = ledger_path(&st);
+    let events = for_account(&read_events(&path), &account);
+    let (balance, pending, _, _) = summarize(&events);
+    let cfg = config();
+    // 提醒阈值: 配置里 low_balance_usd (美元), 缺省 1 美元
+    let threshold = cfg.get("low_balance_usd").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let bal_usd = balance as f64 / MICRO as f64;
+    Json(serde_json::json!({
+        "ok": true,
+        "account": account,
+        "balance_usd": bal_usd,
+        "pending_usd": pending as f64 / MICRO as f64,
+        "today": today_summary(&events, &account),
+        "low_balance": { "threshold_usd": threshold, "hit": bal_usd < threshold },
+    }))
+}
+
+/// GET /api/pay/upstream → 你自己的 DeepSeek 账户余额 (用服务器端 key, 不暴露给前端)
+pub async fn pay_upstream() -> Json<serde_json::Value> {
+    let key = {
+        let cfg = bolloon_llm::config_store::load();
+        bolloon_llm::config_store::resolve(&cfg, "deepseek")
+            .ok()
+            .and_then(|r| r.api_key)
+            .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok())
+            .unwrap_or_default()
+    };
+    if key.trim().is_empty() {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "还没有 DeepSeek key (配置里或 DEEPSEEK_API_KEY), 查不了上游余额"
+        }));
+    }
+    let resp = tokio::task::spawn_blocking(move || {
+        ureq::get("https://api.deepseek.com/user/balance")
+            .timeout(std::time::Duration::from_secs(6))
+            .set("Authorization", &format!("Bearer {}", key.trim()))
+            .call()
+            .map(|r| r.into_string().unwrap_or_default())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("任务异常 {e}")));
+    match resp {
+        Ok(body) => {
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
+            let infos = v.get("balance_infos").cloned().unwrap_or(serde_json::json!([]));
+            Json(serde_json::json!({
+                "ok": true,
+                "available": v.get("is_available").cloned().unwrap_or(serde_json::json!(null)),
+                "balances": infos,
+            }))
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("查上游余额失败: {e}") })),
+    }
+}
+
 /// 该用户的余额 (micro-USD)
 pub fn balance_for(st: &AppState, account: &str) -> i64 {
     let path = ledger_path(st);
@@ -475,6 +613,45 @@ pub fn needs_payment(did: &str) -> bool {
     let cfg = config();
     let tier = user_entry(&cfg, did)["tier"].as_str().unwrap_or("standard").to_string();
     tier_multiplier(&cfg, &tier) > 0.0
+}
+
+
+/// GET /api/pay/qr/{name} → 只吐 pay 目录里的收款码图片。
+/// 安全: 只接受 [A-Za-z0-9._-] 的文件名 (拒 `..` 与任何路径分隔符), 只能读 pay 目录。
+pub async fn pay_qr(
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let safe = !name.is_empty()
+        && name.len() <= 64
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !safe {
+        return (axum::http::StatusCode::BAD_REQUEST, "坏文件名").into_response();
+    }
+    let path = crate::server::data_dir().join("pay").join(&name);
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let ct = if name.ends_with(".png") {
+                "image/png"
+            } else if name.ends_with(".jpg") || name.ends_with(".jpeg") {
+                "image/jpeg"
+            } else {
+                "application/octet-stream"
+            };
+            (
+                [
+                    (axum::http::header::CONTENT_TYPE, ct),
+                    (axum::http::header::CACHE_CONTROL, "no-store"),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Err(_) => (axum::http::StatusCode::NOT_FOUND, "没有这张收款码").into_response(),
+    }
 }
 
 #[cfg(test)]
@@ -491,6 +668,9 @@ mod tests {
             note: String::new(),
             ts_ms: 0,
             account: String::new(),
+            model: String::new(),
+            tokens_in: 0,
+            tokens_out: 0,
             ref_id: ref_id.into(),
         }
     }

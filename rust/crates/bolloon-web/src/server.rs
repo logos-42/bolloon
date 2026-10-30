@@ -335,6 +335,11 @@ pub fn app(state: AppState) -> Router {
         .route("/api/pay/pricing", get(crate::pay::pay_pricing))
         // 给特定用户定等级/配额 (本机管理, 收款人本人操作)
         .route("/api/pay/user", post(crate::pay::pay_set_user))
+        // 收款码图片 (支付宝/微信), 只读 pay 目录
+        .route("/api/pay/qr/{name}", get(crate::pay::pay_qr))
+        // 今日用量汇总 + 余额提醒阈值; 以及你自己的 DeepSeek 账户余额 (服务端 key)
+        .route("/api/pay/summary", get(crate::pay::pay_summary))
+        .route("/api/pay/upstream", get(crate::pay::pay_upstream))
         .route("/api/pay/claim", post(crate::pay::pay_claim))
         .route("/api/pay/confirm", post(crate::pay::pay_confirm))
         .route("/api/phone/bind", post(crate::native::bind_phone))
