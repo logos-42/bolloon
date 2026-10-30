@@ -462,6 +462,21 @@ pub async fn pay_set_user(Json(req): Json<serde_json::Value>) -> Json<serde_json
     Json(serde_json::json!({ "ok": true, "users": cfg["users"].clone(), "config_path": path }) )
 }
 
+
+/// 该用户的余额 (micro-USD)
+pub fn balance_for(st: &AppState, account: &str) -> i64 {
+    let path = ledger_path(st);
+    let events = for_account(&read_events(&path), account);
+    summarize(&events).0
+}
+
+/// 这个用户是否**需要付费** (等级乘数 > 0)。免费档 (本人/自带 key) 不查余额。
+pub fn needs_payment(did: &str) -> bool {
+    let cfg = config();
+    let tier = user_entry(&cfg, did)["tier"].as_str().unwrap_or("standard").to_string();
+    tier_multiplier(&cfg, &tier) > 0.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

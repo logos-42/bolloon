@@ -1184,6 +1184,8 @@ pub struct EconCtx {
     pub group_id: Option<String>,
     pub agent_id: Option<String>,
     pub surface: String,
+    /// 谁为这次调用付钱 (远端 DID)。None = 本机主人自己, 不扣付费账本。
+    pub bill_did: Option<String>,
 }
 
 /// 兼容旧调用方（无经济层归属）：等价于 `call_model_metered(.., None)`。
@@ -1260,6 +1262,21 @@ pub async fn call_model_metered(
         images: vec![],
     });
     full.extend(messages);
+
+    // ── 付费闸 (2026-10-30): 远端 DID 走付费账本 —— 需要付费且余额 ≤ 0 直接拒, 不发起调用。
+    //    免费档 (tier 乘数 0: 本人/自带 key) 不拦。
+    let bill_did = econ_ctx
+        .as_ref()
+        .and_then(|e| e.bill_did.clone())
+        .filter(|d| !d.trim().is_empty());
+    if let Some(did) = bill_did.as_ref() {
+        if crate::pay::needs_payment(did) && crate::pay::balance_for(st, did) <= 0 {
+            return Err(format!(
+                "余额不足：{} 的付费额度为 0 —— 请在「订阅/充值」里充值后再用平台模型",
+                short_did(did)
+            ));
+        }
+    }
 
     let mut params = GenerateParams::new(model.clone(), full);
     params.temperature = 0.7;
@@ -1342,6 +1359,21 @@ pub async fn call_model_metered(
         econ.finish_model_call(
             &ctx, &prov, &mdl, tin, tout, status, elapsed_ms, evidence, est,
         );
+    }
+
+    // 按**真实 token** 扣费 (成功后): 模型/单价/等级在 pay 模块里算, 未配置模型会报错。
+    if let (Some(did), Ok(g)) = (bill_did.as_ref(), &res) {
+        let mdl = if g.model.trim().is_empty() { model.clone() } else { g.model.clone() };
+        match crate::pay::charge_model(
+            st,
+            did,
+            &mdl,
+            g.usage.prompt_tokens as u64,
+            g.usage.completion_tokens as u64,
+        ) {
+            Ok(bal) => tracing::info!("[pay] {did} 扣费 model={mdl} 余额={bal}"),
+            Err(e) => tracing::warn!("[pay] 扣费失败 did={did} model={mdl}: {e}"),
+        }
     }
 
     res.map(|g| g.content)
@@ -1536,6 +1568,7 @@ pub async fn reply_with_model(
             intent_id: format!("chat:{}", chrono::Utc::now().timestamp_millis()),
             group_id: None,
             agent_id: agent.map(|a| a.id.clone()),
+            bill_did: None,
             surface: "web-chat".to_string(),
         }),
     )
@@ -4471,6 +4504,8 @@ pub async fn agents_public_chat(
         group_id: None,
         agent_id: Some(agent.id.clone()),
         surface: "friend-relay".into(),
+        // 跨机来访 = **对方的 did 为这次推理付钱** (免费档不扣)
+        bill_did: Some(from_did.clone()),
     };
     match call_model_metered(&st, &system, messages, Some(econ)).await {
         Ok(reply) => Json(serde_json::json!({

@@ -3055,7 +3055,8 @@ mod route_tests {
                     intent_id: intent.to_string(),
                     group_id: Some("g1".into()),
                     agent_id: Some(agent.into()),
-                    surface: "web-room".into(),
+                    bill_did: None,
+            surface: "web-room".into(),
                 }),
             )
             .await;
@@ -3104,7 +3105,8 @@ mod route_tests {
                 intent_id: "group:g1:2".into(),
                 group_id: Some("g1".into()),
                 agent_id: Some("a".into()),
-                surface: "web-room".into(),
+                bill_did: None,
+            surface: "web-room".into(),
             }),
         )
         .await;
