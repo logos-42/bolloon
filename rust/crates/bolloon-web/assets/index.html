@@ -2791,7 +2791,7 @@ async function loadWorld() {
         ${cv.html}
         ${mediaHtml}
         ${cardLine(o)}
-        ${cardMedia(o.card && o.card.media)}
+        ${cardMedia((o.card && o.card.media) || o.media)}
         <div class="tags">${tags}</div>
         <div class="row">
           ${o.accepted ? '<span class="tag-chip" style="color:var(--accent);border-color:var(--accent)">已接受</span>' : `<button data-act="accept" data-id="${o.id}">接受</button>`}
