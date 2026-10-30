@@ -1076,6 +1076,16 @@ pub async fn set_settings(
 const WEB_SYSTEM_PROMPT: &str = "你是 Bolloon 智能体，运行在去中心化智能体资源交流网络中。\
 回答用中文，简洁、有依据；不确定就说不确定，不编造事实。";
 
+/// 说话风格 (2026-10-30 leo: 回复要抓重点、不长篇大论、说人话)
+///
+/// 放在 system prompt 里而不是前端截断: 截断会切掉结论, 而约束生成才是"少而准"。
+/// 只在用户明确要"详细/展开/写文档"时放开长度 —— 默认短。
+const STYLE_PROMPT: &str = "\n\n【说话风格】\n\
+- 先给结论, 再给理由; 不复述我的问题, 不铺垫背景, 不写小作文。\n\
+- 默认控制在 3 句话内说清; 只有我明确说\"详细点/展开/写成文档\"时才长写。\n\
+- 说人话: 用日常中文, 不用\"赋能/闭环/抓手/生态位\"这类空话; 专有名词和代码保留原文。\n\
+- 不确定就直说不确定, 不编造, 不拿套话填长度。";
+
 /// web 对话 system prompt —— 与 CLI/App 同一真源 `bolloon_agent::prompt::build_system_prompt`
 /// (原来 `WEB_SYSTEM_PROMPT` 是 2 行硬编码常量, persona/soul/memory/文档快照一个都没注入)。
 /// 装配失败 → 降级为 `WEB_SYSTEM_PROMPT`, 绝不因此打断对话。
@@ -1211,8 +1221,10 @@ pub async fn build_web_system(
         Err(_) => WEB_SYSTEM_PROMPT.to_string(),
     };
     format!(
-        "{}{}{}{}{}{}{}",
+        "{}{}{}{}{}{}{}{}",
         private_identity_block(agent),
+        // 说话风格: 抓重点/说人话 (leo) —— 紧贴身份块, 优先级高于默认身份描述
+        STYLE_PROMPT,
         base,
         // 主人昵称 + DID + 所属权 (全局事实, 每个智能体都带)
         owner_block,
