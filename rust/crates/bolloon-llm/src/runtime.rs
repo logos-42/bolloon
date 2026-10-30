@@ -33,6 +33,10 @@ pub struct ChatMessage {
     /// 贴图只能插 `@路径` —— 那是欠账, 这一版补上。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    /// 思考模式模型的思维链。DeepSeek v4 思考模式 **要求把上一轮的 reasoning_content
+    /// 原样带回去**, 否则下一次请求直接 400 ("must be passed back to the API")。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -115,6 +119,8 @@ pub struct GenerateResult {
     pub finish_reason: String,
     pub usage: Usage,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -566,6 +572,8 @@ impl SseBuffer {
 #[derive(Default)]
 pub(crate) struct StreamAccumulator {
     content: String,
+    /// 思考模式的思维链增量 (DeepSeek 要求回传)
+    reasoning: String,
     tool_calls: Vec<ToolCallMsg>,
     finish_reason: String,
     usage: Usage,
@@ -592,6 +600,9 @@ impl StreamAccumulator {
         let Some(delta) = first.get("delta") else {
             return delta_text;
         };
+        if let Some(rc) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+            self.reasoning.push_str(rc);
+        }
         if let Some(c) = delta.get("content").and_then(|c| c.as_str()) {
             self.content.push_str(c);
             delta_text.push_str(c);
@@ -634,6 +645,11 @@ impl StreamAccumulator {
             finish_reason: self.finish_reason,
             usage: self.usage,
             model: model.to_string(),
+            reasoning_content: if self.reasoning.is_empty() {
+                None
+            } else {
+                Some(self.reasoning)
+            },
         }
     }
 }
@@ -798,6 +814,9 @@ pub fn messages_payload(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
             if let Some(id) = &m.tool_call_id {
                 o["tool_call_id"] = serde_json::json!(id);
             }
+            if let Some(rc) = &m.reasoning_content {
+                o["reasoning_content"] = serde_json::Value::String(rc.clone());
+            }
             if let Some(tcs) = &m.tool_calls {
                 o["tool_calls"] = serde_json::to_value(tcs).unwrap_or(serde_json::Value::Null);
             }
@@ -855,6 +874,12 @@ fn parse_openai_response(v: serde_json::Value, model: &str) -> Result<GenerateRe
         .unwrap_or("")
         .to_string();
 
+    let reasoning_content = msg
+        .get("reasoning_content")
+        .and_then(|r| r.as_str())
+        .filter(|r| !r.is_empty())
+        .map(|r| r.to_string());
+
     let tool_calls = msg
         .get("tool_calls")
         .and_then(|t| t.as_array())
@@ -903,6 +928,7 @@ fn parse_openai_response(v: serde_json::Value, model: &str) -> Result<GenerateRe
         finish_reason,
         usage,
         model: model.to_string(),
+        reasoning_content: reasoning_content.clone(),
     })
 }
 
@@ -958,6 +984,7 @@ fn parse_anthropic_response(v: serde_json::Value, model: &str) -> Result<Generat
         finish_reason,
         usage,
         model: model.to_string(),
+        reasoning_content: None,
     })
 }
 
@@ -1016,6 +1043,7 @@ fn parse_gemini_response(v: serde_json::Value, model: &str) -> Result<GenerateRe
         finish_reason,
         usage,
         model: model.to_string(),
+        reasoning_content: None,
     })
 }
 
@@ -1075,6 +1103,7 @@ fn parse_ollama_response(v: serde_json::Value, model: &str) -> Result<GenerateRe
         finish_reason,
         usage,
         model: model.to_string(),
+        reasoning_content: None,
     })
 }
 
@@ -1176,6 +1205,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
+            reasoning_content: None,
         }
     }
 
@@ -1371,7 +1401,8 @@ mod tests {
                     tool_call_id: None,
                     images: vec![],
                     tool_calls: None,
-                }]),
+    reasoning_content: None,
+}]),
             )
             .await
             .unwrap_err();
@@ -1424,7 +1455,8 @@ mod tests {
                     tool_call_id: None,
                     images: vec![],
                     tool_calls: None,
-                }]),
+    reasoning_content: None,
+}]),
             )
             .await
             .expect("429 退避后应成功");

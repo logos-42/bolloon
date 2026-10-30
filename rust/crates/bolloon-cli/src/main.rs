@@ -1584,7 +1584,8 @@ async fn send_one(
         tool_call_id: None,
         tool_calls: None,
         images: user_msg.images,
-    });
+    reasoning_content: None,
+});
     // 状态栏的会话摘要跟着首条用户消息走 (语义标题, 不是时间戳)
     sess.refresh_title();
     let _ = sess.save();
@@ -1684,7 +1685,8 @@ async fn send_one(
         tool_call_id: None,
         tool_calls: None,
         images: vec![],
-    }];
+    reasoning_content: None,
+}];
     convo.extend(sess.messages.clone());
 
     let started = std::time::Instant::now();

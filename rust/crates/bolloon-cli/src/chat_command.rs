@@ -318,7 +318,8 @@ impl Jobs {
                 tool_call_id: None,
                 tool_calls: None,
                 images: vec![],
-            }];
+    reasoning_content: None,
+}];
             let body = match llm
                 .generate("env", bolloon_llm::GenerateParams::new(&model, msgs))
                 .await
@@ -804,7 +805,8 @@ impl ChatSession {
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-        }];
+    reasoning_content: None,
+}];
         match ctx
             .llm
             .generate("env", bolloon_llm::GenerateParams::new(&self.model, msgs))
@@ -880,7 +882,8 @@ impl ChatSession {
             tool_call_id: None,
             tool_calls: None,
             images,
-        })
+    reasoning_content: None,
+})
     }
 
     /// 给 LLM 看的对话摘录 (最多 `turns` 轮 / `max_chars` 字符, 从尾部取)
@@ -1228,7 +1231,8 @@ impl ChatSession {
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-        }];
+    reasoning_content: None,
+}];
         let res = match ctx
             .llm
             .generate("env", bolloon_llm::GenerateParams::new(&self.model, msgs))
@@ -1496,7 +1500,8 @@ impl ChatSession {
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-        }];
+    reasoning_content: None,
+}];
         match ctx
             .llm
             .generate("env", bolloon_llm::GenerateParams::new(&self.model, msgs))
@@ -1533,7 +1538,8 @@ impl ChatSession {
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-        }];
+    reasoning_content: None,
+}];
         match ctx
             .llm
             .generate("env", bolloon_llm::GenerateParams::new(&self.model, msgs))
@@ -1819,7 +1825,8 @@ impl ChatSession {
                     tool_call_id: None,
                     tool_calls: None,
                     images: vec![],
-                }];
+    reasoning_content: None,
+}];
                 let res = match ctx
                     .llm
                     .generate("env", bolloon_llm::GenerateParams::new(&self.model, msgs))
@@ -1903,7 +1910,8 @@ impl ChatSession {
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-        }];
+    reasoning_content: None,
+}];
         next.extend(tail);
         self.messages = next;
     }
@@ -2638,7 +2646,8 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-        });
+    reasoning_content: None,
+});
     }
 
     async fn run(s: &mut ChatSession, cmd: &str, args: &str) -> Cmd {

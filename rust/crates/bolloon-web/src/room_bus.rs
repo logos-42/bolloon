@@ -444,7 +444,8 @@ async fn agent_turn(
         tool_call_id: None,
         tool_calls: None,
         images: vec![],
-    }];
+    reasoning_content: None,
+}];
     // 走**计量咽喉**：一条人类消息触发的多个 agent 调用共用同一个根意图
     crate::native::call_model_metered(
         st,

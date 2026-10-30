@@ -98,6 +98,7 @@ impl GoalReviewer for LlmGoalReviewer {
                     tool_call_id: None,
                     images: vec![],
                     tool_calls: None,
+                    reasoning_content: None,
                 },
                 ChatMessage {
                     role: "user".into(),
@@ -106,6 +107,7 @@ impl GoalReviewer for LlmGoalReviewer {
                     tool_call_id: None,
                     images: vec![],
                     tool_calls: None,
+                    reasoning_content: None,
                 },
             ],
         );
@@ -388,6 +390,7 @@ impl<S: LoopStrategy> KernelLoop<S> {
                     tool_call_id: None,
                     images: vec![],
                     tool_calls: None,
+                    reasoning_content: None,
                 },
             );
         }
@@ -410,6 +413,7 @@ impl<S: LoopStrategy> KernelLoop<S> {
                         tool_call_id: None,
                         images: vec![],
                         tool_calls: None,
+                        reasoning_content: None,
                     },
                 ),
             }
@@ -534,6 +538,8 @@ impl<S: LoopStrategy> KernelLoop<S> {
                     tool_call_id: None,
                     images: vec![],
                     tool_calls: None,
+                    // 思考模式的思维链必须原样回传 (DeepSeek 否则 400)
+                    reasoning_content: resp.reasoning_content.clone(),
                 });
                 continue;
             }
@@ -568,7 +574,8 @@ impl<S: LoopStrategy> KernelLoop<S> {
                     tool_call_id: Some(tc.id.clone()),
                     images: vec![],
                     tool_calls: None,
-                });
+    reasoning_content: None,
+});
                 if !tool_ok {
                     // 工具失败不打断循环（下一次模型调用会看到 tool 结果）
                 }
@@ -601,6 +608,8 @@ impl<S: LoopStrategy> KernelLoop<S> {
                         })
                         .collect(),
                 ),
+                // 带 tool_calls 的 assistant 消息同样要带上思维链, 否则下一轮 400
+                reasoning_content: resp.reasoning_content.clone(),
             };
             messages.push(assistant_msg);
             messages.extend(tool_messages);
@@ -646,7 +655,8 @@ fn build_transcript(messages: &[ChatMessage], current: &GenerateResult) -> Strin
         tool_call_id: None,
         images: vec![],
         tool_calls: None,
-    });
+    reasoning_content: None,
+});
     msgs.into_iter()
         .rev()
         .take(24)
@@ -745,7 +755,8 @@ mod tests {
             tool_call_id: None,
             images: vec![],
             tool_calls: None,
-        }];
+    reasoning_content: None,
+}];
         let steps = loop_.run("p", "m", messages, vec![], None).await.unwrap();
         assert!(steps.len() >= 2, "至少两轮: 工具轮 + 完成轮");
         let last = steps.last().unwrap();
@@ -870,7 +881,8 @@ mod tests {
             tool_call_id: None,
             images: vec![],
             tool_calls: None,
-        }];
+    reasoning_content: None,
+}];
         let steps = loop_.run("p", "m", messages, vec![], None).await.unwrap();
         // 自问自答没有提前停: 走了 工具→自问→工具→结论 共 4 轮
         assert_eq!(steps.len(), 4, "自问自答应持续推进到对齐才收尾");
@@ -919,7 +931,8 @@ mod tests {
             tool_call_id: None,
             images: vec![],
             tool_calls: None,
-        }];
+    reasoning_content: None,
+}];
         let run = loop_
             .run_observed(&obs, "p", "m", messages, vec![], None)
             .await
@@ -990,7 +1003,8 @@ mod tests {
                     tool_call_id: None,
                     images: vec![],
                     tool_calls: None,
-                }],
+    reasoning_content: None,
+}],
                 vec![],
                 None,
             )

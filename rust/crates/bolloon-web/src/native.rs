@@ -627,7 +627,8 @@ pub async fn models_test(
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-        }],
+    reasoning_content: None,
+}],
     );
     params.max_tokens = 8;
     params.temperature = 0.0;
@@ -1274,7 +1275,8 @@ pub async fn call_model_metered(
         tool_call_id: None,
         tool_calls: None,
         images: vec![],
-    });
+    reasoning_content: None,
+});
     full.extend(messages);
 
     // ── 付费闸 (2026-10-30): 远端 DID 走付费账本 —— 需要付费且余额 ≤ 0 直接拒, 不发起调用。
@@ -1562,7 +1564,8 @@ pub async fn reply_with_model(
                 tool_call_id: None,
                 tool_calls: None,
                 images: vec![],
-            });
+    reasoning_content: None,
+});
         }
     }
     messages.push(ChatMessage {
@@ -1572,7 +1575,8 @@ pub async fn reply_with_model(
         tool_call_id: None,
         tool_calls: None,
         images: vec![],
-    });
+    reasoning_content: None,
+});
     // 私聊一轮 = 一个根意图（同一条消息内的重试/多轮共享它）
     call_model_metered(
         st,
@@ -1619,7 +1623,8 @@ pub async fn reply_with_agent(
                 tool_call_id: None,
                 images: vec![],
                 tool_calls: None,
-            });
+    reasoning_content: None,
+});
         }
     }
     messages.push(ChatMessage {
@@ -1629,7 +1634,8 @@ pub async fn reply_with_agent(
         tool_call_id: None,
         images: vec![],
         tool_calls: None,
-    });
+    reasoning_content: None,
+});
 
     // 解析 provider + model (与 call_model 同逻辑)
     let (ui_provider, ui_model) = {
@@ -4627,7 +4633,8 @@ pub async fn agents_public_chat(
         tool_call_id: None,
         images: vec![],
         tool_calls: None,
-    }];
+    reasoning_content: None,
+}];
     let econ = EconCtx {
         intent_id: String::new(),
         group_id: None,
