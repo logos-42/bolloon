@@ -2160,6 +2160,19 @@ $('dragonSubBtn').onclick=()=>openPayDialog();
 $('payClose').onclick=()=>$('payDlg').close();
 if($('payBtn'))$('payBtn').onclick=(e)=>{e.stopPropagation();openPayDialog();};
 if($('subBtn'))$('subBtn').onclick=(e)=>{e.stopPropagation();openPayDialog();};
+// 2026-10-30: 「直连节点 · 添加」以前只有按钮没有处理函数 ⇒ 对端永远登记不进 directory_peers,
+// 结果意图广播一直 peers:0 (什么都发不出去)。这里接上 POST /api/directory/peers。
+if($('nodeAddBtn'))$('nodeAddBtn').onclick=async()=>{
+  const url=(($('nodeUrl')&&$('nodeUrl').value)||'').trim();
+  if(!url){ if($('nodeStatus'))$('nodeStatus').textContent='先粘贴对端节点地址，例 http://192.168.1.9:54188'; return; }
+  try{
+    const r=await fetch('/api/directory/peers',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url})});
+    const j=await r.json().catch(()=>({}));
+    if(j.error){ if($('nodeStatus'))$('nodeStatus').textContent='登记失败：'+j.error; return; }
+    if($('nodeStatus'))$('nodeStatus').textContent='已登记对端 '+((j.peers||[]).length)+' 个 · 意图广播现在有对象了';
+    if(typeof renderContacts==='function')renderContacts();
+  }catch(e){ if($('nodeStatus'))$('nodeStatus').textContent='登记失败：'+e; }
+};
 $('paySubmit').onclick=async()=>{
   const amount=parseFloat($('payAmount').value||'0');
   const proof=$('payProof').value.trim();
