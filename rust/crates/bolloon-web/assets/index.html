@@ -151,6 +151,12 @@
   /* 2026-10-30: 通讯录节标题右侧的入口按钮组 (加好友 / 加群 / 创建群) — 桌面壳与网页端同款 */
   /* 2026-10-30 (leo): 创建智能体按钮下面 = 三个标签页 (智能体 / 通讯录 / 群组) */
   .side-tabs{display:flex;gap:4px;padding:2px 10px 8px}
+  .side-tab .ico{display:none;width:19px;height:19px}
+  /* 折叠后 = 纵向图标轨 (桌面 rail 的 SVG), 只留图标 */
+  body.side-collapsed .side-tabs{flex-direction:column;align-items:center;gap:6px;padding:4px 0 8px}
+  body.side-collapsed .side-tab{width:34px;height:32px;display:grid;place-items:center;padding:0}
+  body.side-collapsed .side-tab .lbl{display:none}
+  body.side-collapsed .side-tab .ico{display:block}
   .side-tab{flex:1;font-size:12px;line-height:1;padding:6px 0;border-radius:9px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer;transition:color .12s,border-color .12s,background .12s}
   .side-tab:hover{color:var(--accent);border-color:var(--accent)}
   .side-tab.on{color:var(--on-accent,#1b1a19);background:var(--accent,#c4d640);border-color:var(--accent,#c4d640);font-weight:600}
@@ -720,10 +726,10 @@
     </div>
     <!-- 2026-10-30 (leo): 通讯录 / 群组 作为标签页放在「创建智能体」下面 -->
     <div class="side-tabs" id="sideTabs" role="tablist">
-      <button class="side-tab on" data-side="agents" role="tab">智能体</button>
-      <button class="side-tab" data-side="contacts" role="tab">通讯录</button>
-      <button class="side-tab" data-side="groups" role="tab">群组</button>
-      <button class="side-tab" data-side="world" role="tab">世界</button>
+      <button class="side-tab on" data-side="agents" role="tab" title="智能体"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7a8.5 8.5 0 0 1-.9-3.8 8.38 8.38 0 0 1 8.5-8.5 8.5 8.5 0 0 1 8.5 8.5z"/></svg><span class="lbl">智能体</span></button>
+      <button class="side-tab" data-side="contacts" role="tab" title="通讯录"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span class="lbl">通讯录</span></button>
+      <button class="side-tab" data-side="groups" role="tab" title="群组"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span class="lbl">群组</span></button>
+      <button class="side-tab" data-side="world" role="tab" title="世界"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg><span class="lbl">世界</span></button>
     </div>
     <div class="side-scroll">
       <!-- 2026-10-26: 桌面三栏第二栏 — 按第一栏模块显隐 (chat=智能体/会话, world=意图面板) -->
@@ -821,8 +827,10 @@
         </div>
       </div>
       <aside class="world-side">
-        <div style="font-weight:600;font-size:12px;margin-bottom:6px">我的意图</div>
-        <div id="worldIntents"></div>
+        <details id="worldIntentBox" open style="margin-bottom:8px">
+          <summary style="font-weight:600;font-size:12px;cursor:pointer;margin-bottom:6px">我的意图 <span id="worldIntentCount" style="color:var(--muted);font-weight:400"></span></summary>
+          <div id="worldIntents"></div>
+        </details>
         <!-- 输入统一在底部 composer (世界模式也用它); 这里只放 @ 候选与已选提示 -->
         <div style="display:flex;gap:6px;margin:8px 0">
           <button id="worldAtBtn" title="指定接话的智能体 / 群组（不指定=默认本机智能体回复）" style="font-size:11px;padding:5px 8px">@ 指定接话</button>
@@ -2167,11 +2175,14 @@ function syncCollapseHint(){
 }
 function collapseSidebar(){
   $('app').classList.add('collapsed');
+  // 折叠态让标签栏变纵向图标轨 (世界/群组/通讯录/智能体 四个桌面同款 SVG)
+  document.body.classList.add('side-collapsed');
   syncCollapseHint();
 }
 function expandSidebar(){
   if(!$('app').classList.contains('collapsed'))return;
   $('app').classList.remove('collapsed');
+  document.body.classList.remove('side-collapsed');
   syncCollapseHint();
 }
 $('collapseBtn').onclick=collapseSidebar;
@@ -2635,6 +2646,16 @@ function cardMedia(media) {
 }
 
 let worldLoaded = false;
+function toggleCardDetail(e,id){
+  if(e&&e.target&&(e.target.tagName==='A'||e.target.tagName==='BUTTON'||e.target.tagName==='SUMMARY'))return;
+  const d=document.getElementById('detail-'+id);
+  if(!d)return;
+  const open=d.style.display!=='none';
+  d.style.display=open?'none':'block';
+  if(!open){ try{ api('/api/world/opened',{method:'POST',body:JSON.stringify({id})}); }catch(_){}
+    try{ api('/api/world/vote',{method:'POST',body:JSON.stringify({id,dir:'open'})}); }catch(_){}
+  }
+}
 async function voteWorldCard(id,dir){
   try{
     const r=await api('/api/world/vote',{method:'POST',body:JSON.stringify({id,dir})});
@@ -2715,7 +2736,7 @@ async function loadWorld() {
       if(/\.(mp3|m4a|wav|ogg)$/i.test(u))return `<audio src="${escapeHTML(u)}" controls preload="none"></audio>`;
       return `<div class="cover tier-image"><img src="${escapeHTML(u)}" alt="" loading="lazy" style="max-height:190px;object-fit:cover"></div>`;
     }).join("");
-      return `<div class="opp-card ${cv.tier}">
+      return `<div class="opp-card ${cv.tier}" data-oid="${escapeHTML(o.id)}" onclick="toggleCardDetail(event,'${escapeHTML(o.id)}')">
         <div class="oh"><b>${escapeHTML(o.title)}</b><span class="scope">${o.by?('by '+escapeHTML(o.by)):(scopeIcon + ' ' + escapeHTML(o.kind || "world"))}</span><span class="score">${(o.score ?? 0).toFixed(2)}</span></div>
         <div class="sum">${escapeHTML(o.summary || "")}${url}</div>
         ${cv.html}
@@ -2728,13 +2749,18 @@ async function loadWorld() {
           <button data-act="ignore" data-id="${o.id}">忽略</button>
           <span class="wcard-vote"><button class="up" onclick="voteWorldCard('${o.id}','up')">👍 ${o.up||0}</button><button onclick="voteWorldCard('${o.id}','down')">👎 ${o.down||0}</button></span>
           <span class="why">${escapeHTML(o.why || o.reason || "")}</span>
-          ${(o.links && o.links.length) ? `<details class="opp-links"><summary>链接 ${o.links.length} 条</summary>${o.links.map(u=>`<a href="${escapeHTML(u)}" target="_blank" rel="noopener noreferrer">${escapeHTML(u)}</a>`).join('')}</details>` : `<details class="opp-links"><summary>链接</summary><span style="color:var(--muted)">这条内容没有给出链接</span></details>`}
+          <div class="opp-detail" id="detail-${escapeHTML(o.id)}" style="display:none">
+          <div style="white-space:pre-wrap;font-size:12.5px;line-height:1.55;margin:4px 0">${escapeHTML(o.summary || '(没有正文)')}</div>
+          <div style="font-size:11px;color:var(--muted)">作者 ${escapeHTML(o.by || o.source || '未知')} · 版本 ${o.version || 1} · ${o.verification || 'unverified'}${o.ts?(' · '+new Date(o.ts).toLocaleString()):''}</div>
+        </div>
+        ${(o.links && o.links.length) ? `<details class="opp-links"><summary>链接 ${o.links.length} 条</summary>${o.links.map(u=>`<a href="${escapeHTML(u)}" target="_blank" rel="noopener noreferrer">${escapeHTML(u)}</a>`).join('')}</details>` : `<details class="opp-links"><summary>链接</summary><span style="color:var(--muted)">这条内容没有给出链接</span></details>`}
         </div>
       </div>`;
     }).join("") || '<div class="hint">世界正在持续送来 — 稍等一下。</div>';
 
     // 意图列
     const it = await api("/api/intents");
+    if($('worldIntentCount'))$('worldIntentCount').textContent='· '+((it.intents||[]).length)+' 条';
     $("worldIntents").innerHTML = (it.intents || []).length
       ? (it.intents || []).map(t => `<span class="intent-chip">${escapeHTML(t)}<i class="x" data-tag="${escapeHTML(t)}">×</i></span>`).join("")
       : '<div class="hint" style="font-size:11px">(还没有意图 — 告诉世界你在做什么)</div>';

@@ -14,6 +14,7 @@ pub mod native;
 pub mod pay;
 pub mod agent_wallet;
 pub mod qr_login;
+pub mod reco;
 pub mod room_bus;
 pub mod server;
 pub mod updater;

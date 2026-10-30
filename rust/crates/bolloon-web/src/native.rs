@@ -245,6 +245,16 @@ pub struct NativeState {
     /// 意图权重 (intent → 权重): 由赞/踩/点开/忽略反馈持续调整, 三个模式共用
     #[serde(default)]
     pub intent_weights: std::collections::HashMap<String, f64>,
+    /// 推荐引擎的兴趣向量 (带时间衰减; 落盘 ⇒ 跨重启继续"长期更新")
+    #[serde(default)]
+    pub interests: crate::reco::Interests,
+
+    /// 收到的对端意图 (外部智能体广播来的; 只当参考, 不当成自己的意图)
+    #[serde(default)]
+    pub peer_intents: Vec<serde_json::Value>,
+    /// 对外广播意图的结果 (逐个对端记成功/失败, 不假装全网收到)
+    #[serde(default)]
+    pub intent_broadcast_log: Vec<serde_json::Value>,
     /// 判断力落盘 (append-only): 每次世界/群组/智能体决策都记下"按什么意图选了谁、为什么"
     #[serde(default)]
     pub judgments: Vec<serde_json::Value>,
@@ -3176,6 +3186,25 @@ pub async fn update_apply(State(st): State<AppState>) -> Json<serde_json::Value>
             }
         }
     }
+    // 网页端/裸进程: 走 npm 一条龙 (安装 → 重启 web), 不再只给个链接
+    if std::env::var("BOLLOON_UPDATE_NPM").map(|v| v != "0").unwrap_or(true) {
+        tokio::spawn(async move {
+            let r = tokio::task::spawn_blocking(crate::updater::npm_install_latest).await;
+            match r {
+                Ok(Ok(bin)) => {
+                    tracing::info!(bin = %bin.display(), "npm 更新完成 — 重启 web");
+                    let _ = crate::updater::exec_restart(&bin);
+                }
+                Ok(Err(e)) => tracing::warn!(error = %e, "npm 更新失败 (详见 update.log)"),
+                Err(e) => tracing::warn!(error = %e, "npm 更新线程失败"),
+            }
+        });
+        return Json(serde_json::json!({
+            "installing": true,
+            "via": "npm",
+            "message": "正在用 npm 安装最新版，装好会自动重启 web（日志：/api/update/log）",
+        }));
+    }
     st.updating.store(false, Ordering::SeqCst);
     Json(serde_json::json!({
         "url": release_url,
@@ -3321,12 +3350,49 @@ pub async fn list_opportunities(
         }
         items.push(obj);
     }
-    // 推荐流: 按推荐分降序 (意图 + 看过 + 赞踩 + 新鲜度, 权重见 RankWeights)
-    items.sort_by(|a, b| {
-        let ra = a["rank"].as_f64().unwrap_or(0.0);
-        let rb = b["rank"].as_f64().unwrap_or(0.0);
-        rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // 推荐引擎: 兴趣向量(带半衰期) × 质量 × 赞踩 × 新鲜度 × 看过, 再做同类多样性去重
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let engine = crate::reco::Engine::default();
+    let cands: Vec<crate::reco::Candidate> = items
+        .iter()
+        .map(|o| crate::reco::Candidate {
+            id: o["id"].as_str().unwrap_or_default().to_string(),
+            topics: o["tags"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default(),
+            quality: o["score"].as_f64().unwrap_or(0.0),
+            vote: {
+                let u = o["up"].as_i64().unwrap_or(0);
+                let d = o["down"].as_i64().unwrap_or(0);
+                ((u - d) as f64 / (1.0 + (u + d) as f64)).clamp(-1.0, 1.0)
+            },
+            age_h: o["age_h"].as_f64().unwrap_or(24.0),
+            opened: o["opened"].as_bool().unwrap_or(false),
+        })
+        .collect();
+    let ranked = engine.rank(&fs.interests, &cands, now_ms);
+    // 按引擎给出的顺序重排, 并把引擎理由写回卡片 (面板上就是"为什么它在这")
+    let mut by_id: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, o) in items.iter().enumerate() {
+        by_id.insert(o["id"].as_str().unwrap_or_default().to_string(), i);
+    }
+    let mut out_items: Vec<serde_json::Value> = Vec::with_capacity(items.len());
+    for r in &ranked {
+        if let Some(&i) = by_id.get(&r.id) {
+            let mut o = items[i].clone();
+            o["rank"] = serde_json::json!(r.score);
+            o["why"] = serde_json::json!(r.why);
+            out_items.push(o);
+        }
+    }
+    // 引擎没覆盖到的 (理论上不会有) 追加在后面, 不丢弃内容
+    for o in items.iter() {
+        if !ranked.iter().any(|r| Some(r.id.as_str()) == o["id"].as_str()) {
+            out_items.push(o.clone());
+        }
+    }
+    items = out_items;
     let note = if items.is_empty() {
         "此刻没有真实流入：在世界里说一句话，本机智能体会回应并生成卡片；外部节点投递需 POST /api/world/inbox（带签名才收录）"
     } else {
@@ -6267,4 +6333,93 @@ mod tests {
         seqs.sort_unstable();
         assert_eq!(seqs, (1..=24).collect::<Vec<_>>());
     }
+}
+
+// ───────────────────────── 世界意图对外广播 (2026-10-30) ─────────────────────────
+
+/// 把本机意图广播给已登记对端 (best-effort; 每个对端的结果落 `intent_broadcast_log`)。
+pub async fn broadcast_intents(st: &AppState, limit: usize) -> serde_json::Value {
+    let (peers, intents) = {
+        let fs = st.forge.lock().await;
+        let mut top = fs.interests.top(limit, chrono::Utc::now().timestamp_millis());
+        if top.is_empty() {
+            top = fs.intents.iter().map(|i| (i.clone(), 1.0)).collect();
+        }
+        (fs.directory_peers.clone(), top)
+    };
+    if peers.is_empty() || intents.is_empty() {
+        return serde_json::json!({
+            "peers": peers.len(), "intents": intents.len(), "delivered": 0,
+            "note": if peers.is_empty() { "没有登记对端 — 意图无处广播" } else { "还没有意图可广播" },
+        });
+    }
+    let payload = serde_json::json!({
+        "from_did": st.identity.did.as_str(),
+        "intents": intents.iter().map(|(k, w)| serde_json::json!({"intent": k, "weight": w})).collect::<Vec<_>>(),
+        "ts": chrono::Utc::now().timestamp_millis(),
+        "ask": "按这些意图找内容, 找到就 POST /api/world/inbox 推卡回来",
+    });
+    let mut delivered = 0usize;
+    let mut results: Vec<serde_json::Value> = vec![];
+    for p in &peers {
+        let url = format!("{}/api/world/intents/announce", p.trim_end_matches('/'));
+        let ok = ureq::post(&url)
+            .timeout(std::time::Duration::from_secs(5))
+            .set("content-type", "application/json")
+            .send_json(&payload)
+            .map(|r| r.status() < 400)
+            .unwrap_or(false);
+        if ok {
+            delivered += 1;
+        }
+        results.push(serde_json::json!({"peer": p, "ok": ok}));
+    }
+    let entry = serde_json::json!({
+        "ts": chrono::Utc::now().timestamp_millis(),
+        "intents": intents.len(), "delivered": delivered, "results": results,
+    });
+    {
+        let mut fs = st.forge.lock().await;
+        fs.intent_broadcast_log.push(entry.clone());
+        if fs.intent_broadcast_log.len() > 50 {
+            fs.intent_broadcast_log.remove(0);
+        }
+        fs.save(&data_dir());
+    }
+    entry
+}
+
+/// POST /api/world/intents/announce → 收下对端广播来的意图 (外部智能体"我要什么")
+pub async fn world_intents_announce(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let from = req["from_did"].as_str().unwrap_or("").to_string();
+    if from.is_empty() {
+        return Json(serde_json::json!({"ok": false, "error": "缺 from_did"}));
+    }
+    let mut fs = st.forge.lock().await;
+    fs.peer_intents
+        .retain(|p| p["from_did"].as_str() != Some(from.as_str()));
+    fs.peer_intents.push(serde_json::json!({
+        "from_did": from,
+        "intents": req["intents"].clone(),
+        "ts": chrono::Utc::now().timestamp_millis(),
+    }));
+    if fs.peer_intents.len() > 100 {
+        fs.peer_intents.remove(0);
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({"ok": true, "stored": fs.peer_intents.len()}))
+}
+
+/// POST /api/world/intents/broadcast → 立刻对外广播一次
+pub async fn world_intents_broadcast(State(st): State<AppState>) -> Json<serde_json::Value> {
+    Json(broadcast_intents(&st, 3).await)
+}
+
+
+/// GET /api/update/log → 最近的更新日志 (前端据此显示 npm 装到哪一步)
+pub async fn update_log() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "lines": crate::updater::tail_log(40) }))
 }

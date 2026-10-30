@@ -326,6 +326,7 @@ pub fn app(state: AppState) -> Router {
         // 原生 UI 数据面 (前端 index.html 期望的形状: agents/sessions/profile/settings/update)
         .route("/api/bootstrap", get(crate::native::bootstrap_native))
         .route("/api/version", get(crate::native::version))
+        .route("/api/update/log", get(crate::native::update_log))
         .route("/api/models", get(crate::native::models))
         // 200+ provider: 全量列表 / 选一家 / 真连一次
         .route("/api/models/providers", get(providers))
@@ -563,6 +564,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/world/say", post(world_say))
         .route("/api/world/thread", get(world_thread))
         .route("/api/world/intents", get(world_intents))
+        .route("/api/world/intents/announce", post(crate::native::world_intents_announce))
+        .route("/api/world/intents/broadcast", post(crate::native::world_intents_broadcast))
         .route("/api/world/judgment", get(judgment)) // 世界侧意图权重+决策记录 (原有的 /api/judgment 是另一套判断账本)
         .route("/api/world/opened", post(crate::native::mark_world_opened))
         .route("/api/world/vote", post(crate::native::vote_world_card))
