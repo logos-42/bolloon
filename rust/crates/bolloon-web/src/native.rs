@@ -4486,11 +4486,39 @@ pub async fn agents_public_chat(
     if from_did.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺少 from_did" }));
     }
-    if !is_local_friend(&st, &from_did).await {
-        return Json(serde_json::json!({ "ok": false, "error": "对方不是本机好友, 拒绝跨机对话" }));
-    }
     if text.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "消息为空" }));
+    }
+    // 2026-10-30: **验签先行** —— 只查「from_did 是好友」挡不住冒充 (请求体里的 did 谁都能写)。
+    // 签名覆盖 收件人 did + agent + 文本摘要 + 时间戳; 缺签名/过期/验不过一律拒, 不进模型。
+    let ts = req["ts_ms"].as_u64().unwrap_or(0);
+    let sig_hex = req["sig"].as_str().unwrap_or("").trim().to_string();
+    if ts == 0 || sig_hex.is_empty() {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "缺签名 (ts_ms/sig): 跨机对话必须由发送方 DID 签名, 已拒收"
+        }));
+    }
+    if now_ms().abs_diff(ts) > 120_000 {
+        return Json(serde_json::json!({
+            "ok": false, "error": "签名时间戳过期 (>120s): 可能被重放, 已拒收"
+        }));
+    }
+    let to_did = st.identity.did.as_str().to_string();
+    let expect = relay_message(&from_did, &to_did, &agent_id, &text, ts);
+    let ok_sig = hex::decode(&sig_hex)
+        .ok()
+        .and_then(|v| <[u8; 64]>::try_from(v).ok())
+        .zip(bolloon_p2p::identity::pubkey_of_did(&from_did))
+        .map(|(sig, pk)| bolloon_p2p::KeyPair::verify(&pk, expect.as_bytes(), &sig))
+        .unwrap_or(false);
+    if !ok_sig {
+        return Json(serde_json::json!({
+            "ok": false, "error": "签名验不过 (冒充或内容被改): 已拒收"
+        }));
+    }
+    if !is_local_friend(&st, &from_did).await {
+        return Json(serde_json::json!({ "ok": false, "error": "对方不是本机好友, 拒绝跨机对话" }));
     }
     let agent = agent_by_id(&st, Some(agent_id.as_str())).await;
     let Some(agent) = agent else {
@@ -4612,6 +4640,29 @@ pub async fn friend_agents(
     }
 }
 
+
+/// 跨机来访的签名原文: `relay|from|to|agent|sha256(text)|ts`
+pub(crate) fn relay_message(from: &str, to: &str, agent_id: &str, text: &str, ts_ms: u64) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(text.as_bytes());
+    let digest = hex::encode(h.finalize());
+    format!("relay|{from}|{to}|{agent_id}|{digest}|{ts_ms}")
+}
+
+/// 本机对某次跨机请求签名 (hex)
+fn relay_signature(
+    st: &AppState,
+    from: &str,
+    to: &str,
+    agent_id: &str,
+    text: &str,
+    ts_ms: u64,
+) -> String {
+    let msg = relay_message(from, to, agent_id, text, ts_ms);
+    hex::encode(st.identity.sign(msg.as_bytes()))
+}
+
 /// POST /api/friends/{did}/chat {agent_id, text} → 转发给对端执行, 回它那句回答
 pub async fn friend_chat(
     AxumPath(did): AxumPath<String>,
@@ -4632,7 +4683,14 @@ pub async fn friend_chat(
         Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
     };
     let our_did = st.identity.did.as_str().to_string();
-    let body = serde_json::json!({ "from_did": our_did, "agent_id": agent_id, "text": text });
+    // 2026-10-30: 请求必须带签名 —— 只靠请求体里的 from_did 是可冒充的。
+    // 签名内容含**收件人 did**, 所以同一份签名重放到别人的节点上无效。
+    let ts_ms = now_ms();
+    let sig = relay_signature(&st, &our_did, &did, &agent_id, &text, ts_ms);
+    let body = serde_json::json!({
+        "from_did": our_did, "agent_id": agent_id, "text": text,
+        "ts_ms": ts_ms, "sig": sig,
+    });
     match peer_json("POST", format!("{url}/api/agents/public/chat"), Some(body)).await {
         Ok(v) => Json(v),
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),

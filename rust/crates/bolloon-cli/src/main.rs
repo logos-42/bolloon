@@ -108,6 +108,60 @@ enum Commands {
         #[command(subcommand)]
         action: GroupAction,
     },
+    /// 充值 / 用量 / 核销 (余额·今日用量·提交凭证·确认入账·价目·定档)
+    Pay {
+        #[command(subcommand)]
+        action: PayAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum PayAction {
+    /// 余额 + 今日用量 + 收款通道
+    Info {
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+        /// 查谁的余额 (DID; 空 = 本机主人)
+        #[arg(long, default_value = "")]
+        account: String,
+    },
+    /// 转账后提交待核销 (核对到账前不计入余额)
+    Claim {
+        /// 金额 (美元)
+        amount: f64,
+        /// 通道: crypto | alipay | wechat | paypal
+        #[arg(long, default_value = "crypto")]
+        channel: String,
+        /// 凭证: 交易哈希 / 交易号
+        #[arg(long)]
+        proof: String,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+        #[arg(long, default_value = "")]
+        account: String,
+    },
+    /// 收款人核对到账后确认入账
+    Confirm {
+        /// 待核销记录 id (pay info 里能看到)
+        id: String,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
+    /// 价目表 (两款模型) + 用户等级 + 已定档用户
+    Pricing {
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
+    /// 给某个 did 定档 (free/standard/friend/sponsor/owner)
+    User {
+        did: String,
+        #[arg(long, default_value = "standard")]
+        tier: String,
+        #[arg(long, default_value_t = 0)]
+        quota: u64,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -214,6 +268,7 @@ async fn main() -> anyhow::Result<()> {
         },
         Some(Commands::Dream { topic, domain }) => run_dream(topic, &domain),
         Some(Commands::Group { action }) => run_group(action),
+        Some(Commands::Pay { action }) => run_pay(action),
     }
 }
 
@@ -339,6 +394,192 @@ fn glass_login(port: u16, once: bool) -> anyhow::Result<()> {
 
 /// 群 / 子讨论 / 统一分享：全部走 HTTP 调本地节点（与 `bolloon web` 同一个进程）。
 /// 子讨论 = 独立 orbit store（自带 ACL，组织内部才可写）；统一分享 join/read 对整群与子讨论同源。
+
+/// 付费链路 (与 web/App 同一套端点, CLI 只是另一个客户端)
+fn run_pay(action: PayAction) -> anyhow::Result<()> {
+    let get = |url: String| -> anyhow::Result<serde_json::Value> {
+        let r = ureq::get(&url)
+            .timeout(std::time::Duration::from_secs(6))
+            .call()
+            .map_err(|e| anyhow::anyhow!("节点没在跑（先 `bolloon web`）：{e}"))?;
+        Ok(r.into_json()?)
+    };
+    let post = |url: String, body: serde_json::Value| -> anyhow::Result<serde_json::Value> {
+        let r = ureq::post(&url)
+            .timeout(std::time::Duration::from_secs(6))
+            .send_json(body)
+            .map_err(|e| anyhow::anyhow!("节点没在跑（先 `bolloon web`）：{e}"))?;
+        Ok(r.into_json()?)
+    };
+    match action {
+        PayAction::Info { port, account } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let q = if account.trim().is_empty() {
+                String::new()
+            } else {
+                format!("?account={}", percent(&account))
+            };
+            let info = get(format!("{base}/api/pay/info{q}"))?;
+            let sum = get(format!("{base}/api/pay/summary{q}"))?;
+            if let Some(e) = info["error"].as_str() {
+                anyhow::bail!("读余额失败: {e}");
+            }
+            let cfg = &info["config"];
+            println!("账户: {}", if account.trim().is_empty() { "本机主人" } else { account.as_str() });
+            println!(
+                "余额: ${:.2}   待核销: ${:.2}   已用: ${:.2}",
+                info["balance_usd"].as_f64().unwrap_or(0.0),
+                info["pending_usd"].as_f64().unwrap_or(0.0),
+                info["charged_usd"].as_f64().unwrap_or(0.0)
+            );
+            let today = &sum["today"];
+            println!(
+                "今日: {} 次 · 输入 {} / 输出 {} tokens · 花费 ${:.3}",
+                today["calls"].as_u64().unwrap_or(0),
+                today["tokens_in"].as_u64().unwrap_or(0),
+                today["tokens_out"].as_u64().unwrap_or(0),
+                today["cost_usd"].as_f64().unwrap_or(0.0)
+            );
+            if sum["low_balance"]["hit"].as_bool().unwrap_or(false) {
+                println!(
+                    "⚠ 余额低于提醒线 ${:.2}",
+                    sum["low_balance"]["threshold_usd"].as_f64().unwrap_or(0.0)
+                );
+            }
+            // 收款通道 (只列真配了的)
+            println!("收款通道:");
+            if let Some(chains) = cfg["crypto"]["chains"].as_array() {
+                for c in chains {
+                    println!(
+                        "  - {:<10} {}",
+                        c["label"].as_str().unwrap_or("crypto"),
+                        c["address"].as_str().unwrap_or("")
+                    );
+                }
+            } else if let Some(a) = cfg["crypto"]["address"].as_str() {
+                if !a.is_empty() {
+                    println!("  - crypto     {a}");
+                }
+            }
+            for (k, label) in [("alipay", "支付宝"), ("wechat", "微信")] {
+                if cfg[k]["qr"].as_str().map(|s| !s.is_empty()).unwrap_or(false) {
+                    println!("  - {label}     收款码已配置 ({})", cfg[k]["qr"].as_str().unwrap_or(""));
+                }
+            }
+            if cfg["paypal"]["link"].as_str().map(|s| !s.is_empty()).unwrap_or(false) {
+                println!("  - PayPal    {}", cfg["paypal"]["link"].as_str().unwrap_or(""));
+            }
+            if let Some(pending) = info["events"].as_array() {
+                let pend: Vec<&serde_json::Value> = pending
+                    .iter()
+                    .filter(|e| e["kind"] == "topup_pending")
+                    .collect();
+                if !pend.is_empty() {
+                    println!("待核销记录:");
+                    for e in pend {
+                        println!(
+                            "  - {}  ${:.2}  {}  {}",
+                            e["id"].as_str().unwrap_or(""),
+                            e["amount_micro"].as_i64().unwrap_or(0) as f64 / 1_000_000.0,
+                            e["channel"].as_str().unwrap_or(""),
+                            e["proof"].as_str().unwrap_or("")
+                        );
+                    }
+                }
+            }
+        }
+        PayAction::Claim { amount, channel, proof, port, account } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let r = post(
+                format!("{base}/api/pay/claim"),
+                serde_json::json!({ "amount_usd": amount, "channel": channel, "proof": proof, "account": account }),
+            )?;
+            if let Some(e) = r["error"].as_str() {
+                anyhow::bail!("提交失败: {e}");
+            }
+            println!(
+                "已提交待核销: {}  ${:.2}  {}",
+                r["pending"]["id"].as_str().unwrap_or(""),
+                amount,
+                channel
+            );
+            println!("核对到账后运行: bolloon pay confirm {}", r["pending"]["id"].as_str().unwrap_or(""));
+        }
+        PayAction::Confirm { id, port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let r = post(
+                format!("{base}/api/pay/confirm"),
+                serde_json::json!({ "id": id, "note": "cli 人工核销" }),
+            )?;
+            if let Some(e) = r["error"].as_str() {
+                anyhow::bail!("确认失败: {e}");
+            }
+            println!(
+                "已确认入账 · 余额 ${:.2} · 待核销 ${:.2}",
+                r["balance_usd"].as_f64().unwrap_or(0.0),
+                r["pending_usd"].as_f64().unwrap_or(0.0)
+            );
+        }
+        PayAction::Pricing { port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let r = get(format!("{base}/api/pay/pricing"))?;
+            println!("模型单价 (元 / 百万 tokens):");
+            if let Some(models) = r["models"].as_array() {
+                for m in models {
+                    println!(
+                        "  - {:<22} 输入 {:.2} / 输出 {:.2}",
+                        m["label"].as_str().unwrap_or(m["id"].as_str().unwrap_or("")),
+                        m["cny_per_1k_in"].as_f64().unwrap_or(0.0) * 1000.0,
+                        m["cny_per_1k_out"].as_f64().unwrap_or(0.0) * 1000.0
+                    );
+                }
+            }
+            println!("等级乘数:");
+            if let Some(tiers) = r["tiers"].as_array() {
+                for t in tiers {
+                    println!(
+                        "  - {:<10} x{:.2}",
+                        t["id"].as_str().unwrap_or(""),
+                        t["multiplier"].as_f64().unwrap_or(1.0)
+                    );
+                }
+            }
+            if let Some(users) = r["users"].as_object() {
+                if !users.is_empty() {
+                    println!("已定档用户:");
+                    for (did, v) in users {
+                        println!("  - {did}  {}", v["tier"].as_str().unwrap_or(""));
+                    }
+                }
+            }
+        }
+        PayAction::User { did, tier, quota, port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let r = post(
+                format!("{base}/api/pay/user"),
+                serde_json::json!({ "did": did, "tier": tier, "quota_calls_per_day": quota }),
+            )?;
+            if let Some(e) = r["error"].as_str() {
+                anyhow::bail!("定档失败: {e}");
+            }
+            println!("已定档: {did} → {tier}");
+        }
+    }
+    Ok(())
+}
+
+/// 极简百分号编码 (did 里只有 `:` 需要)
+fn percent(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            ':' => "%3A".to_string(),
+            '/' => "%2F".to_string(),
+            ' ' => "%20".to_string(),
+            c => c.to_string(),
+        })
+        .collect()
+}
+
 fn run_group(action: GroupAction) -> anyhow::Result<()> {
     match action {
         GroupAction::Create { group, name, members, port } => {

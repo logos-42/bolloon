@@ -521,6 +521,10 @@
   .pay-stats>div{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
   .pay-stats small{display:block;font-size:11px;color:var(--muted);margin-bottom:2px}
   .pay-stats b{font-size:17px;letter-spacing:.2px}
+  .pay-banner{display:flex;align-items:center;gap:10px;padding:8px 14px;background:rgba(255,209,102,.12);border-bottom:1px solid var(--glow);color:var(--text);font-size:12px}
+  .pay-banner.hidden{display:none}
+  .pay-banner .mini{margin-left:auto;border:1px solid var(--glow);color:var(--glow);border-radius:999px;padding:3px 10px;background:transparent;cursor:pointer}
+  .pay-banner-x{width:24px;height:24px;padding:0;border-radius:6px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer}
   .pay-today{padding:2px 18px 0;font-size:11px;color:var(--muted)}
   .pay-today.low{color:var(--glow)}
   .pay-channels{display:flex;gap:8px;flex-wrap:wrap;padding:14px 18px 6px}
@@ -688,6 +692,12 @@
     </div>
   </aside>
   <main>
+    <!-- 2026-10-30: 余额不足的常驻提示 (不打开充值弹窗也能看到); 点「充值」直接开弹窗 -->
+    <div id="payBanner" class="pay-banner hidden">
+      <span id="payBannerText"></span>
+      <button class="mini" id="payBannerTopup">充值</button>
+      <button class="pay-banner-x" id="payBannerClose" aria-label="关闭">✕</button>
+    </div>
     <header>
       <button id="newSessionBtn" class="chat-new" title="新会话" aria-label="新会话">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -1894,6 +1904,23 @@ async function pinSession(){
 }
 
 // 2026-10-28 (用户): 最右上龙形订阅按钮 — 订阅 Bolloon 更新推送 (后端订阅端点待接, 先给诚实占位反馈)
+
+// ── 2026-10-30: 余额常驻提醒 —— 不打开充值弹窗也能看到; 关掉只在本次会话生效 ──
+let payBannerDismissed=false;
+async function checkPayBanner(){
+  if(payBannerDismissed) return;
+  const el=$('payBanner'); if(!el) return;
+  let sum=null;
+  try{ sum=await api('/api/pay/summary'); }catch(_){ sum=null; }
+  const low=sum&&sum.low_balance;
+  if(!low||!low.hit){ el.classList.add('hidden'); return; }
+  const bal=Number(sum.balance_usd||0).toFixed(2), th=Number(low.threshold_usd||0).toFixed(2);
+  const today=sum.today||{};
+  $('payBannerText').textContent=`余额 $${bal} 低于提醒线 $${th} — 今日 ${today.calls||0} 次调用${today.cost_usd?` · 已花 $${Number(today.cost_usd).toFixed(3)}`:''}，充值后继续用云端模型`;
+  el.classList.remove('hidden');
+}
+$('payBannerTopup').onclick=()=>openPayDialog();
+$('payBannerClose').onclick=()=>{ payBannerDismissed=true; $('payBanner').classList.add('hidden'); };
 $('dragonSubBtn').onclick=()=>openPayDialog();
 $('payClose').onclick=()=>$('payDlg').close();
 $('paySubmit').onclick=async()=>{
@@ -3019,6 +3046,9 @@ boot().finally(()=>{
   if(sp){ setTimeout(()=>{ sp.classList.add('hide'); setTimeout(()=>sp.remove(),650); }, 700); }
   setTimeout(refreshUpdate,5000);
   setInterval(refreshUpdate,60000);
+  // 余额提醒: 启动后 6s 查一次, 之后每 10 分钟
+  setTimeout(checkPayBanner,6000);
+  setInterval(checkPayBanner,600000);
   setInterval(pollAuth,5000);pollAuth(); // clarity 验证：待授权轮询
   // clarity 完全访问权限开关: 放在输入框下方
   clarityToggle=createToggle({

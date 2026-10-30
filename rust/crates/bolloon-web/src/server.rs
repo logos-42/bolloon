@@ -2259,11 +2259,13 @@ mod route_tests {
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
 
         let state = AppState::new(offline_llm());
-        // 造一个「已加好友」的 did (正向对照), 证明拒绝不是因为什么都没接上
-        const FRIEND: &str = "did:pi:testfriend";
+        // 造一个「已加好友」的 did (正向对照): 用真 keypair, 因为跨机来访现在要求 DID 签名
+        let friend_kp = bolloon_p2p::KeyPair::generate();
+        let friend_did = friend_kp.did.as_str().to_string();
+        let server_did = state.identity.did.as_str().to_string();
         {
             let mut fs = state.forge.lock().await;
-            let fr = fs.friends.inbound(FRIEND, FRIEND, 1_000);
+            let fr = fs.friends.inbound(&friend_did, &friend_did, 1_000);
             fs.friends.accept(&fr.request_id, 1_001).unwrap();
         }
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -2316,23 +2318,56 @@ mod route_tests {
             let stranger = get_json("/api/agents/public?did=did:pi:stranger");
             assert_eq!(stranger["ok"], false);
             assert!(stranger["error"].as_str().unwrap().contains("不是本机好友"));
-            let friend = get_json(&format!("/api/agents/public?did={FRIEND}"));
+            let friend = get_json(&format!("/api/agents/public?did={friend_did}"));
             assert_eq!(friend["ok"], true, "已加好友的 did 必须能列举: {friend}");
             assert!(friend["agents"].is_array());
 
-            // 对话面: 非好友拒 (fail-closed), 好友但智能体不存在也如实拒
+            // 对话面 (2026-10-30 起要求 DID 签名):
+            // ① 没签名 ⇒ 直接拒, 连好友判断都不走 (防「请求体里写个好友 did 就冒充」)
+            let unsigned = post_json(
+                "/api/agents/public/chat",
+                serde_json::json!({ "from_did": friend_did, "agent_id": "agent-001", "text": "hi" }),
+            );
+            assert_eq!(unsigned["ok"], false);
+            assert!(unsigned["error"].as_str().unwrap().contains("缺签名"), "实得 {unsigned}");
+            // ② 签了但不是好友 ⇒ 「不是本机好友」(fail-closed)
+            let stranger_kp = bolloon_p2p::KeyPair::generate();
+            let s_did = stranger_kp.did.as_str().to_string();
+            let s_ts = chrono::Utc::now().timestamp_millis() as u64;
+            let s_msg = crate::native::relay_message(&s_did, &server_did, "agent-001", "hi", s_ts);
             let stranger_chat = post_json(
                 "/api/agents/public/chat",
-                serde_json::json!({ "from_did": "did:pi:stranger", "agent_id": "agent-001", "text": "hi" }),
+                serde_json::json!({
+                    "from_did": s_did, "agent_id": "agent-001", "text": "hi",
+                    "ts_ms": s_ts, "sig": hex::encode(stranger_kp.sign(s_msg.as_bytes())),
+                }),
             );
             assert_eq!(stranger_chat["ok"], false);
-            assert!(stranger_chat["error"].as_str().unwrap().contains("不是本机好友"));
+            assert!(stranger_chat["error"].as_str().unwrap().contains("不是本机好友"), "实得 {stranger_chat}");
+            // ③ 好友签名有效, 但智能体不存在 ⇒ 如实报「没有这个智能体」(说明签名门已过)
+            let ts = chrono::Utc::now().timestamp_millis() as u64;
+            let msg = crate::native::relay_message(&friend_did, &server_did, "nope", "hi", ts);
             let missing_agent = post_json(
                 "/api/agents/public/chat",
-                serde_json::json!({ "from_did": FRIEND, "agent_id": "nope", "text": "hi" }),
+                serde_json::json!({
+                    "from_did": friend_did, "agent_id": "nope", "text": "hi",
+                    "ts_ms": ts, "sig": hex::encode(friend_kp.sign(msg.as_bytes())),
+                }),
             );
             assert_eq!(missing_agent["ok"], false);
-            assert!(missing_agent["error"].as_str().unwrap().contains("没有这个智能体"));
+            assert!(missing_agent["error"].as_str().unwrap().contains("没有这个智能体"), "实得 {missing_agent}");
+            // ④ 篡改文本 ⇒ 验签失败 (签名覆盖文本摘要)
+            let ts2 = chrono::Utc::now().timestamp_millis() as u64;
+            let msg2 = crate::native::relay_message(&friend_did, &server_did, "agent-001", "hi", ts2);
+            let tampered = post_json(
+                "/api/agents/public/chat",
+                serde_json::json!({
+                    "from_did": friend_did, "agent_id": "agent-001", "text": "hi, 但是被改了",
+                    "ts_ms": ts2, "sig": hex::encode(friend_kp.sign(msg2.as_bytes())),
+                }),
+            );
+            assert_eq!(tampered["ok"], false);
+            assert!(tampered["error"].as_str().unwrap().contains("签名验不过"), "实得 {tampered}");
 
             // 本机代理面: 非好友一律拒 (不给对端地址也不假装成功)
             let proxy_agents = get_json("/api/friends/did:pi:stranger/agents");
