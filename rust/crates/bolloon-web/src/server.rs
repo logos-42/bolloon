@@ -21,7 +21,7 @@ use tokio::sync::Mutex;
 use bolloon_agent::{MemoryLayer, MemoryStore, TaskBoard};
 use bolloon_agent::deliberation::{ElectionMode, MemberRole};
 use bolloon_agent::judgment::JudgmentStore;
-use bolloon_agent::world::{Opportunity, OpportunityStream};
+use bolloon_agent::world::OpportunityStream;
 use bolloon_agent::memory_db::MemoryDb;
 use bolloon_agent::clarity::{clarity_of, ClaritySummary};
 use bolloon_x402::{
@@ -486,6 +486,9 @@ pub fn app(state: AppState) -> Router {
                 )
                 .route("/api/groups/{id}/invite", get(group_invite))
                 .route("/api/groups/{id}/members", get(group_members_api))
+                .route("/api/groups/{id}/participants", post(set_group_participants))
+        .route("/api/groups/{id}/update", post(update_group))
+        .route("/api/groups/{id}/delete", post(delete_group))
                 .route("/api/econ/probe", get(crate::native::econ_probe))
                 .route("/api/econ/reputation/{principal}", get(econ_reputation))
                 .route("/api/econ/immune/report", post(immune_report))
@@ -554,6 +557,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/judgment", get(top_judgments).post(evolve_judgment))
         // 世界流 (机会 feed)
         .route("/api/world/feed", get(world_feed))
+        .route("/api/world/say", post(world_say))
+        .route("/api/world/thread", get(world_thread))
+        .route("/api/world/intents", get(world_intents))
         // x402 付费信息 (402 报价 → 直付判定 → 交付)
         .route("/api/x402/info/{id}", get(x402_info_quote))
         .route("/api/x402/info/{id}/payment", post(x402_info_payment))
@@ -898,16 +904,28 @@ async fn create_group(
 }
 
 async fn list_groups(State(st): State<AppState>) -> Json<serde_json::Value> {
-    let groups: Vec<serde_json::Value> = st
+    let (overrides, closed) = {
+        let fs = st.forge.lock().await;
+        (fs.group_overrides.clone(), fs.room_closed.clone())
+    };
+    let mut groups: Vec<serde_json::Value> = st
         .groups
         .list_groups()
         .iter()
         // 内部存储不算"我的群组"：眼镜意图流是观察账本，出现在群列表里只会误导用户
         .filter(|m| !m.id.starts_with("intent-"))
+        // 本节点删掉的群不再显示 (store 数据仍在, 凭邀请链接能重新加入)
+        .filter(|m| !closed.iter().any(|c| c == &m.id))
         .map(|m| {
+            let ov = overrides.get(&m.id).cloned().unwrap_or_default();
             serde_json::json!({
                 "id": m.id,
-                "name": m.name,
+                "name": ov.name.clone().unwrap_or_else(|| m.name.clone()),
+                "orbit_name": m.name,
+                "pinned": ov.pinned,
+                "intro": ov.intro,
+                "intro_manual": ov.intro_manual,
+                "ping_secs": ov.ping_secs,
                 "owner": m.owner,
                 "acl": m.acl,
                 "address": m.address,
@@ -915,7 +933,74 @@ async fn list_groups(State(st): State<AppState>) -> Json<serde_json::Value> {
             })
         })
         .collect();
+    // 置顶在最前; 其余按创建时间倒序 (新群在上)
+    groups.sort_by(|a, b| {
+        let pa = a["pinned"].as_bool().unwrap_or(false);
+        let pb = b["pinned"].as_bool().unwrap_or(false);
+        pb.cmp(&pa).then_with(|| {
+            b["created_at_ms"]
+                .as_u64()
+                .unwrap_or(0)
+                .cmp(&a["created_at_ms"].as_u64().unwrap_or(0))
+        })
+    });
     Json(serde_json::json!({ "groups": groups }))
+}
+
+/// POST /api/groups/{id}/update  body: {name?, pinned?, intro?}
+///
+/// 本节点视图上的改名 / 置顶 / 简介 —— OrbitDB 里的群名与内容是签名链的一部分, 改不了
+/// （如实写在这里, 不假装"改了全网的群名"）。`intro` 传了就视为人工设定, 不再自动覆盖。
+async fn update_group(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    let entry = fs.group_overrides.entry(id.clone()).or_default();
+    if let Some(n) = req["name"].as_str() {
+        let n = n.trim();
+        entry.name = if n.is_empty() { None } else { Some(n.to_string()) };
+    }
+    if let Some(p) = req["pinned"].as_bool() {
+        entry.pinned = p;
+    }
+    if let Some(p) = req["ping"].as_u64() {
+        // 5–86400 秒, 与智能体的固定 ping 同一范围
+        if !(5..=86_400).contains(&p) {
+            return Json(serde_json::json!({ "ok": false, "error": "ping 间隔要在 5–86400 秒之间" }));
+        }
+        entry.ping_secs = Some(p);
+    }
+    if req["ping"].is_null() && req.get("clear_ping").is_some() {
+        entry.ping_secs = None;
+    }
+    if let Some(i) = req["intro"].as_str() {
+        let i = i.trim();
+        entry.intro = if i.is_empty() { None } else { Some(i.to_string()) };
+        entry.intro_manual = !i.is_empty();
+    }
+    let out = entry.clone();
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true, "group_id": id, "group": out }))
+}
+
+/// POST /api/groups/{id}/delete
+///
+/// 只从**本节点**列表移除 (`room_closed`), store 与已落块的消息都不删 ——
+/// 去中心化存储里"删掉别人的副本"本来就不存在, 假装删掉才是骗人。
+async fn delete_group(State(st): State<AppState>, Path(id): Path<String>) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    if !fs.room_closed.iter().any(|c| c == &id) {
+        fs.room_closed.push(id.clone());
+    }
+    fs.group_overrides.remove(&id);
+    fs.sheriffs.remove(&id);
+    fs.rosters.remove(&id);
+    fs.sheriff_by_group.remove(&id);
+    fs.room_participants.remove(&id);
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true, "group_id": id, "scope": "本节点列表" }))
 }
 
 #[derive(Deserialize)]
@@ -985,12 +1070,136 @@ async fn group_messages(
             })
             .collect()
     };
+    // 群简介: 人工设过就固定; 没设过则由最近几条汇报自动生成 (内容变了简介跟着变)
+    let auto_intro: Option<String> = {
+        let ov = {
+            let fs = st.forge.lock().await;
+            fs.group_overrides.get(&id).cloned().unwrap_or_default()
+        };
+        if ov.intro_manual {
+            ov.intro.clone()
+        } else {
+            let mut bits: Vec<String> = vec![];
+            for m in out.iter().rev() {
+                if bits.len() >= 2 {
+                    break;
+                }
+                let kind = m["kind"].as_str().unwrap_or("message");
+                if kind != "report" && kind != "message" {
+                    continue;
+                }
+                let text = m["content"].as_str().unwrap_or("").trim();
+                if text.is_empty() {
+                    continue;
+                }
+                let first_line = text.lines().next().unwrap_or("").trim();
+                let short: String = first_line.chars().take(42).collect();
+                if !short.is_empty() && !bits.iter().any(|b| b.contains(&short)) {
+                    bits.push(short);
+                }
+            }
+            let derived = if bits.is_empty() {
+                None
+            } else {
+                Some(bits.join(" · "))
+            };
+            // 落盘 (下次不用重算); 只写自动值, 不碰人工设定
+            if let Some(d) = &derived {
+                let mut fs = st.forge.lock().await;
+                let e = fs.group_overrides.entry(id.clone()).or_default();
+                if !e.intro_manual && e.intro.as_deref() != Some(d.as_str()) {
+                    e.intro = Some(d.clone());
+                    fs.save(&data_dir());
+                }
+            }
+            derived.or(ov.intro)
+        }
+    };
+    // 警长 = 本群任期选举 (三天一换, 只在本群参与者里选): 群页要看得见谁在主持
+    let (sheriff, sheriff_name, sheriff_ends_ms) = match crate::native::sheriff_term(&st, &id).await {
+        Some(t) => {
+            let name = {
+                let fs = st.forge.lock().await;
+                fs.agents
+                    .iter()
+                    .find(|a| a.id == t.agent_id)
+                    .map(|a| a.name.clone())
+                    .unwrap_or_default()
+            };
+            let ends = t.elected_at_ms + t.term_days.max(0) as i64 * 86_400_000;
+            (t.agent_id, name, ends)
+        }
+        None => (String::new(), String::new(), 0),
+    };
+    // 议程成员 = 这个群选中的智能体 (没选过 ⇒ 全部内部智能体) —— 前端芯片按它点亮/变绿
+    let participants: Vec<String> = {
+        let fs = st.forge.lock().await;
+        let chosen = fs.room_participants.get(&id).cloned().unwrap_or_default();
+        if chosen.is_empty() {
+            fs.agents.iter().map(|a| a.id.clone()).collect()
+        } else {
+            chosen
+        }
+    };
     Json(serde_json::json!({
         "messages": out,
         "thinking": thinking,
+        "participants": participants,
+        "intro": auto_intro,
+        "sheriff": sheriff,
+        "sheriff_name": sheriff_name,
+        "sheriff_term_ends_ms": sheriff_ends_ms,
         // 如实告知调用方：这个视图里有没有诚信标识（人类侧没有）
         "trust_visible": as_agent,
     }))
+}
+
+/// POST /api/groups/{id}/participants → 设定本群"议程成员"（谁在这个群接话）。
+///
+/// 2026-10-30 (leo: 群组选中按钮对底部变亮的智能体没有操作权):
+/// 群页底部的芯片必须**真能改议程** —— 选了才变绿, 绿的就是会接话的。
+/// 与商议面板共用同一份事实 (`room_participants`), 选人一变就清掉警长/名单/上次推举缓存重选。
+async fn set_group_participants(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let requested: Vec<String> = req["agent_ids"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    let (chosen, known) = {
+        let mut fs = st.forge.lock().await;
+        let known: std::collections::HashSet<String> =
+            fs.agents.iter().map(|a| a.id.clone()).collect();
+        let chosen: Vec<String> = requested.into_iter().filter(|id| known.contains(id)).collect();
+        fs.room_participants.insert(id.clone(), chosen.clone());
+        // 选人变了: 警长/组织名单/上次推举都按新范围重来
+        fs.sheriffs.remove(&id);
+        fs.rosters.remove(&id);
+        fs.sheriff_by_group.remove(&id);
+        fs.room_last_speaker.remove(&id);
+        fs.save(&data_dir());
+        (chosen, known)
+    };
+    Json(serde_json::json!({
+        "ok": true,
+        "group_id": id,
+        // 空数组 = 回到"全员"(未选过), 与 room_candidate_agents 的兜底一致
+        "participants": if chosen.is_empty() {
+            known.into_iter().collect::<Vec<String>>()
+        } else {
+            chosen
+        },
+        "explicit": !requested_empty(&req),
+    }))
+}
+
+fn requested_empty(req: &serde_json::Value) -> bool {
+    req["agent_ids"]
+        .as_array()
+        .map(|a| a.is_empty())
+        .unwrap_or(true)
 }
 
 #[derive(Deserialize)]
@@ -2119,52 +2328,288 @@ async fn world_feed(
     State(st): State<AppState>,
     Query(q): Query<WorldFeedQuery>,
 ) -> Json<serde_json::Value> {
-    let mut world = st.world.lock().await;
-    // 演示种子 (真实机会由 world-watcher / P2P 投递注入; 无意图也流入, 永不空流)
-    if world.feed().is_empty() {
-        for (title, summary, tags, url) in [
-            ("世界流: 默认流入不空", "没有意图也保持世界流动", vec!["world".to_string()], None),
-            ("合作机会示例", "可控核聚变 论文合作招募", vec!["聚变".to_string(), "合作".to_string()], Some("https://example.com/1".into())),
-        ] {
-            let (score, reason) = bolloon_agent::world::score_opportunity(&tags, &[]);
-            world.push(Opportunity {
-                id: String::new(),
-                title: title.into(),
-                summary: summary.into(),
-                source: "world".into(),
-                score,
-                reason,
-                card: None,
-                url,
-            });
+    // 意图标签: 显式传入 > 本机已存的意图 (世界按意图重打分)
+    let saved_intents = {
+        let fs = st.forge.lock().await;
+        fs.intents.clone()
+    };
+    let intent_tags: Vec<String> = match &q.tags {
+        Some(tags) => tags
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        None => saved_intents,
+    };
+    // **真实流入**: 只有两路 —— ① 验签过的世界卡片 (fs.inbox) ② 世界观察器推进来的机会 (st.world)
+    // 2026-10-30 (leo: 世界里都是 mock 卡片): 演示种子已删除。没有流入就如实空着,
+    // 不再用"世界流: 默认流入不空 / 合作机会示例"这种编造的卡片充数。
+    let inbox = {
+        let fs = st.forge.lock().await;
+        fs.inbox.clone()
+    };
+    let mut feed: Vec<serde_json::Value> = Vec::new();
+    for (i, item) in inbox.iter().enumerate() {
+        let title = item["title"].as_str().unwrap_or("").to_string();
+        let summary = item["summary"].as_str().unwrap_or("").to_string();
+        if title.is_empty() && summary.is_empty() {
+            continue;
         }
-        // 带意图时重打分 (透明 reason)
-        if let Some(tags) = &q.tags {
-            let intent_tags: Vec<String> = tags.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            let mut rescored = Vec::new();
-            for opp in world.feed() {
-                let mut o = opp.clone();
-                let (score, reason) = bolloon_agent::world::score_opportunity(&intent_tags, &intent_tags.clone());
-                let _ = (&o, &tags);
-                o.score = score;
-                o.reason = reason;
-                rescored.push(o);
-            }
-            return Json(serde_json::json!({ "feed": rescored, "intent_tags": intent_tags }));
+        let tags = tokenize_for_score(&format!("{title} {summary}"));
+        let (score, reason) = bolloon_agent::world::score_opportunity(&tags, &intent_tags);
+        feed.push(serde_json::json!({
+            "id": item.get("id").cloned().unwrap_or(serde_json::json!(format!("inbox-{i}"))),
+            "title": title,
+            "summary": summary,
+            "source": if item.get("from").is_some() { "local-agent" } else { "world-card" },
+            "verification": item.get("verification").cloned().unwrap_or(serde_json::json!("unverified")),
+            "ts": item.get("ts").cloned().unwrap_or(serde_json::Value::Null),
+            "score": score,
+            "reason": reason,
+            "url": serde_json::Value::Null,
+        }));
+    }
+    {
+        let world = st.world.lock().await;
+        for o in world.feed() {
+            let tags = tokenize_for_score(&format!("{} {}", o.title, o.summary));
+            let (score, reason) = bolloon_agent::world::score_opportunity(&tags, &intent_tags);
+            feed.push(serde_json::json!({
+                "id": o.id,
+                "title": o.title,
+                "summary": o.summary,
+                "source": o.source,
+                "score": score,
+                "reason": reason,
+                "url": o.url,
+            }));
         }
     }
-    let feed: Vec<serde_json::Value> = world
-        .feed()
-        .iter()
-        .map(|o| {
-            serde_json::json!({
-                "id": o.id, "title": o.title, "summary": o.summary,
-                "source": o.source, "score": o.score, "reason": o.reason,
-                "url": o.url,
-            })
+    // 按分数排序 (意图命中在前), 同分保持流入顺序
+    feed.sort_by(|a, b| {
+        b["score"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .partial_cmp(&a["score"].as_f64().unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let total = feed.len();
+    Json(serde_json::json!({
+        "feed": feed,
+        "count": total,
+        "intent_tags": intent_tags,
+        "note": if total == 0 {
+            "此刻世界里没有流入：说一句话，本机智能体会回应并生成卡片；外部智能体投递需要 POST /api/world/inbox（带签名才收录）"
+        } else {
+            ""
+        },
+    }))
+}
+
+/// 打分用的标签: 中文按 2–4 字滑窗 + 英文/数字词 (与分组/意图抽词同一口径)
+fn tokenize_for_score(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut cjk: Vec<char> = vec![];
+    let flush = |cjk: &mut Vec<char>, out: &mut Vec<String>| {
+        for w in 1..=3usize {
+            for i in 0..cjk.len() {
+                if i + w > cjk.len() {
+                    break;
+                }
+                let t: String = cjk[i..i + w].iter().collect();
+                if !out.iter().any(|x| x == &t) {
+                    out.push(t);
+                }
+            }
+        }
+        cjk.clear();
+    };
+    for tok in text.split_whitespace() {
+        let mut word = String::new();
+        for c in tok.chars() {
+            if c.is_ascii_alphanumeric() {
+                word.push(c);
+            } else {
+                if !word.is_empty() {
+                    out.push(word.clone());
+                    word.clear();
+                }
+                if c.is_alphabetic() {
+                    cjk.push(c);
+                } else if !cjk.is_empty() {
+                    flush(&mut cjk, &mut out);
+                }
+            }
+        }
+        if !word.is_empty() {
+            out.push(word);
+        }
+        if !cjk.is_empty() {
+            flush(&mut cjk, &mut out);
+        }
+    }
+    out.retain(|t| !t.is_empty());
+    out.truncate(24);
+    out
+}
+
+
+/// POST /api/world/say  body: {text}
+///
+/// 世界模式发一句话 = ① 记进世界对话线 ② 变成意图标签 ③ **本机智能体真的回应**
+/// (后台并发, 回复落回对话线) ④ 每条回复顺手生成一张世界卡片。
+async fn world_say(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let text = req["text"].as_str().unwrap_or("").trim().to_string();
+    if text.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "空消息" }));
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    {
+        let mut fs = st.forge.lock().await;
+        fs.world_thread.push(serde_json::json!({
+            "role": "human",
+            "from": st.identity.did,
+            "text": text,
+            "ts": now,
+        }));
+        // 简单抽词进意图 (世界按意图重打分)
+        let mut tags: Vec<String> = vec![];
+        for tok in text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-')) {
+            let t = tok.trim();
+            if t.chars().count() >= 2 && t.chars().count() <= 12 && !tags.iter().any(|x| x == t) {
+                tags.push(t.to_string());
+            }
+            if tags.len() >= 4 {
+                break;
+            }
+        }
+        for t in tags {
+            if !fs.intents.iter().any(|i| i == &t) {
+                fs.intents.push(t);
+            }
+        }
+        fs.save(&data_dir());
+    }
+    // @ 目标: [{type:"agent"|"group", id}] —— 空 = 默认 (先在文本里找名字, 再退前两个)
+    let req_targets: Vec<(String, String)> = req["targets"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| {
+                    let ty = t["type"].as_str().unwrap_or("agent").to_string();
+                    let id = t["id"].as_str()?.to_string();
+                    Some((ty, id))
+                })
+                .collect()
         })
-        .collect();
-    Json(serde_json::json!({ "feed": feed }))
+        .unwrap_or_default();
+    let mut targets: Vec<crate::native::AgentView> = vec![];
+    let mut groups: Vec<String> = vec![];
+    {
+        let fs = st.forge.lock().await;
+        for (ty, id) in &req_targets {
+            if ty == "group" {
+                groups.push(id.clone());
+            } else if let Some(a) = fs.agents.iter().find(|a| &a.id == id) {
+                targets.push(a.clone());
+            }
+        }
+        if targets.is_empty() && groups.is_empty() {
+            // @ 都没给: 文本里点到谁就谁来; 谁都没点到 ⇒ 默认本机前两个 (世界里不能没人接话)
+            targets = fs.agents.iter().filter(|a| text.contains(&a.name)).cloned().collect();
+            if targets.is_empty() {
+                targets = fs.agents.iter().take(2).cloned().collect();
+            }
+        }
+    }
+    // 群组: 把这句话投进群, 由群的议程成员回应 (与群页发言同一套推举)
+    for gid in &groups {
+        let st2 = st.clone();
+        let g2 = gid.clone();
+        let txt = text.clone();
+        tokio::spawn(async move {
+            let targets = crate::native::elect_group_targets(&st2, &g2, &txt, None).await;
+            crate::room_bus::spawn_reports(
+                st2.clone(),
+                g2.clone(),
+                txt,
+                targets,
+                crate::room_bus::group_intent(&g2, chrono::Utc::now().timestamp_millis() as u64),
+            );
+        });
+    }
+    if targets.is_empty() && groups.is_empty() {
+        return Json(serde_json::json!({
+            "ok": true, "queued": [],
+            "note": "本机还没有智能体 —— 世界里没人能接话"
+        }));
+    }
+    let queued: Vec<String> = targets.iter().map(|a| a.name.clone()).collect();
+    for agent in targets {
+        let st2 = st.clone();
+        let q = text.clone();
+        tokio::spawn(async move {
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let sid = format!("world:{}", agent.id);
+            let reply = crate::native::reply_with_agent_stages(&st2, &q, Some(&agent), &sid, None, cancel)
+                .await
+                .unwrap_or_else(|e| format!("（没答上：{e}）"));
+            let ts = chrono::Utc::now().timestamp_millis();
+            let short: String = reply.chars().take(80).collect();
+            let mut fs = st2.forge.lock().await;
+            fs.world_thread.push(serde_json::json!({
+                "role": "agent", "from": agent.id, "name": agent.name,
+                "text": reply, "ts": ts,
+            }));
+            fs.inbox.insert(0, serde_json::json!({
+                "title": format!("{} 回应了世界", agent.name),
+                "summary": short,
+                "from": agent.id,
+                "ts": ts,
+                "verification": "unverified",
+            }));
+            if fs.inbox.len() > 50 {
+                fs.inbox.truncate(50);
+            }
+            fs.save(&data_dir());
+        });
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "queued": queued,
+        "groups": groups,
+        "defaulted": req_targets.is_empty(),
+    }))
+}
+
+/// GET /api/world/intents → 本节点的世界意图 (外部智能体/群组按它去找信息, 再投卡回来)
+///
+/// 这是"外部也能按意图服务"的读端: 对方拉这个列表 → 自己去搜 → POST /api/world/inbox
+/// 或 /api/world/cards/push (带签名) 把卡片投进来。本节点不做任何捏造填充。
+async fn world_intents(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    Json(serde_json::json!({
+        "intents": fs.intents,
+        "count": fs.intents.len(),
+        "push": {
+            "inbox": "/api/world/inbox",
+            "signed_cards": "/api/world/cards/push",
+            "note": "带签名的信封会记 verification=verified, 裸卡如实标 unverified"
+        }
+    }))
+}
+
+/// GET /api/world/thread → 世界对话线 (我说的 + 智能体回的)
+async fn world_thread(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    Json(serde_json::json!({
+        "thread": fs.world_thread,
+        "intents": fs.intents,
+        "count": fs.world_thread.len(),
+    }))
 }
 
 // ---------- x402 付费信息 ----------

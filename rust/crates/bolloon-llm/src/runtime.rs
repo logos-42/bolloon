@@ -313,6 +313,7 @@ impl LlmRuntime {
         let mut result = self.do_generate(slot, &params).await;
         if let Err(LlmError::Http { status: 400, body }) = &result {
             if body.contains("reasoning_content") {
+                tracing::debug!(stream = false, shapes = %message_shapes(&params.messages), "400 缺思维链 — 请求形状");
                 // ① 打补丁: 缺思维链的工具回合补空串再试
                 let mut p1 = params.clone();
                 fill_missing_reasoning(&mut p1.messages);
@@ -345,6 +346,18 @@ impl LlmRuntime {
         &self,
         provider_id: &str,
         params: GenerateParams,
+        on_delta: impl FnMut(&str),
+    ) -> Result<GenerateResult, LlmError> {
+        self.generate_streaming_full(provider_id, params, |_| {}, on_delta).await
+    }
+
+    /// 流式生成 + **思维链增量**回调: 思考模式下 `reasoning_content` 走 `on_thought`,
+    /// 正文走 `on_delta`。界面据此显示"AI 真实在想什么/在写什么" —— 不做假进度文案。
+    pub async fn generate_streaming_full(
+        &self,
+        provider_id: &str,
+        params: GenerateParams,
+        mut on_thought: impl FnMut(&str),
         mut on_delta: impl FnMut(&str),
     ) -> Result<GenerateResult, LlmError> {
         let slot = self
@@ -356,13 +369,33 @@ impl LlmRuntime {
         }
         let key = format!("{}|{}", slot.cfg.id, slot.cfg.base_url);
         let _permit = self.gate.acquire(&key).await;
-        let mut result = self.do_generate_stream(slot, &params, &mut on_delta).await;
+        let mut result = self
+            .do_generate_stream(slot, &params, &mut on_thought, &mut on_delta)
+            .await;
+        // 两级兜底与**非流式那条完全对齐** (以前流式只做了第一级, 同样的问题在流式下会直接失败):
+        // ① 缺思维链的工具回合补空串 ② 仍被拒 ⇒ 本次把工具协议摊平成纯文本轨迹
         if let Err(LlmError::Http { status: 400, body }) = &result {
             if body.contains("reasoning_content") {
-                // 同 generate: 缺思维链的工具回合补空串重试 (已吐出的增量不回滚, 只补发后续)
+                tracing::debug!(stream = true, shapes = %message_shapes(&params.messages), "400 缺思维链 — 请求形状");
+                // 已吐出的增量不回滚, 只补发后续
                 let mut p1 = params.clone();
                 fill_missing_reasoning(&mut p1.messages);
-                result = self.do_generate_stream(slot, &p1, &mut on_delta).await;
+                result = self
+                    .do_generate_stream(slot, &p1, &mut on_thought, &mut on_delta)
+                    .await;
+                if let Err(LlmError::Http { status: 400, body: b2 }) = &result {
+                    if b2.contains("reasoning_content") {
+                        tracing::warn!(
+                            provider = %slot.cfg.id,
+                            "stream: reasoning_content 补不回来 — 本次降级为纯文本工具轨迹重试"
+                        );
+                        let mut p2 = params.clone();
+                        flatten_tool_protocol(&mut p2.messages);
+                        result = self
+                            .do_generate_stream(slot, &p2, &mut on_thought, &mut on_delta)
+                            .await;
+                    }
+                }
             }
         }
         result.inspect_err(|e| {
@@ -374,6 +407,7 @@ impl LlmRuntime {
         &self,
         slot: &ProviderSlot,
         params: &GenerateParams,
+        on_thought: &mut impl FnMut(&str),
         on_delta: &mut impl FnMut(&str),
     ) -> Result<GenerateResult, LlmError> {
         let (url, headers, body) = openai_stream_request(&slot.cfg, params);
@@ -430,7 +464,10 @@ impl LlmRuntime {
                     return Ok(acc.finish(&params.model));
                 }
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-                    let delta = acc.feed(&v);
+                    let (think, delta) = acc.feed_full(&v);
+                    if !think.is_empty() {
+                        on_thought(&think);
+                    }
                     if !delta.is_empty() {
                         on_delta(&delta);
                     }
@@ -620,28 +657,33 @@ pub(crate) struct StreamAccumulator {
 }
 
 impl StreamAccumulator {
-    /// 喂一条 chunk; 返回本次的**文本增量** (没有则空串)
-    pub fn feed(&mut self, v: &serde_json::Value) -> String {
+    /// 喂一条 chunk; 返回 (**思维链增量**, **正文增量**)。
+    ///
+    /// 思考模式下模型先吐 `reasoning_content` 再吐 `content`, 两路要分开推给前端:
+    /// 前者是"它真实在想什么", 后者是回答本身 —— 界面上不能混成一坨。
+    pub fn feed_full(&mut self, v: &serde_json::Value) -> (String, String) {
         if let Some(u) = v.get("usage") {
             if u.is_object() {
                 self.usage = serde_json::from_value(u.clone()).unwrap_or_default();
             }
         }
         let Some(choices) = v.get("choices").and_then(|c| c.as_array()) else {
-            return String::new();
+            return (String::new(), String::new());
         };
         let Some(first) = choices.first() else {
-            return String::new();
+            return (String::new(), String::new());
         };
         if let Some(f) = first.get("finish_reason").and_then(|f| f.as_str()) {
             self.finish_reason = f.to_string();
         }
         let mut delta_text = String::new();
+        let mut think_text = String::new();
         let Some(delta) = first.get("delta") else {
-            return delta_text;
+            return (String::new(), delta_text);
         };
         if let Some(rc) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
             self.reasoning.push_str(rc);
+            think_text.push_str(rc);
         }
         if let Some(c) = delta.get("content").and_then(|c| c.as_str()) {
             self.content.push_str(c);
@@ -675,7 +717,7 @@ impl StreamAccumulator {
                 }
             }
         }
-        delta_text
+        (think_text, delta_text)
     }
 
     pub fn finish(self, model: &str) -> GenerateResult {
@@ -836,6 +878,26 @@ fn ollama_request(
  *   · **有图**: `content` 换成 OpenAI 视觉数组 `[{type:text},{type:image_url,…}]`,
  *     其余字段 (role/name/tool_call_id/tool_calls) 原样带上。
  */
+/// 请求形状摘要 (只出角色/结构/长度, **不出正文**) —— 400 时定位"哪条消息缺思维链"用。
+///
+/// 实测 (2026-10-30): DeepSeek 只在"assistant 带 tool_calls 却无 reasoning_content"时 400,
+/// 纯文本带思维链、空串思维链都接受 ⇒ 摘要里 `tc=` 有值而 `rc=` 为 None 的就是那条。
+fn message_shapes(msgs: &[ChatMessage]) -> String {
+    msgs.iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let tc = m.tool_calls.as_ref().map(|c| c.len()).unwrap_or(0);
+            let rc = m
+                .reasoning_content
+                .as_ref()
+                .map(|r| r.chars().count().to_string())
+                .unwrap_or_else(|| "None".to_string());
+            format!("{i}:{}/tc={tc}/rc={rc}/len={}", m.role, m.content.chars().count())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// DeepSeek 思考模式: **带 tool_calls 的 assistant 消息必须把 reasoning_content 原样带回**,
 /// 少一个就 400「must be passed back to the API」。有些回合模型/中转不返回思维链 ⇒ 我们手上没有。
 /// 第一步补丁: 缺的补成空串 (字段在场)。
@@ -893,7 +955,17 @@ pub fn messages_payload(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
         .iter()
         .map(|m| {
             if m.images.is_empty() {
-                return serde_json::to_value(m).unwrap_or(serde_json::Value::Null);
+                let mut o = serde_json::to_value(m).unwrap_or(serde_json::Value::Null);
+                // **出站边界兜底** (2026-10-30 实测): DeepSeek 思考模式只拒绝「assistant 带
+                // tool_calls 却整条没有 reasoning_content 字段」——传空串它接受, 字段缺失必 400。
+                // 所以这里补字段, 而不是只依赖上层填: 任何代码路径忘了填, 也不会把整轮打挂。
+                if m.role == "assistant"
+                    && m.tool_calls.as_ref().map(|c| !c.is_empty()).unwrap_or(false)
+                    && m.reasoning_content.is_none()
+                {
+                    o["reasoning_content"] = serde_json::Value::String(String::new());
+                }
+                return o;
             }
             let mut parts = vec![serde_json::json!({ "type": "text", "text": m.content })];
             for url in &m.images {
@@ -1250,23 +1322,29 @@ mod tests {
     #[test]
     fn stream_accumulator_merges_text_and_tool_fragments() {
         let mut acc = StreamAccumulator::default();
-        let d1 = acc.feed(&serde_json::json!({
+        // 思考模式: reasoning_content 与 content 必须分两路返回 (前端想法/正文分开显示)
+        let (t0, d0) = acc.feed_full(&serde_json::json!({
+            "choices": [{"delta": {"reasoning_content": "先看"}}]
+        }));
+        assert_eq!((t0.as_str(), d0.as_str()), ("先看", ""), "思考帧只有想法, 不能冒充正文");
+        let (t1, d1) = acc.feed_full(&serde_json::json!({
             "choices": [{"delta": {"content": "你"}}]
         }));
-        let d2 = acc.feed(&serde_json::json!({
+        let (t2, d2) = acc.feed_full(&serde_json::json!({
             "choices": [{"delta": {"content": "好"}, "finish_reason": null}]
         }));
-        acc.feed(&serde_json::json!({
+        assert!(t1.is_empty() && t2.is_empty(), "无思维链时想法增量为空");
+        acc.feed_full(&serde_json::json!({
             "choices": [{"delta": {"tool_calls": [
                 {"index": 0, "id": "call_1", "function": {"name": "read_file", "arguments": "{\"path\":"}}
             ]}}]
         }));
-        acc.feed(&serde_json::json!({
+        acc.feed_full(&serde_json::json!({
             "choices": [{"delta": {"tool_calls": [
                 {"index": 0, "function": {"arguments": "\"a.txt\"}"}}
             ]}}]
         }));
-        acc.feed(&serde_json::json!({
+        acc.feed_full(&serde_json::json!({
             "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5}
         }));
@@ -1274,6 +1352,7 @@ mod tests {
         assert_eq!(d2, "好");
         let r = acc.finish("m1");
         assert_eq!(r.content, "你好");
+        assert_eq!(r.reasoning_content.as_deref(), Some("先看"), "思维链必须累积并可回传");
         assert_eq!(r.finish_reason, "tool_calls");
         assert_eq!(r.usage.prompt_tokens, 10);
         assert_eq!(r.tool_calls.len(), 1);
@@ -1281,6 +1360,24 @@ mod tests {
         assert_eq!(tc.id, "call_1");
         assert_eq!(tc.function.name, "read_file");
         assert_eq!(tc.function.arguments, "{\"path\":\"a.txt\"}", "参数片段必须拼合");
+    }
+
+    /// 出站边界: assistant 带 tool_calls 且思维链为 None ⇒ 必须补成空串字段
+    /// (字段缺失会让 DeepSeek 思考模式 400; 空串它接受 —— 实测三种回传形状)
+    #[test]
+    fn payload_fills_missing_reasoning_on_tool_calls() {
+        let mut m = msg("assistant", "先看看");
+        m.tool_calls = Some(vec![ToolCallMsg {
+            id: "c1".into(),
+            call_type: "function".into(),
+            function: FunctionCall { name: "read_file".into(), arguments: "{}".into() },
+        }]);
+        m.reasoning_content = None;
+        let v = messages_payload(&[m]);
+        assert_eq!(v[0]["reasoning_content"], serde_json::json!(""), "缺字段就必须补空串");
+        // 纯文本消息不补 (不必要地发字段也不是错, 但别乱加)
+        let plain = messages_payload(&[msg("assistant", "hi")]);
+        assert!(plain[0].get("reasoning_content").is_none(), "无 tool_calls 不补");
     }
 
     /// 流式请求体: stream 必须是 true, 其余与一次性请求同构

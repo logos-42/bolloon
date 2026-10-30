@@ -16,6 +16,7 @@ pub mod agent_wallet;
 pub mod qr_login;
 pub mod room_bus;
 pub mod server;
+pub mod updater;
 pub mod vision;
 pub mod wallet;
 pub use server::*;

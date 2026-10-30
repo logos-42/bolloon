@@ -149,6 +149,41 @@
   .side-scroll{flex:1;overflow:auto;padding:0 8px 8px}
   .sec{margin:8px 6px 4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
   /* 2026-10-30: 通讯录节标题右侧的入口按钮组 (加好友 / 加群 / 创建群) — 桌面壳与网页端同款 */
+  /* 2026-10-30 (leo): 创建智能体按钮下面 = 三个标签页 (智能体 / 通讯录 / 群组) */
+  .side-tabs{display:flex;gap:4px;padding:2px 10px 8px}
+  .side-tab{flex:1;font-size:12px;line-height:1;padding:6px 0;border-radius:9px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer;transition:color .12s,border-color .12s,background .12s}
+  .side-tab:hover{color:var(--accent);border-color:var(--accent)}
+  .side-tab.on{color:var(--on-accent,#1b1a19);background:var(--accent,#c4d640);border-color:var(--accent,#c4d640);font-weight:600}
+  /* 群页底部议程芯片: 选中才变绿 (绿=会在这个群接话) */
+  .group-intro{padding:6px 14px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--line);line-height:1.45}
+  .group-intro:empty{display:none}
+  .world-thread{margin-top:14px;display:flex;flex-direction:column;gap:6px}
+  .world-thread #worldThread{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto}
+  .wmsg{font-size:12.5px;line-height:1.5;border-radius:9px;padding:6px 9px;border:1px solid var(--line);max-width:92%}
+  .wmsg.human{align-self:flex-end;background:var(--active)}
+  .wmsg.agent{align-self:flex-start;background:var(--panel2)}
+  .wmsg b{font-size:11px;color:var(--muted);display:block;margin-bottom:2px}
+  .world-at{display:flex;flex-wrap:wrap;gap:5px;padding:6px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);max-height:150px;overflow:auto}
+  .world-at.hidden{display:none}
+  .world-at button{font-size:11.5px;padding:4px 8px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer}
+  .world-at button.on{background:var(--accent,#c4d640);border-color:var(--accent,#c4d640);color:var(--on-accent,#1b1a19);font-weight:600}
+  .world-at button.grp::before{content:"👥 "}
+  .world-at button.ag::before{content:"🤖 "}
+  .world-at-picked{display:flex;flex-wrap:wrap;gap:5px;font-size:11px;color:var(--muted)}
+  .world-at-picked:empty{display:none}
+  /* AI 回完就折到左下角: 主体只留卡片, 想看过程点开 */
+  .world-thread .wmsg{display:none}
+  .world-thread.open .wmsg{display:block}
+  .world-fold{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted);cursor:pointer;padding:5px 8px;border:1px solid var(--line);border-radius:8px;max-width:92%;align-self:flex-start;background:var(--panel2)}
+  .world-fold b{color:var(--accent,#c4d640);font-weight:600}
+  .world-fold .tail{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%}
+  .group-chips{display:flex;flex-wrap:wrap;gap:6px;padding:7px 10px;border-top:1px solid var(--line);max-height:86px;overflow:auto}
+  .gchip{font-size:12px;line-height:1;padding:5px 10px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer;white-space:nowrap}
+  .gchip:hover{color:var(--accent);border-color:var(--accent)}
+  .gchip.on{color:var(--on-accent,#1b1a19);background:var(--accent,#c4d640);border-color:var(--accent,#c4d640);font-weight:600}
+  .gchip.lead{border-color:var(--accent,#c4d640)}
+  .gchip.lead.on{box-shadow:0 0 0 2px rgba(196,214,64,.25)}
+  .gchip small{opacity:.65;margin-left:4px}
   .contacts-sec-head{display:flex;align-items:center;gap:4px}
   .sec-acts{margin-left:auto;display:flex;align-items:center;gap:4px}
   .contacts-sec-head .mini{padding:2px 8px;font-size:11px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--muted);cursor:pointer}
@@ -198,10 +233,10 @@
   .msg.user{background:var(--user-bg);color:var(--user-text);white-space:normal;padding:8px 14px;font-size:15px;line-height:1.4;border-radius:11px}
   .msg.bot{background:var(--panel2);border:1px solid var(--line);position:relative;white-space:normal}
   /* 2026-10-30: 运行中的阶段行 (读文件 / 跑命令 / 整理结论…) —— 流光只给最后一行 */
-  .msg-stages{display:flex;flex-direction:column;gap:3px;margin:0 0 7px;font-size:12px;line-height:1.45;color:var(--muted,#8a8a8a)}
-  .msg-stages .stage-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-left:2px solid rgba(142,197,255,.28);padding-left:8px}
-  .msg-stages .stage-line.cur{color:var(--accent,#c4d640);border-left-color:var(--accent,#c4d640)}
-  .msg.bot:not(.streaming) .msg-stages{opacity:.55}
+  /* AI 真实的想法 (思考模式下模型自己吐的 reasoning 流): 暗一档, 左边一道细线, 长了自己滚 */
+  .msg-think{white-space:pre-wrap;word-break:break-word;font-size:12.5px;line-height:1.55;color:var(--muted,#8a8a8a);border-left:2px solid rgba(142,197,255,.28);padding:1px 0 1px 9px;margin:0 0 8px;max-height:240px;overflow:auto;scrollbar-width:thin}
+  .msg.bot.streaming .msg-think{border-left-color:var(--accent,#c4d640)}
+  .msg.bot:not(.streaming) .msg-think{opacity:.6}
   .msg.bot.streaming::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:linear-gradient(110deg,transparent 30%,rgba(255,255,255,.12) 50%,transparent 70%);background-size:220% 100%;animation:shimmer 1.35s linear infinite}
   @media (prefers-color-scheme:light){.msg.bot.streaming::after{background:linear-gradient(110deg,transparent 30%,rgba(37,99,235,.12) 50%,transparent 70%)}}
   @keyframes shimmer{0%{background-position:180% 0}100%{background-position:-80% 0}}
@@ -662,6 +697,13 @@
         </svg>
       </button>
     </div>
+    <!-- 2026-10-30 (leo): 通讯录 / 群组 作为标签页放在「创建智能体」下面 -->
+    <div class="side-tabs" id="sideTabs" role="tablist">
+      <button class="side-tab on" data-side="agents" role="tab">智能体</button>
+      <button class="side-tab" data-side="contacts" role="tab">通讯录</button>
+      <button class="side-tab" data-side="groups" role="tab">群组</button>
+      <button class="side-tab" data-side="world" role="tab">世界</button>
+    </div>
     <div class="side-scroll">
       <!-- 2026-10-26: 桌面三栏第二栏 — 按第一栏模块显隐 (chat=智能体/会话, world=意图面板) -->
       <div class="sec" id="secAgents">智能体</div>
@@ -674,12 +716,16 @@
       <div id="contactsSlot">
         <div id="contactsList">
           <!-- 2026-10-30 (用户): 群组页面 = 加好友 / 加群 / 创建群 都在这里 (入口不再散在侧栏底部) -->
-          <div class="sec contacts-sec-head">好友<span class="sec-acts"><button class="mini" id="addFriendBtn" title="搜索 DID / 手机号 / 邮箱 / 姓名 加好友">＋ 加好友</button></span></div>
-          <div id="friendList"></div>
-          <div class="sec" id="secFriendReq" style="display:none">好友请求</div>
-          <div id="friendRequests"></div>
-          <div class="sec contacts-sec-head">群组<span class="sec-acts"><button class="mini" id="joinGroupBtn" title="用邀请链接加入群组">加群</button><button class="mini" id="newGroupBtn" title="创建群组">＋ 创建</button></span></div>
-          <div id="groupList"></div>
+          <div id="sideFriends">
+            <div class="sec contacts-sec-head">好友<span class="sec-acts"><button class="mini" id="addFriendBtn" title="搜索 DID / 手机号 / 邮箱 / 姓名 加好友">＋ 加好友</button></span></div>
+            <div id="friendList"></div>
+            <div class="sec" id="secFriendReq" style="display:none">好友请求</div>
+            <div id="friendRequests"></div>
+          </div>
+          <div id="sideGroups">
+            <div class="sec contacts-sec-head">群组<span class="sec-acts"><button class="mini" id="joinGroupBtn" title="用邀请链接加入群组">加群</button><button class="mini" id="newGroupBtn" title="创建群组">＋ 创建</button></span></div>
+            <div id="groupList"></div>
+          </div>
         </div>
         <div id="contactsFriend" style="display:none">
           <div class="item" id="friendBack" title="返回通讯录列表">
@@ -731,7 +777,8 @@
       <span id="agentDid" style="color:var(--muted)"></span>
       <span class="grow"></span>
       <!-- 模块入口统一在左侧第一栏 rail; 此处保留隐藏 relay 以维持既有 JS 绑定 (room 由 railRoomBtn 触发) -->
-      <button id="worldTabBtn" class="mini" style="display:none">🌍 世界 <span id="worldBadge" style="display:none"></span></button>
+      <!-- 2026-10-30 (leo): 世界流并入侧栏标签页, 这里只留隐藏元素 (旧代码仍按 id 引用) -->
+<button id="worldTabBtn" class="mini" style="display:none" hidden aria-hidden="true">🌍 世界 <span id="worldBadge" style="display:none"></span></button>
       <button id="contactsTabBtn" class="mini" style="display:none">通讯录</button>
       <button id="roomBtn" class="mini" style="display:none">内部商议</button>
     </header>
@@ -740,13 +787,22 @@
       <div class="world-main">
         <div style="font-size:13px;color:var(--muted)">🌍 世界持续流入 — 按你的意图重打分；忽略的进校准环不再回来</div>
         <div id="worldOpportunities"></div>
+        <div class="world-thread">
+          <div class="sec">世界对话 <span id="worldThreadNote" style="font-weight:400;color:var(--muted)"></span></div>
+          <div id="worldThread"></div>
+          <!-- 复用世界模式既有的那个对话框 (右下「我的意图」); 这里只放 @ 候选与等待提示 -->
+          <div id="worldAtPanel" class="world-at hidden"></div>
+          <div id="worldAtPicked" class="world-at-picked"></div>
+          <div id="worldPending" class="hint" style="display:none">正在等回应…</div>
+        </div>
       </div>
       <aside class="world-side">
         <div style="font-weight:600;font-size:12px;margin-bottom:6px">我的意图</div>
         <div id="worldIntents"></div>
         <div style="display:flex;gap:6px;margin:8px 0">
-          <input id="worldIntentInput" placeholder="例如：核聚变" style="flex:1;font-size:12px;padding:5px 7px;border-radius:8px;background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn-border)" />
-          <button id="worldIntentAdd" style="font-size:11px;padding:5px 9px">加</button>
+          <input id="worldIntentInput" placeholder="说一句 / 加意图…（@ 可指定接话的智能体或群组）" style="flex:1;font-size:12px;padding:5px 7px;border-radius:8px;background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn-border)" />
+          <button id="worldAtBtn" title="指定接话的智能体 / 群组（不指定=默认本机智能体回复）" style="font-size:11px;padding:5px 8px">@</button>
+          <button id="worldIntentAdd" style="font-size:11px;padding:5px 9px">发送</button>
         </div>
         <div class="world-stat" id="worldStats"></div>
       </aside>
@@ -786,6 +842,8 @@
         <b id="groupName">群组</b>
         <span id="groupMeta" style="color:var(--muted);font-size:11px"></span>
         <span class="grow"></span>
+        <button class="mini" id="groupMenuBtn" title="群组设置">⋯</button>
+        <span class="grow"></span>
         <button id="groupInvite" class="mini" title="邀请成员（复制邀请链接）">邀请</button>
         <button id="groupDots" class="group-dots" title="群组设置" aria-label="群组设置" aria-haspopup="menu">⋯</button>
       </div>
@@ -804,7 +862,10 @@
         </div>
         <div id="topicList" style="display:flex;flex-direction:column;gap:4px"></div>
       </div>
+      <div class="group-intro" id="groupIntro"></div>
       <div id="groupMessages"></div>
+      <!-- 议程成员: 点一下就加入/退出本群, 绿色 = 会在这个群接话 (2026-10-30 leo) -->
+      <div id="groupChips" class="group-chips" title="点选议程成员：绿色 = 会在这个群接话"></div>
       <div class="group-composer">
         <input id="groupInput" placeholder="输入消息，Enter 发送（本地 DID 签名后上 oplog）" />
         <button class="primary" id="groupSend">发送</button>
@@ -1475,10 +1536,10 @@ function renderChat(){
     const retry=m.role==='assistant'?`<button title="重试" aria-label="重试" onclick="retryMessage(${i})">${iconRetry}</button>`:'';
     const edit=m.role==='user'?`<button title="编辑" aria-label="编辑" onclick="editMessage(${i})">${iconPencil}</button>`:'';
     const streaming=m.streaming?' streaming':'';
-    const stages=(m.role!=='user'&&Array.isArray(m.stages))?m.stages:[];
-    const stageBox=stages.length?`<div class="msg-stages">${stages.slice(-8).map((t,si,arr)=>`<div class="stage-line shimmer${(m.streaming&&si===arr.length-1)?' cur':''}">${escapeHTML(t)}</div>`).join('')}</div>`:'';
+    // 真实想法 (模型 reasonig 流) — 不是我们编的进度文案
+    const thinkBox=(m.role!=='user'&&m.think)?`<div class="msg-think">${escapeHTML(m.think)}</div>`:'';
     return `<div class="msg-row ${role}" data-index="${i}">
-      <div class="msg ${role}${streaming}">${stageBox}${body}
+      <div class="msg ${role}${streaming}">${thinkBox}${body}
         ${(m.images||[]).map(im=>`<img src="${im}" alt="">`).join('')}
       </div>
       <div class="msg-actions">
@@ -1491,15 +1552,17 @@ function renderChat(){
   }).join('');
   if(stick)chat.scrollTop=chat.scrollHeight;
 }
-function updateStreamingBubble(index,text,stages){
+function updateStreamingBubble(index,text,think){
   const chat=$('chat');
   const row=chat.querySelector(`.msg-row[data-index="${index}"]`);
   if(!row){renderChat();return;}
   const msg=row.querySelector('.msg.bot');
   if(!msg)return;
-  const list=Array.isArray(stages)?stages:[];
-  const stageBox=list.length?`<div class="msg-stages">${list.slice(-8).map((t,si,arr)=>`<div class="stage-line shimmer${si===arr.length-1?' cur':''}">${escapeHTML(t)}</div>`).join('')}</div>`:'';
-  msg.innerHTML=stageBox+mdToHTML(text);
+  // 想法块随流增长; 贴底时把它滚到底部, 保证眼睛跟得上最新一句
+  const thinkBox=think?`<div class="msg-think">${escapeHTML(think)}</div>`:'';
+  msg.innerHTML=thinkBox+mdToHTML(text);
+  const tb=msg.querySelector('.msg-think');
+  if(tb)tb.scrollTop=tb.scrollHeight;
   if(nearBottom(chat))chat.scrollTop=chat.scrollHeight;
 }
 
@@ -2246,10 +2309,16 @@ async function runUpdateFlow(){
   const b=$('updateBtn');
   if(b.dataset.busy==='1')return; // 互斥: 一次只跑一条安装流
   b.dataset.busy='1';b.disabled=true;
-  setUpdateStage('正在安装更新…','install');
+  // 2026-10-30 (leo: 网页端点更新没反应): 先把新标签页**同步**占住, 再 await。
+  // 浏览器只允许在用户手势的同一 tick 里开窗 —— await 之后再 window.open 会被当弹窗拦掉,
+  // 于是"取到下载地址"却什么都没打开 (旧代码就是这样: 只把按钮改成「已打开下载页」)。
+  let dlWin=null;
+  try{ dlWin=window.open('about:blank','bolloon_download'); }catch(_){ dlWin=null; }
+  setUpdateStage('正在准备更新…','install');
   try{
     if(!(update&&update.available))update=await api('/api/update');
     if(!update.available){
+      if(dlWin&&!dlWin.closed)try{dlWin.close();}catch(_){}
       setUpdateStage('已是最新','done');
       setTimeout(()=>{b.dataset.busy='';b.disabled=false;renderUpdate();},1500);
       return;
@@ -2258,13 +2327,36 @@ async function runUpdateFlow(){
     // apply 若把旧进程换掉, 这个 fetch 会以网络错误结束 (属预期) — 直接进重启等待
     let applied=null;
     try{applied=await api('/api/update/apply',{method:'POST'});}catch(e){/* 旧进程可能已退出，继续轮询 */}
-    // 桌面壳 + 原生通道不可用时的 HTTP 兜底: 服务端只打开发布下载页, **不会自我替换**
-    // (Tauri .app 自替换会破签名) ⇒ 不轮询重启, 直接告诉人去装 (说真话, 不假装装完了)
-    if(applied&&(applied.bootstrap||(applied.url&&!applied.installing))){
-      setUpdateStage('已打开下载页','done');
-      if(typeof toast==='function')toast('已打开下载页 '+(latest||'')+' — 装好后重开即可');
+    // 两条出路: ① 桌面壳替我们打开了下载页 (bootstrap) ② 只回了地址 (网页端/裸二进制)
+    //   ⇒ ② 必须我们**真的打开**, 打不开就复制链接说清楚 (不许假装"已打开")
+    if(applied&&(applied.bootstrap||applied.url)){
+      let opened=!!applied.bootstrap;
+      if(!opened&&applied.url){
+        if(dlWin&&!dlWin.closed){ try{ dlWin.location.href=applied.url; opened=true; }catch(_){ dlWin=null; } }
+        if(!opened){ try{ const w=window.open(applied.url,'bolloon_download'); opened=!!w; }catch(_){ opened=false; } }
+        if(!opened){
+          try{ await copyText(applied.url); }catch(_){}
+          setUpdateStage('下载链接已复制','done');
+          toast('浏览器拦了新窗口 — 下载链接已复制: '+applied.url);
+          b.dataset.busy='';b.disabled=false;
+          setTimeout(()=>renderUpdate(),6000);
+          return;
+        }
+      }
+      setUpdateStage(opened?'已打开下载页':'下载页地址已就绪','done');
+      toast((opened?'已打开下载页 ':'下载地址: ')+(latest?('（新版 '+latest+'）'):'')+' — 装好后重开即可');
       b.dataset.busy='';b.disabled=false;
       setTimeout(()=>renderUpdate(),2500);
+      return;
+    }
+    // 服务端一条龙: 后台下载 + 替换 + 原地重启 (.app 才走这条; 装好版本号会变)
+    if(applied&&applied.installing&&!applied.busy){
+      if(dlWin&&!dlWin.closed)try{dlWin.close();}catch(_){}
+      setUpdateStage('正在下载并安装…','install');
+      toast('正在下载并安装'+(latest?(' ' + latest):'')+' — 装好后自动重启');
+      if(await waitForRestart(latest)){location.reload();return;}
+      setUpdateStage('安装超时 (请手动重开)','fail');
+      b.dataset.busy='';b.disabled=false;
       return;
     }
     setUpdateStage('正在重启…','restart');
@@ -2278,8 +2370,14 @@ async function runUpdateFlow(){
   setTimeout(()=>renderUpdate(),2500); // 回到"有更新才显形"
 }
 $('updateBtn').onclick=runUpdateFlow;
+$('groupMenuBtn').onclick=(e)=>openGroupMenu(e,activeGroupId);
+$('worldAtBtn').onclick=(e)=>{e.stopPropagation();renderWorldAt();$('worldAtPanel').classList.toggle('hidden');};
+// 既有「加」按钮现在同时: 记意图 + 发给世界 (谁接话由 @ 决定, 不指定=默认本机智能体)
+$('worldIntentAdd').onclick=()=>sendWorldSay();
+$('worldIntentInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();sendWorldSay();}});
+document.addEventListener('click',()=>{const m=$('groupMenu');if(m)m.classList.add('hidden');});
 
-async function streamChat(payload,onDelta,signal,onStage){
+async function streamChat(payload,onDelta,signal,onThought){
   const r=await fetch('/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal});
   if(!r.ok){const t=await r.text();throw new Error(t||('HTTP '+r.status));}
   const reader=r.body.getReader(),dec=new TextDecoder();
@@ -2298,7 +2396,7 @@ async function streamChat(payload,onDelta,signal,onStage){
       });
       if(!data)continue;
       let obj={};try{obj=JSON.parse(data)}catch{obj={text:data}}
-      if(event==='stage'&&obj.text){if(onStage)onStage(obj.text);}
+      if(event==='thought'&&obj.text){if(onThought)onThought(obj.text);}
       else if(event==='delta'&&obj.text)onDelta(obj.text);
       else if(event==='error'){const e=new Error(obj.error||'流式错误');e.sse=true;throw e;}
       else if(event==='done')final=obj.reply||'';
@@ -2343,7 +2441,7 @@ async function submitMessage(text,images){
   setBusy(s.id,true);renderSidebar();
   s.messages=s.messages||[];
   s.messages.push({role:'user',text,images,time:new Date().toISOString()});
-  const assistant={role:'assistant',text:'',stages:[],streaming:true,time:new Date().toISOString()};
+  const assistant={role:'assistant',text:'',think:'',streaming:true,time:new Date().toISOString()};
   s.messages.push(assistant);
   const aiIndex=s.messages.length-1;
   renderChat();
@@ -2351,20 +2449,22 @@ async function submitMessage(text,images){
   try{
     const reply=await streamChat(payload,delta=>{
       assistant.text+=delta;
-      updateStreamingBubble(aiIndex,assistant.text,assistant.stages);
-    },controller.signal,stage=>{
-      // 阶段行: 首个是「已收到，开始执行」, 之后是 轮次 / 工具调用 / 工具结果
-      assistant.stages.push(stage);
-      updateStreamingBubble(aiIndex,assistant.text,assistant.stages);
+      updateStreamingBubble(aiIndex,assistant.text,assistant.think);
+    },controller.signal,thought=>{
+      // 模型真实的想法 (思考模式的 reasoning 流) —— 不是我们编的进度
+      assistant.think=(assistant.think||'')+thought;
+      updateStreamingBubble(aiIndex,assistant.text,assistant.think);
     });
     if(reply)assistant.text=reply;
     if(!assistant.text)throw new Error('模型没有返回内容');
+    // 跑完只留最终内容: 思维链是"过程", 不留在气泡里 (leo 2026-10-30)
+    assistant.think='';
   }catch(e){
     if(e.name==='AbortError'){
       if(!assistant.text)assistant.text='（已停止）';
     }else if(e.sse){
       assistant.text='（错误）'+(e.message||'流式错误');
-    }else if(!assistant.text&&!(assistant.stages||[]).length){
+    }else if(!assistant.text&&!assistant.think){
       try{
         const j=await api('/api/chat',{method:'POST',body:JSON.stringify(payload),signal:controller.signal});
         if(j.error)throw new Error(j.error);
@@ -2597,6 +2697,9 @@ function initDesktopThreeCol() {
   setDesktopModule('chat');
 }
 if (isDesktopShell) initDesktopThreeCol();
+// 侧栏标签页初始态 (智能体): 通讯录/群组默认收起
+try{ setSideTab('agents'); }catch(_){}
+
 
 // ── 2026-10-27 (用户): 通讯录模块 (第一栏 📒 → 第二栏: 好友 / 好友请求 / 群聊) ──
 //   点好友钻取 = 「外部好友 × 外部智能体」, 布局与默认第二栏同款 (.sec + .item),
@@ -2611,6 +2714,251 @@ async function loadContacts(){
 }
 // 2026-10-30 (用户): 群组以**名字**为准 — 展示层不出现 gw-xxx 这类技术 id, 名字缺省就叫「未命名群组」
 const groupLabel=(g)=>String((g&&g.name)||'').trim()||'未命名群组';
+// ─────────────────────────────────────────────────────────────
+// 侧栏标签页: 智能体 / 通讯录 / 群组 (2026-10-30 leo: 放在「创建智能体」按钮下面)
+// ─────────────────────────────────────────────────────────────
+let sideTab='agents';
+function setSideTab(tab){
+  // 四个标签: 智能体 / 通讯录 / 群组 / 世界 (世界流并入同一排, 不再单独一个入口按钮)
+  sideTab=(['contacts','groups','world'].includes(tab))?tab:'agents';
+  document.querySelectorAll('#sideTabs .side-tab').forEach(b=>b.classList.toggle('on',b.dataset.side===sideTab));
+  const showAgents=sideTab==='agents';
+  ['secAgents','agents','secSessions','sessions'].forEach(id=>{const el=$(id);if(el)el.style.display=showAgents?'':'none';});
+  const slot=$('contactsSlot');
+  if(slot)slot.style.display=(sideTab==='contacts'||sideTab==='groups')?'block':'none';
+  const friends=$('sideFriends'),groups=$('sideGroups');
+  if(friends)friends.style.display=sideTab==='contacts'?'':'none';
+  if(groups)groups.style.display=sideTab==='groups'?'':'none';
+  const wslot=$('worldSideSlot');
+  if(wslot)wslot.style.display=(sideTab==='world'&&isDesktopShell)?'block':'none';
+  // 钻取态 (好友详情) 回到列表, 否则切过去看不见列表
+  const cf=$('contactsFriend');
+  if(sideTab!=='agents'&&cf&&cf.style.display!=='none')backToContacts();
+  if(sideTab==='world'){
+    setPanel('world');                 // 世界流: 机会按意图重打分, 忽略的进校准环
+    if(isDesktopShell)setDesktopModule('world');
+    if(activeGroupId)closeGroup();
+    return;
+  }
+  if(showAgents){
+    setPanel('chat');
+    if(isDesktopShell)setDesktopModule('chat');
+  }else{
+    setPanel('contacts');
+    if(isDesktopShell)setDesktopModule('contacts');
+    if(sideTab==='groups'){
+      const head=[...document.querySelectorAll('#contactsView .ct-head')].find(e=>/^群组/.test((e.textContent||'').trim()));
+      if(head&&head.scrollIntoView)head.scrollIntoView({block:'start'});
+    }
+    loadContacts();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 群页议程成员芯片: 选中才变绿 = 会在这个群接话 (2026-10-30 leo)
+// 与商议面板共用同一份事实 (/api/groups/{id}/participants), 不是另一套本地状态
+// ─────────────────────────────────────────────────────────────
+let groupParticipants=new Set();
+function renderGroupChips(){
+  const box=$('groupChips');
+  if(!box)return;
+  const agents=(state&&state.agents)||[];
+  const alive=new Set(agents.map(a=>a.id));
+  for(const id of [...groupParticipants])if(!alive.has(id))groupParticipants.delete(id);
+  if(!agents.length){box.innerHTML='<span class="hint" style="padding:0">还没有智能体</span>';return;}
+  box.innerHTML=agents.map(a=>{
+    const on=groupParticipants.has(a.id);
+    const lead=(a.id===groupSheriffId)?' lead':'';
+    const badge=(a.id===groupSheriffId)?'<small>🎖️</small>':'';
+    const tip=(on?'在群里接话 — 点一下移出':'点一下加入本群议程')+(a.id===groupSheriffId?'（本群警长）':'');
+    return '<button class="gchip'+(on?' on':'')+lead+'" onclick="toggleGroupChip(\''+a.id+'\')" title="'+tip+'">'+escapeHTML(a.name)+badge+'</button>';
+  }).join('');
+}
+async function toggleGroupChip(id){
+  if(!activeGroupId)return;
+  const next=new Set(groupParticipants);
+  if(next.has(id))next.delete(id);else next.add(id);
+  if(!next.size){toast('至少要留一个智能体在群里');return;}
+  groupParticipants=next;renderGroupChips(); // 先变绿再说, 失败了再回滚
+  try{
+    const r=await api('/api/groups/'+encodeURIComponent(activeGroupId)+'/participants',{method:'POST',body:JSON.stringify({agent_ids:[...next]})});
+    if(r&&r.error)throw new Error(r.error);
+    if(Array.isArray(r.participants)){groupParticipants=new Set(r.participants);renderGroupChips();}
+  }catch(e){
+    toast('设置议程失败: '+e.message);
+    await loadGroupMessages(); // 以服务端为准
+  }
+}
+document.querySelectorAll('#sideTabs .side-tab').forEach(b=>{b.onclick=()=>setSideTab(b.dataset.side);});
+// ─────────────────────────────────────────────────────────────
+// 状态同步: 智能体 / 会话 / 群组以**本机服务端**为准, 界面不留旧快照
+// (2026-10-30 leo: 加载的 agent 数据和本地不同步)
+// ─────────────────────────────────────────────────────────────
+let lastSyncAt=0;
+async function syncState(force){
+  const now=Date.now();
+  if(!force&&now-lastSyncAt<1200)return; // 多个轮询同时喊只发一次
+  lastSyncAt=now;
+  try{
+    const j=await api('/api/bootstrap');
+    const keepFocus=state&&state.active_session_id;
+    state=j.state;update=j.update;
+    if(keepFocus&&state.sessions&&state.sessions.some(x=>x.id===keepFocus))state.active_session_id=keepFocus;
+    renderSidebar();renderUpdate();
+    if(!isBusy())renderChat();           // 正在生成时别抢气泡
+    if(sideTab!=='agents')renderContacts();
+    renderGroupChips();
+  }catch(_){/* 断线时下一轮再试 */}
+}
+// 切回窗口 / 从后台回来 → 立刻对齐一次 (别让人对着过期列表操作)
+window.addEventListener('focus',()=>{syncState(true);});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)syncState(true);});
+
+// ── 世界对话线: 说一句 → 意图入流 → 本机智能体回应 → 世界卡片更新 (2026-10-30 leo) ──
+let worldThreadTimer=null;
+async function loadWorldThread(){
+  try{
+    const j=await api('/api/world/thread');
+    const box=$('worldThread');
+    if(!box)return;
+    const rows=(j.thread||[]).slice(-40);
+    const open=box.parentElement.classList.contains('open');
+    // 全量列表 (折叠时 CSS 隐藏, 点一下才出)
+    box.innerHTML=rows.length?rows.map(m=>{
+      const who=m.role==='human'?'我':(m.name||m.from||'智能体');
+      const cls=m.role==='human'?'human':'agent';
+      return `<div class="wmsg ${cls}"><b>${escapeHTML(who)}</b>${mdToHTML(String(m.text||''))}</div>`;
+    }).join(''):'';
+    // 左下角折叠条: 只留最后一句 + 展开开关 (页面主体是卡片, 回复不占版面)
+    const last=rows.length?rows[rows.length-1]:null;
+    let fold=$('worldFold');
+    if(!fold){
+      fold=document.createElement('div');
+      fold.id='worldFold';
+      fold.className='world-fold';
+      fold.onclick=()=>{const p=box.parentElement;p.classList.toggle('open');loadWorldThread();};
+      box.parentElement.insertBefore(fold,box);
+    }
+    fold.innerHTML=last?`<b>${open?'▾':'▸'} ${escapeHTML(last.role==='human'?'我':(last.name||'AI'))}</b><span class="tail">${escapeHTML(String(last.text||'').replace(/\s+/g,' ').slice(0,60))}</span>`:'<b>▸ 世界对话</b><span class="tail">说一句，本机智能体会回应</span>';
+    if($('worldThreadNote'))$('worldThreadNote').textContent=(j.intents&&j.intents.length)?('· 意图 '+j.intents.slice(-4).join(' / ')):'';
+    if($('worldPending')&&rows.length&&rows[rows.length-1].role==='agent')$('worldPending').style.display='none';
+    if(rows.length&&rows[rows.length-1].role==='agent'&&lastWorldCount!==rows.length){lastWorldCount=rows.length;try{loadWorld();}catch(_){}}
+  }catch(_){}
+}
+let lastWorldCount=0;
+let worldTargets=[];
+function renderWorldAt(){
+  const panel=$('worldAtPanel'), picked=$('worldAtPicked');
+  if(!panel)return;
+  const agents=(state&&state.agents)||[];
+  const groups=(contactGroups&&contactGroups.groups)||[];
+  const has=(ty,id)=>worldTargets.some(t=>t.type===ty&&t.id===id);
+  panel.innerHTML=
+    agents.map(a=>`<button class="ag${has('agent',a.id)?' on':''}" onclick="toggleWorldTarget('agent','${a.id}')">${escapeHTML(a.name)}</button>`).join('')+
+    groups.map(g=>`<button class="grp${has('group',g.id)?' on':''}" onclick="toggleWorldTarget('group','${encodeURIComponent(g.id)}')">${escapeHTML(groupLabel(g))}</button>`).join('');
+  picked.innerHTML=worldTargets.length
+    ? '接话: '+worldTargets.map(t=>{
+        if(t.type==='agent'){const a=agents.find(x=>x.id===t.id);return escapeHTML(a?a.name:t.id);}
+        const gid=decodeURIComponent(t.id);const g=groups.find(x=>x.id===gid);
+        return '群「'+escapeHTML(g?groupLabel(g):gid)+'」';
+      }).join(' · ')
+    : '';
+}
+function toggleWorldTarget(ty,id){
+  const i=worldTargets.findIndex(t=>t.type===ty&&t.id===id);
+  if(i>=0)worldTargets.splice(i,1);else worldTargets.push({type:ty,id});
+  renderWorldAt();
+}
+async function sendWorldSay(){
+  const inp=$('worldIntentInput'); // 世界模式唯一的对话框 (右侧「我的意图」)
+  const text=(inp.value||'').trim();
+  if(!text)return;
+  inp.value='';
+  const pend=$('worldPending');
+  try{
+    if(pend)pend.style.display='';
+    const r=await api('/api/world/say',{method:'POST',body:JSON.stringify({text,targets:worldTargets})});
+    if(r.error)throw new Error(r.error);
+    const who=[...(r.queued||[])].concat((r.groups||[]).map(g=>'群「'+g+'」'));
+    if(!who.length)toast(r.note||'没有能接话的智能体');
+    else toast('已发出 · '+who.join('、')+' 正在回应');
+    await loadWorldThread();
+  }catch(e){toast('发送失败: '+e.message);if(pend)pend.style.display='none';}
+}
+
+// ── 群组设置: 改名 / 置顶 / 固定 ping / 分享 / 邀请 / 删除 (2026-10-30 leo) ──
+let menuGroupId='';
+function openGroupMenu(e,id){
+  if(e&&e.stopPropagation)e.stopPropagation();
+  menuGroupId=id;
+  const g=((contactGroups&&contactGroups.groups)||[]).find(x=>x.id===id)||{};
+  const m=$('groupMenu');
+  if(!m)return;
+  m.innerHTML=`
+    <button onclick="renameGroup()">改名</button>
+    <button onclick="pinGroup(${g.pinned?'false':'true'})">${g.pinned?'取消置顶':'置顶'}</button>
+    <button onclick="fixGroupPing()">固定 ping${g.ping_secs?`（${g.ping_secs}s）`:''}</button>
+    <button onclick="shareGroup()">分享</button>
+    <button onclick="inviteGroup()">邀请</button>
+    <button onclick="deleteGroup()">删除（本机列表）</button>`;
+  m.classList.remove('hidden');
+  const w=190,h=230;
+  m.style.left=Math.min(e.clientX,innerWidth-w)+'px';
+  m.style.top=Math.min(e.clientY,innerHeight-h)+'px';
+}
+async function patchGroup(body){
+  const r=await api('/api/groups/'+encodeURIComponent(menuGroupId)+'/update',{method:'POST',body:JSON.stringify(body)});
+  if(r.error)throw new Error(r.error);
+  await loadContacts();
+  if(activeGroupId===menuGroupId)await loadGroupMessages();
+}
+async function renameGroup(){
+  const g=((contactGroups&&contactGroups.groups)||[]).find(x=>x.id===menuGroupId)||{};
+  const v=await askText('群组改名',g.name||'', '只改本机显示名 (OrbitDB 里的原名不可改)');
+  if(!v||!v.trim())return;
+  try{await patchGroup({name:v.trim()});toast('已改名: '+v.trim());}catch(e){toast('改名失败: '+e.message);}
+}
+async function pinGroup(on){
+  try{await patchGroup({pinned:on});toast(on?'已置顶':'已取消置顶');}catch(e){toast('操作失败: '+e.message);}
+}
+async function fixGroupPing(){
+  const g=((contactGroups&&contactGroups.groups)||[]).find(x=>x.id===menuGroupId)||{};
+  const v=await askText('固定 ping 间隔（秒）',String(g.ping_secs||60),'5–86400 秒');
+  if(!v)return;
+  const secs=parseInt(v,10);
+  if(!(secs>=5&&secs<=86400)){toast('间隔要在 5–86400 秒之间');return;}
+  try{await patchGroup({ping:secs});toast(`已固定 ping = ${secs}s`);}catch(e){toast('设置失败: '+e.message);}
+}
+async function shareGroup(){
+  try{
+    const r=await api('/api/groups/'+encodeURIComponent(menuGroupId)+'/share',{method:'POST',body:JSON.stringify({scope:'group'})});
+    const link=r.link||r.url||'';
+    if(!link)throw new Error(r.error||'没有拿到链接');
+    await copyText(link);
+    toast('分享链接已复制');
+  }catch(e){toast('分享失败: '+e.message);}
+}
+async function inviteGroup(){
+  try{
+    const r=await api('/api/groups/'+encodeURIComponent(menuGroupId)+'/invite');
+    const link=r.link||'';
+    if(!link)throw new Error(r.error||'没有拿到邀请链接');
+    await copyText(link);
+    toast('邀请链接已复制 — 对方 POST /api/groups/join 即加入');
+  }catch(e){toast('邀请失败: '+e.message);}
+}
+async function deleteGroup(){
+  const g=((contactGroups&&contactGroups.groups)||[]).find(x=>x.id===menuGroupId)||{};
+  const ok=await askText('删除群组「'+(g.name||'')+'」','yes','输入 yes 确认：只从本机列表移除, 消息记录保留');
+  if((ok||'').trim().toLowerCase()!=='yes')return;
+  try{
+    await api('/api/groups/'+encodeURIComponent(menuGroupId)+'/delete',{method:'POST',body:'{}'});
+    if(activeGroupId===menuGroupId)closeGroup();
+    await loadContacts();
+    toast('已从本机列表删除');
+  }catch(e){toast('删除失败: '+e.message);}
+}
+
 function contactNameMap(){
   const m={};((contacts&&contacts.items)||[]).forEach(c=>{if(c&&c.did&&c.name)m[c.did]=String(c.name);});
   return m;
@@ -2640,7 +2988,8 @@ function renderContacts(){
   gl.innerHTML=groups.length?groups.map(g=>`
     <div class="item${g.id===activeGroupId?' active':''}" onclick="openGroup('${g.id}')">
       <div class="ava">👥</div>
-      <div class="txt"><b>${escapeHTML(groupLabel(g))}</b><small>${escapeHTML(aclTag(g.acl))}</small></div>
+      <div class="txt"><b>${g.pinned?'📌 ':''}${escapeHTML(groupLabel(g))}</b><small>${escapeHTML((g.intro||'').slice(0,28)||aclTag(g.acl))}</small></div>
+      <button class="dots" title="群组设置" onclick="event.stopPropagation();openGroupMenu(event,'${g.id}')">⋯</button>
     </div>`).join(''):'<div class="hint">(还没有群组 — 点「＋ 创建」或「加群」)</div>';
 }
 async function openFriend(did){
@@ -2890,6 +3239,13 @@ if($('topicCreate'))$('topicCreate').onclick=createTopic;
 function openTopic(id){ openGroup(id, topicNames[id]||id); }
 
 // ── 群聊 (主区): 真收发 (/api/groups/{id}/messages · /say, Ed25519 签名) + 4s 轮询 ──
+// 群页头部元信息: ACL/群主 + 警长任期 (警长来自服务端选举, 不是本地猜的)
+let groupMetaBase='';
+let groupSheriff='';
+let groupSheriffId='';
+function groupMetaText(){return [groupMetaBase,groupSheriff].filter(Boolean).join(' · ');}
+function fmtDay(ms){const d=new Date(ms),z=n=>String(n).padStart(2,'0');return (d.getMonth()+1)+'月'+d.getDate()+'日 '+z(d.getHours())+':'+z(d.getMinutes());}
+
 async function openGroup(id, fallbackName){
   activeGroupId=id;
   if(activeFriendDid) backToContacts();
@@ -2900,7 +3256,11 @@ async function openGroup(id, fallbackName){
   // 群组按名字识别: 标题只显示名字 (技术 id / orbit 地址只留在 title 提示里, 不进正文)
   $('groupName').textContent=groupLabel(g)||fallbackName||'群组';
   $('groupName').title=g.address?('orbit '+g.address):'';
-  $('groupMeta').textContent=[aclTag(g.acl),g.owner?('群主 '+shortDid(g.owner)):''].filter(Boolean).join(' · ');
+  groupMetaBase=[aclTag(g.acl),g.owner?('群主 '+shortDid(g.owner)):''].filter(Boolean).join(' · ');
+  groupSheriff='';
+  groupSheriffId='';
+  $('groupMeta').textContent=groupMetaText();
+  renderGroupChips();
   await loadGroupMessages();
   await loadGroupTopics();
   if(groupTimer)clearInterval(groupTimer);
@@ -2915,17 +3275,21 @@ function closeGroup(){
 async function loadGroupMessages(){
   if(!activeGroupId)return;
   try{
+    await syncState(); // 先把本机 agent 列表对齐, 再画芯片 (否则新建的智能体永远不出现)
     const j=await api('/api/groups/'+encodeURIComponent(activeGroupId)+'/messages');
+    if(Array.isArray(j.participants)){groupParticipants=new Set(j.participants);renderGroupChips();}
+    if($('groupIntro'))$('groupIntro').textContent=j.intro||'';
+    groupSheriffId=j.sheriff||'';
+    groupSheriff=j.sheriff?('🎖️ 警长 '+escapeHTML(j.sheriff_name||shortDid(j.sheriff))+(j.sheriff_term_ends_ms?(' · 任期至 '+fmtDay(j.sheriff_term_ends_ms)):'')):'';
+    renderGroupChips();
     renderGroupMessages(j.messages||[], j.thinking||[]);
     if(j.thinking&&j.thinking.length){
-      const base=$('groupMeta').dataset.base||$('groupMeta').textContent;
-      $('groupMeta').dataset.base=base;
       const who=j.thinking.map(t=>thinkingName(t)+(t.stage?'（'+t.stage+'）':'')).join('、');
-      $('groupMeta').textContent=base+' · '+who+' 正在想…';
+      $('groupMeta').textContent=groupMetaText()+' · '+who+' 正在想…';
     }else{
-      const base=$('groupMeta').dataset.base;
-      if(base){$('groupMeta').textContent=base;delete $('groupMeta').dataset.base;}
+      $('groupMeta').textContent=groupMetaText();
     }
+    $('groupMeta').title=j.sheriff_term_ends_ms?('警长任期至 '+new Date(j.sheriff_term_ends_ms).toLocaleString()):'';
   }catch(_){ /* 轮询失败静默, 下轮再试 */ }
 }
 function thinkingName(t){return typeof t==='string'?t:((t&&(t.name||t.agent_id))||'');}
@@ -2942,7 +3306,9 @@ function renderGroupMessages(msgs,thinking){
     const who=(a&&a.name)||shortDid(m.from||m.sender);
     const ava=a?`<img class="ravatar" src="${avatarURL(a.id,a.avatar)}" alt="">`:'<span class="ravatar sys">✦</span>';
     const kind=m.kind&&m.kind!=='message'?` · ${labels[m.kind]||m.kind}`:'';
-    const mine=(m.sender===me||m.from===me);
+    // 2026-10-30 (leo): 智能体的气泡在左, 人类(我)的在右 —— 判据是"谁说的", 不是 DID 有没有拼错
+    const fromAgent=!!(amap[m.from]||amap[m.sender]);
+    const mine=!fromAgent&&((me&&(m.sender===me||m.from===me))||m.sender==='me'||m.from==='me');
     return `<div class="gmsg${mine?' mine':''}">
       <div class="gmeta">${ava}<b>${escapeHTML(who)}</b>${kind}${m.signature?' · ✓':''}</div>
       <div class="gbody">${mdToHTML(String(m.content||''))}</div>
@@ -2992,8 +3358,17 @@ function setPanel(panel) {
     setDesktopModule(panel === "world" ? "world" : "chat");
   }
   if (panel === 'world' && activeGroupId) closeGroup(); // 世界面板与群聊面板互斥
-  if (panel === "world") { if (!worldLoaded) loadWorld(); if (!worldTimer) worldTimer = setInterval(loadWorld, 15000); }
-  else if (worldTimer) { clearInterval(worldTimer); worldTimer = null; }
+  if (panel === "world") {
+    if (!worldLoaded) loadWorld();
+    loadWorldThread();
+    if (!worldTimer) worldTimer = setInterval(loadWorld, 15000);
+    if (!worldThreadTimer) worldThreadTimer = setInterval(loadWorldThread, 3000);
+    renderWorldAt();
+  }
+  else {
+    if (worldThreadTimer) { clearInterval(worldThreadTimer); worldThreadTimer = null; }
+    if (worldTimer) { clearInterval(worldTimer); worldTimer = null; }
+  }
 }
 let worldTimer = null;
 $("worldTabBtn").addEventListener("click", () => {

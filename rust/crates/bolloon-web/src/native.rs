@@ -158,6 +158,30 @@ pub fn term_expired(elected_at_ms: i64, term_days: u32, now_ms: i64) -> bool {
     now_ms >= elected_at_ms + (term_days as i64) * 86_400_000
 }
 
+/// 本节点的群组设置覆盖 (group_id → 设置)。
+///
+/// OrbitDB 里的群名与内容是不可改的 (内容寻址 + 签名链), 所以「改名 / 置顶 / 简介」
+/// 只能是**本节点视图**上的覆盖 —— 不假装改了全网。删除同理: 只从本节点列表移除
+/// (`room_closed`), store 数据保留, 凭邀请链接还能重新加入。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct GroupOverride {
+    /// 本机显示名 (None = 用 OrbitDB 原名)
+    #[serde(default)]
+    pub name: Option<String>,
+    /// 置顶 (列表里排最前, 且不被自动排序挪动)
+    #[serde(default)]
+    pub pinned: bool,
+    /// 简介: 手动设过就固定; 没设过则由最近对话自动生成
+    #[serde(default)]
+    pub intro: Option<String>,
+    /// 简介是否人工设定 (true = 不再自动改写)
+    #[serde(default)]
+    pub intro_manual: bool,
+    /// 固定 ping 间隔 (秒): Some = 固定间隔, None = 自适应退避 (与智能体同一套语义)
+    #[serde(default)]
+    pub ping_secs: Option<u64>,
+}
+
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct NativeState {
     pub agents: Vec<AgentView>,
@@ -194,6 +218,9 @@ pub struct NativeState {
     /// 各群警长 (group_id → 当选智能体 id); 计分直选结果, 开页/发起交流时计算 (特质分本身不出行)
     #[serde(default)]
     pub sheriff_by_group: std::collections::HashMap<String, String>,
+    /// 群组设置覆盖: 改名 / 置顶 / 简介 (本节点视图; OrbitDB 内容本身不可改)
+    #[serde(default)]
+    pub group_overrides: std::collections::HashMap<String, GroupOverride>,
     // ── 世界模式 (对齐 TS routes-world: 意图 / 机会流 / 校准环 / 信箱) ──
     /// 意图标签 (世界按意图重打分)
     pub intents: Vec<String>,
@@ -203,6 +230,9 @@ pub struct NativeState {
     pub accepted: Vec<String>,
     /// 世界信箱 (外部智能体投递的卡片; 置顶)
     pub inbox: Vec<serde_json::Value>,
+    /// 世界对话线: 我说的 + 本机智能体回的 (世界模式发消息的落点)
+    #[serde(default)]
+    pub world_thread: Vec<serde_json::Value>,
     // ── 人类目录 (手机号/邮箱盲化 + 跨机查询/加好友) ──
     /// 盲化目录条目 (HMAC; 明文与 pepper 都不在这里)
     pub directory: Vec<bolloon_agent::directory::DirectoryEntry>,
@@ -1593,9 +1623,15 @@ pub async fn reply_with_model(
     .await
 }
 
-/// SSE 分块（阶段 / 正文 / 收尾）
+/// SSE 分块（真实想法 / 真实正文 / 收尾）
+///
+/// 2026-10-30 (leo: 「我说的动作和想法是 AI 真实的回复，不是硬编码」+「参考 forge 的流光面板」):
+/// 这里只搬运**模型真吐出来的字节** —— 思考模式下先 `Thought`(reasoning_content) 再 `Delta`(正文)。
+/// 不再有「第 N 轮 · 想下一步」「调用 read_file {...}」这种我们自己编的进度文案。
 pub enum StreamChunk {
-    Stage(String),
+    /// 思维链增量（模型真实的想法）
+    Thought(String),
+    /// 正文增量（模型真实的回答）
     Delta(String),
     Done { reply: String, stop: String },
 }
@@ -1605,13 +1641,13 @@ pub enum StreamChunk {
 /// 与 `reply_with_model` 的差异: 不再单次 `call_model`, 而是带 Harness 九步门控的工具循环 —
 /// 模型可反复调用 read_file/search/execute 等工具, 无工具时自问自答反思, 收尾前用目标 review 对齐用户意图。
 ///
-/// `stages` 为 None 时不外发阶段事件（非流式调用）；`cancel` 置位即中止（工具门 + 轮次边界双检）。
+/// `sink` 为 None 时不外发增量（非流式调用）；`cancel` 置位即中止（工具门 + 轮次边界双检）。
 pub async fn reply_with_agent_stages(
     st: &AppState,
     text: &str,
     agent: Option<&AgentView>,
     session_id: &str,
-    stages: Option<tokio::sync::mpsc::Sender<StreamChunk>>,
+    sink: Option<tokio::sync::mpsc::Sender<StreamChunk>>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<String, String> {
     let system_prompt = build_web_system(st, text, agent, "").await;
@@ -1688,6 +1724,7 @@ pub async fn reply_with_agent_stages(
     let strategy = Arc::new(WebStrategy {
         llm: llm.clone(),
         cancel: cancel.clone(),
+        sink: sink.clone(),
     });
     let reviewer = Arc::new(LlmGoalReviewer::new(llm.clone(), provider_id.clone(), model.clone()));
     let loop_ = KernelLoop::new(strategy, harness)
@@ -1721,21 +1758,12 @@ pub async fn reply_with_agent_stages(
             model.clone(),
         )
     });
-    // 观察者链: 阶段事件(前端流光) + 经济计量(旁路) 同时收同一份事实
-    let sobs = StageObserver {
-        st,
-        sid: session_id.to_string(),
-        tx: stages.clone(),
-    };
-    let chain = match econ_obs.as_ref() {
-        Some(e) => bolloon_agent::kernel_loop::ObserverChain::new(vec![
-            &sobs as &dyn bolloon_agent::kernel_loop::LoopObserver,
-            e as &dyn bolloon_agent::kernel_loop::LoopObserver,
-        ]),
-        None => bolloon_agent::kernel_loop::ObserverChain::new(vec![
-            &sobs as &dyn bolloon_agent::kernel_loop::LoopObserver,
-        ]),
-    };
+    // 观察者链: 只挂经济计量旁路。界面上的"想法/动作"由模型真实的流式增量给出,
+    // 不再从工具回调拼进度文案 (那是把我们的措辞冒充成 AI 的话)。
+    let chain = bolloon_agent::kernel_loop::ObserverChain::new(match econ_obs.as_ref() {
+        Some(e) => vec![e as &dyn bolloon_agent::kernel_loop::LoopObserver],
+        None => vec![],
+    });
     // 取消: 前端「停止」置位 ⇒ 工具门立刻拒 + 策略在轮次边界不再发起调用。
     // **不 select-drop**: 丢掉正在进行的 generate future 会漏掉并发闸槽位 (整个进程后来句句卡死)。
     let run = match loop_
@@ -1809,6 +1837,37 @@ struct WebStrategy {
     llm: Arc<LlmRuntime>,
     /// 用户中止标志: 置位后**不再发起下一次**模型调用 (在途那次不打断, 不丢并发槽)
     cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// 真实增量出口 (想法/正文): None = 非流式调用方, 不推
+    sink: Option<tokio::sync::mpsc::Sender<StreamChunk>>,
+}
+
+impl WebStrategy {
+    /// 模型一次调用: 有出口就走真流式(想法+正文实时推), 没有就一次性拿全
+    async fn one_call(
+        &self,
+        provider_id: &str,
+        params: &GenerateParams,
+    ) -> Result<GenerateResult, bolloon_llm::LlmError> {
+        match &self.sink {
+            Some(tx) => {
+                let t = tx.clone();
+                let d = tx.clone();
+                self.llm
+                    .generate_streaming_full(
+                        provider_id,
+                        params.clone(),
+                        move |piece| {
+                            let _ = t.try_send(StreamChunk::Thought(piece.to_string()));
+                        },
+                        move |piece| {
+                            let _ = d.try_send(StreamChunk::Delta(piece.to_string()));
+                        },
+                    )
+                    .await
+            }
+            None => self.llm.generate(provider_id, params.clone()).await,
+        }
+    }
 }
 
 #[async_trait]
@@ -1829,7 +1888,7 @@ impl LoopStrategy for WebStrategy {
         // 3 次都失败才把错误当回答返回 —— 不要因为一次抖动就掐断整条回复。
         let mut last = String::new();
         for attempt in 0..3u32 {
-            match self.llm.generate(provider_id, params.clone()).await {
+            match self.one_call(provider_id, &params).await {
                 Ok(r) => return Ok(r),
                 Err(e) => {
                     last = e.to_string();
@@ -2082,60 +2141,6 @@ impl ChatRuns {
 
 /// 循环观察者 → 阶段事件（**只读**循环事实，不改执行语义）。
 /// 前端拿到的就是这里发出的「哪一轮 / 调了什么工具 / 工具成没成」。
-struct StageObserver<'a> {
-    st: &'a AppState,
-    sid: String,
-    tx: Option<tokio::sync::mpsc::Sender<StreamChunk>>,
-}
-
-impl StageObserver<'_> {
-    fn emit(&self, label: String) {
-        self.st.chat_runs.stage(&self.sid, &label);
-        if let Some(tx) = &self.tx {
-            let _ = tx.try_send(StreamChunk::Stage(label));
-        }
-    }
-}
-
-#[async_trait]
-impl bolloon_agent::kernel_loop::LoopObserver for StageObserver<'_> {
-    async fn on_turn_start(&self, turn: u32, max_steps: u32) {
-        self.emit(format!("第 {turn}/{max_steps} 轮 · 想下一步"));
-    }
-    async fn on_tool_begin(&self, _turn: u32, call: &bolloon_agent::ToolCall) {
-        let arg = one_line(&call.arguments.to_string(), 60);
-        self.emit(format!("调用 {} {}", call.name, arg));
-    }
-    async fn on_tool_result(
-        &self,
-        _turn: u32,
-        call: &bolloon_agent::ToolCall,
-        outcome: &bolloon_agent::GateOutcome,
-    ) {
-        match &outcome.denied {
-            Some(d) => self.emit(format!("{} 被拦: {}", call.name, one_line(&d.reason, 40))),
-            None => {
-                let ok = outcome.result.as_ref().map(|r| r.ok).unwrap_or(false);
-                self.emit(format!(
-                    "{} {} · {}ms",
-                    call.name,
-                    if ok { "完成" } else { "失败" },
-                    outcome.elapsed_ms
-                ));
-            }
-        }
-    }
-}
-
-/// 把一段文本压成一行（阶段行不换行、不刷屏）
-fn one_line(s: &str, max: usize) -> String {
-    let flat: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        flat
-    } else {
-        format!("{}…", flat.chars().take(max).collect::<String>())
-    }
-}
 
 /// 某个会话的历史（**按会话取**，不是全局一份）——
 /// 不同智能体的会话因此可以并行跑，历史不串味。
@@ -2237,8 +2242,9 @@ pub async fn chat_stream(
 
     let (tx, rx) = tokio::sync::mpsc::channel::<StreamChunk>(128);
     let cancel = st.chat_runs.begin(&sid);
-    // 第一字节立刻走: 前端马上能显示「已收到，开始执行」的流光行
-    let _ = tx.try_send(StreamChunk::Stage("已收到，开始执行".to_string()));
+    // 第一个字节仍然立刻走 (前端靠它把气泡点亮), 但内容是**模型随后吐的思维链/正文**,
+    // 不再是我们编的"已收到，开始执行"。空 content 的 `delta` 就是"已连上"的信号。
+    let _ = tx.try_send(StreamChunk::Delta(String::new()));
 
     let st2 = st.clone();
     let sid2 = sid.clone();
@@ -2271,15 +2277,8 @@ pub async fn chat_stream(
             .await;
         }
         st2.chat_runs.finish(&sid2, &stop, &reply);
-        // 正文分段吐 (前端照旧按 delta 累加)
-        let chars: Vec<char> = reply.chars().collect();
-        for chunk in chars.chunks(24) {
-            let piece: String = chunk.iter().collect();
-            if tx.send(StreamChunk::Delta(piece)).await.is_err() {
-                return; // 前端断开: 不再刷
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(8)).await;
-        }
+        // 正文已经**真流式**吐过了 (模型每吐一段就推一段), 这里只做收尾:
+        // `done` 带最终全文, 前端以它为准 (重试/补齐时不会重复也不残缺)。
         let _ = tx
             .send(StreamChunk::Done { reply: reply.clone(), stop })
             .await;
@@ -2288,8 +2287,8 @@ pub async fn chat_stream(
     let stream = futures::stream::unfold(rx, |mut rx| async move {
         let chunk = rx.recv().await?;
         let ev = match chunk {
-            StreamChunk::Stage(t) => Event::default()
-                .event("stage")
+            StreamChunk::Thought(t) => Event::default()
+                .event("thought")
                 .data(serde_json::json!({ "text": t }).to_string()),
             StreamChunk::Delta(t) => Event::default()
                 .event("delta")
@@ -3042,31 +3041,115 @@ pub async fn update_apply(State(st): State<AppState>) -> Json<serde_json::Value>
             "message": "安装中 — 不重复下载替换",
         }));
     }
-    struct Guard<'a>(&'a std::sync::atomic::AtomicBool);
-    impl<'a> Drop for Guard<'a> {
-        fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
-    }
-    let _g = Guard(&st.updating);
+    // 注意: 这里**不用** RAII 守卫 —— 后台安装线程还在跑时 handler 已经返回,
+    // 守卫会在返回瞬间把标志清掉 ⇒ 第二次点击会并发跑第二条安装流。
+    // 手动路径各自释放; 安装路径由那个后台任务在结束/失败时释放。
 
     let release_url = "https://github.com/logos-42/bolloon/releases/latest";
-    let is_desktop = std::env::current_exe()
+    // 一条龙: 跑在 .app 里 ⇒ 服务端自己下载发布包 → 解包 → 原子替换 → exec 原地重启。
+    // (网页端没有 Tauri updater 兜底, 只给链接等于让用户手工干; leo 2026-10-30 明确要求)
+    let exe = std::env::current_exe().ok();
+    let bundle = exe.as_deref().and_then(crate::updater::bundle_of);
+    if let Some(bundle) = bundle {
+        let st2 = st.clone();
+        tokio::spawn(async move {
+            // 清单里的平台资产地址 (镜像链逐个试)
+            let url = tokio::task::spawn_blocking(move || {
+                fetch_first("latest.json", |u| {
+                    let body: serde_json::Value = ureq::get(u)
+                        .timeout(std::time::Duration::from_secs(8))
+                        .set("User-Agent", "bolloon-updater")
+                        .call()
+                        .map_err(|e| e.to_string())?
+                        .into_json()
+                        .map_err(|e| e.to_string())?;
+                    let key = crate::updater::platform_key();
+                    let base = u.trim_end_matches("latest.json");
+                    body["platforms"][&key]["url"]
+                        .as_str()
+                        .map(|s| {
+                            // 清单里若是相对名, 拼回同源目录
+                            if s.starts_with("http") {
+                                s.to_string()
+                            } else {
+                                format!("{base}{s}")
+                            }
+                        })
+                        .ok_or_else(|| format!("清单里没有 {} 的资产", key))
+                })
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("取清单失败: {e}")));
+            let url = match url {
+                Ok(u) => u,
+                Err(e) => {
+                    tracing::warn!(error = %e, "更新: 拿不到平台资产地址");
+                    st2.updating.store(false, Ordering::SeqCst);
+                    return;
+                }
+            };
+            let target = bundle.clone();
+            let done = tokio::task::spawn_blocking(move || {
+                crate::updater::install_from_url(&url, &target)
+            })
+            .await;
+            match done {
+                Ok(Ok(new_bundle)) => {
+                    st2.updating.store(false, Ordering::SeqCst);
+                    let bin = new_bundle.join("Contents/MacOS");
+                    // 包里的主可执行文件 (Bolloon / bolloon-tauri …) 就地重启
+                    let cand = std::fs::read_dir(&bin).ok().and_then(|rd| {
+                        rd.filter_map(|e| e.ok())
+                            .map(|e| e.path())
+                            .find(|p| p.is_file())
+                    });
+                    match cand {
+                        Some(p) => {
+                            tracing::info!(exe = %p.display(), "新版本就位 — 原地重启");
+                            let _ = crate::updater::exec_restart(&p);
+                        }
+                        None => tracing::warn!("新版本就位, 但包内找不到可执行文件 — 请手动重开"),
+                    }
+                }
+                ok => {
+                    tracing::warn!(?ok, "更新: 安装失败 (已回滚)");
+                    st2.updating.store(false, Ordering::SeqCst);
+                }
+            }
+        });
+        return Json(serde_json::json!({
+            "installing": true,
+            "message": "正在下载并安装新版本，装好会自动重启",
+        }));
+    }
+    let is_desktop = exe.as_deref()
         .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS"))
         .unwrap_or(false);
     if is_desktop {
         match open_in_browser(release_url) {
-            Ok(()) => return Json(serde_json::json!({
+            Ok(()) => {
+                st.updating.store(false, Ordering::SeqCst);
+                return Json(serde_json::json!({
                 "bootstrap": true,
                 "url": release_url,
                 "message": "已打开下载页, 请安装新版本以启用自动更新",
-            })),
-            Err(e) => return Json(serde_json::json!({
-                "error": format!("无法打开下载页: {e}"),
-                "url": release_url,
-            })),
+                }));
+            }
+            Err(e) => {
+                st.updating.store(false, Ordering::SeqCst);
+                return Json(serde_json::json!({
+                    "error": format!("无法打开下载页: {e}"),
+                    "url": release_url,
+                }));
+            }
         }
     }
+    st.updating.store(false, Ordering::SeqCst);
     Json(serde_json::json!({
         "url": release_url,
+        // 裸二进制 (target/debug/… 这类非发行产物): 不替换自己, 只给地址;
+        // 打不开就复制链接说清楚 —— 绝不说"已打开"而实际什么都没发生 (2026-10-30 leo 实报)
+        "manual": true,
         "message": "请前往发布页手动下载新版本",
     }))
 }
@@ -3098,86 +3181,6 @@ fn open_in_browser(url: &str) -> std::io::Result<()> {
 }
 
 // ────────────────────────── 世界模式 (对齐 TS routes-world.ts) ──────────────────────────
-
-/// 世界种子机会 (演示流; 真实机会由 world-watcher / P2P 投递注入)
-struct SeedOpp {
-    title: String,
-    summary: String,
-    tags: Vec<String>,
-    url: Option<String>,
-    kind: &'static str,
-    /// 卡片负载 (有 → UI 渲染封面区; 封面 `kind` 决定卡片高度档位)
-    card: Option<serde_json::Value>,
-}
-
-fn seed_world() -> Vec<SeedOpp> {
-    vec![
-        // ① 无封面 → 矮卡
-        SeedOpp {
-            title: "世界流示例".into(),
-            summary: "世界持续流入 — 没有意图也保持流动".into(),
-            tags: vec!["world".into()],
-            url: None,
-            kind: "world",
-            card: None,
-        },
-        // ② 视频封面 → 高卡 (16:9)
-        SeedOpp {
-            title: "合作招募 · 可控核聚变".into(),
-            summary: "交叉验证口径, 需要两拨人; 附点火实录与装置图".into(),
-            tags: vec!["聚变".into(), "合作".into()],
-            url: Some("https://example.com/1".into()),
-            kind: "public",
-            card: Some(serde_json::json!({
-                "title": "可控核聚变 · 点火实录",
-                "summary": "装置点火 30 秒, 附装置剖面图",
-                "cover": { "url": "https://example.com/cover/fusion.mp4", "kind": "video" },
-                "media": [
-                    { "kind": "video", "url": "https://example.com/media/fusion.mp4", "mime": "video/mp4", "name": "点火实录.mp4" },
-                    { "kind": "image", "url": "https://example.com/media/device.png", "mime": "image/png", "name": "装置剖面图.png" }
-                ],
-                "provider": { "did": "did:pi:seed-fusion", "name": "聚变小组" },
-                "verification": "verified"
-            })),
-        },
-        // ③ 图片封面 → 中卡 (4:3)
-        SeedOpp {
-            title: "论文共读 · 等离子体约束".into(),
-            summary: "每周一次线上共读, 本次读约束位形综述".into(),
-            tags: vec!["等离子体".into(), "论文".into()],
-            url: Some("https://example.com/2".into()),
-            kind: "public",
-            card: Some(serde_json::json!({
-                "title": "等离子体约束 · 综述封面",
-                "summary": "综述首页扫描件",
-                "cover": { "url": "https://example.com/cover/plasma.png", "kind": "image" },
-                "media": [
-                    { "kind": "image", "url": "https://example.com/cover/plasma.png", "mime": "image/png", "name": "综述封面.png" },
-                    { "kind": "audio", "url": "https://example.com/media/reading.mp3", "mime": "audio/mpeg", "name": "上期录音.mp3" }
-                ],
-                "provider": { "did": "did:pi:seed-plasma", "name": "共读小组" },
-                "verification": "verified"
-            })),
-        },
-        // ④ 无封面但有媒体 → 矮卡 + 内联媒体
-        SeedOpp {
-            title: "工具共享 · efficode 规范包".into(),
-            summary: "付费信息, 0.01 USDC".into(),
-            tags: vec!["工具".into(), "规范".into()],
-            url: None,
-            kind: "card",
-            card: Some(serde_json::json!({
-                "title": "efficode 规范包",
-                "summary": "纯文本交付, 无封面",
-                "media": [
-                    { "kind": "text", "url": "https://example.com/media/spec.md", "mime": "text/markdown", "name": "规范.md" }
-                ],
-                "provider": { "did": "did:pi:seed-efficode", "name": "efficode" },
-                "verification": "unverified"
-            })),
-        },
-    ]
-}
 
 /// GET /api/intents → 意图列表
 pub async fn list_intents(State(st): State<AppState>) -> Json<serde_json::Value> {
@@ -3227,31 +3230,93 @@ pub async fn list_opportunities(
         .unwrap_or_default();
     let fs = st.forge.lock().await;
     let use_tags = if tags.is_empty() { fs.intents.clone() } else { tags };
-    let mut items: Vec<serde_json::Value> = fs.inbox.clone(); // 信箱置顶
-    for (i, o) in seed_world().into_iter().enumerate() {
-        let id = format!("opp-{i:03}");
-        if fs.ignored.contains(&id) {
-            continue; // 校准环: 被忽略的同源不再流入
+    // 2026-10-30 (leo: 世界里都是 mock 卡片): 演示种子整批删除。
+    // 世界流只装**真实流入**: ① 验签通过的世界卡片 ② 本机智能体在世界里的回应 (带出处/时间)。
+    // 没有流入就如实空着, 并说清"怎么才会有"——不用编造的卡片撑场面。
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    for (i, item) in fs.inbox.iter().enumerate() {
+        let title = item["title"].as_str().unwrap_or("").trim().to_string();
+        let summary = item["summary"].as_str().unwrap_or("").trim().to_string();
+        if title.is_empty() && summary.is_empty() {
+            continue;
         }
-        // 打分参数: (机会标签, 意图标签) —— 原来两参写反, 导致无意图时也落 no-match 0.3
-        // (与 world.rs 文档口径 "无意图 = 0.5 world, 永远不空流" 不符), 这里改正。
-        let (score, reason) = bolloon_agent::world::score_opportunity(&o.tags, &use_tags);
-        let mut item = serde_json::json!({
-            "id": id, "title": o.title, "summary": o.summary, "tags": o.tags,
-            "score": score, "reason": reason, "url": o.url, "kind": o.kind,
+        let id = item["id"]
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("inbox-{i:03}"));
+        if fs.ignored.contains(&id) {
+            continue; // 校准环: 忽略过的同一条不再流入
+        }
+        let tags: Vec<String> = tokenize_for_score(&format!("{title} {summary}"))
+            .into_iter()
+            .take(6)
+            .collect();
+        let (score, reason) = bolloon_agent::world::score_opportunity(&tags, &use_tags);
+        let mut obj = serde_json::json!({
+            "id": id,
+            "title": title,
+            "summary": summary,
+            "tags": tags,
+            "score": score,
+            "reason": reason,
+            "url": item.get("url").cloned().unwrap_or(serde_json::Value::Null),
+            "kind": item.get("kind").and_then(|k| k.as_str()).unwrap_or("card"),
+            "source": item.get("from").and_then(|f| f.as_str()).unwrap_or("world-card"),
+            "verification": item.get("verification").cloned().unwrap_or(serde_json::json!("unverified")),
+            "ts": item.get("ts").cloned().unwrap_or(serde_json::Value::Null),
             "accepted": fs.accepted.contains(&id),
         });
-        if let Some(card) = o.card {
-            item["card"] = card; // UI 据此渲染封面区 + 高度档位
+        if let Some(card) = item.get("card") {
+            obj["card"] = card.clone(); // UI 据此渲染封面区 + 高度档位
         }
-        items.push(item);
+        items.push(obj);
     }
     items.sort_by(|a, b| {
         let sa = a["score"].as_f64().unwrap_or(0.0);
         let sb = b["score"].as_f64().unwrap_or(0.0);
         sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
     });
-    Json(serde_json::json!({ "opportunities": items, "intent_tags": use_tags }))
+    let note = if items.is_empty() {
+        "此刻没有真实流入：在世界里说一句话，本机智能体会回应并生成卡片；外部节点投递需 POST /api/world/inbox（带签名才收录）"
+    } else {
+        ""
+    };
+    Json(serde_json::json!({ "opportunities": items, "intent_tags": use_tags, "note": note }))
+}
+
+/// 打分用的标签: 中文 1–3 字滑窗 + 英文/数字词 (只用于把卡片文本喂给意图打分)
+fn tokenize_for_score(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut cjk: Vec<char> = vec![];
+    for tok in text.split(|c: char| c.is_whitespace() || (!c.is_alphanumeric())) {
+        let mut word = String::new();
+        for ch in tok.chars() {
+            if ch.is_ascii_alphanumeric() {
+                word.push(ch);
+            } else if ch.is_alphabetic() {
+                cjk.push(ch);
+            }
+        }
+        if !word.is_empty() {
+            out.push(word);
+        }
+        for w in 1..=3usize {
+            let n = cjk.len();
+            for i in 0..n {
+                if i + w > n {
+                    break;
+                }
+                let t: String = cjk[i..i + w].iter().collect();
+                if !out.iter().any(|x| x == &t) {
+                    out.push(t);
+                }
+            }
+        }
+        cjk.clear();
+    }
+    out.retain(|t| !t.is_empty());
+    out.truncate(24);
+    out
 }
 
 /// POST /api/opportunities/{id}/ignore → 校准环 (忽略后同源不再流入)

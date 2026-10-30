@@ -326,7 +326,7 @@ pub fn spawn_reports(
             if !st.room_bus.begin(&gid, &agent.id) {
                 return;
             }
-            st.room_bus.set_stage(&gid, &agent.id, "准备上下文");
+            st.room_bus.set_stage(&gid, &agent.id, "想一想");
             let text = match agent_turn(&st, &gid, &agent, &trigger, &intent_id).await {
                 Ok(t) if !t.trim().is_empty() => t.trim().to_string(),
                 Ok(_) => format!("（{} 这一轮没有产出内容）", agent.name),
