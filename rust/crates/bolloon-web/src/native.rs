@@ -5384,7 +5384,20 @@ pub async fn dream_run(
         &mut skills,
         domain,
     );
-    let value = serde_json::to_value(&report).unwrap_or_default();
+    let mut value = serde_json::to_value(&report).unwrap_or_default();
+    // 做梦期更新**判断力引擎**: 兴趣原型衰减 → 剪掉过期/负权重 → 合并相近 (向量余弦 >0.92)
+    // 这是 leo 定的节奏: 推荐引擎的重活不在请求路径上做, 做梦时统一整理。
+    let (kept, dropped, merged) = {
+        let mut fs = st.forge.lock().await;
+        let now = now_ms() as i64;
+        let out = fs.interests.dream_consolidate(now, 1.0);
+        fs.save(&data_dir());
+        out
+    };
+    value["interests"] = serde_json::json!({
+        "kept": kept, "dropped": dropped, "merged": merged,
+        "note": "做梦期整理: 衰减 + 剪枝 + 合并相近原型 (向量余弦>0.92)",
+    });
     // 落盘上次报告
     {
         let mut fs = st.forge.lock().await;
