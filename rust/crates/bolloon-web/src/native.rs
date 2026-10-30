@@ -233,6 +233,12 @@ pub struct NativeState {
     /// 世界对话线: 我说的 + 本机智能体回的 (世界模式发消息的落点)
     #[serde(default)]
     pub world_thread: Vec<serde_json::Value>,
+    /// 最近点开过的卡片 id (侧栏"最近看过的"排序依据; 只记 id, 不复制卡片内容)
+    #[serde(default)]
+    pub world_opened: Vec<String>,
+    /// 卡片反馈票: card_id → (赞, 踩)。推荐流拿它排序 (拉踩直接改变推荐顺序)
+    #[serde(default)]
+    pub world_votes: std::collections::HashMap<String, (i64, i64)>,
     // ── 人类目录 (手机号/邮箱盲化 + 跨机查询/加好友) ──
     /// 盲化目录条目 (HMAC; 明文与 pepper 都不在这里)
     pub directory: Vec<bolloon_agent::directory::DirectoryEntry>,
@@ -3252,6 +3258,15 @@ pub async fn list_opportunities(
             .take(6)
             .collect();
         let (score, reason) = bolloon_agent::world::score_opportunity(&tags, &use_tags);
+        let (up, down) = fs.world_votes.get(&id).copied().unwrap_or((0, 0));
+        let opened = fs.world_opened.iter().any(|o| o == &id);
+        let ts_ms = item.get("ts").and_then(|t| t.as_i64()).unwrap_or(0);
+        let age_h = if ts_ms > 0 {
+            ((chrono::Utc::now().timestamp_millis() - ts_ms).max(0) as f64) / 3_600_000.0
+        } else {
+            RankWeights::HALF_LIFE_H // 没时间戳 ⇒ 按"半天旧"处理, 不假装最新
+        };
+        let (rank, why) = rank_card(score, opened, up, down, age_h);
         let mut obj = serde_json::json!({
             "id": id,
             "title": title,
@@ -3265,16 +3280,22 @@ pub async fn list_opportunities(
             "verification": item.get("verification").cloned().unwrap_or(serde_json::json!("unverified")),
             "ts": item.get("ts").cloned().unwrap_or(serde_json::Value::Null),
             "accepted": fs.accepted.contains(&id),
+            "opened": opened,
+            "up": up,
+            "down": down,
+            "rank": rank,
+            "why": why,
         });
         if let Some(card) = item.get("card") {
             obj["card"] = card.clone(); // UI 据此渲染封面区 + 高度档位
         }
         items.push(obj);
     }
+    // 推荐流: 按推荐分降序 (意图 + 看过 + 赞踩 + 新鲜度, 权重见 RankWeights)
     items.sort_by(|a, b| {
-        let sa = a["score"].as_f64().unwrap_or(0.0);
-        let sb = b["score"].as_f64().unwrap_or(0.0);
-        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        let ra = a["rank"].as_f64().unwrap_or(0.0);
+        let rb = b["rank"].as_f64().unwrap_or(0.0);
+        rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
     });
     let note = if items.is_empty() {
         "此刻没有真实流入：在世界里说一句话，本机智能体会回应并生成卡片；外部节点投递需 POST /api/world/inbox（带签名才收录）"
@@ -3282,6 +3303,61 @@ pub async fn list_opportunities(
         ""
     };
     Json(serde_json::json!({ "opportunities": items, "intent_tags": use_tags, "note": note }))
+}
+
+/// 世界推荐流排序参数 (改权重就改这一处, 面板上的 `why` 会跟着说清楚)
+pub struct RankWeights;
+impl RankWeights {
+    pub const INTENT: f64 = 0.50;
+    pub const OPENED: f64 = 0.18;
+    pub const VOTE: f64 = 0.22;
+    pub const RECENCY: f64 = 0.10;
+    /// 新鲜度半衰期 (小时): 越旧贡献越低, 但不归零
+    pub const HALF_LIFE_H: f64 = 72.0;
+}
+
+/// 一条卡片的推荐分 (**纯函数**: 同样的输入永远同样的分, 便于测与解释)
+///
+/// - `intent_score`  : `score_opportunity` 给的意图匹配分 (0..1)
+/// - `opened`        : 我点开过 (看过的东西要能再找回来)
+/// - `up` / `down`   : 我赞过/踩过几次 (拉踩直接改序)
+/// - `age_hours`     : 卡片年龄 (毫秒时间戳推出来)
+///
+/// 返回 (总分, 人话理由)。理由只讲实际起作用的项, 不给假解释。
+pub fn rank_card(
+    intent_score: f64,
+    opened: bool,
+    up: i64,
+    down: i64,
+    age_hours: f64,
+) -> (f64, String) {
+    let vote = (up - down) as f64 / (1.0 + (up + down) as f64); // 收敛在 (-1,1), 刷量不再线性加分
+    let recency = 0.5f64.powf(age_hours.max(0.0) / RankWeights::HALF_LIFE_H);
+    let total = RankWeights::INTENT * intent_score
+        + if opened { RankWeights::OPENED } else { 0.0 }
+        + RankWeights::VOTE * vote
+        + RankWeights::RECENCY * recency;
+    let mut why: Vec<String> = vec![];
+    if intent_score > 0.5 {
+        why.push("命中意图".into());
+    }
+    if opened {
+        why.push("看过".into());
+    }
+    if up > down {
+        why.push("你赞过".into());
+    } else if down > up {
+        why.push("你踩过".into());
+    }
+    if recency > 0.8 {
+        why.push("很新".into());
+    } else if recency < 0.2 {
+        why.push("偏旧".into());
+    }
+    if why.is_empty() {
+        why.push("默认流入".into());
+    }
+    (total, why.join(" · "))
 }
 
 /// 打分用的标签: 中文 1–3 字滑窗 + 英文/数字词 (只用于把卡片文本喂给意图打分)
@@ -3317,6 +3393,47 @@ fn tokenize_for_score(text: &str) -> Vec<String> {
     out.retain(|t| !t.is_empty());
     out.truncate(24);
     out
+}
+
+/// POST /api/world/opened {id} → 记一条"最近点开过" (侧栏据此排序)
+pub async fn mark_world_opened(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let id = req["id"].as_str().unwrap_or("").to_string();
+    if id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 id" }));
+    }
+    let mut fs = st.forge.lock().await;
+    fs.world_opened.retain(|o| o != &id);
+    fs.world_opened.insert(0, id.clone()); // 最近的在最前
+    if fs.world_opened.len() > 50 {
+        fs.world_opened.truncate(50);
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true, "id": id }))
+}
+
+/// POST /api/world/vote {id, dir: "up"|"down"} → 拉/踩 (直接改推荐流顺序)
+pub async fn vote_world_card(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let id = req["id"].as_str().unwrap_or("").to_string();
+    let dir = req["dir"].as_str().unwrap_or("").to_string();
+    if id.is_empty() || (dir != "up" && dir != "down") {
+        return Json(serde_json::json!({ "ok": false, "error": "需要 id + dir(up|down)" }));
+    }
+    let mut fs = st.forge.lock().await;
+    let e = fs.world_votes.entry(id.clone()).or_insert((0, 0));
+    if dir == "up" {
+        e.0 += 1;
+    } else {
+        e.1 += 1;
+    }
+    let votes = *e;
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true, "id": id, "up": votes.0, "down": votes.1 }))
 }
 
 /// POST /api/opportunities/{id}/ignore → 校准环 (忽略后同源不再流入)
@@ -5835,6 +5952,26 @@ mod tests {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok();
         assert!(retry);
+    }
+
+    /// 推荐流: 拉踩/看过/新鲜度都必须真的改序 (纯函数, 好测也好解释)
+    #[test]
+    fn rank_card_follows_votes_and_recency() {
+        let (base, why0) = rank_card(0.0, false, 0, 0, 72.0);
+        let (opened, why1) = rank_card(0.0, true, 0, 0, 72.0);
+        assert!(opened > base, "看过的要往前: {opened} > {base} ({why1})");
+        let (liked, why2) = rank_card(0.0, false, 3, 0, 72.0);
+        assert!(liked > base, "赞过的要往前: {liked} > {base} ({why2})");
+        let (hated, why3) = rank_card(0.0, false, 0, 3, 72.0);
+        assert!(hated < base, "踩过的要往后: {hated} < {base} ({why3})");
+        let (fresh, _) = rank_card(0.0, false, 0, 0, 0.0);
+        let (old, _) = rank_card(0.0, false, 0, 0, 24.0 * 30.0);
+        assert!(fresh > old, "新的要旧的前面");
+        // 意图匹配是主项: 0.5 权重
+        let (matched, why) = rank_card(1.0, false, 0, 0, 72.0);
+        assert!(matched > base + 0.4, "意图命中必须显著抬分");
+        assert!(why.contains("命中意图"));
+        assert!(!why0.is_empty(), "每条都要给一句人话理由");
     }
 
     // ── 商议接线：房间消息的决策 + 命令门禁（不构造 AppState，直接驱动 decide_room_message）──

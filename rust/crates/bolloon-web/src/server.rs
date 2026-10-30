@@ -560,6 +560,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/world/say", post(world_say))
         .route("/api/world/thread", get(world_thread))
         .route("/api/world/intents", get(world_intents))
+        .route("/api/world/opened", post(crate::native::mark_world_opened))
+        .route("/api/world/vote", post(crate::native::vote_world_card))
         // x402 付费信息 (402 报价 → 直付判定 → 交付)
         .route("/api/x402/info/{id}", get(x402_info_quote))
         .route("/api/x402/info/{id}/payment", post(x402_info_payment))

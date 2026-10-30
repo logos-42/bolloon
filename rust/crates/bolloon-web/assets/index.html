@@ -171,6 +171,12 @@
   .world-at button.ag::before{content:"🤖 "}
   .world-at-picked{display:flex;flex-wrap:wrap;gap:5px;font-size:11px;color:var(--muted)}
   .world-at-picked:empty{display:none}
+  #worldCardList .item{cursor:pointer}
+  #worldCardList .item .txt small{color:var(--muted)}
+  .wcard-vote{display:flex;gap:6px;align-items:center;margin-top:2px}
+  .wcard-vote button{font-size:11px;padding:2px 7px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer}
+  .wcard-vote button.up:hover{color:var(--accent);border-color:var(--accent)}
+  .wcard-vote .why{font-size:10.5px;color:var(--muted);margin-left:auto}
   /* AI 回完就折到左下角: 主体只留卡片, 想看过程点开 */
   .world-thread .wmsg{display:none}
   .world-thread.open .wmsg{display:block}
@@ -710,7 +716,10 @@
       <div id="agents"></div>
       <div class="sec" id="secSessions">会话</div>
       <div id="sessions"></div>
-      <div id="worldSideSlot"></div>
+      <div id="worldSideSlot">
+        <div class="sec contacts-sec-head">世界卡片<span class="sec-acts"><span id="worldSideNote" style="font-size:10.5px;color:var(--muted)"></span></span></div>
+        <div id="worldCardList"></div>
+      </div>
       <!-- 2026-10-27: 通讯录模块 (第一栏 📒) — 好友 / 好友请求 / 群聊; 点好友钻取外部智能体
            布局与默认第二栏同款 (.sec + .item), 逻辑关系是「外部好友 × 外部智能体」 -->
       <div id="contactsSlot">
@@ -2580,6 +2589,57 @@ function cardMedia(media) {
 }
 
 let worldLoaded = false;
+async function voteWorldCard(id,dir){
+  try{
+    const r=await api('/api/world/vote',{method:'POST',body:JSON.stringify({id,dir})});
+    if(r.error)throw new Error(r.error);
+    toast(dir==='up'?'已赞 — 推荐流会把它往前':'已踩 — 推荐流会把它往后');
+    await loadWorld(); // 立刻重排
+  }catch(e){toast('操作失败: '+e.message);}
+}
+async function openWorldCard(id){
+  try{await api('/api/world/opened',{method:'POST',body:JSON.stringify({id})});}catch(_){}
+  await loadWorld();
+  const el=[...document.querySelectorAll('#worldOpportunities .opp-card')].find(e=>(e.textContent||'').includes(id));
+  if(el&&el.scrollIntoView)el.scrollIntoView({block:'start'});
+  toast('已记入「最近看过」');
+}
+function renderWorldSideCards(list){
+  const box=$('worldCardList');
+  if(!box)return;
+  const rows=list||[];
+  box.innerHTML=rows.length?rows.slice(0,20).map(o=>{
+    const link=o.url?`<button class="dots" title="打开链接" onclick="event.stopPropagation();window.open('${escapeHTML(o.url)}','_blank')">↗</button>`:'';
+    return `<div class="item" onclick="openWorldCard('${o.id}')">
+      <div class="ava">${o.opened?'📖':'🎴'}</div>
+      <div class="txt"><b>${escapeHTML((o.title||'').slice(0,22))}</b><small>${escapeHTML((o.why||o.reason||'').slice(0,24))}</small></div>
+      ${link}
+      <button class="dots" title="卡片设置" onclick="event.stopPropagation();openWorldCardMenu(event,'${o.id}',${JSON.stringify(o.url||'').replace(/"/g,'&quot;')})">⋯</button>
+    </div>`;
+  }).join(''):'<div class="hint">(世界流还没有真实卡片 — 在框里说一句，智能体回应后会生成)</div>';
+  if($('worldSideNote'))$('worldSideNote').textContent=rows.length?('最近看过 / 可能有用 · '+rows.length):'';
+}
+let menuWorldCard='', menuWorldUrl='';
+function openWorldCardMenu(e,id,url){
+  e.stopPropagation();
+  menuWorldCard=id; menuWorldUrl=url||'';
+  const m=$('groupMenu');
+  if(!m)return;
+  m.innerHTML=`
+    <button onclick="openWorldCard(menuWorldCard)">打开</button>
+    <button onclick="menuWorldUrl?window.open(menuWorldUrl,'_blank'):toast('这张卡片没有外链')">打开链接</button>
+    <button onclick="deleteWorldCard()">删除（本机）</button>`;
+  m.classList.remove('hidden');
+  m.style.left=Math.min(e.clientX,innerWidth-190)+'px';
+  m.style.top=Math.min(e.clientY,innerHeight-140)+'px';
+}
+async function deleteWorldCard(){
+  try{
+    await api('/api/opportunities/'+encodeURIComponent(menuWorldCard)+'/ignore',{method:'POST',body:'{}'});
+    toast('已删除 — 同源不再进推荐流');
+    await loadWorld();
+  }catch(e){toast('删除失败: '+e.message);}
+}
 async function loadWorld() {
   try {
     const j = await api("/api/opportunities");
@@ -2599,7 +2659,8 @@ async function loadWorld() {
         <div class="row">
           ${o.accepted ? '<span class="tag-chip" style="color:var(--accent);border-color:var(--accent)">已接受</span>' : `<button data-act="accept" data-id="${o.id}">接受</button>`}
           <button data-act="ignore" data-id="${o.id}">忽略</button>
-          <span class="why">${escapeHTML(o.reason || "")}</span>
+          <span class="wcard-vote"><button class="up" onclick="voteWorldCard('${o.id}','up')">👍 ${o.up||0}</button><button onclick="voteWorldCard('${o.id}','down')">👎 ${o.down||0}</button></span>
+          <span class="why">${escapeHTML(o.why || o.reason || "")}</span>
         </div>
       </div>`;
     }).join("") || '<div class="hint">世界正在持续送来 — 稍等一下。</div>';
@@ -2609,6 +2670,7 @@ async function loadWorld() {
     $("worldIntents").innerHTML = (it.intents || []).length
       ? (it.intents || []).map(t => `<span class="intent-chip">${escapeHTML(t)}<i class="x" data-tag="${escapeHTML(t)}">×</i></span>`).join("")
       : '<div class="hint" style="font-size:11px">(还没有意图 — 告诉世界你在做什么)</div>';
+    renderWorldSideCards(j.opportunities || []);
     const st = await api("/api/world/stats");
     $("worldStats").textContent = `意图 ${st.intents} · 已接受 ${st.accepted} · 已忽略 ${st.ignored} · 信箱 ${st.inbox}`;
     const n = (j.opportunities || []).filter(o => (o.score ?? 0) >= 0.8).length;
@@ -2730,7 +2792,8 @@ function setSideTab(tab){
   if(friends)friends.style.display=sideTab==='contacts'?'':'none';
   if(groups)groups.style.display=sideTab==='groups'?'':'none';
   const wslot=$('worldSideSlot');
-  if(wslot)wslot.style.display=(sideTab==='world'&&isDesktopShell)?'block':'none';
+  // 世界标签: 侧栏换成卡片列表 (最近看过 / 可能有用) —— 网页端也要显示 (leo 2026-10-30)
+  if(wslot)wslot.style.display=(sideTab==='world')?'block':'none';
   // 钻取态 (好友详情) 回到列表, 否则切过去看不见列表
   const cf=$('contactsFriend');
   if(sideTab!=='agents'&&cf&&cf.style.display!=='none')backToContacts();
