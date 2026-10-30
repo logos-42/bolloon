@@ -69,7 +69,8 @@ pub fn run() {
                 )
                 .title("Bolloon")
                 .inner_size(1200.0, 800.0)
-                .min_inner_size(900.0, 600.0);
+                .min_inner_size(900.0, 600.0)
+                .transparent(true);
 
                 // 2026-10-28 (用户): 自定义窗口外壳 — 透明标题栏, 由前端 #titlebar 自绘 (品牌+龙订阅)
                 // title_bar_style 仅 macOS 可用; Windows/Linux 用默认标题栏。

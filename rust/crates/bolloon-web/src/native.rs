@@ -1999,13 +1999,32 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
     }))
 }
 
-/// POST /api/room/new (新建群组 — 真正的 OrbitDB events store)
-pub async fn room_new(State(st): State<AppState>) -> Json<serde_json::Value> {
-    let id = format!("gw-{:x}", now_ms() % 0xffff_ffff);
+/// POST /api/room/new (新建商议群组 — 真正的 OrbitDB events store)
+///
+/// 2026-10-30 (用户): 「群组以名字来进行, 并不加数字」 —— 此前这里自动生成 `gw-<hex>` id 和
+/// **带数字的名字**「群组 1234」, 于是 tab 上永远是「群组 8123」这种。现在:
+/// 名字由前端给 (`{name}`), 缺省「商议」;**同名 = 同一个群组**(已存在就复用, 不再自动编号)。
+pub async fn room_new(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let name = {
+        let n = req["name"].as_str().unwrap_or_default().trim().to_string();
+        if n.is_empty() { "商议".to_string() } else { n.chars().take(40).collect::<String>() }
+    };
+    let id = crate::server::group_id_from_name(&name);
     let now_ms_local = now_ms();
+    if let Some(existing) = st.groups.meta(&id) {
+        // 同名群组已存在: 复用它 (群组以名字为身份), 只把 active 指过去
+        let mut fs = st.forge.lock().await;
+        fs.active_group = existing.id.clone();
+        fs.room_closed.retain(|x| x != &existing.id);
+        fs.save(&data_dir());
+        return Json(serde_json::json!({ "id": existing.id, "name": existing.name, "address": existing.address, "reused": true }));
+    }
     let info = st.groups.create_group(
         &id,
-        &format!("群组 {}", now_ms_local % 10_000),
+        &name,
         st.identity.did.as_str(),
         bolloon_p2p::GroupAcl::Open,
         now_ms_local,
@@ -2016,7 +2035,7 @@ pub async fn room_new(State(st): State<AppState>) -> Json<serde_json::Value> {
         fs.room_closed.retain(|x| x != &info.id);
         fs.save(&data_dir());
     }
-    Json(serde_json::json!({ "id": info.id, "address": info.address }))
+    Json(serde_json::json!({ "id": info.id, "name": info.name, "address": info.address, "reused": false }))
 }
 
 /// 群内推举候选: 若「发起交流」时选定了参与者 (room_participants), 只在其中挑 (选谁谁接话);
@@ -2945,7 +2964,9 @@ pub async fn quic_addr(State(st): State<AppState>) -> Json<serde_json::Value> {
                 .await
                 .map(|a| a.to_string())
                 .unwrap_or_else(|_| String::new());
-            Json(serde_json::json!({ "ok": true, "addr": addr }))
+            // 2026-10-30: 必须同时给 did —— 调用方 (node_connect / friend_agents) 靠它认领「哪个基址是哪个好友」
+            // 只有 addr 时 fetch_remote_did 永远拿不到 did ⇒ 跨机加好友/跨机对话全断 (此前正是如此)。
+            Json(serde_json::json!({ "ok": true, "addr": addr, "did": st.identity.did.as_str() }))
         }
         None => Json(serde_json::json!({ "ok": false, "error": "QUIC 传输未启用" })),
     }
@@ -3368,7 +3389,9 @@ pub async fn node_connect(
     if let Ok(self_url) = std::env::var("BOLLOON_PUBLIC_URL") {
         let self_url = self_url.trim().trim_end_matches('/').to_string();
         let our_did = st.identity.did.as_str().to_string();
-        let cb = format!("{}/api/node/connect", self_url);
+        // 回调要打**对端**(url), 不是自己的 self_url —— 打到 self_url 等于自己加自己,
+        // 对端永远收不到我们的 did (实测: mutual:true 但对方好友列表为空)。
+        let cb = format!("{}/api/node/connect", url);
         let body = serde_json::json!({
             "did": our_did,
             "url": self_url,
@@ -4346,6 +4369,241 @@ pub async fn dream_topic(
         }
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
+}
+
+
+// ────────────────────────── 好友 × 对方开放的智能体 + 跨机对话 (2026-10-30) ──────────────────────────
+//
+// 用户需求: 「点击加的好友, 可以看到对方开放的智能体; 点击对方智能体可以跨机聊天」。
+//
+// 两个面, 权限各自 fail-closed:
+//   对端接收面  GET  /api/agents/public?did=<来访者 did>   —— 只对**已加好友**的 did 列出开放智能体
+//               POST /api/agents/public/chat               —— 只对**已加好友**的 did 执行一轮模型调用
+//   本机代理面  GET  /api/friends/{did}/agents              —— 按 did 找到对端基址后转发上面那条
+//               POST /api/friends/{did}/chat                —— 同上 (真正的推理在对端机器上)
+//
+// 诚实边界: 对端不在线 / 没登记对端基址 ⇒ note/error 里写明原因, 不伪装成「对方没有智能体」。
+
+/// 智能体是否对好友开放。缺省开放 (好友关系是双方明确同意过的),
+/// 关掉的方式 = 在该智能体目录下放一个 `private.json` 标记 (不猜、不改持久化 schema)。
+fn agent_open_to_friends(id: &str) -> bool {
+    !data_dir().join("agents").join(id).join("private.json").exists()
+}
+
+/// 本机是否把 `did` 当好友 (跨机对话的唯一门禁依据)
+async fn is_local_friend(st: &AppState, did: &str) -> bool {
+    let fs = st.forge.lock().await;
+    fs.friends.friends().iter().any(|d| d == did)
+}
+
+/// GET /api/agents/public?did=<来访者> → 本机对好友开放的智能体 (给对端代理面用)
+pub async fn agents_public(
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let caller = q.get("did").cloned().unwrap_or_default();
+    if caller.trim().is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺少来访者 did (只对已加好友开放)" }));
+    }
+    if !is_local_friend(&st, caller.trim()).await {
+        return Json(serde_json::json!({ "ok": false, "error": "对方不是本机好友, 不列智能体" }));
+    }
+    let (owner_did, agents) = {
+        let fs = st.forge.lock().await;
+        (st.identity.did.as_str().to_string(), fs.agents.clone())
+    };
+    let list: Vec<serde_json::Value> = agents
+        .iter()
+        .filter(|a| agent_open_to_friends(&a.id))
+        .map(|a| {
+            let soul = std::fs::read_to_string(data_dir().join("agents").join(&a.id).join("soul.md"))
+                .unwrap_or_default();
+            serde_json::json!({
+                "id": a.id,
+                "name": a.name,
+                "did": a.did,
+                "soul": soul.chars().take(280).collect::<String>(),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "ok": true, "did": owner_did, "agents": list }))
+}
+
+/// POST /api/agents/public/chat {from_did, agent_id, text} → 好友发来的一句话, 本机该智能体回一句
+pub async fn agents_public_chat(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let from_did = req["from_did"].as_str().unwrap_or_default().trim().to_string();
+    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
+    let text = req["text"].as_str().unwrap_or_default().trim().to_string();
+    if from_did.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺少 from_did" }));
+    }
+    if !is_local_friend(&st, &from_did).await {
+        return Json(serde_json::json!({ "ok": false, "error": "对方不是本机好友, 拒绝跨机对话" }));
+    }
+    if text.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "消息为空" }));
+    }
+    let agent = agent_by_id(&st, Some(agent_id.as_str())).await;
+    let Some(agent) = agent else {
+        return Json(serde_json::json!({ "ok": false, "error": format!("本机没有这个智能体: {agent_id}") }));
+    };
+    if !agent_open_to_friends(&agent.id) {
+        return Json(serde_json::json!({ "ok": false, "error": "该智能体没有对好友开放" }));
+    }
+    let extra = format!(
+        "\n\n## 跨机来访\n对方是你主人已加的好友 ({})，从另一台机器发来消息。直接回答对方的这句话，不要声称自己在本地或问对方是谁。",
+        short_did(&from_did)
+    );
+    let system = build_web_system(&st, &text, Some(&agent), &extra).await;
+    let messages = vec![ChatMessage {
+        role: "user".into(),
+        content: text,
+        name: None,
+        tool_call_id: None,
+        images: vec![],
+        tool_calls: None,
+    }];
+    let econ = EconCtx {
+        intent_id: String::new(),
+        group_id: None,
+        agent_id: Some(agent.id.clone()),
+        surface: "friend-relay".into(),
+    };
+    match call_model_metered(&st, &system, messages, Some(econ)).await {
+        Ok(reply) => Json(serde_json::json!({
+            "ok": true,
+            "reply": reply,
+            "agent": { "id": agent.id, "name": agent.name },
+        })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("对端模型调用失败: {e}") })),
+    }
+}
+
+/// 按 did 找到对端节点基址 (遍历已登记对端, 用它的 /api/quic/addr 认领 did)
+async fn peer_url_for_did(st: &AppState, did: &str) -> Result<String, String> {
+    let peers = {
+        let fs = st.forge.lock().await;
+        fs.directory_peers.clone()
+    };
+    if peers.is_empty() {
+        return Err("本机还没登记对端节点地址 (通讯录 → 直连节点: 粘贴 http://IP:54188)".to_string());
+    }
+    for url in &peers {
+        if let Some(remote) = fetch_remote_did(url).await {
+            if remote == did {
+                return Ok(url.trim_end_matches('/').to_string());
+            }
+        }
+    }
+    Err(format!(
+        "已登记的 {} 个对端节点里没有 {} (对方节点不在线, 或还没在本机登记地址)",
+        peers.len(),
+        short_did(did)
+    ))
+}
+
+/// 阻塞调用对端 JSON 端点 (与目录查询同款 6s 超时, 失败如实带原因)
+async fn peer_json(
+    method: &'static str,
+    url: String,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let handle = tokio::task::spawn_blocking(move || {
+        let req = if method == "POST" {
+            ureq::post(&url)
+        } else {
+            ureq::get(&url)
+        };
+        let req = req.timeout(std::time::Duration::from_millis(6000));
+        let resp = match body {
+            Some(b) => req.send_json(b),
+            None => req.call(),
+        };
+        match resp {
+            Ok(r) => r.into_json::<serde_json::Value>().map_err(|e| format!("对端返回不是 JSON: {e}")),
+            Err(e) => Err(format!("对端不可达: {e}")),
+        }
+    });
+    match handle.await {
+        Ok(v) => v,
+        Err(e) => Err(format!("对端调用任务失败: {e}")),
+    }
+}
+
+/// GET /api/friends/{did}/agents → 对方开放的智能体 (跨机; 本机只做转发, 不缓存不伪造)
+pub async fn friend_agents(
+    AxumPath(did): AxumPath<String>,
+    State(st): State<AppState>,
+) -> Json<serde_json::Value> {
+    let did = did.trim().to_string();
+    if !is_local_friend(&st, &did).await {
+        return Json(serde_json::json!({ "ok": false, "agents": [], "note": "不是本机好友" }));
+    }
+    let url = match peer_url_for_did(&st, &did).await {
+        Ok(u) => u,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "agents": [], "note": e })),
+    };
+    let our_did = st.identity.did.as_str().to_string();
+    let u = format!("{url}/api/agents/public?did={}", urlencode(&our_did));
+    match peer_json("GET", u, None).await {
+        Ok(v) => {
+            if !v["ok"].as_bool().unwrap_or(false) {
+                return Json(serde_json::json!({
+                    "ok": false, "agents": [], "peer": url,
+                    "note": v["error"].as_str().unwrap_or("对端拒绝了列举"),
+                }));
+            }
+            Json(serde_json::json!({
+                "ok": true, "peer": url, "agents": v["agents"].clone(), "note": "",
+            }))
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "agents": [], "peer": url, "note": e })),
+    }
+}
+
+/// POST /api/friends/{did}/chat {agent_id, text} → 转发给对端执行, 回它那句回答
+pub async fn friend_chat(
+    AxumPath(did): AxumPath<String>,
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = did.trim().to_string();
+    if !is_local_friend(&st, &did).await {
+        return Json(serde_json::json!({ "ok": false, "error": "不是本机好友" }));
+    }
+    let agent_id = req["agent_id"].as_str().unwrap_or_default().to_string();
+    let text = req["text"].as_str().unwrap_or_default().trim().to_string();
+    if agent_id.is_empty() || text.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 agent_id 或 text" }));
+    }
+    let url = match peer_url_for_did(&st, &did).await {
+        Ok(u) => u,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
+    };
+    let our_did = st.identity.did.as_str().to_string();
+    let body = serde_json::json!({ "from_did": our_did, "agent_id": agent_id, "text": text });
+    match peer_json("POST", format!("{url}/api/agents/public/chat"), Some(body)).await {
+        Ok(v) => Json(v),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
+/// 只编码 query 里会出现的那几个字符 (did 里只有 `:`/字母数字, 不引额外依赖)
+fn urlencode(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            ':' => "%3A".to_string(),
+            '/' => "%2F".to_string(),
+            '?' => "%3F".to_string(),
+            '&' => "%26".to_string(),
+            '#' => "%23".to_string(),
+            ' ' => "%20".to_string(),
+            c => c.to_string(),
+        })
+        .collect()
 }
 
 #[cfg(test)]

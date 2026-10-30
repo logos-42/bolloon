@@ -1,0 +1,30 @@
+{
+  "set": [
+    {
+      "identifier": "bolloon-default",
+      "description": "Bolloon 自定义 Tauri 命令权限 (check_update / update_install / relaunch)",
+      "permissions": [
+        "allow-check-update",
+        "allow-update-install",
+        "allow-relaunch"
+      ]
+    }
+  ],
+  "permission": [
+    {
+      "identifier": "allow-check-update",
+      "description": "允许检查更新",
+      "commands": { "allow": ["check_update"] }
+    },
+    {
+      "identifier": "allow-update-install",
+      "description": "允许下载并安装更新",
+      "commands": { "allow": ["update_install"] }
+    },
+    {
+      "identifier": "allow-relaunch",
+      "description": "允许重启应用",
+      "commands": { "allow": ["relaunch"] }
+    }
+  ]
+}

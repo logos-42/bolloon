@@ -458,6 +458,12 @@ pub fn app(state: AppState) -> Router {
         .route("/api/friends/accept", post(crate::native::friend_accept))
         .route("/api/friends/reject", post(crate::native::friend_reject))
         .route("/api/friends", get(crate::native::friend_list))
+        // 2026-10-30 (用户): 点好友 → 看对方开放的智能体 → 跨机聊天
+        .route("/api/friends/{did}/agents", get(crate::native::friend_agents))
+        .route("/api/friends/{did}/chat", post(crate::native::friend_chat))
+        // 对端接收面 (只对已加好友的 did 开放; 由上面的代理面在对方机器上调)
+        .route("/api/agents/public", get(crate::native::agents_public))
+        .route("/api/agents/public/chat", post(crate::native::agents_public_chat))
         // 通讯录 (2026-10-28): 网页端/APP 端统一的联系人搜索面 — 手机号走跨机目录, 名称走本机名片本
         .route("/api/contacts", get(crate::native::contact_list))
         .route("/api/contacts/set", post(crate::native::contact_set))
@@ -736,11 +742,47 @@ struct CreateGroupRequest {
     members: Option<Vec<String>>,
 }
 
+/// 群组 id = 名字 (用户 2026-10-30: 「群组以名字来进行, 并不加数字」)。
+///
+/// 语义: **同名 = 同一个群组** —— 重复创建直接返回既有那个, 不再生成 `gw-xxxx` 技术 id,
+/// 也不会出现「项目群 2」这种自动编号。只有名字里会破坏 URL/路径的字符被替换成 `_`
+/// (展示层永远用 `name`, id 只是内部键)。
+pub(crate) fn group_id_from_name(name: &str) -> String {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .take(40)
+        .map(|c| match c {
+            '/' | '\\' | '?' | '#' | '%' | '&' | ':' => '_',
+            c => c,
+        })
+        .collect();
+    let cleaned = cleaned.trim().to_string();
+    if cleaned.is_empty() { "新群组".to_string() } else { cleaned }
+}
+
 async fn create_group(
     State(st): State<AppState>,
     Json(req): Json<CreateGroupRequest>,
 ) -> Json<serde_json::Value> {
-    let id = format!("gw-{}", uuid_v4_short());
+    let name = {
+        let n = req.name.trim().to_string();
+        if n.is_empty() { "新群组".to_string() } else { n.chars().take(40).collect::<String>() }
+    };
+    let id = group_id_from_name(&name);
+    // 同名群组已存在 ⇒ 直接复用 (群组以名字为身份, 不做自动编号)
+    if let Some(meta) = st.groups.meta(&id) {
+        return Json(serde_json::json!({
+            "id": meta.id,
+            "name": meta.name,
+            "owner": meta.owner,
+            "acl": meta.acl,
+            "address": meta.address,
+            "created_at_ms": meta.created_at_ms,
+            "member_count": 1,
+            "reused": true,
+        }));
+    }
     let acl = match req.members {
         Some(wl) if !wl.is_empty() => GroupAcl::Whitelist(wl),
         _ => GroupAcl::OwnerOnly,
@@ -748,7 +790,7 @@ async fn create_group(
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
     let meta = st
         .groups
-        .create_group(&id, &req.name, st.identity.did.as_str(), acl, now_ms);
+        .create_group(&id, &name, st.identity.did.as_str(), acl, now_ms);
     // 兼容旧 GroupInfo 形状 (前端旧字段) + 新增 orbit address
     Json(serde_json::json!({
         "id": meta.id,
@@ -758,6 +800,7 @@ async fn create_group(
         "address": meta.address,
         "created_at_ms": meta.created_at_ms,
         "member_count": 1,
+        "reused": false,
     }))
 }
 
@@ -2165,16 +2208,6 @@ async fn x402_info_payment(
 
 // ---------- utils ----------
 
-fn uuid_v4_short() -> String {
-    // 无 uuid 依赖时的简单随机 id (hex 12)
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64 ^ d.as_secs())
-        .unwrap_or(0);
-    format!("{nanos:012x}")
-}
-
 /// 内嵌单页 HTML（hushforge 布局: 284px 侧栏 + 主聊天 + room 面板）
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 
@@ -2192,6 +2225,125 @@ mod route_tests {
             }],
             1,
         )
+    }
+
+
+    /// 2026-10-30 (leo): 群组以名字为身份 + 好友智能体跨机面 fail-closed + 界面真源门。
+    ///
+    /// 三件要一起钉住:
+    /// ① `create_group` / `room_new` 的 id 就是名字(同名复用), 群列表里不再出现 `gw-<hex>`;
+    /// ② `/api/agents/public` 与 `/api/agents/public/chat` 只对**已加好友的 did** 开口;
+    /// ③ 桌面界面只有一份真源(`bolloon-web/assets/index.html`), 壳目录里那份不许再长第二个界面
+    ///    —— 上一轮「外壳栏改动没生效」就是因为它只改了 `app-tauri/ui/index.html` 这份过期副本。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn group_name_identity_and_friend_agents_gates() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-web-grouptest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+
+        let state = AppState::new(offline_llm());
+        // 造一个「已加好友」的 did (正向对照), 证明拒绝不是因为什么都没接上
+        const FRIEND: &str = "did:pi:testfriend";
+        {
+            let mut fs = state.forge.lock().await;
+            let fr = fs.friends.inbound(FRIEND, FRIEND, 1_000);
+            fs.friends.accept(&fr.request_id, 1_001).unwrap();
+        }
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = serve_on(state, listener).await;
+        });
+        let base = format!("http://{addr}");
+
+        tokio::task::spawn_blocking(move || {
+            let get_json = |path: &str| -> serde_json::Value {
+                ureq::get(&format!("{base}{path}")).call().unwrap().into_json().unwrap()
+            };
+            let post_json = |path: &str, body: serde_json::Value| -> serde_json::Value {
+                ureq::post(&format!("{base}{path}")).send_json(body).unwrap().into_json().unwrap()
+            };
+
+            // ① 群组 id = 名字; 同名复用; 不留技术 id
+            let g1 = post_json("/api/groups", serde_json::json!({ "name": "聚变小组" }));
+            assert_eq!(g1["id"], "聚变小组");
+            assert_eq!(g1["reused"], false);
+            let g2 = post_json("/api/groups", serde_json::json!({ "name": "聚变小组" }));
+            assert_eq!(g2["id"], "聚变小组");
+            assert_eq!(g2["reused"], true);
+            let list = get_json("/api/groups");
+            let ids: Vec<String> = list["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|g| g["id"].as_str().unwrap_or_default().to_string())
+                .collect();
+            assert!(ids.contains(&"聚变小组".to_string()));
+            assert!(!ids.iter().any(|i| i.starts_with("gw-")), "群列表里不该再出现技术 id: {ids:?}");
+
+            // 商议群组同样按名字 (此前是「群组 1234」+ gw-xxxx)
+            let r1 = post_json("/api/room/new", serde_json::json!({ "name": "商议A" }));
+            assert_eq!(r1["id"], "商议A");
+            assert_eq!(r1["name"], "商议A");
+            assert_eq!(r1["reused"], false);
+            let r2 = post_json("/api/room/new", serde_json::json!({ "name": "商议A" }));
+            assert_eq!(r2["reused"], true);
+            let r3 = post_json("/api/room/new", serde_json::json!({}));
+            assert_eq!(r3["name"], "商议", "缺省名不许带数字");
+            assert!(!r3["id"].as_str().unwrap().chars().any(|c| c.is_ascii_digit()));
+
+            // ② 好友面: 缺 did / 非好友 / 好友 三种
+            let no_did = get_json("/api/agents/public");
+            assert_eq!(no_did["ok"], false);
+            assert!(no_did["error"].as_str().unwrap().contains("缺少来访者 did"));
+            let stranger = get_json("/api/agents/public?did=did:pi:stranger");
+            assert_eq!(stranger["ok"], false);
+            assert!(stranger["error"].as_str().unwrap().contains("不是本机好友"));
+            let friend = get_json(&format!("/api/agents/public?did={FRIEND}"));
+            assert_eq!(friend["ok"], true, "已加好友的 did 必须能列举: {friend}");
+            assert!(friend["agents"].is_array());
+
+            // 对话面: 非好友拒 (fail-closed), 好友但智能体不存在也如实拒
+            let stranger_chat = post_json(
+                "/api/agents/public/chat",
+                serde_json::json!({ "from_did": "did:pi:stranger", "agent_id": "agent-001", "text": "hi" }),
+            );
+            assert_eq!(stranger_chat["ok"], false);
+            assert!(stranger_chat["error"].as_str().unwrap().contains("不是本机好友"));
+            let missing_agent = post_json(
+                "/api/agents/public/chat",
+                serde_json::json!({ "from_did": FRIEND, "agent_id": "nope", "text": "hi" }),
+            );
+            assert_eq!(missing_agent["ok"], false);
+            assert!(missing_agent["error"].as_str().unwrap().contains("没有这个智能体"));
+
+            // 本机代理面: 非好友一律拒 (不给对端地址也不假装成功)
+            let proxy_agents = get_json("/api/friends/did:pi:stranger/agents");
+            assert_eq!(proxy_agents["ok"], false);
+            assert_eq!(proxy_agents["agents"], serde_json::json!([]));
+            let proxy_chat = post_json(
+                "/api/friends/did:pi:stranger/chat",
+                serde_json::json!({ "agent_id": "agent-001", "text": "hi" }),
+            );
+            assert_eq!(proxy_chat["ok"], false);
+        })
+        .await
+        .unwrap();
+
+        // ③ 界面真源门 (源级): 新入口/外壳栏在真源里, 旧顶栏没了; 壳目录那份只是占位
+        assert!(INDEX_HTML.contains("id=\"shellRail\""), "真源必须有左侧外壳栏");
+        assert!(!INDEX_HTML.contains("id=\"titlebar\""), "旧顶部标题栏必须删掉 (否则与 header 叠两条横栏)");
+        for need in ["id=\"addFriendBtn\"", "id=\"joinGroupBtn\"", "id=\"groupDots\"", "id=\"friendAgents\""] {
+            assert!(INDEX_HTML.contains(need), "群组页入口缺失: {need}");
+        }
+        assert!(INDEX_HTML.contains("/api/friends/"), "跨机好友面必须接到界面上");
+        const TAURI_UI: &str = include_str!("../../../app-tauri/ui/index.html");
+        assert!(
+            !TAURI_UI.contains("desktop3col"),
+            "rust/app-tauri/ui/index.html 只能是占位页 —— 真源是 bolloon-web/assets/index.html"
+        );
     }
 
     /// `BOLLOON_HOME` 是**进程级全局环境变量**: 两条起真服务的 e2e 并行跑会互相串

@@ -1,5 +1,6 @@
 # Wiki 日志
 
+| 2026-10-30 | fix(ui) | **群组页入口归位 + ⋯ 群组设置 + 群组按名字识别 + 好友智能体跨机对话 + 外壳栏/第二栏/更新四点修复** — ① **入口归位**: 加好友(搜索框) / 加群 / 创建群三个入口都移到**群组页**(第二栏好友·群组两个节头 + 通讯录页群组区), 删掉侧栏底部放错页面的「邀请」; 通讯录模块点第一栏 📒 现在会把主区切到通讯录页(`setPanel('contacts')`)—— 此前切了模块但主区还停在聊天, 所以「加好友没有搜索框」。 ② **群头 ⋯**: 群头只留「邀请 + ⋯」, 子讨论 / 分享只读 / 加入其他群组 / 关闭群组收进菜单(菜单条目就是原按钮 id, 原绑定零改动)。 ③ **群组以名字为身份**: `create_group` 的 id 从 `gw-<hex>` 改为**名字本身**(危险字符转 `_`), 同名建群返回既有群(`reused:true`), 不再自动编号; 内部商议的 `room_new` 同样修(此前 tab 上就是「群组 8123」这种名字+数字, id 也是 `gw-<hex>`), 现在新建时问名字、缺省「商议」; 前端群列表/群头/商议 tab 只显示名字, 技术 id 与 orbit 地址只留在 `title`。 ④ **好友 → 对方开放的智能体 → 跨机聊天**: 新端点 `GET /api/agents/public?did=` + `POST /api/agents/public/chat`(对端执行, 只服务已加好友的 did, fail-closed) 与 `GET /api/friends/{did}/agents` + `POST /api/friends/{did}/chat`(本机代理), 第二栏好友钻取内显示对方智能体并可对话。 ⑤ **两个真 bug (跨机链路此前根本不通)**: `GET /api/quic/addr` 只回 `addr` 不回 `did` ⇒ `fetch_remote_did` 永远拿不到 did, 一键互加好友恒定失败; 互加回调打的是**自己的** `BOLLOON_PUBLIC_URL` 而不是对端 `url` ⇒ `mutual:true` 但对方好友列表为空。两处都修了。 ⑥ **外壳栏**: 顶部 `#titlebar`(32px, 与主区 header 叠成两条横栏)改为**左侧 52px 外壳栏**(品牌 logo + 龙订阅 + 拖拽区), 桌面四列 `52/56/284/1fr`; 毛玻璃透明度 `.4 → .86`(用户: 透明的没有这么高); **第二栏 aside 回归不透明**(上一轮把它改成 rgba .5 是错的); 导航栏里重复的 logo 收掉, 折叠改挂到外壳 logo。 ⑦ **更新失败 `window.__TAURI__.updater.checkUpdate is not a function`**: 回退到壳的 `check_update/update_install/relaunch` 命令, 并补上缺失的 ACL —— `capabilities/default.json` 加 `bolloon-default`(权限集本来写在 `permissions/bolloon.json` 却没进 capability, 于是 invoke 被 ACL 拒); 透明窗补 `macos-private-api` 特性 + `app.macOSPrivateApi`。 **验证**: 真两节点(不同 BOLLOON_HOME + 端口 55001/55002 + 假上游 LLM): `node_connect` 互加成功 → A 的 `/api/friends/{didB}/agents` 列出 B 的智能体 → `/api/friends/{didB}/chat` 返回对端模型那句 `pong:你好,你是谁?`; 非好友/缺 did 两条门禁都拒; 同名建群 `reused:true`; 真浏览器(?app=desktop)逐项: 外壳栏 52px 且无 `#titlebar`、四列 52/56/284、`html.tauri` 下 aside 不透明+外壳 blur 20px、加好友聚焦 `#ctInput`、群头 ⋯ 菜单 4 项、好友→智能体→对话气泡。`cargo check -p bolloon-web` 0 错; `node --check` 内嵌脚本 0 错。 **诚实边界**: 跨 NAT 未做(需双方节点互相可达) · 跨机对话是单轮(对端不带上文) · 「对好友开放」缺省开, 关闭只能放 `agents/<id>/private.json`(无 UI) · Tauri 透明窗/ACL 只做了 cargo check 与 ACL 配置, **未真开 Tauri 窗口目验**(需 `cargo tauri dev`)。 | `rust/crates/bolloon-web/assets/index.html` · `rust/crates/bolloon-web/src/{native,server}.rs` · `rust/app-tauri/src-tauri/{Cargo.toml,tauri.conf.json,capabilities/default.json}` · `rust/app-tauri/ui/index.html` · `docs/wiki/friend-agent-relay.md` |
 | 2026-10-29 | release | **0.7.0 Rust 正式版发布** — 版本：npm `@bolloon/bolloon-agent@0.7.0`、Rust workspace `0.7.0`、Tauri App `0.7.0-1`（Release tag `v0.7.0.1`）。README 增中英两节「0.7.0：Rust 正式版重构」（kernel/harness/agent/llm/p2p/econ 分层对照表 + 兼容性说明 + 经济层默认关闭）。产物：`target/release/bolloon`(x86_64, 23,487,440 B) + `target/aarch64-apple-darwin/release/bolloon`(arm64, 22,653,360 B) 进 npm 包；`sw.js` 缓存名派生 `bolloon-mobile-v0.7.0`。 | `README.md` · `package.json` · `rust/Cargo.toml` · `rust/app-tauri/src-tauri/tauri.conf.json` |
 | 2026-10-29 | feat(econ) | **意识成长档案（人类不可见指标）+ 公共池跨节点验签** — ① `consciousness`：只吃可核验行为（帮人/守信/分享/更正/追问/降温/不烧钱/复盘），结构里无身份维度（单测断言）；饱和曲线防刷量；`human_view()` 剥掉 index/stage（`quantified:false`），`?role=agent` 才给完整档；倍率并入 `allowance_for`（成长加成 ×1.0–2.0），地板额度不受影响。② 跨节点池：`GET /api/econ/pool/view`（ed25519 签名快照）+ `POST /api/econ/pool/peers`（拉取/接收后验签），`network.cash_available_sum_usd` 只求和验签通过者。**验证**：econ 24+41 全绿；web 新增 `pool_view_crosses_nodes_only_when_signature_holds`（两节点不同身份、A 充 $5、B 验签通过 → 全网 5.0；篡改 ⇒ verified=false 且不计钱）。 | `bolloon-econ/src/consciousness.rs` · `bolloon-web/src/server.rs`(pool view/peers) · `economic-layer.md` §22-23 |
 | 2026-10-29 | feat(econ) | **诚信额度 + 双层可上链档案 + 加群额度 + 群内标识 + 免疫系统 + 18 人组织名单 + 邀请链路** — ① `allowance`：地板 5/基础 50，贡献/零现金意图/意图质量加权，白嫖按半衰衰减到地板（**永不封号**）；群善意复制（未用额度×50%）。② `reputation`：`OnChainAttestation`（canonical JSON + sha256 digest + detail_digest，确定性已测/篡改必红）+ `OffChainProfile`（理由、goodwill_path）。③ 加群额度按**账号年龄+违规**：第1天 10 → 第5天 100 → 满月 500，违规 5（`JOIN_QUOTA_*`，`join_quota_by_age`）。④ 群内 `trust` 标识经 `say_flagged` 落块；`/messages` 默认剥离、`?role=agent` 才可见（e2e 断言人类侧无 trust）。⑤ 免疫系统 quorum sensing：单点只到 watch，≥3 报告者 restricted，≥5 隔离 2h 自动解除，半衰期 6h；隔离者本轮不进接话名单。⑥ 组织名单 1+5+12=18 可直接回复，名单外被 @ 也不刷群；警长 3 天一轮换并校验 reply-limit 调用者。⑦ 邀请：`GET /api/groups/{id}/invite` + 侧边栏「结束｜邀请」按钮 + agent 工具 `group_invite/group_join/group_members/group_read`；经济工具 `econ_probe/econ_claim`。**验证**：econ 17+41 全绿、agent 424 全绿、web 31 全绿（含 `trust_badge_is_hidden_from_humans_but_visible_to_agents`、`roster_splits_into_one_five_twelve`、`addressed_outside_roster_do_not_speak`、`econ_shared_pool_endpoints_e2e`）。**未做**：公共池跨节点同步、agent 间 @ 转接、Win/Linux 安装包。 | `bolloon-econ/src/{allowance,reputation,immune,economy,budget}.rs` · `bolloon-p2p/src/group_orbit.rs` · `bolloon-agent/src/{econ_tools,invite_tools,builtin_tools}.rs` · `bolloon-web/src/{native,server,room_bus}.rs` · `assets/index.html` |
@@ -760,6 +761,47 @@
 | 2026-07-06 | fix | server.ts 三处 (主 chat / regenerate / v3 P2P) 加 `fullResponse` 空内容兜底, abort 时设默认文本, 防止前端 segmentChatReply('') 返回 [] 导致气泡不渲染 | server.ts 各处 broadcast |
 
 ## 详细日志
+
+### [2026-10-30] fix(ui) | 群组页入口归位 · ⋯ 群组设置 · 群组按名字识别 · 好友智能体跨机对话 · 外壳栏/第二栏/更新
+
+#### 触发
+leo 一条消息里报了七件事: 加群/邀请按钮放错页面、群组页要能加好友加群创建群、加好友没有搜索框、群组上没有三点设置、
+群组不该带数字、点好友要能看到对方开放的智能体并跨机聊天、更新报 `window.__TAURI__.updater.checkUpdate is not a function`、
+外壳毛玻璃太透 + 第二栏被透明 + 顶栏外壳仍与顶部标签栏共存。
+
+#### 两个「改了却没生效」的根因
+1. **桌面界面只有一份真源**: 壳的窗口加载 `http://127.0.0.1:<port>/?app=desktop`, 页面来自
+   `bolloon-web/assets/index.html`(`server.rs` 的 `include_str!`)。而 `rust/app-tauri/ui/index.html` 是 2600 行的**过期副本**
+   —— 上一轮「顶部标题栏改左侧外壳栏」只改了副本, 所以用户看到的仍是旧顶栏(并和主区 header 叠成两条横栏)。
+   本次改动落到真源, 副本改成占位页并在文件里写明真源路径。
+2. **通讯录模块只切了第二栏**: `setDesktopModule('contacts')` 只加 body class, 没把主区切到通讯录页
+   ⇒ `main.contacts-mode` 从未成立 ⇒ `#contactsView`(加好友搜索框)一直 `display:none`。这就是「加好友没有搜索框」。
+
+#### 跨机链路的两个既有 bug (此前功能不可用)
+- `GET /api/quic/addr` 只返回 `{ok,addr}`, 注释却写「did + socket」; `fetch_remote_did` 读 `v["did"]` ⇒ 永远 `None`
+  ⇒ 一键互加好友(`/api/node/connect`)恒定报「拉不到对端 did」。修: 返回里补 `did`。
+- 互加回调 `cb = format!("{}/api/node/connect", self_url)` 打的是**自己**: 结果 `mutual:true` 但对方好友列表为空。
+  修: 打对端 `url`, body 里带自己的 did + 对外基址。
+
+#### 设计取舍 (详见 friend-agent-relay.md)
+- 推理发生在**拥有智能体的那台机器**, 本机只转发与展示(不复制 persona/记忆, 避免两个真源);
+- 两个面都 fail-closed: 列举与对话都要求来访者 did 在本机好友表里; 缺 did / 非好友各自明确拒;
+- 对端找不到/不可达时返回 `note` 说明原因, **不返回空数组冒充「对方没有智能体」**;
+- 「对好友开放」缺省开(好友关系是双方同意过的), 关掉靠 `agents/<id>/private.json`(不改持久化 schema)。
+
+#### 群组身份
+`create_group` 的 id 改成名字本身(危险字符 `_`), 同名 = 同一个群(`reused:true`), 不再 `gw-<hex>` 也不自动编号;
+展示层只出现名字, id/orbit 地址只在 `title`。
+
+#### 验证
+- 真两节点(55001/55002, 假 OpenAI 兼容上游): 互加 → 列举对方智能体 → 跨机对话拿到 `pong:…`; 门禁三连拒。
+- 同名建群两次 ⇒ 同一 id、`reused:true`。
+- 真浏览器 `?app=desktop`: 无 `#titlebar`、外壳栏 52px、四列 `52/56/284`、`html.tauri` 下 aside 不透明/外壳 blur 20px、
+  加好友按钮聚焦 `#ctInput`、群头 ⋯ 四项、好友 → 智能体 → 气泡往返。
+- `cargo check -p bolloon-web` 0 错; 内嵌脚本 `node --check` 0 错。
+
+#### 未做 / 诚实边界
+跨 NAT 打洞 · 跨机多轮上下文 · 开放开关的 UI · Tauri 真窗口目验(只做了 `cargo check` + ACL/特性配置)。
 ### [2026-10-26] feat(rust) | 视觉编码 + agent 循环 + 快照回滚 (欠账清账, 618 测试)
 
 ### 触发

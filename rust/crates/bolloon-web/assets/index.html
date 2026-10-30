@@ -40,6 +40,11 @@
   *{box-sizing:border-box}
   html,body{height:100%;margin:0}
   body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;overflow:hidden}
+  /* 2026-10-30: 桌面壳透明窗 — 仅 Tauri 内 (html.tauri) 生效, 网页端保持不透明。
+     只有**外壳栏(第一列)**做毛玻璃; 第二栏 aside / 主区 / 商议面板一律不透明
+     (用户 2026-10-30: "第二栏不透明, 目前的第二栏被透明了" —— 所以这里不许再给 aside 加 rgba)。 */
+  html.tauri body{background:transparent}
+  html.tauri main{background:var(--bg)}
   #app{display:grid;grid-template-columns:284px 1fr;height:100vh;overflow:hidden;transition:grid-template-columns .18s ease}
   #app.collapsed{grid-template-columns:66px 1fr}
   #app.room-open{grid-template-columns:284px minmax(0,1fr) var(--roomw,360px)}
@@ -108,7 +113,6 @@
   .side-actions{display:flex;gap:6px;padding:8px 10px 4px;align-items:center}
   .side-actions button{flex:1;height:28px;border-radius:8px;font-size:12px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer}
   .side-actions #sideEndBtn:hover{border-color:#e4663a;color:#e4663a}
-  .side-actions #sideInviteBtn{background:linear-gradient(135deg,var(--glow),var(--accent));border-color:transparent;color:#06101a;font-weight:600}
   .brand{display:flex;align-items:center;gap:8px;padding:14px 12px 10px;font-weight:600;white-space:nowrap}
   #collapseBtn{display:grid;place-items:center;width:32px;height:28px;padding:0;border-radius:8px;margin-left:auto;flex:none}
   #app.collapsed .brand{justify-content:center;padding:14px 0 10px;gap:0}
@@ -140,6 +144,22 @@
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,209,102,.55)}70%{box-shadow:0 0 0 10px rgba(255,209,102,0)}100%{box-shadow:0 0 0 0 rgba(255,209,102,0)}}
   .side-scroll{flex:1;overflow:auto;padding:0 8px 8px}
   .sec{margin:8px 6px 4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  /* 2026-10-30: 通讯录节标题右侧的入口按钮组 (加好友 / 加群 / 创建群) — 桌面壳与网页端同款 */
+  .contacts-sec-head{display:flex;align-items:center;gap:4px}
+  .sec-acts{margin-left:auto;display:flex;align-items:center;gap:4px}
+  .contacts-sec-head .mini{padding:2px 8px;font-size:11px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--muted);cursor:pointer}
+  .contacts-sec-head .mini:hover{color:var(--accent);border-color:var(--accent)}
+  /* 群头「⋯ 群组设置」 */
+  .group-dots{width:28px;height:26px;padding:0;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:16px;line-height:1;display:grid;place-items:center;cursor:pointer}
+  .group-dots:hover,.group-dots.on{color:var(--accent);border-color:var(--accent)}
+  /* 跨机对话 (第二栏好友钻取内): 与主区群聊气泡同款配色, 窄栏里自动换行 */
+  .relay-log{display:flex;flex-direction:column;gap:6px;padding:6px 8px;max-height:46vh;overflow-y:auto}
+  .relay-log .relay-msg{font-size:12px;line-height:1.5;border:1px solid var(--line);border-radius:9px;padding:6px 8px;background:var(--panel2);word-break:break-word}
+  .relay-log .relay-msg.mine{background:var(--active);align-self:flex-end;max-width:88%}
+  .relay-log .relay-msg.them{max-width:92%}
+  .relay-log .relay-meta{font-size:10px;color:var(--muted);margin-bottom:2px}
+  .relay-composer{display:flex;gap:6px;padding:4px 8px 8px}
+  .relay-composer input{flex:1;min-width:0;font-size:12px;padding:6px 8px;border-radius:8px;background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn-border)}
   .item{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;cursor:pointer;color:var(--text)}
   .item:hover{background:var(--panel2)}
   .item.active{background:var(--active);border:1px solid var(--line)}
@@ -238,15 +258,22 @@
   #splash .sp-word{margin-top:16px;font-size:28px;font-weight:800;letter-spacing:.5px;display:flex;align-items:baseline;justify-content:center;gap:10px}
   #splash .sp-word small{font-size:19px;font-weight:700;color:#c4d640;letter-spacing:3px}
   #splash .sp-sub{margin-top:8px;font-size:12px;color:#8c8c84}
-  /* ── 2026-10-28 (用户): 自定义窗口外壳 (标题栏) — 极简, 平时不占地方, 右上龙订阅 ── */
-  /* ── 2026-10-28 (用户): 窗口外壳(标题栏) — 可拖拽区; 毛玻璃透明; Bolloon 空闲隐藏, hover 显形 ── */
-  #titlebar{position:fixed;top:0;left:0;right:0;height:32px;z-index:200;display:flex;align-items:center;gap:8px;padding:0 10px 0 80px;background:rgba(18,18,16,.4);backdrop-filter:blur(16px) saturate(140%);-webkit-app-region:drag;color:#effb06;font-weight:700;font-size:13px;letter-spacing:.3px;user-select:none;transition:background .18s}
-  #titlebar:hover{background:rgba(18,18,16,.6)}
-  #titlebar .tb-title{color:#effb06;opacity:0;transition:opacity .18s}
-  #titlebar:hover .tb-title{opacity:1}
-  #titlebar .grow{flex:1}
-  #titlebar .dragon-btn{-webkit-app-region:no-drag;width:24px;height:24px}
-  #app{box-sizing:border-box;padding-top:32px}
+  /* ── 2026-10-30 (用户): 窗口外壳从"顶部标题栏"改为**左侧外壳栏** (独立列, 与第一栏并列)。
+        原因: 顶部外壳与主区 header 共存 = 两条横栏叠着 (用户: "顶栏外壳的位置没有更改, 和顶部标签栏共存")。
+        外壳栏兼作窗口拖拽区, 毛玻璃但**明显更实** (用户: "毛玻璃透明的没有这么高")。
+        网页端 (非 Tauri 壳) display:none, 布局与改动前一致。 ── */
+  .shell-rail{display:none}
+  body.desktop3col .shell-rail{
+    display:flex;flex-direction:column;align-items:center;gap:14px;
+    background:rgba(23,23,21,.86);backdrop-filter:blur(20px) saturate(150%);-webkit-backdrop-filter:blur(20px) saturate(150%);
+    border-right:1px solid var(--line);padding:14px 0;min-width:0;overflow:hidden;
+    -webkit-app-region:drag;
+  }
+  body.desktop3col .shell-rail .shell-logo{-webkit-app-region:no-drag;display:block;width:30px;height:30px;border-radius:9px;overflow:hidden;flex:none;box-shadow:0 0 0 1px var(--line)}
+  body.desktop3col .shell-rail .shell-logo svg{width:100%;height:100%;display:block}
+  body.desktop3col .shell-rail .dragon-btn{-webkit-app-region:no-drag;width:26px;height:26px;padding:0;border-radius:8px;background:transparent;border:1px solid var(--line);color:var(--accent);display:grid;place-items:center}
+  body.desktop3col .shell-rail .dragon-btn svg{width:16px;height:16px;display:block}
+  #app{box-sizing:border-box}
   .composer-footer{display:flex;gap:8px;padding:0 16px 12px}
   .mini{font-size:12px;padding:5px 9px;border-radius:999px;color:var(--muted)}
   .mini:hover{color:var(--text)}
@@ -365,19 +392,20 @@
   .primary-rail{display:none}
   body.desktop3col .primary-rail{
     display:flex;flex-direction:column;align-items:center;gap:14px;
-    background:rgba(18,18,16,.4);backdrop-filter:blur(16px) saturate(140%);border-right:1px solid var(--line);padding:14px 0;min-width:0;overflow:hidden;
+    background:rgba(23,23,21,.86);backdrop-filter:blur(20px) saturate(150%);-webkit-backdrop-filter:blur(20px) saturate(150%);border-right:1px solid var(--line);padding:14px 0;min-width:0;overflow:hidden;
   }
   body.desktop3col .rail-group{display:flex;flex-direction:column;align-items:center;gap:12px}
   body.desktop3col .rail-btn svg{width:21px;height:21px;display:block}
-  body.desktop3col #app{grid-template-columns:56px 284px minmax(0,1fr)}
-  /* 桌面 APP 收缩: 整个第二栏完全消失 (只留第一栏 + 主区), 不预留第二栏宽度 */
-  body.desktop3col #app.collapsed{grid-template-columns:56px 0 minmax(0,1fr)}
-  body.desktop3col #app.room-open{grid-template-columns:56px 284px minmax(0,1fr) var(--roomw,360px)}
-  body.desktop3col #app.collapsed.room-open{grid-template-columns:56px 0 minmax(0,1fr) var(--roomw,360px)}
+  /* 四列: 外壳栏(52) | 导航栏(56) | 第二栏(284) | 主区 */
+  body.desktop3col #app{grid-template-columns:52px 56px 284px minmax(0,1fr)}
+  /* 桌面 APP 收缩: 整个第二栏完全消失 (只留外壳栏 + 第一栏 + 主区), 不预留第二栏宽度 */
+  body.desktop3col #app.collapsed{grid-template-columns:52px 56px 0 minmax(0,1fr)}
+  body.desktop3col #app.room-open{grid-template-columns:52px 56px 284px minmax(0,1fr) var(--roomw,360px)}
+  body.desktop3col #app.collapsed.room-open{grid-template-columns:52px 56px 0 minmax(0,1fr) var(--roomw,360px)}
   /* 桌面端: 第二栏顶部的 Bolloon logo + 折叠按钮是网页端的设置, APP 第一栏已是完整侧边栏 ⇒ 移除 */
   body.desktop3col .brand{display:none}
   body.desktop3col .rail-gap{flex:1}
-  body.desktop3col .rail-logo{display:block;width:30px;height:30px;border-radius:9px;overflow:hidden;flex:none;cursor:pointer;box-shadow:0 0 0 1px var(--line)}
+  body.desktop3col .rail-logo{display:none} /* 外壳栏已有品牌 logo (同一个折叠开关), 不再重复一个 */
   body.desktop3col .rail-logo svg{width:100%;height:100%;display:block}
   body.desktop3col .rail-btn{width:38px;height:34px;padding:0;border-radius:9px;font-size:15px;display:grid;place-items:center}
   body.desktop3col .rail-btn.on{border-color:var(--accent);color:var(--accent);font-weight:600}
@@ -443,8 +471,8 @@
   body.desktop3col #worldTabBtn,body.desktop3col #roomBtn{display:none}
   /* ── 响应式: 桌面窗口过窄时第二栏收成图标列 (第一栏/主区保留) ── */
   @media(max-width:860px){
-    body.desktop3col #app{grid-template-columns:56px 66px minmax(0,1fr)}
-    body.desktop3col #app.room-open{grid-template-columns:56px 66px minmax(0,1fr) var(--roomw,360px)}
+    body.desktop3col #app{grid-template-columns:52px 56px 66px minmax(0,1fr)}
+    body.desktop3col #app.room-open{grid-template-columns:52px 56px 66px minmax(0,1fr) var(--roomw,360px)}
   }
 
   /* ── 2026-10-29: 手机端 (Tauri Android, ?app=mobile) — 底部四 tab, 无侧栏 ── */
@@ -467,6 +495,7 @@
   #mobBack{display:none;position:fixed;top:calc(8px + env(safe-area-inset-top));left:8px;z-index:81;width:38px;height:38px;border-radius:50%;background:var(--panel);border:1px solid var(--line);color:var(--text);font-size:20px;line-height:1}
   body.mobile #app.mob-detail #mobBack{display:block}
 </style>
+<script>if(window.__TAURI__&&window.__TAURI__.core&&window.__TAURI__.core.invoke)document.documentElement.classList.add('tauri');</script>
 </head>
 <body>
   <div id="splash">
@@ -486,13 +515,13 @@
   <input id="askInput" />
   <div class="row"><button id="askCancel">取消</button><button class="primary" id="askOk">确定</button></div>
 </dialog>
-<div id="titlebar" data-tauri-drag-region>
-  <span class="tb-title">Bolloon</span>
-  <span class="grow"></span>
-  <!-- 2026-10-28 (用户): 窗口外壳右上龙形订阅按钮 (帛龙 = bolloon 中文名) -->
-  <button id="dragonSubBtn" class="dragon-btn" title="订阅 Bolloon 更新（帛龙）" aria-label="订阅"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 17c1.4-1 2.4-2.4 3.9-2.4S10 16 12 16s3-2 5-2 3 1.4 4 1.4"/><path d="M20.5 13.4c.7 0 1.4.4 1.6 1.4-.2.9-.9 1.4-1.8 1.2"/><path d="M19.8 14.6l.9-2.5.8.6"/><circle cx="21.1" cy="15.1" r=".5" fill="currentColor"/><path d="M14 13.6c-.7 2-2 3.3-3.7 3.3-1.7 0-2.8-1-2.8-2.5.2-1.9 1.9-3.3 3.8-3.3 1.5 0 2.6.8 3.2 2.1"/><path d="M9.8 11.4c.3-1.5-.1-2.8-1.2-3.6"/></svg></button>
-</div>
 <div id="app">
+  <!-- 2026-10-30 (用户): 窗口外壳 = 左侧外壳栏 (原顶部标题栏移到这里) — 品牌 + 龙订阅 + 拖拽区; 毛玻璃但更实 -->
+  <div class="shell-rail" id="shellRail" data-tauri-drag-region>
+    <span class="shell-logo" id="shellLogo" role="img" aria-label="Bolloon" title="Bolloon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#effb06"/><ellipse cx="15.9" cy="17.6" rx="6.5" ry="7.7" fill="none" stroke="#1b1a19" stroke-width="4.2"/><circle cx="15.9" cy="5.6" r="2.5" fill="#1b1a19"/></svg></span>
+    <div class="rail-gap"></div>
+    <button id="dragonSubBtn" class="dragon-btn" title="订阅 Bolloon 更新（帛龙）" aria-label="订阅"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 17c1.4-1 2.4-2.4 3.9-2.4S10 16 12 16s3-2 5-2 3 1.4 4 1.4"/><path d="M20.5 13.4c.7 0 1.4.4 1.6 1.4-.2.9-.9 1.4-1.8 1.2"/><path d="M19.8 14.6l.9-2.5.8.6"/><circle cx="21.1" cy="15.1" r=".5" fill="currentColor"/><path d="M14 13.6c-.7 2-2 3.3-3.7 3.3-1.7 0-2.8-1-2.8-2.5.2-1.9 1.9-3.3 3.8-3.3 1.5 0 2.6.8 3.2 2.1"/><path d="M9.8 11.4c.3-1.5-.1-2.8-1.2-3.6"/></svg></button>
+  </div>
   <!-- 2026-10-26 (用户): 桌面三栏 — 第一栏: 全局导航栏。
        仅 Tauri 壳显示 (?app=desktop → body.desktop3col); 网页端 display:none。
        职责: 只做模块切换 + 全局入口 (relay 到现有按钮), 不放列表 — 列表在第二栏。 -->
@@ -540,11 +569,12 @@
            布局与默认第二栏同款 (.sec + .item), 逻辑关系是「外部好友 × 外部智能体」 -->
       <div id="contactsSlot">
         <div id="contactsList">
-          <div class="sec">好友</div>
+          <!-- 2026-10-30 (用户): 群组页面 = 加好友 / 加群 / 创建群 都在这里 (入口不再散在侧栏底部) -->
+          <div class="sec contacts-sec-head">好友<span class="sec-acts"><button class="mini" id="addFriendBtn" title="搜索 DID / 手机号 / 邮箱 / 姓名 加好友">＋ 加好友</button></span></div>
           <div id="friendList"></div>
           <div class="sec" id="secFriendReq" style="display:none">好友请求</div>
           <div id="friendRequests"></div>
-          <div class="sec contacts-sec-head">群聊<button class="mini" id="newGroupBtn" title="新建群聊">＋</button></div>
+          <div class="sec contacts-sec-head">群组<span class="sec-acts"><button class="mini" id="joinGroupBtn" title="用邀请链接加入群组">加群</button><button class="mini" id="newGroupBtn" title="创建群组">＋ 创建</button></span></div>
           <div id="groupList"></div>
         </div>
         <div id="contactsFriend" style="display:none">
@@ -552,18 +582,22 @@
             <div class="ava">←</div>
             <div class="txt"><b id="friendDidShort">好友</b><small>返回通讯录</small></div>
           </div>
-          <div class="sec">智能体（对方分享）</div>
+          <!-- 2026-10-30 (用户): 点好友 → 看对方**开放的智能体** → 点智能体跨机聊天 (对端执行, 本机转发) -->
+          <div class="sec">对方的智能体</div>
           <div id="friendAgents"></div>
-          <div class="sec">会话</div>
-          <div id="friendSessions"></div>
-          <div class="sec">共同群聊</div>
+          <div class="sec" id="relayHead" style="display:none">跨机对话 · <span id="relayWho"></span></div>
+          <div id="relayLog" class="relay-log" style="display:none"></div>
+          <div id="relayComposer" class="relay-composer" style="display:none">
+            <input id="relayInput" placeholder="发给对方的智能体（Enter 发送）" autocomplete="off" />
+            <button class="mini" id="relaySend">发送</button>
+          </div>
+          <div class="sec">共同群组</div>
           <div id="friendGroups"></div>
         </div>
       </div>
     </div>
     <div class="side-actions">
       <button id="sideEndBtn" title="结束当前交流（/api/room/stop）">结束</button>
-      <button id="sideInviteBtn" title="复制群邀请链接（人类点一下即可复制；智能体用 /api/groups/{id}/invite）">邀请</button>
     </div>
     <div class="side-update"><button id="updateBtn" title="下载更新" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button></div>
     <div class="account" id="account" title="点击绑定手机号 / 查看身份">
@@ -628,24 +662,29 @@
         <button class="mini" id="nodeFriendBtn">互加好友+直连</button>
       </div>
       <div class="ct-head" id="nodeStatus"></div>
-      <!-- 2026-10-28 (用户): 群聊 — 用 orbit 邀请链接加入 (后端 /api/groups/join 开出与邀请方同一个 store) -->
-      <div class="ct-head" style="margin-top:14px">群聊 — 粘贴 orbit 邀请链接加入（内容寻址，开出与邀请方同一个 store）</div>
+      <!-- 2026-10-30 (用户): 群组区 —— 创建群组 / 加群 (粘贴 orbit 邀请链接), 与好友搜索同一页 -->
+      <div class="ct-head" style="margin-top:14px">群组 — 创建群组，或用邀请链接加入（内容寻址，开出与邀请方同一个 store）</div>
       <div class="ct-search">
-        <input id="groupLinkInput" type="search" placeholder="bolloon://join/…" autocomplete="off" />
-        <button class="mini" id="groupLinkJoinBtn">加入群聊</button>
+        <input id="groupLinkInput" type="search" placeholder="bolloon://join/… 邀请链接" autocomplete="off" />
+        <button class="mini" id="groupLinkJoinBtn">加群</button>
+        <button class="mini" id="createGroupBtn">＋ 创建群组</button>
       </div>
     </div>
     <!-- 2026-10-27: 群聊面板 (通讯录 → 群聊) — 真收发: GET /api/groups/{id}/messages · POST /api/groups/{id}/say (Ed25519 签名) -->
     <div id="groupView">
       <div class="group-head">
-        <b id="groupName">群聊</b>
+        <b id="groupName">群组</b>
         <span id="groupMeta" style="color:var(--muted);font-size:11px"></span>
         <span class="grow"></span>
-        <button id="groupInvite" class="mini" title="生成 orbit 邀请链接（内容寻址，对方开出同一个群）">邀请</button>
-        <button id="groupJoinLink" class="mini" title="用 orbit 邀请链接加入群聊">加入</button>
-        <button id="groupTopicsBtn" class="mini" title="子讨论 / 小组内部分组讨论（组织内部）">子讨论</button>
-        <button id="groupShareRead" class="mini" title="生成只读分享快照链接（不加入也能看）">分享只读</button>
-        <button id="groupClose" class="mini" title="关闭群聊">✕</button>
+        <button id="groupInvite" class="mini" title="邀请成员（复制邀请链接）">邀请</button>
+        <button id="groupDots" class="group-dots" title="群组设置" aria-label="群组设置" aria-haspopup="menu">⋯</button>
+      </div>
+      <!-- 群组设置菜单: 条目都是既有按钮的 id, 原有绑定照常生效 (不另写一套逻辑) -->
+      <div id="groupMenu" class="menu hidden" role="menu">
+        <button id="groupTopicsBtn" title="子讨论 / 小组内部分组讨论（组织内部）">子讨论</button>
+        <button id="groupShareRead" title="生成只读分享快照链接（不加入也能看）">分享只读链接</button>
+        <button id="groupJoinLink" title="用 orbit 邀请链接加入其他群组">加入其他群组…</button>
+        <button id="groupClose" title="关闭群组面板">关闭群组</button>
       </div>
       <div id="topicPanel" style="display:none;border-bottom:1px solid var(--btn-border);padding:8px;background:var(--bg2)">
         <div style="display:flex;gap:6px;margin-bottom:6px">
@@ -1057,7 +1096,14 @@ function renderRoomTabs(groups){
 }
 function switchRoomGroup(id){activeRoomGroup=id;roomPickedDirty=false;loadRoom();}
 async function newRoomGroup(){
-  try{const r=await api('/api/room/new',{method:'POST',body:'{}'});activeRoomGroup=r.id;await loadRoom();}catch(e){alert(e.message);}
+  // 2026-10-30 (用户): 群组按名字来, 不加数字 —— 新建商议群组时问名字; 同名会复用同一个群
+  const name=await askText('新建商议群组','群组名字','同名 = 同一个群组（不会自动编号）');
+  if(name===null)return;
+  try{
+    const r=await api('/api/room/new',{method:'POST',body:JSON.stringify({name:String(name||'').trim()})});
+    activeRoomGroup=r.id;await loadRoom();
+    if(r.reused)toast('已存在同名群组，直接打开');
+  }catch(e){alert(e.message);}
 }
 async function closeRoomGroup(id){
   try{const r=await api('/api/room/close',{method:'POST',body:JSON.stringify({group_id:id})});if(activeRoomGroup===id)activeRoomGroup=r.active_group_id||'';await loadRoom();}catch(e){alert(e.message);}
@@ -1135,14 +1181,11 @@ function renderSettingsUpdate(){
 function syncRailUpdate(){
   if(IN_TAURI){ renderTauriUpdate(); return; }
   const rb=$('railUpdateBtn'); if(!rb)return;
-  const tb=$('topUpdateBtn');
   if(update&&update.available){
     rb.style.display='';rb.classList.add('available');
     rb.title='有新版本 '+update.latest+'，点击自动更新';
-    if(tb){tb.style.display='';tb.classList.add('available');tb.title=rb.title;}
   }else{
     rb.style.display='none';rb.classList.remove('available');
-    if(tb){tb.style.display='none';tb.classList.remove('available');}
   }
 }
 // ───────────────────────── Tauri 原生更新 (tauri-plugin-updater) ─────────────────────────
@@ -1875,12 +1918,6 @@ function setUpdateStage(text,stage){
     rb.textContent=(stage==='install'||stage==='restart')?'⏳':(stage==='done')?'✓':'⟳';
     rb.title=text;
   }
-  const tb=$('topUpdateBtn');
-  if(tb){
-    tb.style.display='';tb.classList.add('available');
-    tb.textContent=(stage==='install'||stage==='restart')?'⏳':(stage==='done')?'✓':'⟳';
-    tb.title=text;
-  }
 }
 async function runUpdateFlow(){
   if(IN_TAURI){ await tauriInstallUpdate(); return; }
@@ -2180,23 +2217,6 @@ function setDesktopModule(mod) {
   document.querySelectorAll('#primaryRail .rail-btn[data-module]').forEach(b => {
     b.classList.toggle('on', b.dataset.module === mod);
   });
-  document.querySelectorAll('#topNav .top-nav-btn[data-module]').forEach(b => {
-    b.classList.toggle('on', b.dataset.module === mod);
-  });
-}
-// 2026-10-28 (用户): 顶部导航栏 — 与第一栏 rail 同源切换; 世界/通讯录/内部商议 relay 到既有 tab 按钮 (.click()), 复用其完整逻辑
-function initTopNav(){
-  const nav=$('topNav'); if(!nav)return;
-  nav.querySelectorAll('.top-nav-btn').forEach(b=>{
-    b.addEventListener('click',()=>{
-      const mod=b.dataset.module;
-      nav.querySelectorAll('.top-nav-btn').forEach(x=>x.classList.toggle('on',x.dataset.module===mod));
-      if(mod==='chat'){ setDesktopModule('chat'); setPanel('chat'); }
-      else if(mod==='world'){ const w=$('worldTabBtn'); if(w)w.click(); }
-      else if(mod==='contacts'){ const c=$('contactsTabBtn'); if(c)c.click(); }
-      else if(mod==='room'){ const r=$('roomBtn'); if(r)r.click(); }
-    });
-  });
 }
 function initDesktopThreeCol() {
   if (document.body.classList.contains('desktop3col')) return; // 幂等
@@ -2209,14 +2229,19 @@ function initDesktopThreeCol() {
     b.addEventListener('click', () => {
       const mod = b.dataset.module;
       setDesktopModule(mod);
-      setPanel(mod === 'world' ? 'world' : 'chat');
-      if (mod === 'contacts') loadContacts(); // 好友 / 群聊列表按需拉取
+      if (mod === 'contacts') {
+        // 通讯录模块 = 群组页面: 主区必须切到通讯录页 (加好友搜索框 + 创建/加入群组入口在那儿)
+        if (activeGroupId) closeGroup();
+        setPanel('contacts');
+        loadContacts();
+      } else {
+        setPanel(mod === 'world' ? 'world' : 'chat');
+      }
     });
   });
   // 第一栏底部全局入口 → relay 到现有按钮, 不重复绑定逻辑
   // 更新: 走与 #updateBtn 同一个 runUpdateFlow (下载→校验→原子替换→重启→reload), 不另写一份
   $('railUpdateBtn').onclick = () => runUpdateFlow();
-  const tb2=$('topUpdateBtn'); if(tb2) tb2.onclick = () => runUpdateFlow(); // 外壳(标题栏)已无此按钮, 判空
   $('railThemeBtn').onclick = (e) => { e.stopPropagation(); $('themeBtn').click(); }; // 黑白切换放进头像: 点角落图标切主题 (不触发打开设置)
   $('railRoomBtn').onclick = () => $('roomBtn').click();
   $('railAva').onclick = (e) => { if (e.target.closest('#railThemeBtn')) return; openSettings(); }; // 点头像=设置, 主题小圆点已单独处理
@@ -2224,12 +2249,14 @@ function initDesktopThreeCol() {
   new MutationObserver(syncRailAva).observe($('accountAva'), { childList: true, subtree: true });
   syncRailAva();
   // APP 第一栏即完整侧边栏: 点 Bolloon 图标 = 折叠/展开第二栏 (收缩后第二栏完全消失, 只留第一栏)
-  $('railLogo').onclick = () => {
+  const toggleAside = () => {
     const app=$('app');
     if(app.classList.contains('collapsed'))app.classList.remove('collapsed');
     else app.classList.add('collapsed');
     syncCollapseHint();
   };
+  $('railLogo').onclick = toggleAside;
+  const shellLogo=$('shellLogo'); if(shellLogo) shellLogo.onclick = toggleAside;
   syncCollapseHint();
   setDesktopModule('chat');
 }
@@ -2246,15 +2273,24 @@ async function loadContacts(){
   try{contactGroups=await api('/api/groups');}catch(_){contactGroups=null;}
   renderContacts();
 }
+// 2026-10-30 (用户): 群组以**名字**为准 — 展示层不出现 gw-xxx 这类技术 id, 名字缺省就叫「未命名群组」
+const groupLabel=(g)=>String((g&&g.name)||'').trim()||'未命名群组';
+function contactNameMap(){
+  const m={};((contacts&&contacts.items)||[]).forEach(c=>{if(c&&c.did&&c.name)m[c.did]=String(c.name);});
+  return m;
+}
 function renderContacts(){
   const fl=$('friendList'),rl=$('friendRequests'),gl=$('groupList');
   if(!fl)return;
+  const names=contactNameMap();
   const friends=(contacts&&contacts.friends)||[];
-  fl.innerHTML=friends.length?friends.map(did=>`
+  fl.innerHTML=friends.length?friends.map(did=>{
+    const nm=names[did]||'';
+    return `
     <div class="item${did===activeFriendDid?' active':''}" onclick="openFriend('${did}')">
       <div class="ava">👤</div>
-      <div class="txt"><b>${escapeHTML(shortDid(did))}</b><small>${escapeHTML(shortDid(did))}</small></div>
-    </div>`).join(''):'<div class="hint">(还没有好友 — 可用手机号 / 邮箱加好友)</div>';
+      <div class="txt"><b>${escapeHTML(nm||shortDid(did))}</b><small>${escapeHTML(nm?'好友 · 点开看对方智能体':'好友 · 点开看对方智能体')}</small></div>
+    </div>`;}).join(''):'<div class="hint">(还没有好友 — 点「＋ 加好友」搜索手机号 / DID / 邮箱)</div>';
   const reqs=((contacts&&contacts.requests)||[]).filter(r=>String(r.status).toLowerCase()==='pending');
   $('secFriendReq').style.display=reqs.length?'':'none';
   rl.innerHTML=reqs.map(r=>`
@@ -2268,20 +2304,91 @@ function renderContacts(){
   gl.innerHTML=groups.length?groups.map(g=>`
     <div class="item${g.id===activeGroupId?' active':''}" onclick="openGroup('${g.id}')">
       <div class="ava">👥</div>
-      <div class="txt"><b>${escapeHTML(g.name||g.id)}</b><small>${escapeHTML(shortDid(g.owner))}</small></div>
-    </div>`).join(''):'<div class="hint">(还没有群聊)</div>';
+      <div class="txt"><b>${escapeHTML(groupLabel(g))}</b><small>${escapeHTML(aclTag(g.acl))}</small></div>
+    </div>`).join(''):'<div class="hint">(还没有群组 — 点「＋ 创建」或「加群」)</div>';
 }
 async function openFriend(did){
   activeFriendDid=did;
   if(!contactGroups) await loadContacts(); // 确保群列表已拉 (按 owner/ACL 过滤共同群聊)
   $('contactsList').style.display='none';
   $('contactsFriend').style.display='';
-  $('friendDidShort').textContent=shortDid(did);
-  // 后端暂无「好友分享给我的智能体」端点 ⇒ 如实空态 (不造假数据, 端点落地后替换这两行)
-  $('friendAgents').innerHTML='<div class="hint">(对方尚未分享智能体 — 后端暂无跨机智能体共享端点)</div>';
-  $('friendSessions').innerHTML='<div class="hint">(需先拿到对方分享的智能体)</div>';
+  const nm=contactNameMap()[did]||'';
+  $('friendDidShort').textContent=nm||shortDid(did);
+  hideRelay();
+  await loadFriendAgents(did);
   renderFriendGroups(did);
 }
+
+// ── 2026-10-30 (用户): 点好友 → 看对方**开放的智能体** → 点智能体跨机聊天 ──
+//   链路: 本机 GET /api/friends/{did}/agents (代理到对端 /api/agents/public)
+//        发消息 POST /api/friends/{did}/chat → 对端 /api/agents/public/chat (**对端模型真跑**)
+//   诚实边界: 对端节点不在线 / 没登记对端地址 ⇒ 明确报原因, 不伪造列表与回复。
+let relayState={did:'',agentId:'',agentName:'',log:[]};
+async function loadFriendAgents(did){
+  const box=$('friendAgents'); if(!box)return;
+  box.innerHTML='<div class="hint">正在问对方的节点…</div>';
+  try{
+    const r=await api('/api/friends/'+encodeURIComponent(did)+'/agents');
+    if(r&&r.error)throw new Error(r.error);
+    const list=(r&&r.agents)||[];
+    if(!list.length){
+      box.innerHTML='<div class="hint">对方没有开放的智能体'+(r&&r.note?' · '+escapeHTML(r.note):'')+'</div>';
+      return;
+    }
+    box.innerHTML=list.map(a=>`
+      <div class="item relay-pick" data-agent="${escapeHTML(a.id||'')}" data-name="${escapeHTML(a.name||a.id||'')}">
+        <div class="ava">🤖</div>
+        <div class="txt"><b>${escapeHTML(a.name||a.id||'智能体')}</b><small>${escapeHTML(String(a.soul||a.intro||'对好友开放').replace(/\s+/g,' ').slice(0,42))}</small></div>
+      </div>`).join('');
+    if(r&&r.peer)box.insertAdjacentHTML('beforeend','<div class="hint">来自 '+escapeHTML(r.peer)+'</div>');
+  }catch(e){
+    box.innerHTML='<div class="hint">拿不到对方智能体: '+escapeHTML(String((e&&e.message)||e))+'</div>';
+  }
+}
+function hideRelay(){
+  relayState={did:'',agentId:'',agentName:'',log:[]};
+  ['relayHead','relayLog','relayComposer'].forEach(id=>{const el=$(id);if(el)el.style.display='none';});
+  const w=$('relayWho'); if(w)w.textContent='';
+}
+function openRelay(did,agentId,agentName){
+  relayState={did,agentId,agentName,log:[]};
+  $('relayHead').style.display=''; $('relayLog').style.display=''; $('relayComposer').style.display='';
+  $('relayWho').textContent=agentName;
+  renderRelay();
+  const inp=$('relayInput'); if(inp)inp.focus();
+}
+function renderRelay(){
+  const box=$('relayLog'); if(!box)return;
+  box.innerHTML=relayState.log.length?relayState.log.map(m=>`
+    <div class="relay-msg ${m.role==='me'?'mine':'them'}">
+      <div class="relay-meta">${escapeHTML(m.role==='me'?'我':relayState.agentName)}</div>
+      ${mdToHTML(String(m.text||''))}
+    </div>`).join(''):'<div class="hint">说第一句 — 由对方的机器执行</div>';
+  box.scrollTop=box.scrollHeight;
+}
+async function sendRelay(){
+  const inp=$('relayInput'); const text=(inp.value||'').trim();
+  if(!text||!relayState.did||!relayState.agentId)return;
+  inp.value=''; relayState.log.push({role:'me',text}); renderRelay();
+  relayState.log.push({role:'them',text:'…'}); renderRelay();
+  try{
+    const r=await api('/api/friends/'+encodeURIComponent(relayState.did)+'/chat',{
+      method:'POST', body:JSON.stringify({agent_id:relayState.agentId,text})
+    });
+    if(r&&r.error)throw new Error(r.error);
+    relayState.log.pop(); relayState.log.push({role:'them',text:String((r&&r.reply)||'(空回复)')});
+  }catch(e){
+    relayState.log.pop(); relayState.log.push({role:'them',text:'跨机发送失败: '+String((e&&e.message)||e)});
+  }
+  renderRelay();
+}
+if($('friendAgents'))$('friendAgents').addEventListener('click',(ev)=>{
+  const row=ev.target.closest?ev.target.closest('.relay-pick'):null;
+  if(!row)return;
+  openRelay(activeFriendDid,row.dataset.agent||'',row.dataset.name||'');
+});
+if($('relaySend'))$('relaySend').onclick=sendRelay;
+if($('relayInput'))$('relayInput').addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendRelay();}});
 // 共同群聊: 群主是该好友 / 白名单含该好友 / 公开群(Open, 任何人可写) 都算"共同" — 用真实 /api/groups 数据, 不造假
 // acl 序列化 (默认 serde): 单元变体=字符串 "OwnerOnly"|"Open"; 新类型变体=对象 {"Whitelist":[did...]}
 function renderFriendGroups(did){
@@ -2297,8 +2404,8 @@ function renderFriendGroups(did){
   box.innerHTML=shared.length?shared.map(g=>`
     <div class="item${g.id===activeGroupId?' active':''}" onclick="openGroup('${g.id}')">
       <div class="ava">👥</div>
-      <div class="txt"><b>${escapeHTML(g.name||g.id)}</b><small>${escapeHTML(shortDid(g.owner))} · ${aclTag(g.acl)}</small></div>
-    </div>`).join(''):'<div class="hint">(没有与该好友共同的群聊)</div>';
+      <div class="txt"><b>${escapeHTML(groupLabel(g))}</b><small>${escapeHTML(aclTag(g.acl))}</small></div>
+    </div>`).join(''):'<div class="hint">(没有与该好友共同的群组)</div>';
 }
 function aclTag(acl){
   if(acl==='Open')return'公开群';
@@ -2319,7 +2426,7 @@ async function decideFriend(rid,act){
 $('friendBack').onclick=backToContacts;
 // 新建群聊: 复用页内 askText (Tauri 下 window.prompt 被禁, 不能用), 建完直接打开主区群聊面板
 async function createGroup(){
-  const name=await askText('新建群聊','新群聊','给群起个名字（后续可在群内邀请成员）');
+  const name=await askText('创建群组','群组名字','群组以名字为身份（同名 = 同一个群组，不会自动编号）');
   if(name===null)return;
   try{
     const g=await api('/api/groups',{method:'POST',body:JSON.stringify({name:(name||'').trim()||'新群聊'})});
@@ -2329,6 +2436,41 @@ async function createGroup(){
   }catch(e){ toast('创建群聊失败: '+e.message); }
 }
 $('newGroupBtn').onclick=createGroup;
+if($('createGroupBtn'))$('createGroupBtn').onclick=createGroup;
+// 2026-10-30 (用户): 群组页面 = 加好友 / 加群 / 创建群 三个入口都在这里
+//   加好友 → 主区通讯录页的搜索框 (/api/contacts/search); 加群 → 邀请链接加入; 创建 → 建群并打开
+function openAddFriendEntry(){
+  setPanel('contacts');
+  if(isDesktopShell) setDesktopModule('contacts');
+  if(activeGroupId) closeGroup();
+  ctSearch();
+  const inp=$('ctInput');
+  if(inp){ inp.focus(); if(inp.select)inp.select(); }
+}
+if($('addFriendBtn'))$('addFriendBtn').onclick=openAddFriendEntry;
+if($('joinGroupBtn'))$('joinGroupBtn').onclick=()=>joinGroupByLink();
+
+// ── 群头「⋯」= 群组设置: 菜单条目就是既有按钮 (id 不变 ⇒ 原绑定照常生效, 不写第二套逻辑) ──
+function toggleGroupMenu(){
+  const m=$('groupMenu'), b=$('groupDots');
+  if(!m||!b)return;
+  if(!m.classList.contains('hidden')){ m.classList.add('hidden'); b.classList.remove('on'); return; }
+  const r=b.getBoundingClientRect();
+  m.classList.remove('hidden'); b.classList.add('on');
+  m.style.left=Math.max(8,Math.min(r.right-170, innerWidth-182))+'px';
+  m.style.top=Math.min(r.bottom+6, innerHeight-190)+'px';
+}
+if($('groupDots'))$('groupDots').onclick=(e)=>{ e.stopPropagation(); toggleGroupMenu(); };
+['groupTopicsBtn','groupShareRead','groupJoinLink','groupClose'].forEach(id=>{
+  const b=$(id); if(!b)return;
+  b.addEventListener('click',()=>{ const m=$('groupMenu'); if(m)m.classList.add('hidden'); const d=$('groupDots'); if(d)d.classList.remove('on'); });
+});
+document.addEventListener('click',(e)=>{
+  const m=$('groupMenu'); if(!m||m.classList.contains('hidden'))return;
+  if(m.contains(e.target))return;
+  if(e.target.closest&&e.target.closest('#groupDots'))return;
+  m.classList.add('hidden'); const d=$('groupDots'); if(d)d.classList.remove('on');
+});
 
 // ── 群聊 orbit 邀请链接: 分享(签发 bolloon://join/…) / 加入(开出**同一个** store) ──
 // 后端已实现并在此接线: POST /api/groups/{id}/share {mode:'join'} · POST /api/groups/join {link}
@@ -2352,7 +2494,7 @@ async function joinGroupByLink(prefill){
     if(r.error)throw new Error(r.error);
     await loadContacts();
     if(r.group_id)openGroup(r.group_id);
-    toast('已加入群聊: '+(r.name||r.group_id));
+    toast('已加入群组: '+(r.name||'新群组'));
   }catch(e){ toast('加入群聊失败: '+e.message); }
 }
 if($('groupInvite'))$('groupInvite').onclick=shareGroupLink;
@@ -2366,20 +2508,7 @@ async function sidebarStopRoom(){
     toast('已结束本群交流');
   }catch(e){ toast('结束失败: '+e.message); }
 }
-// 邀请：优先用后端 /invite（同时给出可点链接 + 可发给其他智能体的 join 链接）
-async function sidebarInvite(){
-  if(!activeGroupId){ toast('请先打开一个群聊'); return; }
-  try{
-    const r=await api('/api/groups/'+encodeURIComponent(activeGroupId)+'/invite',{method:'GET'});
-    if(r&&r.error)throw new Error(r.error);
-    const link=r.abs_link||r.link||'';
-    if(!link)throw new Error('后端没有返回邀请链接');
-    try{ await navigator.clipboard.writeText(link); toast('邀请链接已复制: '+link); }
-    catch(_){ toast('邀请链接: '+link); }
-  }catch(e){ toast('邀请失败: '+e.message); }
-}
 if($('sideEndBtn'))$('sideEndBtn').onclick=sidebarStopRoom;
-if($('sideInviteBtn'))$('sideInviteBtn').onclick=sidebarInvite;
 if($('groupJoinLink'))$('groupJoinLink').onclick=()=>joinGroupByLink();
 if($('groupLinkJoinBtn'))$('groupLinkJoinBtn').onclick=()=>joinGroupByLink($('groupLinkInput')?$('groupLinkInput').value:'');
 
@@ -2427,12 +2556,15 @@ function openTopic(id){ openGroup(id, topicNames[id]||id); }
 // ── 群聊 (主区): 真收发 (/api/groups/{id}/messages · /say, Ed25519 签名) + 4s 轮询 ──
 async function openGroup(id, fallbackName){
   activeGroupId=id;
+  if(activeFriendDid) backToContacts();
   const g=((contactGroups&&contactGroups.groups)||[]).find(x=>x.id===id)||{};
   const m=document.querySelector('main');
   m.classList.remove('world-mode');              // 与世界面板互斥
   m.classList.add('group-mode');
-  $('groupName').textContent=g.name||fallbackName||id;
-  $('groupMeta').textContent=[shortDid(g.owner),g.address?('orbit '+String(g.address).slice(0,12)):''].filter(Boolean).join(' · ');
+  // 群组按名字识别: 标题只显示名字 (技术 id / orbit 地址只留在 title 提示里, 不进正文)
+  $('groupName').textContent=groupLabel(g)||fallbackName||'群组';
+  $('groupName').title=g.address?('orbit '+g.address):'';
+  $('groupMeta').textContent=[aclTag(g.acl),g.owner?('群主 '+shortDid(g.owner)):''].filter(Boolean).join(' · ');
   await loadGroupMessages();
   await loadGroupTopics();
   if(groupTimer)clearInterval(groupTimer);
@@ -2676,7 +2808,6 @@ loadWorld();
 setInterval(() => { if (!worldLoaded) loadWorld(); }, 60000);
 
 boot().finally(()=>{
-  initTopNav();
   // 2026-10-28 (用户): 启动 splash — 中文 locale 显示「帛龙」, 完全打开后淡出
   (function(){
     const zh=/^zh/i.test(navigator.language||'');

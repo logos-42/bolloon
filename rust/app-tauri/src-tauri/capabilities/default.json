@@ -1,9 +1,12 @@
 {
   "identifier": "default",
-  "description": "Bolloon 桌面默认权限：核心事件（接收更新进度）+ updater 插件",
-  "windows": ["main"],
+  "description": "Bolloon 桌面默认权限：核心事件（接收更新进度）+ updater 插件 + 壳命令 (check_update/update_install/relaunch)",
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
-    "updater:default"
+    "updater:default",
+    "bolloon-default"
   ]
 }

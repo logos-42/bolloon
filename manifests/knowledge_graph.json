@@ -246,6 +246,24 @@
       "source_file": "docs/wiki/durable-run-protocol.md"
     },
     {
+      "id": "dynamic-config.md",
+      "type": "chapter",
+      "label": "受治理动态配置 (bolloon-config)",
+      "tags": "[config, dynamic-config, harness, kernel-loop, multi-node, lease, ai-optimizer, observability]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/dynamic-config.md"
+    },
+    {
+      "id": "economic-layer.md",
+      "type": "chapter",
+      "label": "旁路经济层 (bolloon-econ)",
+      "tags": "[economics, cost-metering, intent-budget, settlement, shadow-mode, provider-registry, contributions]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/economic-layer.md"
+    },
+    {
       "id": "efficode.md",
       "type": "protocol",
       "label": "Efficode —— AI 专用交流语言 (参考实现 · 诚实边界 · 短消息开销真算)",
@@ -289,6 +307,15 @@
       "stage": "draft",
       "audience": "self",
       "source_file": "docs/wiki/four-terminal-intent-design.md"
+    },
+    {
+      "id": "friend-agent-relay.md",
+      "type": "chapter",
+      "label": "好友 × 对方开放的智能体 + 跨机对话 (设计 + 落地)",
+      "tags": "[contacts, friends, agents, cross-machine, rust-web]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/friend-agent-relay.md"
     },
     {
       "id": "github-and-raw-strategy.md",
@@ -780,12 +807,27 @@
     },
     {
       "from": "current-status.md",
-      "to": "rokid-glasses-baremetal.md",
+      "to": "friend-agent-relay.md",
       "type": "references"
     },
     {
       "from": "current-status.md",
       "to": "log.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "economic-layer.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "dynamic-config.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "rokid-glasses-baremetal.md",
       "type": "references"
     },
     {
@@ -979,6 +1021,11 @@
       "type": "references"
     },
     {
+      "from": "economic-layer.md",
+      "to": "task:id:desc.md",
+      "type": "references"
+    },
+    {
       "from": "efficode.md",
       "to": "agent-access-layer.md",
       "type": "references"
@@ -1091,6 +1138,16 @@
     {
       "from": "index.md",
       "to": "durable-run-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "economic-layer.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "dynamic-config.md",
       "type": "references"
     },
     {
@@ -1729,22 +1786,27 @@
       "type": "references"
     },
     {
+      "from": "rust-rewrite.md",
+      "to": "group-subtopic-sharing.md",
+      "type": "references"
+    },
+    {
       "from": "update-protocol.md",
       "to": "runtime-bootstrap-protocol.md",
       "type": "references"
     }
   ],
   "stats": {
-    "node_count": 81,
-    "edge_count": 200,
+    "node_count": 84,
+    "edge_count": 207,
     "node_types": {
       "meta": 16,
       "protocol": 22,
-      "chapter": 42,
+      "chapter": 45,
       "claim": 1
     },
     "edge_types": {
-      "references": 198,
+      "references": 205,
       "supersedes": 2
     }
   }
