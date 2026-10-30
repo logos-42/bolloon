@@ -6849,3 +6849,10 @@ server.mjs 与配置仍**只存在于机器上**(未镜像化) · 并发/长期�
 - 自查: `bolloon self [--json]` 与 `GET /api/agents/{id}/paths` 同源，给 DID/persona/memory/workspace/wallets 位置。
 - 一键创建智能体: 点「＋」直接建（自动名/头像/DID），随后开编辑框改名。
 - 收款人开权限: `bolloon pay credit <did> <金额>`（后台 `/api/pay/credit`）+ `bolloon pay accounts` 总览 —— 余额即权限。
+
+#### 充值弹窗「无法选中」根因（2026-10-30）
+
+- 现象: 四个通道全灰、点不动。
+- 真因: 不是 UI 逻辑, 是 **App 被带着临时 BOLLOON_HOME 启动**, data_dir 指到 scratch 目录, pay/config.json 不存在 ⇒ `/api/pay/info` 返回空 config ⇒ 渲染时 `b.disabled=!ready` 全禁用。
+- 修法: ① 没配收款信息的通道**不再禁用**, 只标 title 并在选中时明说没配哪一项 (`data-ready`); ② 从 shell 启动 App 前必须 `env -u BOLLOON_HOME open -a Bolloon.app`, 否则整个应用会指向别的 data_dir（本次踩到）。
+- 验证: App 自身端口 38168 → 四通道 disabled=false, crypto/alipay/wechat ready=1, paypal ready=0 但可选中并给出「还没配」说明。

@@ -1685,8 +1685,11 @@ function renderPay(){
     const ch=b.dataset.ch, c=cfg[ch]||{};
     const ready=(ch==='crypto'&&(c.address||(c.chains||[]).length))||(ch==='alipay'&&c.qr)||(ch==='wechat'&&c.qr)||(ch==='paypal'&&c.link);
     b.classList.toggle('on', ch===payChannel);
-    b.disabled=!ready;
-    b.title=ready?'':'本机还没配置 '+PAY_LABEL[ch]+' 的收款信息 (data_dir/pay/config.json)';
+    // 2026-10-30 (用户: 充值无法选中): 没配收款信息的通道**不禁用** ——
+    // 禁用了会让人以为整个弹窗坏了; 点进去照样能看说明和输入凭证。
+    b.disabled=false;
+    b.dataset.ready=ready?'1':'0';
+    b.title=ready?'':'本机还没配置 '+PAY_LABEL[ch]+' 的收款信息 (pay/config.json)';
   });
   // 今日用量 + 低余额提醒 (阈值来自 /api/pay/summary 的 low_balance)
   const today=(paySummary&&paySummary.today)||null;
@@ -1700,8 +1703,17 @@ function renderPay(){
     td.classList.toggle('low', !!(low&&low.hit));
   }
   const c=cfg[payChannel]||{};
+  // 选中通道没配收款信息时, 明说「没配」而不是留一片空白
+  const chanReady=(payChannel==='crypto'&&(c.address||(c.chains||[]).length))
+    ||((payChannel==='alipay'||payChannel==='wechat')&&c.qr)
+    ||(payChannel==='paypal'&&c.link);
+  if(!chanReady){
+    $('payTarget').innerHTML=`<div class="hint">这台机器还没配 ${PAY_LABEL[payChannel]||payChannel} 的收款信息。<br>
+      收款地址/收款码写在 <code>${(payInfo&&payInfo.data_dir)||'<data_dir>'}/pay/config.json</code>，
+      配好刷新这个弹窗即可；不影响你在这里先填金额和凭证。</div>`;
+  }
   const t=$('payTarget');
-  if(payChannel==='crypto'){
+  if(!chanReady){ /* 上面已提示没配, 不再覆盖 */ } else if(payChannel==='crypto'){
     // 多链: config.crypto.chains 有几条就列几条 (ETH/BASE · Solana · Bitcoin · Tron)
     const chains=(c.chains&&c.chains.length)?c.chains:[{label:PAY_CHAIN_LABEL[c.chain]||c.chain||'链上',asset:c.asset,address:c.address}];
     const rows=chains.filter(x=>x&&x.address).map((x,i)=>`
