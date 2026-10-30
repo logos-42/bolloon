@@ -566,6 +566,22 @@
   <input id="askInput" />
   <div class="row"><button id="askCancel">取消</button><button class="primary" id="askOk">确定</button></div>
 </dialog>
+
+<!-- 2026-10-30 (用户): 智能体钱包 —— 在这里创建本地钱包 / 绑定已有地址; 只收地址, 不收私钥 -->
+<dialog id="walletDlg" style="width:min(520px,94vw)">
+  <div class="pay-head">
+    <div><b>智能体钱包</b><span class="pay-sub" id="walletSub"></span></div>
+    <button class="pay-x" id="walletClose" aria-label="关闭">✕</button>
+  </div>
+  <div class="pay-target" id="walletList" style="margin:12px 16px 0"></div>
+  <div class="pay-form" style="padding:12px 16px 6px">
+    <button class="primary" id="walletCreate">创建本地钱包</button>
+    <input id="walletAddr" placeholder="绑定已有地址 0x…（只填地址，不要填私钥）" autocomplete="off" />
+    <button id="walletBind">绑定这个地址</button>
+  </div>
+  <div class="hint pay-note">绑定上限 20 个；自建不限，但建议低于 20 个便于管理。私钥只存在本机（0600），既不显示也不上传。</div>
+</dialog>
+
 <!-- 2026-10-30 (用户): 订阅/充值弹窗 —— 按量计费, 先充值后扣费; 默认加密钱包, 也支持支付宝/微信/PayPal (人工核销) -->
 <dialog id="payDlg">
   <div class="pay-head">
@@ -1722,6 +1738,57 @@ document.addEventListener('click',e=>{
   const b=e.target.closest&&e.target.closest('#payChannels button');
   if(b&&!b.disabled){ payChannel=b.dataset.ch; renderPay(); }
 });
+
+// ── 2026-10-30 (用户): 智能体钱包弹窗 —— 创建本地钱包 / 绑定已有地址 (只收地址, 不收私钥) ──
+let walletAgentId='';
+async function openWallet(agentId){
+  walletAgentId=agentId||'';
+  const d=$('walletDlg'); if(!d) return;
+  if(!d.open) d.showModal();
+  const a=(state.agents||[]).find(x=>x.id===walletAgentId)||{};
+  $('walletSub').textContent=a.name?('· '+a.name):'';
+  await refreshWallets();
+}
+async function refreshWallets(){
+  const box=$('walletList'); if(!box) return;
+  box.innerHTML='<span class="hint">读取中…</span>';
+  let r=null;
+  try{ r=await api('/api/agents/'+encodeURIComponent(walletAgentId)+'/wallets'); }catch(_){ r=null; }
+  if(!r){ box.innerHTML='<span class="hint">读不到钱包列表（后端不可达）</span>'; return; }
+  const ws=r.wallets||[], c=r.counts||{};
+  const rows=ws.length?ws.map(w=>`
+    <div class="pay-chain">
+      <span class="pay-chain-label">${w.source==='created'?'本机创建':'已绑定'}</span>
+      <span class="pay-addr">${w.address}</span>
+      <button class="pay-copy" data-rm="${w.address}">解绑</button>
+    </div>`).join(''):'<span class="hint">这个智能体还没有钱包</span>';
+  box.innerHTML=`${rows}
+    <div class="hint" style="margin-top:8px">已创建 ${c.created||0} 个（不限） · 已绑定 ${c.bound||0}/${c.bound_limit||20} 个</div>
+    ${r.warning?`<div class="hint" style="color:var(--glow)">${r.warning}</div>`:''}`;
+  box.querySelectorAll('[data-rm]').forEach(b=>b.onclick=async()=>{
+    try{ await api('/api/agents/'+encodeURIComponent(walletAgentId)+'/wallets/remove',{method:'POST',body:JSON.stringify({address:b.dataset.rm})}); await refreshWallets(); }
+    catch(e){ toast('解绑失败：'+e.message); }
+  });
+}
+$('walletClose').onclick=()=>$('walletDlg').close();
+$('walletCreate').onclick=async()=>{
+  try{
+    const r=await api('/api/agents/'+encodeURIComponent(walletAgentId)+'/wallets/create',{method:'POST',body:JSON.stringify({})});
+    if(r&&r.error){ toast(r.error); return; }
+    toast('已创建本地钱包 '+String(r.address||'').slice(0,10)+'…');
+    await refreshWallets();
+  }catch(e){ toast('创建失败：'+e.message); }
+};
+$('walletBind').onclick=async()=>{
+  const addr=($('walletAddr').value||'').trim();
+  if(!/^0x[0-9a-fA-F]{40}$/.test(addr)){ toast('要填 0x + 40 位十六进制地址（不是私钥）'); return; }
+  try{
+    const r=await api('/api/agents/'+encodeURIComponent(walletAgentId)+'/wallets/bind',{method:'POST',body:JSON.stringify({address:addr})});
+    if(r&&r.error){ toast(r.error); return; }
+    $('walletAddr').value=''; toast('已绑定');
+    await refreshWallets();
+  }catch(e){ toast('绑定失败：'+e.message); }
+};
 function toast(msg){
   const t=$('toast'); t.textContent=msg; t.classList.remove('hidden');
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.add('hidden'), 3200);
@@ -1751,7 +1818,7 @@ function openAgentMenu(e,id){
   const m=$('agentMenu');
   m.innerHTML=`
     <button onclick="renameAgentGlobal()">改默认全局名称</button>
-    <button onclick="authorizeWallet()">授权钱包</button>
+    <button onclick="openWallet(menuAgentId)">钱包（创建 / 绑定）</button>
     <button onclick="fixAgentPing()">固定 ping${ip[id]?`（${ip[id]}s）`:''}</button>
     <button onclick="shareAgent(menuAgentId)">分享</button>
     <button onclick="deleteAgent(menuAgentId)">删除</button>`;
@@ -1906,18 +1973,23 @@ async function pinSession(){
 // 2026-10-28 (用户): 最右上龙形订阅按钮 — 订阅 Bolloon 更新推送 (后端订阅端点待接, 先给诚实占位反馈)
 
 // ── 2026-10-30: 余额常驻提醒 —— 不打开充值弹窗也能看到; 关掉只在本次会话生效 ──
-let payBannerDismissed=false;
+let payBannerDismissed=false, payBannerCooldownUntil=0;
 async function checkPayBanner(){
   if(payBannerDismissed) return;
   const el=$('payBanner'); if(!el) return;
   let sum=null;
   try{ sum=await api('/api/pay/summary'); }catch(_){ sum=null; }
   const low=sum&&sum.low_balance;
-  if(!low||!low.hit){ el.classList.add('hidden'); return; }
+  // 2026-10-30 (用户): 有可用模型通路 (自带 key / 本地模型) 时**不提醒**充值 —— 那不是他缺钱, 是他不需要买。
+  if(!low||!low.hit||(sum&&sum.llm_ready)){ el.classList.add('hidden'); return; }
+  if(Date.now()<payBannerCooldownUntil) return;
   const bal=Number(sum.balance_usd||0).toFixed(2), th=Number(low.threshold_usd||0).toFixed(2);
   const today=sum.today||{};
   $('payBannerText').textContent=`余额 $${bal} 低于提醒线 $${th} — 今日 ${today.calls||0} 次调用${today.cost_usd?` · 已花 $${Number(today.cost_usd).toFixed(3)}`:''}，充值后继续用云端模型`;
   el.classList.remove('hidden');
+  // 默认只显示 20 秒, 之后收起来 30 分钟再看一眼 (不刷屏、也不彻底失联)
+  clearTimeout(el._hideTimer);
+  el._hideTimer=setTimeout(()=>{ el.classList.add('hidden'); payBannerCooldownUntil=Date.now()+30*60*1000; },20000);
 }
 $('payBannerTopup').onclick=()=>openPayDialog();
 $('payBannerClose').onclick=()=>{ payBannerDismissed=true; $('payBanner').classList.add('hidden'); };

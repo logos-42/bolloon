@@ -337,6 +337,16 @@ pub fn app(state: AppState) -> Router {
         .route("/api/pay/pricing", get(crate::pay::pay_pricing))
         // 给特定用户定等级/配额 (本机管理, 收款人本人操作)
         .route("/api/pay/user", post(crate::pay::pay_set_user))
+        // 收款人手动入账 (给某个 DID 开额度 = 开权限) + 所有账户余额总览
+        // 智能体钱包: 创建本地钱包 (自建不限) / 绑定已有地址 (上限 20) / 列表 / 解绑
+        // 智能体自查: 自己的 DID / persona / memory / workspace 路径
+        .route("/api/agents/{id}/paths", get(crate::native::agent_paths))
+        .route("/api/agents/{id}/wallets", get(crate::agent_wallet::list_wallets))
+        .route("/api/agents/{id}/wallets/create", post(crate::agent_wallet::create_wallet))
+        .route("/api/agents/{id}/wallets/bind", post(crate::agent_wallet::bind_wallet))
+        .route("/api/agents/{id}/wallets/remove", post(crate::agent_wallet::remove_wallet))
+        .route("/api/pay/credit", post(crate::pay::pay_credit))
+        .route("/api/pay/accounts", get(crate::pay::pay_accounts))
         // 收款码图片 (支付宝/微信), 只读 pay 目录
         .route("/api/pay/qr/{name}", get(crate::pay::pay_qr))
         // 今日用量汇总 + 余额提醒阈值; 以及你自己的 DeepSeek 账户余额 (服务端 key)

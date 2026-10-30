@@ -108,6 +108,16 @@ enum Commands {
         #[command(subcommand)]
         action: GroupAction,
     },
+    /// 自查: 我的 DID / persona / memory / workspace / 钱包文件在哪 (不常驻 prompt)
+    #[command(name = "self", alias = "self-info")]
+    SelfInfo {
+        /// 机器可读 (给智能体自己或脚本用)
+        #[arg(long)]
+        json: bool,
+        /// 指定智能体 (默认 bolloon)
+        #[arg(long, default_value = "")]
+        agent: String,
+    },
     /// 充值 / 用量 / 核销 (余额·今日用量·提交凭证·确认入账·价目·定档)
     Pay {
         #[command(subcommand)]
@@ -139,6 +149,26 @@ enum PayAction {
         port: u16,
         #[arg(long, default_value = "")]
         account: String,
+    },
+    /// 收款人手动入账: 钱到账后直接给这个 DID 开额度 (= 开付费权限)
+    Credit {
+        /// 用户 DID (did:pi:…)
+        did: String,
+        /// 金额 (美元)
+        amount: f64,
+        #[arg(long, default_value = "manual")]
+        channel: String,
+        #[arg(long, default_value = "")]
+        proof: String,
+        #[arg(long, default_value = "")]
+        note: String,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
+    /// 所有账户余额总览 (谁有多少额度、什么等级)
+    Accounts {
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
     },
     /// 收款人核对到账后确认入账
     Confirm {
@@ -268,6 +298,7 @@ async fn main() -> anyhow::Result<()> {
         },
         Some(Commands::Dream { topic, domain }) => run_dream(topic, &domain),
         Some(Commands::Group { action }) => run_group(action),
+        Some(Commands::SelfInfo { json, agent }) => run_self(json, &agent),
         Some(Commands::Pay { action }) => run_pay(action),
     }
 }
@@ -396,6 +427,46 @@ fn glass_login(port: u16, once: bool) -> anyhow::Result<()> {
 /// 子讨论 = 独立 orbit store（自带 ACL，组织内部才可写）；统一分享 join/read 对整群与子讨论同源。
 
 /// 付费链路 (与 web/App 同一套端点, CLI 只是另一个客户端)
+
+/// 自查 (2026-10-30 用户): 智能体不必把长路径塞进上下文, 需要时跑一次即可。
+fn run_self(json: bool, agent: &str) -> anyhow::Result<()> {
+    let home = bolloon_agent::home::BolloonHome::resolve();
+    let id = if agent.trim().is_empty() { "bolloon" } else { agent.trim() };
+    let persona = home.agent_persona_path(id).map(|p| p.display().to_string()).unwrap_or_default();
+    let memory = home.agent_memory_path(id).map(|p| p.display().to_string()).unwrap_or_default();
+    let agent_dir = home.root().join("agents").join(id);
+    let data = bolloon_web_data_dir();
+    let did = std::env::var("BOLLOON_DID").unwrap_or_default();
+    let wallets = data.join("agents").join(id).join("wallets.json").display().to_string();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "agent_id": id,
+                "did": did,
+                "home": home.root().display().to_string(),
+                "persona": persona,
+                "persona_global": home.global_persona_path().display().to_string(),
+                "memory": memory,
+                "workspace": agent_dir.join("workspace").display().to_string(),
+                "agent_dir": agent_dir.display().to_string(),
+                "wallets": wallets,
+                "data_dir": data.display().to_string(),
+            }))?
+        );
+    } else {
+        println!("智能体: {id}");
+        println!("DID:     {}", if did.is_empty() { "(未绑定手机号)" } else { did.as_str() });
+        println!("home:    {}", home.root().display());
+        println!("persona: {persona}");
+        println!("memory:  {memory}");
+        println!("工作区:  {}", agent_dir.join("workspace").display());
+        println!("钱包表:  {wallets}");
+    }
+    Ok(())
+}
+
 fn run_pay(action: PayAction) -> anyhow::Result<()> {
     let get = |url: String| -> anyhow::Result<serde_json::Value> {
         let r = ureq::get(&url)
@@ -505,6 +576,40 @@ fn run_pay(action: PayAction) -> anyhow::Result<()> {
             );
             println!("核对到账后运行: bolloon pay confirm {}", r["pending"]["id"].as_str().unwrap_or(""));
         }
+        PayAction::Credit { did, amount, channel, proof, note, port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let r = post(
+                format!("{base}/api/pay/credit"),
+                serde_json::json!({ "did": did, "amount_usd": amount, "channel": channel, "proof": proof, "note": note }),
+            )?;
+            if let Some(e) = r["error"].as_str() {
+                anyhow::bail!("入账失败: {e}");
+            }
+            println!(
+                "已入账 {did}  ${:.2} · 余额 ${:.2} · 待核销 ${:.2}",
+                amount,
+                r["balance_usd"].as_f64().unwrap_or(0.0),
+                r["pending_usd"].as_f64().unwrap_or(0.0)
+            );
+        }
+        PayAction::Accounts { port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let r = get(format!("{base}/api/pay/accounts"))?;
+            let rows = r["accounts"].as_array().cloned().unwrap_or_default();
+            if rows.is_empty() {
+                println!("（还没有任何账户账务）");
+            } else {
+                println!("{:<44} {:>10}  等级", "DID", "余额");
+                for a in rows {
+                    println!(
+                        "{:<44} {:>9.2}  {}",
+                        a["did"].as_str().unwrap_or(""),
+                        a["balance_usd"].as_f64().unwrap_or(0.0),
+                        a["tier"].as_str().unwrap_or("")
+                    );
+                }
+            }
+        }
         PayAction::Confirm { id, port } => {
             let base = format!("http://127.0.0.1:{port}");
             let r = post(
@@ -566,6 +671,11 @@ fn run_pay(action: PayAction) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// 与 bolloon-web 同一个数据目录口径: BolloonHome::resolve().root()
+fn bolloon_web_data_dir() -> std::path::PathBuf {
+    bolloon_agent::home::BolloonHome::resolve().root().to_path_buf()
 }
 
 /// 极简百分号编码 (did 里只有 `:` 需要)

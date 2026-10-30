@@ -1028,6 +1028,12 @@ pub async fn build_web_system(
     let docs = bolloon_agent::home::AgentDocs::freeze_with(&home, &agent_key, "web", &project_root)
         .or_else(|_| bolloon_agent::home::AgentDocs::freeze(&home, "bolloon"));
 
+    // 钱包动态注入 (2026-10-30 用户): 授权/创建之后, 下一句它就带着地址说话。
+    // 每轮现读, 不走记忆条目 —— 钱包变了就是变了, 不该等压缩/召回才生效。
+    let wallet_block = crate::agent_wallet::prompt_block(&agent_key);
+    // 一行指路, 不贴长路径: 智能体自查走 CLI/接口, 不占常驻上下文。
+    let self_hint = "\n## 自查\n你的 DID、persona、memory、workspace、钱包文件位置**不**常驻在这里；\n需要时跑 `bolloon self --json`（与 GET /api/agents/<你的id>/paths 同源）。\n";
+
     // 记忆召回 (top-N, 不是全量): 复用 MemoryStore::recall 的 importance×decay 打分
     let memory_text = {
         let store = st.memory.lock().await;
@@ -1049,7 +1055,15 @@ pub async fn build_web_system(
         }
         Err(_) => WEB_SYSTEM_PROMPT.to_string(),
     };
-    format!("{}{}{}{}", private_identity_block(agent), base, intent_block(st), extra)
+    format!(
+        "{}{}{}{}{}{}",
+        private_identity_block(agent),
+        base,
+        intent_block(st),
+        wallet_block,
+        self_hint,
+        extra
+    )
 }
 
 
@@ -5297,6 +5311,42 @@ pub async fn intent_observe(
         }
         Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("{e}") })),
     }
+}
+
+
+/// GET /api/agents/{id}/paths —— 这个智能体自己的身份与文件位置。
+///
+/// 刻意**不**塞进 system prompt: 路径很长, 常驻会白占注意力。
+/// 智能体需要时现查 (CLI `bolloon self --json` 是同一份来源)。
+pub async fn agent_paths(
+    axum::extract::Path(id): axum::extract::Path<String>,
+    State(st): State<AppState>,
+) -> Json<serde_json::Value> {
+    let home = bolloon_agent::home::BolloonHome::resolve();
+    let persona = home
+        .agent_persona_path(&id)
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let memory = home
+        .agent_memory_path(&id)
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let agent_dir = home.root().join("agents").join(&id);
+    let data = data_dir();
+    Json(serde_json::json!({
+        "ok": true,
+        "agent_id": id,
+        "did": st.identity.did.as_str(),
+        "home": home.root().display().to_string(),
+        "persona": persona,
+        "persona_global": home.global_persona_path().display().to_string(),
+        "memory": memory,
+        "workspace": agent_dir.join("workspace").display().to_string(),
+        "agent_dir": agent_dir.display().to_string(),
+        "wallets": data.join("agents").join(&id).join("wallets.json").display().to_string(),
+        "data_dir": data.display().to_string(),
+        "note": "这些位置会随 BOLLOON_HOME 变; 用本接口/`bolloon self --json` 现查, 不要写死在笔记里",
+    }))
 }
 
 /// GET /api/notify/count → 菜单栏角标: 待处理好友请求 + 待核销充值。

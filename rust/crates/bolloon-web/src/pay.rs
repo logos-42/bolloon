@@ -550,9 +550,16 @@ pub async fn pay_summary(
     // 提醒阈值: 配置里 low_balance_usd (美元), 缺省 1 美元
     let threshold = cfg.get("low_balance_usd").and_then(|v| v.as_f64()).unwrap_or(1.0);
     let bal_usd = balance as f64 / MICRO as f64;
+    // 2026-10-30 (用户): 只有「没有可用的模型通路」时才该提醒充值 ——
+    // 用户自带 key / 本地模型跑得动, 提醒他充钱就是噪音。
+    let llm_ready = {
+        let lcfg = bolloon_llm::config_store::load();
+        !bolloon_llm::config_store::usable(&lcfg).is_empty()
+    };
     Json(serde_json::json!({
         "ok": true,
         "account": account,
+        "llm_ready": llm_ready,
         "balance_usd": bal_usd,
         "pending_usd": pending as f64 / MICRO as f64,
         "today": today_summary(&events, &account),
@@ -651,6 +658,81 @@ pub async fn pay_qr(
         }
         Err(_) => (axum::http::StatusCode::NOT_FOUND, "没有这张收款码").into_response(),
     }
+}
+
+
+/// POST /api/pay/credit {did, amount_usd, channel?, proof?, note?} → **收款人手动入账**
+///
+/// 这是「用我的 DID 给某个用户开权限」的那一步: 钱到账后由我在自己这台机器上执行,
+/// 直接给该 DID 记一笔已确认充值。余额 > 0 才允许调用付费模型 ⇒ 余额即权限。
+/// 只认本机调用 (没有远端鉴权的口子), 也不记明文的收款凭据以外的东西。
+pub async fn pay_credit(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or("").trim().to_string();
+    if did.is_empty() || did.len() > 120 {
+        return Json(serde_json::json!({ "error": "缺 did (或长度不合理)" }));
+    }
+    let amount_usd = req["amount_usd"].as_f64().unwrap_or(0.0);
+    if !(0.01..=100_000.0).contains(&amount_usd) {
+        return Json(serde_json::json!({ "error": "金额不合理 (0.01–100000 美元)" }));
+    }
+    let path = ledger_path(&st);
+    let ev = PayEvent {
+        id: format!("credit-{}", now_ms()),
+        kind: "topup_confirmed".into(),
+        amount_micro: (amount_usd * MICRO as f64).round() as i64,
+        channel: req["channel"].as_str().unwrap_or("manual").to_string(),
+        proof: req["proof"].as_str().unwrap_or("").to_string(),
+        note: format!("收款人手动入账: {}", req["note"].as_str().unwrap_or("")),
+        ts_ms: now_ms(),
+        account: did.clone(),
+        model: String::new(),
+        tokens_in: 0,
+        tokens_out: 0,
+        ref_id: String::new(),
+    };
+    if let Err(e) = append(&path, &ev) {
+        return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    let (bal, pending, _, _) = summarize(&for_account(&read_events(&path), &did));
+    Json(serde_json::json!({
+        "ok": true, "did": did,
+        "credited_usd": amount_usd,
+        "balance_usd": bal as f64 / MICRO as f64,
+        "pending_usd": pending as f64 / MICRO as f64,
+    }))
+}
+
+/// GET /api/pay/accounts → 所有出现过账务的 DID 及余额 (收款人视角总览)
+pub async fn pay_accounts(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let path = ledger_path(&st);
+    let events = read_events(&path);
+    let mut accounts: std::collections::BTreeMap<String, i64> = Default::default();
+    for e in &events {
+        *accounts.entry(e.account.clone()).or_insert(0) += match e.kind.as_str() {
+            "topup_confirmed" | "grant" | "charge" => e.amount_micro,
+            _ => 0,
+        };
+    }
+    let cfg = config();
+    let tiers = cfg.get("users").cloned().unwrap_or(serde_json::json!({}));
+    let rows: Vec<serde_json::Value> = accounts
+        .into_iter()
+        .map(|(did, bal)| {
+            let tier = tiers
+                .get(&did)
+                .and_then(|v| v["tier"].as_str())
+                .unwrap_or("standard");
+            serde_json::json!({
+                "did": if did.is_empty() { "本机主人".to_string() } else { did },
+                "balance_usd": bal as f64 / MICRO as f64,
+                "tier": tier,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "ok": true, "accounts": rows }))
 }
 
 #[cfg(test)]
