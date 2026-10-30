@@ -2332,9 +2332,18 @@ mod route_tests {
         .await
         .unwrap();
 
-        // ③ 界面真源门 (源级): 新入口/外壳栏在真源里, 旧顶栏没了; 壳目录那份只是占位
-        assert!(INDEX_HTML.contains("id=\"shellRail\""), "真源必须有左侧外壳栏");
+        // ③ 界面真源门 (源级): 群组页入口在真源里, 旧顶栏/旧外壳栏都没了, 壳目录那份只是占位
+        //    2026-10-30 (用户第二轮): 外壳 = 第一栏本身 —— 不再有独立的 #shellRail 列
+        //    (上一轮那列让"第一栏前面多出来一个栏"), 拖拽区挂到 #primaryRail 上。
+        assert!(
+            !INDEX_HTML.contains("id=\"shellRail\""),
+            "不许再有独立外壳栏 —— 外壳就是第一栏 (#primaryRail)"
+        );
         assert!(!INDEX_HTML.contains("id=\"titlebar\""), "旧顶部标题栏必须删掉 (否则与 header 叠两条横栏)");
+        assert!(
+            INDEX_HTML.contains("id=\"primaryRail\"") && INDEX_HTML.contains("data-tauri-drag-region"),
+            "第一栏必须存在且自己是窗口拖拽区"
+        );
         for need in ["id=\"addFriendBtn\"", "id=\"joinGroupBtn\"", "id=\"groupDots\"", "id=\"friendAgents\""] {
             assert!(INDEX_HTML.contains(need), "群组页入口缺失: {need}");
         }

@@ -344,3 +344,5 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 > 经济层闸口已接通（2026-10-29）：原子预留 + 节点日闸 + web 真消费判定，默认仍全关；群聊接话默认 >10 人只 5 人（警长可设）；共享池 6 个 HTTP 端点可用，但公共池仍是本机账本、无 P2P 同步。详见 `economic-layer.md` §13-15。
 
 > 0.7.0 Rust 正式版（2026-10-29）：内核整体迁到 `rust/crates/`，Node 只剩薄入口；npm 0.7.0 / Tauri 0.7.0-1 / tag v0.7.0.1。详见 `log.md` 当日 release 行。
+
+> 桌面壳（2026-10-30）：更新失败的根因是 capability 缺 `remote.urls`（内嵌服务来源 `http://127.0.0.1:*` 对 Tauri 是远程来源，缺了它所有 IPC 都被 ACL 拒），已补 + 新增 `tests/acl_capability.rs` 5 条门；同批修拖拽权限（`core:window:allow-start-dragging`）、中文菜单、菜单栏图标、白天模式 `--glass` 毛玻璃，并把「外壳栏」并成「第一栏 + 顶部标签栏」（红绿灯原地不动）。App 已重打包到 `rust/app-tauri/src-tauri/target/release/bundle/macos/Bolloon.app`；线上 `latest.json` 仍是 0.7.0-1，所以通道修好后只显示「当前已是最新」。详见 `log.md` 当日行。

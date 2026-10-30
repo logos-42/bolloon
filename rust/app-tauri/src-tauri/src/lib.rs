@@ -15,6 +15,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use serde_json::json;
 use tauri::Emitter;
+use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 
 /// 安装互斥: 同一应用只允许一条安装流 (重复点击/并发 invoke 不重复下载替换)
@@ -41,48 +42,49 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            // ① 起内嵌业务服务 (随机端口, 只绑回环)
-            let port: u16 = 20000 + (rand::random::<u16>() % 20000);
+            // ⓪ 菜单: Tauri 缺省菜单是英文 (About Bolloon / Hide / Quit / File / Edit ...)。
+            //    2026-10-30 (用户): 「bolloon 的左上角按钮打开也是英文的」⇒ 自己装一份中文菜单。
+            //    菜单项全用 PredefinedMenuItem: 动作仍是系统标准实现 (退出/复制/粘贴/最小化…),
+            //    壳不写业务; 只在文字上做本地化。
+            #[cfg(desktop)]
+            install_chinese_menu(app)?;
+            // 菜单栏图标 (macOS 顶部菜单栏右侧) — 用户: 「Mac 栏的菜单栏图标要有」
+            #[cfg(desktop)]
+            install_tray(app.handle())?;
+
+            // ① 先把端口**真的 bind 上** (backlog 会替我们排队), 再起异步服务。
+            //    ⚠ 2026-10-30 (实测): 若先建窗、服务之后才 listen, 首次导航会打到还没起来的端口
+            //    ⇒ 白页; 而窗口是 transparent 的, 白页 = 整窗看不见 (用户以为应用没启动)。
+            //    反过来若把建窗推给 run_on_main_thread 异步建, 窗口/WebView 会建出来但不可见
+            //    (实测: 页面 JS 在跑, 窗口却抓不到图)。所以顺序是: bind → 后台 serve → 同步建窗。
             let llm = build_llm_from_env();
             let state = bolloon_web::AppState::new(llm);
             let handle = app.handle().clone();
+            #[cfg(desktop)]
+            let _ = &handle; // 桌面只用 app.handle(), handle 留给移动端分支
             let handle_for_task = handle.clone();
+            let listener = bind_loopback()?;
+            let port = listener.local_addr()?.port();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = bolloon_web::serve(state, port).await {
+                let listener = match tokio::net::TcpListener::from_std(listener) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        tracing::error!("内嵌服务监听器移交失败: {e}");
+                        handle_for_task.exit(1);
+                        return;
+                    }
+                };
+                if let Err(e) = bolloon_web::serve_on(state, listener).await {
                     tracing::error!("内嵌服务退出: {e}");
                     handle_for_task.exit(1);
                 }
             });
 
-            // ② 主窗口加载内嵌服务
+            // ② 主窗口加载内嵌服务 (主线程同步建, 端口此刻已在 listen)
             //    2026-10-26: URL 带 ?app=desktop — UI 侧据此启用三栏式侧边导航
             //    (浏览器直接访问同一端口不带该参数, 仍是原单侧栏布局, 网页端不变)
             #[cfg(desktop)]
-            {
-                #[allow(unused_mut)]
-                let mut window_builder = tauri::WebviewWindowBuilder::new(
-                    &handle,
-                    "main",
-                    tauri::WebviewUrl::External(
-                        format!("http://127.0.0.1:{port}/?app=desktop").parse().unwrap(),
-                    ),
-                )
-                .title("Bolloon")
-                .inner_size(1200.0, 800.0)
-                .min_inner_size(900.0, 600.0)
-                .transparent(true);
-
-                // 2026-10-28 (用户): 自定义窗口外壳 — 透明标题栏, 由前端 #titlebar 自绘 (品牌+龙订阅)
-                // title_bar_style 仅 macOS 可用; Windows/Linux 用默认标题栏。
-                #[cfg(target_os = "macos")]
-                {
-                    window_builder =
-                        window_builder.title_bar_style(tauri::TitleBarStyle::Transparent);
-                }
-
-                let window = window_builder.build()?;
-                let _ = window;
-            }
+            build_main_window(app.handle(), port)?;
 
             #[cfg(mobile)]
             {
@@ -117,6 +119,154 @@ pub fn run() {
         .expect("tauri 启动失败");
 }
 
+/// 绑一个随机回环端口 (20000–40000, 与 ACL 门/remote 模式同一口径)。
+///
+/// **先 bind 再建窗** 是刻意的: bind 成功 = 内核已经在 listen (backlog 会替我们排队),
+/// 窗口首次导航就不会打到空端口 (白页 + 透明窗 = 整窗看不见)。
+fn bind_loopback() -> std::io::Result<std::net::TcpListener> {
+    let mut last: Option<std::io::Error> = None;
+    for _ in 0..64 {
+        let port: u16 = 20000 + (rand::random::<u16>() % 20000);
+        match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(l) => {
+                l.set_nonblocking(true)?;
+                return Ok(l);
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("没有可用端口")))
+}
+
+/// 菜单栏图标 (macOS 系统托盘): 品牌 B 形模板图 + 左键唤回主窗 + 右键菜单 (显示/退出)。
+///
+/// 2026-10-30 用户: 「Mac 栏的菜单栏图标要有」。图标是 `icons/tray.png` (44×44, 纯黑+透明),
+/// `icon_as_template(true)` ⇒ macOS 会按菜单栏明暗自动反色 (深色栏白、浅色栏黑)。
+#[cfg(desktop)]
+fn install_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+    use tauri::tray::TrayIconBuilder;
+
+    let show = MenuItemBuilder::with_id("tray-show", "显示主窗口").build(app)?;
+    let quit = MenuItemBuilder::with_id("tray-quit", "退出 Bolloon").build(app)?;
+    let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
+
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+
+    TrayIconBuilder::with_id("bolloon-tray")
+        .icon(icon)
+        .icon_as_template(true)
+        .tooltip("Bolloon")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray-show" => reveal_main_window(app),
+            "tray-quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let tauri::tray::TrayIconEvent::Click { button, button_state, .. } = event {
+                if button == tauri::tray::MouseButton::Left
+                    && button_state == tauri::tray::MouseButtonState::Up
+                {
+                    reveal_main_window(tray.app_handle());
+                }
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
+/// 把主窗口拉回前台 (最小化/被盖住/被关掉都适用; 关掉时重建)。
+#[cfg(desktop)]
+fn reveal_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// 装一份中文菜单 (桌面)。
+///
+/// Tauri 的缺省菜单在 macOS 上固定是英文 (About Bolloon / Hide / Quit / File / Edit / View /
+/// Window / Help)。2026-10-30 用户: 「bolloon 的左上角按钮打开也是英文的」⇒ 换成中文。
+/// 纪律: 全部用 `PredefinedMenuItem` —— 退出/隐藏/复制/粘贴/最小化这些动作仍由系统实现,
+/// 壳只负责文字, 不写业务逻辑。
+#[cfg(desktop)]
+fn install_chinese_menu(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{MenuBuilder, PredefinedMenuItem as P, SubmenuBuilder};
+
+    let app_menu = SubmenuBuilder::new(app, "Bolloon")
+        .items(&[
+            &P::about(app, Some("关于 Bolloon"), None)?,
+            &P::separator(app)?,
+            &P::hide(app, Some("隐藏 Bolloon"))?,
+            &P::hide_others(app, Some("隐藏其他"))?,
+            &P::separator(app)?,
+            &P::quit(app, Some("退出 Bolloon"))?,
+        ])
+        .build()?;
+
+    let edit_menu = SubmenuBuilder::new(app, "编辑")
+        .items(&[
+            &P::undo(app, Some("撤销"))?,
+            &P::redo(app, Some("重做"))?,
+            &P::separator(app)?,
+            &P::cut(app, Some("剪切"))?,
+            &P::copy(app, Some("复制"))?,
+            &P::paste(app, Some("粘贴"))?,
+            &P::select_all(app, Some("全选"))?,
+        ])
+        .build()?;
+
+    let window_menu = SubmenuBuilder::new(app, "窗口")
+        .items(&[
+            &P::minimize(app, Some("最小化"))?,
+            &P::fullscreen(app, Some("进入全屏"))?,
+        ])
+        .build()?;
+
+    let menu = MenuBuilder::new(app)
+        .items(&[&app_menu, &edit_menu, &window_menu])
+        .build()?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
+/// 建主窗口 (桌面)。内嵌服务**真的在 listen** 之后由主线程调用。
+///
+/// 2026-10-30 (用户): 不要再有「顶部外壳栏」那个独立位置 —— macOS 用 `Overlay` 标题栏
+/// (红绿灯浮在内容之上, 不占一行), 前端把第一栏顶部留出 30px 交给红绿灯并自己当拖拽区。
+#[cfg(desktop)]
+fn build_main_window(app: &tauri::AppHandle, port: u16) -> tauri::Result<()> {
+    #[allow(unused_mut)]
+    let mut b = tauri::WebviewWindowBuilder::new(
+        app,
+        "main",
+        tauri::WebviewUrl::External(
+            format!("http://127.0.0.1:{port}/?app=desktop").parse().unwrap(),
+        ),
+    )
+    .title("Bolloon")
+    .inner_size(1200.0, 800.0)
+    .min_inner_size(900.0, 600.0)
+    // 透明窗 = 左栏毛玻璃能虚化桌面 (macOS 需 macos-private-api 特性 + macOSPrivateApi)
+    .transparent(true);
+
+    #[cfg(target_os = "macos")]
+    {
+        // 2026-10-30 (用户, 第三轮): Overlay 标题栏 —— 红绿灯**原地不动** (macOS 默认位, 不调用
+        // traffic_light_position: 用户明确 "红绿灯不动"), 它们浮在第一栏顶部;
+        // 同一行的右侧就是顶部标签栏 (#topBar: 品牌 + 帛龙订阅), 顶栏与第一栏同色同毛玻璃
+        // ⇒ 视觉上是一整块 L 形外壳, 没有单独的壳条, 也没有空带。
+        b = b.title_bar_style(tauri::TitleBarStyle::Overlay);
+    }
+
+    b.build()?;
+    Ok(())
+}
+
 /// 构造 updater, 统一的 30s 网络超时 (要求: 网络超时可配置)。
 fn make_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
     app.updater_builder()
@@ -141,6 +291,8 @@ fn emit_state(app: &tauri::AppHandle, state: &str, extra: serde_json::Value) {
 /// 关键: 任何错误都显式返回 reason, **绝不**谎报"已是最新"。
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    // 观测点 (2026-10-30): 这行出现 = IPC 已过 ACL (若 ACL 挡了, 函数根本不会被调用)
+    tracing::info!("[update] check_update 被调用 (IPC 已放行)");
     let updater = make_updater(&app)?;
     let current = app.package_info().version.to_string();
     emit_state(&app, "checking", json!({}));

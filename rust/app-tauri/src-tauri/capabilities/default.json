@@ -1,12 +1,18 @@
 {
   "identifier": "default",
-  "description": "Bolloon 桌面默认权限：核心事件（接收更新进度）+ updater 插件 + 壳命令 (check_update/update_install/relaunch)",
+  "description": "Bolloon 桌面默认权限：核心事件（接收更新进度）+ updater 插件 + 壳命令 (check_update/update_install/relaunch)。⚠ remote 必须列出内嵌服务的来源：主窗口加载的是 http://127.0.0.1:<随机端口>/?app=desktop，对 Tauri 而言这是**远程来源** (Origin::Remote)，只写 permissions 不写 remote ⇒ 所有 IPC 都会被判 'Command ... not allowed by ACL'（2026-10-30 用户实测踩到）。",
   "windows": [
     "main"
   ],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:*"
+    ]
+  },
   "permissions": [
     "core:default",
     "updater:default",
-    "bolloon-default"
+    "bolloon-default",
+    "core:window:allow-start-dragging"
   ]
 }

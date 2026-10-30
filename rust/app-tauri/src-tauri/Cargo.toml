@@ -13,7 +13,7 @@ description = "Bolloon 桌面外壳 (Tauri) — 托管内嵌服务, 壳不写业
 [workspace]
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
