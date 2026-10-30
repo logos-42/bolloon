@@ -109,7 +109,7 @@ impl AppState {
             })
             .unwrap_or_default();
 
-        Self {
+        let st = Self {
             llm: Arc::new(std::sync::RwLock::new(Arc::new(llm))),
             sessions: Arc::new(Mutex::new(vec![])),
             messages: Arc::new(Mutex::new(restored)),
@@ -143,7 +143,35 @@ impl AppState {
             ))),
             llm_health: std::sync::Arc::new(bolloon_agent::kernel_loop::LlmHealth::default()),
             econ: std::sync::Arc::new(std::sync::OnceLock::new()),
+        };
+
+        // 启动补种 (2026-10-30): default.jsonl 恢复出来的消息, 若侧栏会话全空,
+        // 塞进最近一个会话 —— 否则界面看到"有会话、没记录"。
+        if let (Ok(msgs), Ok(mut fs)) = (st.messages.try_lock(), st.forge.try_lock()) {
+            if !msgs.is_empty() && fs.sessions.iter().all(|s| s.messages.is_empty()) {
+                if let Some(last) = fs.sessions.last_mut() {
+                    last.messages = msgs
+                        .iter()
+                        .map(|m| crate::native::UiMessage {
+                            role: m.role.clone(),
+                            text: m.content.clone(),
+                            images: vec![],
+                            time: String::new(),
+                            streaming: false,
+                        })
+                        .collect();
+                    if last.title == "新对话" {
+                        last.title = msgs
+                            .iter()
+                            .find(|m| m.role == "user")
+                            .map(|m| m.content.chars().take(18).collect::<String>())
+                            .unwrap_or_else(|| "历史对话".into());
+                    }
+                }
+                fs.save(&dir);
+            }
         }
+        st
     }
 
     /// 取当前 runtime 快照（Arc 克隆，不持锁过 await）
@@ -725,7 +753,21 @@ async fn health() -> Json<serde_json::Value> {
 }
 
 async fn sessions(State(st): State<AppState>) -> Json<Vec<SessionMeta>> {
-    Json(st.sessions.lock().await.clone())
+    // 2026-10-30: 这里原来返回 st.sessions —— 一个**永远没人往里写**的 Vec,
+    // 于是 /api/sessions 常年是 [] (界面走 /api/bootstrap 才看得到会话)。
+    // 事实来源统一为 NativeState.sessions (会落盘、重启能恢复)。
+    let fs = st.forge.lock().await;
+    Json(
+        fs.sessions
+            .iter()
+            .map(|s| SessionMeta {
+                id: s.id.clone(),
+                title: s.title.clone(),
+                agent: s.agent_id.clone(),
+                updated_at: String::new(),
+            })
+            .collect(),
+    )
 }
 
 async fn send(State(st): State<AppState>, Json(req): Json<SendRequest>) -> Json<SendResponse> {

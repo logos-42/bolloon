@@ -6856,3 +6856,10 @@ server.mjs 与配置仍**只存在于机器上**(未镜像化) · 并发/长期�
 - 真因: 不是 UI 逻辑, 是 **App 被带着临时 BOLLOON_HOME 启动**, data_dir 指到 scratch 目录, pay/config.json 不存在 ⇒ `/api/pay/info` 返回空 config ⇒ 渲染时 `b.disabled=!ready` 全禁用。
 - 修法: ① 没配收款信息的通道**不再禁用**, 只标 title 并在选中时明说没配哪一项 (`data-ready`); ② 从 shell 启动 App 前必须 `env -u BOLLOON_HOME open -a Bolloon.app`, 否则整个应用会指向别的 data_dir（本次踩到）。
 - 验证: App 自身端口 38168 → 四通道 disabled=false, crypto/alipay/wechat ready=1, paypal ready=0 但可选中并给出「还没配」说明。
+
+#### 会话持久化 / 超时重试 / 侧栏「结束」（2026-10-30）
+
+- 会话记录重启后消失: 三处叠加 —— ① `remember_turn` 只写 `st.messages` + `default.jsonl`, 从不写 `UiSession.messages`, 侧栏每个会话都是空的; ② `fs.save()` 一轮对话后不落盘; ③ `/api/sessions` 返回的是 `st.sessions`(一个永远没人写的 Vec), 恒为 `[]`。修法: 每轮把 user/assistant 写进会话并 `fs.save`; 启动时若会话全空但有恢复消息则补种到最近会话; `/api/sessions` 统一读 `NativeState.sessions`。
+- 超时/重试直接中断回复: `WebStrategy::call` 一次失败就把错误当回答。改成网络类错误(超时/连接/429/5xx)退避重试 3 次(0.8s/3.2s/7.2s), 仍失败才回「已自动重试 3 次仍失败」。
+- 侧栏「结束」按钮移除(#sideEndBtn 及其处理器与 CSS 规则)。
+- 验证: 临时 home → 建会话 → 发一句 → native-state.json 里 msgs=2 且 title 自动取首句 → 重启后 `/api/bootstrap` 与 `/api/sessions` 都还看得到; App 自身端口 28585 上 `/api/sessions` 返回 7 条磁盘会话(修复前恒 `[]`)。

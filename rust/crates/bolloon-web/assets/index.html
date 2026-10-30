@@ -696,7 +696,7 @@
       </div>
     </div>
     <div class="side-actions">
-      <button id="sideEndBtn" title="结束当前交流（/api/room/stop）">结束</button>
+      
     </div>
     <div class="side-update"><button id="updateBtn" title="下载更新" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button></div>
     <div class="account" id="account" title="点击绑定手机号 / 查看身份">
@@ -2824,7 +2824,7 @@ async function sidebarStopRoom(){
     toast('已结束本群交流');
   }catch(e){ toast('结束失败: '+e.message); }
 }
-if($('sideEndBtn'))$('sideEndBtn').onclick=sidebarStopRoom;
+/* 2026-10-30 (用户): 侧栏「结束」按钮与其处理器一并移除 */
 if($('groupJoinLink'))$('groupJoinLink').onclick=()=>joinGroupByLink();
 if($('groupLinkJoinBtn'))$('groupLinkJoinBtn').onclick=()=>joinGroupByLink($('groupLinkInput')?$('groupLinkInput').value:'');
 

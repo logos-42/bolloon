@@ -1796,15 +1796,41 @@ impl LoopStrategy for WebStrategy {
     ) -> Result<GenerateResult, String> {
         let mut params = GenerateParams::new(model, messages);
         params.tools = tools;
-        self.llm
-            .generate(provider_id, params)
-            .await
-            .map_err(|e| e.to_string())
+        // 2026-10-30 (用户: 超时/重试把回复打断了): 网络类错误改「再试一次」,
+        // 3 次都失败才把错误当回答返回 —— 不要因为一次抖动就掐断整条回复。
+        let mut last = String::new();
+        for attempt in 0..3u32 {
+            match self.llm.generate(provider_id, params.clone()).await {
+                Ok(r) => return Ok(r),
+                Err(e) => {
+                    last = e.to_string();
+                    let low = last.to_lowercase();
+                    let transient = ["timeout", "超时", "timed out", "connection", "connect",
+                                     "502", "503", "504", "rate limit", "429"]
+                        .iter()
+                        .any(|k| low.contains(k));
+                    if !transient {
+                        return Err(last);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        800 * (attempt as u64 + 1) * (attempt as u64 + 1),
+                    ))
+                    .await;
+                }
+            }
+        }
+        Err(format!("（已自动重试 3 次仍失败，不是你写错了：{last}）"))
     }
 }
 
 /// 记一轮对话（历史要能被下一轮读到）
-async fn remember_turn(st: &AppState, text: &str, reply: &str, who: Option<&str>) {
+async fn remember_turn(
+    st: &AppState,
+    text: &str,
+    reply: &str,
+    who: Option<&str>,
+    session_id: Option<&str>,
+) {
     let mut msgs = st.messages.lock().await;
     msgs.push(ChatMessageView { role: "user".into(), content: text.to_string(), name: None });
     // 名字必须是真的那个智能体（小黑/小宝…），不能用 "AI" 占位 ——
@@ -1820,6 +1846,40 @@ async fn remember_turn(st: &AppState, text: &str, reply: &str, who: Option<&str>
     let _ = st
         .session_store
         .append(&bolloon_agent::SessionEvent::Assistant { text: reply.to_string() });
+
+    // 2026-10-30 (用户: 重启后记录消失): 会话自己的 messages 也要写并落盘。
+    // 之前只写 st.messages + default.jsonl, 侧栏里每个会话都是空的, 重启就像"记录没了"。
+    {
+        let mut fs = st.forge.lock().await;
+        let sid = match session_id {
+            Some(s) => Some(s.to_string()),
+            None => fs.sessions.first().map(|s| s.id.clone()),
+        };
+        if let Some(sid) = sid {
+            if let Some(sess) = fs.sessions.iter_mut().find(|s| s.id == sid) {
+                let now = chrono::Local::now().format("%H:%M").to_string();
+                sess.messages.push(UiMessage {
+                    role: "user".into(),
+                    text: text.to_string(),
+                    images: vec![],
+                    time: now.clone(),
+                    streaming: false,
+                });
+                let _ = who; // 名字由前端按 agent_id 取, 会话条目里不重复存
+                sess.messages.push(UiMessage {
+                    role: "assistant".into(),
+                    text: reply.to_string(),
+                    images: vec![],
+                    time: now,
+                    streaming: false,
+                });
+                if sess.title == "新对话" && !text.trim().is_empty() {
+                    sess.title = text.trim().chars().take(18).collect();
+                }
+            }
+            fs.save(&data_dir());
+        }
+    }
 }
 
 
@@ -1862,7 +1922,14 @@ pub async fn chat(
         Err(e) => e, // 错误也是"回答"：界面要能看到到底缺什么
     };
     if !reply.is_empty() {
-        remember_turn(&st, &text, &reply, agent.as_ref().map(|a| a.name.as_str())).await;
+        remember_turn(
+        &st,
+        &text,
+        &reply,
+        agent.as_ref().map(|a| a.name.as_str()),
+        req["session_id"].as_str(),
+    )
+    .await;
     }
     Json(serde_json::json!({ "reply": reply }))
 }
@@ -1879,7 +1946,14 @@ pub async fn chat_stream(
         Err(e) => e,
     };
     if !reply.is_empty() {
-        remember_turn(&st, &text, &reply, agent.as_ref().map(|a| a.name.as_str())).await;
+        remember_turn(
+        &st,
+        &text,
+        &reply,
+        agent.as_ref().map(|a| a.name.as_str()),
+        req["session_id"].as_str(),
+    )
+    .await;
     }
     let chunks: Vec<String> = {
         let chars: Vec<char> = reply.chars().collect();
