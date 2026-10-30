@@ -146,13 +146,15 @@ fn config() -> serde_json::Value {
         "paypal": { "link": "", "note": "PayPal.Me 个人收款链接; 到账后填交易号" },
         // 只卖两款 (2026-10-30 用户定): DeepSeek V4.1 Flash / V4 Pro —— 都从本人的私有 key 扣。
         // 单价是 micro-USD / 1K tokens (1e6 = 1 美元), 按档位乘数再打折。
-        // 单价按 DeepSeek 官方**人民币**高峰价 × 毛利系数 (默认 1.3), 内部仍折成 micro-USD 记账。
-        // 官价 (元/1M tokens): Flash 输入未命中 2 / 输出 8;  Pro 输入 9 / 输出 27。
+        // 定价口径 (2026-10-30 用户定): **毛利率 20%** ⇒ 售价 = 成本 / (1 - 0.2) = 成本 × 1.25。
+        // 成本取 DeepSeek 官方**高峰价** (最贵那档), 所以空闲时段毛利只会更高、不会低于 20%。
+        // 官价 (元/1M tokens, 高峰/未命中): Flash 2 / 8;  Pro 9 / 27
+        // ⇒ 售价: Flash 2.5 / 10.0;  Pro 11.25 / 33.75 (元/1M = 0.0025/0.010 与 0.01125/0.03375 元/1K)
         "fx_cny_per_usd": 7.1,
-        "markup": 1.3,
+        "markup": 1.25,
         "models": [
-            { "id": "deepseek-flash",  "label": "DeepSeek V4.1 Flash", "cny_per_1k_in": 0.0026, "cny_per_1k_out": 0.0104 },
-            { "id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro",     "cny_per_1k_in": 0.0117, "cny_per_1k_out": 0.0351 }
+            { "id": "deepseek-flash",  "label": "DeepSeek V4.1 Flash", "cny_per_1k_in": 0.0025,  "cny_per_1k_out": 0.01 },
+            { "id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro",     "cny_per_1k_in": 0.01125, "cny_per_1k_out": 0.03375 }
         ],
         // 用户等级: multiplier 是折扣乘数 (1.0 原价 / 0.7 打七折 / 0 免费)
         "tiers": [
@@ -480,13 +482,13 @@ mod tests {
 
 
     fn cfg_with_users() -> serde_json::Value {
-        // 官方价 (元/1M) 折成元/1K, 已含 1.3 毛利: Flash 2/8 → 0.0026/0.0104; Pro 9/27 → 0.0117/0.0351
+        // 官方高峰价 (元/1M) × 1.25 (毛利率 20%): Flash 2/8 → 0.0025/0.010; Pro 9/27 → 0.01125/0.03375
         serde_json::json!({
             "fx_cny_per_usd": 7.1,
             "markup": 1.3,
             "models": [
-                { "id": "deepseek-flash", "cny_per_1k_in": 0.0026, "cny_per_1k_out": 0.0104 },
-                { "id": "deepseek-v4-pro", "cny_per_1k_in": 0.0117, "cny_per_1k_out": 0.0351 }
+                { "id": "deepseek-flash", "cny_per_1k_in": 0.0025, "cny_per_1k_out": 0.01 },
+                { "id": "deepseek-v4-pro", "cny_per_1k_in": 0.01125, "cny_per_1k_out": 0.03375 }
             ],
             "tiers": [
                 { "id": "free", "multiplier": 0.0 },
@@ -500,16 +502,25 @@ mod tests {
     #[test]
     fn price_follows_model_and_tier() {
         let cfg = cfg_with_users();
-        // 标准用户 10k in + 2k out: flash 0.0468 元 ÷ 7.1 ⇒ 6592 micro-USD;  pro 0.1872 元 ⇒ 26367
-        assert_eq!(price_for(&cfg, "did:pi:who", "deepseek-flash", 10_000, 2_000).unwrap(), 6592);
-        assert_eq!(price_for(&cfg, "did:pi:who", "deepseek-v4-pro", 10_000, 2_000).unwrap(), 26367);
+        // 标准用户 10k in + 2k out: flash 0.045 元 ÷ 7.1 ⇒ 6339 micro-USD;  pro 0.18 元 ⇒ 25353
+        assert_eq!(price_for(&cfg, "did:pi:who", "deepseek-flash", 10_000, 2_000).unwrap(), 6339);
+        assert_eq!(price_for(&cfg, "did:pi:who", "deepseek-v4-pro", 10_000, 2_000).unwrap(), 25353);
         // 朋友 7 折
-        assert_eq!(price_for(&cfg, "did:pi:friend", "deepseek-flash", 10_000, 2_000).unwrap(), 4615);
+        assert_eq!(price_for(&cfg, "did:pi:friend", "deepseek-flash", 10_000, 2_000).unwrap(), 4437);
         // 免费档 = 0 (只记用量, 不扣钱)
         assert_eq!(price_for(&cfg, "did:pi:free", "deepseek-flash", 10_000, 2_000).unwrap(), 0);
         // Pro 必须比 Flash 贵 (防「两个模型一个价」)
         assert!(price_for(&cfg, "did:pi:who", "deepseek-v4-pro", 1000, 1000).unwrap()
             > price_for(&cfg, "did:pi:who", "deepseek-flash", 1000, 1000).unwrap());
+    }
+
+    #[test]
+    fn price_carries_exactly_twenty_percent_margin_on_peak_cost() {
+        // 官价高峰 (元/1M): flash 2 / 8。售价应是成本的 1.25 倍 ⇒ 毛利 20%。
+        let cost: f64 = (10.0 / 1000.0) * 2.0 + (2.0 / 1000.0) * 8.0; // 10k in + 2k out, 元
+        let sell: f64 = (10.0 / 1000.0) * 2.5 + (2.0 / 1000.0) * 10.0; // 同用量按售价, 元
+        let margin: f64 = (sell - cost) / sell;
+        assert!((margin - 0.2).abs() < 0.001, "毛利率应恰好 20%, 实得 {:.4}", margin);
     }
 
     #[test]
