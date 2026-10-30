@@ -55,7 +55,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn pay_dir(st: &AppState) -> PathBuf {
+fn pay_dir(_st: &AppState) -> PathBuf {
     // 与 web 其它本地状态同源 (data_dir 由 BOLLOON_HOME 决定)
     crate::server::data_dir().join("pay")
 }
@@ -63,7 +63,6 @@ fn pay_dir(st: &AppState) -> PathBuf {
 fn ledger_path(st: &AppState) -> PathBuf {
     let d = pay_dir(st);
     let _ = std::fs::create_dir_all(&d);
-    let _ = st;
     d.join("ledger.jsonl")
 }
 

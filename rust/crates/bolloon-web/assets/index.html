@@ -521,6 +521,8 @@
   .pay-stats>div{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
   .pay-stats small{display:block;font-size:11px;color:var(--muted);margin-bottom:2px}
   .pay-stats b{font-size:17px;letter-spacing:.2px}
+  .pay-today{padding:2px 18px 0;font-size:11px;color:var(--muted)}
+  .pay-today.low{color:var(--glow)}
   .pay-channels{display:flex;gap:8px;flex-wrap:wrap;padding:14px 18px 6px}
   .pay-channels button{padding:7px 12px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:12px;cursor:pointer}
   .pay-channels button.on{border-color:var(--accent);color:var(--accent);font-weight:600}
@@ -571,6 +573,7 @@
     <div><small>待核销</small><b id="payPending">$0.00</b></div>
     <div><small>已用</small><b id="payCharged">$0.00</b></div>
   </div>
+  <div class="pay-today" id="payToday"></div>
   <div class="pay-channels" id="payChannels">
     <button data-ch="crypto" class="on">USDC 钱包</button>
     <button data-ch="alipay">支付宝</button>
@@ -1633,7 +1636,7 @@ async function retryMessage(i){
 let menuAgentId='';
 // ── 2026-10-30 (用户): 订阅/充值弹窗 —— 按量计费: 先充值 (加密钱包默认, 也支持支付宝/微信/PayPal),
 //    人工核销后才计入余额; 余额不足时 backend 拒绝执行 (不静默欠费)。不发代币, 不做充值赠币。
-let payInfo=null, payChannel='crypto';
+let payInfo=null, paySummary=null, payChannel='crypto';
 const PAY_LABEL={crypto:'USDC 钱包', alipay:'支付宝', wechat:'微信', paypal:'PayPal'};
 const PAY_CHAIN_LABEL={base:'BASE 链 (USDC)', 'base-sepolia':'BASE 测试网'};
 async function openPayDialog(){
@@ -1641,6 +1644,7 @@ async function openPayDialog(){
   if(!d.open) d.showModal();
   $('payTarget').innerHTML='<span class="hint">正在读取收款信息…</span>';
   try{ payInfo=await api('/api/pay/info'); }catch(e){ payInfo=null; }
+  try{ paySummary=await api('/api/pay/summary'); }catch(e){ paySummary=null; }
   if(!payInfo) $('payTarget').innerHTML='<span class="hint">读不到收款信息（后端 /api/pay/info 不可达）</span>';
   renderPay();
 }
@@ -1658,6 +1662,17 @@ function renderPay(){
     b.disabled=!ready;
     b.title=ready?'':'本机还没配置 '+PAY_LABEL[ch]+' 的收款信息 (data_dir/pay/config.json)';
   });
+  // 今日用量 + 低余额提醒 (阈值来自 /api/pay/summary 的 low_balance)
+  const today=(paySummary&&paySummary.today)||null;
+  const low=(paySummary&&paySummary.low_balance)||null;
+  const td=$('payToday');
+  if(td){
+    const parts=[];
+    if(today) parts.push(`今日 ${today.calls} 次 · 输入 ${today.tokens_in} / 输出 ${today.tokens_out} tokens · 花费 $${Number(today.cost_usd||0).toFixed(3)}`);
+    if(low&&low.hit) parts.push(`⚠ 余额低于 $${Number(low.threshold_usd||0).toFixed(2)}，建议充值`);
+    td.textContent=parts.join(' · ');
+    td.classList.toggle('low', !!(low&&low.hit));
+  }
   const c=cfg[payChannel]||{};
   const t=$('payTarget');
   if(payChannel==='crypto'){
