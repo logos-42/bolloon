@@ -140,6 +140,74 @@ pub fn exec_restart(_exe: &Path) -> Result<(), String> {
     Err("当前平台不支持原地重启, 请手动重开应用".to_string())
 }
 
+// ─────────────── npm 路径: 网页端/裸进程的一条龙安装 (2026-10-30) ───────────────
+
+/// 更新日志路径 (前端 `/api/update/log` 读它)
+pub fn log_path() -> PathBuf {
+    std::env::var("BOLLOON_HOME")
+        .map(|h| PathBuf::from(h).join("update.log"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("bolloon-update.log"))
+}
+
+fn append_log(line: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path())
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+/// 用 npm 安装最新版, 返回装好的 `bolloon` 可执行文件路径。
+///
+/// 为什么是 npm: 网页端/裸进程没有 .app 包也没有签名产物, npm 是普通用户不需要 sudo 的正规通道
+/// (`npm i -g @bolloon/bolloon-agent@latest`)。失败**不假装成功**, 全部输出落 update.log。
+pub fn npm_install_latest() -> Result<PathBuf, String> {
+    append_log("=== 开始 npm 更新 ===");
+    let out = std::process::Command::new("npm")
+        .args(["i", "-g", "@bolloon/bolloon-agent@latest"])
+        .output()
+        .map_err(|e| {
+            let msg = format!("调用 npm 失败 (没装 npm?): {e}");
+            append_log(&msg);
+            msg
+        })?;
+    append_log(&format!("npm stdout: {}", String::from_utf8_lossy(&out.stdout)));
+    append_log(&format!("npm stderr: {}", String::from_utf8_lossy(&out.stderr)));
+    if !out.status.success() {
+        return Err(format!("npm 安装失败 (退出码 {:?}), 详见 update.log", out.status.code()));
+    }
+    // 找到装好的二进制: `npm prefix -g` + /bin/bolloon
+    let prefix = std::process::Command::new("npm")
+        .args(["prefix", "-g"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    let prefix = String::from_utf8_lossy(&prefix.stdout).trim().to_string();
+    let cand = PathBuf::from(&prefix).join("bin").join("bolloon");
+    let exe = if cand.exists() {
+        cand
+    } else {
+        PathBuf::from("bolloon")
+    };
+    append_log(&format!("新版本入口: {}", exe.display()));
+    Ok(exe)
+}
+
+/// 读最近的更新日志 (前端展示"装到哪一步了")
+pub fn tail_log(n: usize) -> Vec<String> {
+    std::fs::read_to_string(log_path())
+        .map(|s| {
+            let v: Vec<&str> = s.lines().collect();
+            v[v.len().saturating_sub(n)..]
+                .iter()
+                .map(|l| l.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,72 +305,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let _ = src;
     }
-}
-
-// ─────────────── npm 路径: 网页端/裸进程的一条龙安装 (2026-10-30) ───────────────
-
-/// 更新日志路径 (前端 `/api/update/log` 读它)
-pub fn log_path() -> PathBuf {
-    std::env::var("BOLLOON_HOME")
-        .map(|h| PathBuf::from(h).join("update.log"))
-        .unwrap_or_else(|_| std::env::temp_dir().join("bolloon-update.log"))
-}
-
-fn append_log(line: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path())
-    {
-        let _ = writeln!(f, "{line}");
-    }
-}
-
-/// 用 npm 安装最新版, 返回装好的 `bolloon` 可执行文件路径。
-///
-/// 为什么是 npm: 网页端/裸进程没有 .app 包也没有签名产物, npm 是普通用户不需要 sudo 的正规通道
-/// (`npm i -g @bolloon/bolloon-agent@latest`)。失败**不假装成功**, 全部输出落 update.log。
-pub fn npm_install_latest() -> Result<PathBuf, String> {
-    append_log("=== 开始 npm 更新 ===");
-    let out = std::process::Command::new("npm")
-        .args(["i", "-g", "@bolloon/bolloon-agent@latest"])
-        .output()
-        .map_err(|e| {
-            let msg = format!("调用 npm 失败 (没装 npm?): {e}");
-            append_log(&msg);
-            msg
-        })?;
-    append_log(&format!("npm stdout: {}", String::from_utf8_lossy(&out.stdout)));
-    append_log(&format!("npm stderr: {}", String::from_utf8_lossy(&out.stderr)));
-    if !out.status.success() {
-        return Err(format!("npm 安装失败 (退出码 {:?}), 详见 update.log", out.status.code()));
-    }
-    // 找到装好的二进制: `npm prefix -g` + /bin/bolloon
-    let prefix = std::process::Command::new("npm")
-        .args(["prefix", "-g"])
-        .output()
-        .map_err(|e| e.to_string())?;
-    let prefix = String::from_utf8_lossy(&prefix.stdout).trim().to_string();
-    let cand = PathBuf::from(&prefix).join("bin").join("bolloon");
-    let exe = if cand.exists() {
-        cand
-    } else {
-        PathBuf::from("bolloon")
-    };
-    append_log(&format!("新版本入口: {}", exe.display()));
-    Ok(exe)
-}
-
-/// 读最近的更新日志 (前端展示"装到哪一步了")
-pub fn tail_log(n: usize) -> Vec<String> {
-    std::fs::read_to_string(log_path())
-        .map(|s| {
-            let v: Vec<&str> = s.lines().collect();
-            v[v.len().saturating_sub(n)..]
-                .iter()
-                .map(|l| l.to_string())
-                .collect()
-        })
-        .unwrap_or_default()
 }

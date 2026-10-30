@@ -50,6 +50,13 @@ pub struct AgentView {
     pub global_dir: String,
     pub created_at_ms: u64,
 
+
+    /// 所属权: 主人 DID (谁签的这个智能体)
+    #[serde(default)]
+    pub owner_did: String,
+    /// 用户对该智能体的 Ed25519 所属权签名 (hex); 空 = 未签名
+    #[serde(default)]
+    pub owner_signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -364,11 +371,17 @@ pub async fn bootstrap_native(State(st): State<AppState>) -> Json<serde_json::Va
     if fs.profile.did.is_empty() {
         fs.profile.did = st.identity.did.as_str().to_string();
     }
+    // 所属权: 没有用户签名的智能体在这里补签 (幂等; 用户 DID 签名一切智能体)
+    drop(fs);
+    let _ = ensure_agent_ownership(&st).await;
+    let mut fs = st.forge.lock().await;
     if fs.agents.is_empty() {
         // 首启: 内置一个默认智能体 (用户在 UI 里可再建)
         fs.next_agent += 1;
         let id = format!("agent-{:03}", fs.next_agent);
         fs.agents.push(AgentView {
+            owner_did: String::new(),
+            owner_signature: String::new(),
             id: id.clone(),
             name: "Bolloon 智能体".into(),
             did: st.identity.did.as_str().into(),
@@ -730,6 +743,8 @@ pub async fn create_agent(
     // 没选头像就留空: 前端按 agent id 生成确定性头像 (hashavatar), 不存"人人同脸"的假图
     let avatar = req["avatar"].as_str().unwrap_or_default().to_string();
     let agent = AgentView {
+            owner_did: String::new(),
+            owner_signature: String::new(),
         id: id.clone(),
         name,
         did,
@@ -1070,6 +1085,72 @@ const WEB_SYSTEM_PROMPT: &str = "你是 Bolloon 智能体，运行在去中心�
 /// 回复永远自称 "Bolloon 智能体" (leo: 用户设计的私有身份应该覆盖)。
 /// 现在: agent 选了谁就用谁 (agent.id 决定 persona 目录), 名字/persona 作为**最高优先级**的
 /// 私有身份块放在最前面, 压过默认身份描述。
+/// GET /api/agents/{id}/ownership → 智能体的所属权凭证 + 自验签
+///
+/// `verified:true` 表示签名确实由本机主人的公钥签在 `payload` 上 —— 别的节点拿到
+/// `payload + signature + owner_did` 也能自己验一遍 (DID 就是公钥)。
+pub async fn agent_ownership(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Json<serde_json::Value> {
+    let _ = ensure_agent_ownership(&st).await;
+    let fs = st.forge.lock().await;
+    let Some(a) = fs.agents.iter().find(|x| x.id == id) else {
+        return Json(serde_json::json!({ "error": "没有这个智能体" }));
+    };
+    let payload = agent_owner_payload(&a.id, &a.did, &a.owner_did);
+    let verified = {
+        let sig = hex::decode(&a.owner_signature).unwrap_or_default();
+        if sig.len() == 64 {
+            let mut arr = [0u8; 64];
+            arr.copy_from_slice(&sig);
+            bolloon_p2p::KeyPair::verify(&st.identity.public_bytes(), payload.as_bytes(), &arr)
+        } else {
+            false
+        }
+    };
+    Json(serde_json::json!({
+        "agent_id": a.id,
+        "agent_did": a.did,
+        "owner_did": a.owner_did,
+        "payload": payload,
+        "signature": a.owner_signature,
+        "verified": verified,
+        "scheme": "ed25519",
+    }))
+}
+
+/// 所属权签名的规范内容 (改任何一项都验不过)
+pub fn agent_owner_payload(agent_id: &str, agent_did: &str, owner_did: &str) -> String {
+    format!("bolloon-agent-owner|{agent_id}|{agent_did}|{owner_did}")
+}
+
+/// 用**主人的密钥**给智能体签所属权 (2026-10-30 leo: 智能体会被用户签名)
+pub fn sign_agent_ownership(kp: &bolloon_p2p::KeyPair, agent_id: &str, agent_did: &str) -> (String, String) {
+    let owner = kp.did.as_str().to_string();
+    let payload = agent_owner_payload(agent_id, agent_did, &owner);
+    (owner, hex::encode(kp.sign(payload.as_bytes())))
+}
+
+/// 给还没有所属权签名的智能体补签 (幂等; 启动与新建时各调一次)
+pub async fn ensure_agent_ownership(st: &AppState) -> usize {
+    let kp = (*st.identity).clone();
+    let mut fs = st.forge.lock().await;
+    let mut signed = 0usize;
+    for a in fs.agents.iter_mut() {
+        if a.owner_signature.is_empty() || a.owner_did.is_empty() {
+            let (did, sig) = sign_agent_ownership(&kp, &a.id, &a.did);
+            a.owner_did = did;
+            a.owner_signature = sig;
+            signed += 1;
+        }
+    }
+    if signed > 0 {
+        fs.save(&data_dir());
+    }
+    signed
+}
+
 pub async fn build_web_system(
     st: &AppState,
     query: &str,
@@ -3666,7 +3747,7 @@ pub async fn publish_group_to_world(
     let body = texts.join("\n\n");
     let headline: String = {
         let flat = texts[0].lines().next().unwrap_or("").trim().trim_start_matches(['#', '-', '*', ' ']);
-        let first = flat.split(|c: char| c == '。' || c == '！' || c == '？').next().unwrap_or(flat);
+        let first = flat.split(['。', '！', '？']).next().unwrap_or(flat);
         first.chars().take(28).collect()
     };
     let topic = req["topic"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "群聊".to_string());
@@ -6199,6 +6280,95 @@ pub async fn notify_count(State(st): State<AppState>) -> Json<serde_json::Value>
     }))
 }
 
+// ───────────────────────── 世界意图对外广播 (2026-10-30) ─────────────────────────
+
+/// 把本机意图广播给已登记对端 (best-effort; 每个对端的结果落 `intent_broadcast_log`)。
+pub async fn broadcast_intents(st: &AppState, limit: usize) -> serde_json::Value {
+    let (peers, intents) = {
+        let fs = st.forge.lock().await;
+        let mut top = fs.interests.top(limit, chrono::Utc::now().timestamp_millis());
+        if top.is_empty() {
+            top = fs.intents.iter().map(|i| (i.clone(), 1.0)).collect();
+        }
+        (fs.directory_peers.clone(), top)
+    };
+    if peers.is_empty() || intents.is_empty() {
+        return serde_json::json!({
+            "peers": peers.len(), "intents": intents.len(), "delivered": 0,
+            "note": if peers.is_empty() { "没有登记对端 — 意图无处广播" } else { "还没有意图可广播" },
+        });
+    }
+    let payload = serde_json::json!({
+        "from_did": st.identity.did.as_str(),
+        "intents": intents.iter().map(|(k, w)| serde_json::json!({"intent": k, "weight": w})).collect::<Vec<_>>(),
+        "ts": chrono::Utc::now().timestamp_millis(),
+        "ask": "按这些意图找内容, 找到就 POST /api/world/inbox 推卡回来",
+    });
+    let mut delivered = 0usize;
+    let mut results: Vec<serde_json::Value> = vec![];
+    for p in &peers {
+        let url = format!("{}/api/world/intents/announce", p.trim_end_matches('/'));
+        let ok = ureq::post(&url)
+            .timeout(std::time::Duration::from_secs(5))
+            .set("content-type", "application/json")
+            .send_json(&payload)
+            .map(|r| r.status() < 400)
+            .unwrap_or(false);
+        if ok {
+            delivered += 1;
+        }
+        results.push(serde_json::json!({"peer": p, "ok": ok}));
+    }
+    let entry = serde_json::json!({
+        "ts": chrono::Utc::now().timestamp_millis(),
+        "intents": intents.len(), "delivered": delivered, "results": results,
+    });
+    {
+        let mut fs = st.forge.lock().await;
+        fs.intent_broadcast_log.push(entry.clone());
+        if fs.intent_broadcast_log.len() > 50 {
+            fs.intent_broadcast_log.remove(0);
+        }
+        fs.save(&data_dir());
+    }
+    entry
+}
+
+/// POST /api/world/intents/announce → 收下对端广播来的意图 (外部智能体"我要什么")
+pub async fn world_intents_announce(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let from = req["from_did"].as_str().unwrap_or("").to_string();
+    if from.is_empty() {
+        return Json(serde_json::json!({"ok": false, "error": "缺 from_did"}));
+    }
+    let mut fs = st.forge.lock().await;
+    fs.peer_intents
+        .retain(|p| p["from_did"].as_str() != Some(from.as_str()));
+    fs.peer_intents.push(serde_json::json!({
+        "from_did": from,
+        "intents": req["intents"].clone(),
+        "ts": chrono::Utc::now().timestamp_millis(),
+    }));
+    if fs.peer_intents.len() > 100 {
+        fs.peer_intents.remove(0);
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({"ok": true, "stored": fs.peer_intents.len()}))
+}
+
+/// POST /api/world/intents/broadcast → 立刻对外广播一次
+pub async fn world_intents_broadcast(State(st): State<AppState>) -> Json<serde_json::Value> {
+    Json(broadcast_intents(&st, 3).await)
+}
+
+
+/// GET /api/update/log → 最近的更新日志 (前端据此显示 npm 装到哪一步)
+pub async fn update_log() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "lines": crate::updater::tail_log(40) }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6356,93 +6526,4 @@ mod tests {
         seqs.sort_unstable();
         assert_eq!(seqs, (1..=24).collect::<Vec<_>>());
     }
-}
-
-// ───────────────────────── 世界意图对外广播 (2026-10-30) ─────────────────────────
-
-/// 把本机意图广播给已登记对端 (best-effort; 每个对端的结果落 `intent_broadcast_log`)。
-pub async fn broadcast_intents(st: &AppState, limit: usize) -> serde_json::Value {
-    let (peers, intents) = {
-        let fs = st.forge.lock().await;
-        let mut top = fs.interests.top(limit, chrono::Utc::now().timestamp_millis());
-        if top.is_empty() {
-            top = fs.intents.iter().map(|i| (i.clone(), 1.0)).collect();
-        }
-        (fs.directory_peers.clone(), top)
-    };
-    if peers.is_empty() || intents.is_empty() {
-        return serde_json::json!({
-            "peers": peers.len(), "intents": intents.len(), "delivered": 0,
-            "note": if peers.is_empty() { "没有登记对端 — 意图无处广播" } else { "还没有意图可广播" },
-        });
-    }
-    let payload = serde_json::json!({
-        "from_did": st.identity.did.as_str(),
-        "intents": intents.iter().map(|(k, w)| serde_json::json!({"intent": k, "weight": w})).collect::<Vec<_>>(),
-        "ts": chrono::Utc::now().timestamp_millis(),
-        "ask": "按这些意图找内容, 找到就 POST /api/world/inbox 推卡回来",
-    });
-    let mut delivered = 0usize;
-    let mut results: Vec<serde_json::Value> = vec![];
-    for p in &peers {
-        let url = format!("{}/api/world/intents/announce", p.trim_end_matches('/'));
-        let ok = ureq::post(&url)
-            .timeout(std::time::Duration::from_secs(5))
-            .set("content-type", "application/json")
-            .send_json(&payload)
-            .map(|r| r.status() < 400)
-            .unwrap_or(false);
-        if ok {
-            delivered += 1;
-        }
-        results.push(serde_json::json!({"peer": p, "ok": ok}));
-    }
-    let entry = serde_json::json!({
-        "ts": chrono::Utc::now().timestamp_millis(),
-        "intents": intents.len(), "delivered": delivered, "results": results,
-    });
-    {
-        let mut fs = st.forge.lock().await;
-        fs.intent_broadcast_log.push(entry.clone());
-        if fs.intent_broadcast_log.len() > 50 {
-            fs.intent_broadcast_log.remove(0);
-        }
-        fs.save(&data_dir());
-    }
-    entry
-}
-
-/// POST /api/world/intents/announce → 收下对端广播来的意图 (外部智能体"我要什么")
-pub async fn world_intents_announce(
-    State(st): State<AppState>,
-    Json(req): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    let from = req["from_did"].as_str().unwrap_or("").to_string();
-    if from.is_empty() {
-        return Json(serde_json::json!({"ok": false, "error": "缺 from_did"}));
-    }
-    let mut fs = st.forge.lock().await;
-    fs.peer_intents
-        .retain(|p| p["from_did"].as_str() != Some(from.as_str()));
-    fs.peer_intents.push(serde_json::json!({
-        "from_did": from,
-        "intents": req["intents"].clone(),
-        "ts": chrono::Utc::now().timestamp_millis(),
-    }));
-    if fs.peer_intents.len() > 100 {
-        fs.peer_intents.remove(0);
-    }
-    fs.save(&data_dir());
-    Json(serde_json::json!({"ok": true, "stored": fs.peer_intents.len()}))
-}
-
-/// POST /api/world/intents/broadcast → 立刻对外广播一次
-pub async fn world_intents_broadcast(State(st): State<AppState>) -> Json<serde_json::Value> {
-    Json(broadcast_intents(&st, 3).await)
-}
-
-
-/// GET /api/update/log → 最近的更新日志 (前端据此显示 npm 装到哪一步)
-pub async fn update_log() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "lines": crate::updater::tail_log(40) }))
 }

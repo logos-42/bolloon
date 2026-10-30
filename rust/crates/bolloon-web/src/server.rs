@@ -358,6 +358,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/agents/pin", post(crate::native::pin_agent))
         // 智能体档案（DID 缩写 + soul 介绍 + 功能简介），眼镜端详情页用
         .route("/api/agents/{id}/profile", get(crate::native::agent_profile))
+        .route("/api/agents/{id}/ownership", get(crate::native::agent_ownership))
         .route("/api/wallet/authorize", post(crate::native::authorize_wallet))
         // 眼镜端钱包视图: 地址 + 链上余额（真实 RPC）
         .route("/api/wallet", get(crate::wallet::wallet))
@@ -2508,7 +2509,7 @@ async fn world_say(
         let fs = st.forge.lock().await;
         let mut hit: Option<String> = None;
         for i in &fs.intents {
-            if text.contains(i.as_str()) && hit.as_ref().map_or(true, |h| i.chars().count() > h.chars().count()) {
+            if text.contains(i.as_str()) && hit.as_ref().is_none_or(|h| i.chars().count() > h.chars().count()) {
                 hit = Some(i.clone());
             }
         }
@@ -2634,8 +2635,8 @@ async fn world_say(
             // 标题 = **内容摘要** (leo 2026-10-30): 取正文第一句/前 28 字, 不写"谁 · 主题"
             let headline: String = {
                 let flat = reply.split('\n').map(|l| l.trim()).find(|l| !l.is_empty()).unwrap_or("");
-                let flat = flat.trim_start_matches(|c: char| c == '#' || c == '-' || c == '*' || c == ' ');
-                let first = flat.split(|c: char| c == '。' || c == '！' || c == '？' || c == '.').next().unwrap_or(flat);
+                let flat = flat.trim_start_matches(['#', '-', '*', ' ']);
+                let first = flat.split(['。', '！', '？', '.']).next().unwrap_or(flat);
                 first.chars().take(28).collect()
             };
             fs.inbox.insert(0, serde_json::json!({
@@ -2872,6 +2873,8 @@ mod route_tests {
 
         let state = AppState::new(offline_llm());
         let mk = |id: &str, name: &str| crate::native::AgentView {
+            owner_did: String::new(),
+            owner_signature: String::new(),
             id: id.into(),
             name: name.into(),
             did: format!("did:pi:{id}"),

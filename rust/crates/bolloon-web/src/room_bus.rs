@@ -700,6 +700,8 @@ mod tests {
 
     fn agent(id: &str, name: &str) -> AgentView {
         AgentView {
+            owner_did: String::new(),
+            owner_signature: String::new(),
             id: id.into(),
             name: name.into(),
             did: format!("did:pi:{id}"),
