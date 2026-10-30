@@ -3396,8 +3396,19 @@ pub async fn list_opportunities(
     // 没有流入就如实空着, 并说清"怎么才会有"——不用编造的卡片撑场面。
     let mut items: Vec<serde_json::Value> = Vec::new();
     for (i, item) in fs.inbox.iter().enumerate() {
-        let title = item["title"].as_str().unwrap_or("").trim().to_string();
-        let summary = item["summary"].as_str().unwrap_or("").trim().to_string();
+        // 信箱条目可能是 {title,media,...} 直放, 也可能是外部推送的 {"card":{title,media,...}} 包一层。
+        // 两处都取 —— 否则 media/links/cover 全部丢失 (卡片就只剩标题, 媒体槽永远空)。
+        let nested = item.get("card").cloned().unwrap_or(serde_json::Value::Null);
+        let pick = |k: &str| -> serde_json::Value {
+            let flat = item.get(k).cloned().unwrap_or(serde_json::Value::Null);
+            if flat.is_null() {
+                nested.get(k).cloned().unwrap_or(serde_json::Value::Null)
+            } else {
+                flat
+            }
+        };
+        let title = pick("title").as_str().unwrap_or("").trim().to_string();
+        let summary = pick("summary").as_str().unwrap_or("").trim().to_string();
         if title.is_empty() && summary.is_empty() {
             continue;
         }
@@ -3415,13 +3426,22 @@ pub async fn list_opportunities(
         let (score, reason) = bolloon_agent::world::score_opportunity(&tags, &use_tags);
         let (up, down) = fs.world_votes.get(&id).copied().unwrap_or((0, 0));
         let opened = fs.world_opened.iter().any(|o| o == &id);
-        let ts_ms = item.get("ts").and_then(|t| t.as_i64()).unwrap_or(0);
+        let ts_ms = pick("ts").as_i64().unwrap_or(0);
         let age_h = if ts_ms > 0 {
             ((chrono::Utc::now().timestamp_millis() - ts_ms).max(0) as f64) / 3_600_000.0
         } else {
             RankWeights::HALF_LIFE_H // 没时间戳 ⇒ 按"半天旧"处理, 不假装最新
         };
         let (rank, why) = rank_card(score, opened, up, down, age_h);
+        // json! 里不能放带 let 的块, 先算好 (空 ⇒ 默认值, 不编造"已验证")
+        let verification = {
+            let v = pick("verification");
+            if v.is_null() { serde_json::json!("unverified") } else { v }
+        };
+        let version = {
+            let v = pick("version");
+            if v.is_null() { serde_json::json!(1) } else { v }
+        };
         let mut obj = serde_json::json!({
             "id": id,
             "title": title,
@@ -3429,17 +3449,19 @@ pub async fn list_opportunities(
             "tags": tags,
             "score": score,
             "reason": reason,
-            "url": item.get("url").cloned().unwrap_or(serde_json::Value::Null),
-            "kind": item.get("kind").and_then(|k| k.as_str()).unwrap_or("card"),
+            "url": pick("url"),
+            "kind": pick("kind").as_str().unwrap_or("card").to_string(),
             "source": item.get("from").and_then(|f| f.as_str()).unwrap_or("world-card"),
             // 作者 (标题现在是内容摘要, 谁说的放这里)
-            "by": item.get("by").cloned().unwrap_or(serde_json::Value::Null),
+            "by": pick("by"),
             // 媒体槽: 外部智能体推来的视频/图片/音频 (原样透出, 不做二次加工)
-            "media": item.get("media").cloned().unwrap_or(serde_json::Value::Null),
-            "verification": item.get("verification").cloned().unwrap_or(serde_json::json!("unverified")),
-            "ts": item.get("ts").cloned().unwrap_or(serde_json::Value::Null),
+            "media": pick("media"),
+            // 真实链接 (外部推送带来的出处), 前端放在折叠栏里
+            "links": pick("links"),
+            "verification": verification,
+            "ts": pick("ts"),
             // 版本号: 同一 (智能体, 主题) 的卡片被后续答复覆盖时 +1
-            "version": item.get("version").cloned().unwrap_or(serde_json::json!(1)),
+            "version": version,
             "accepted": fs.accepted.contains(&id),
             "opened": opened,
             "up": up,
