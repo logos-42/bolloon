@@ -171,6 +171,8 @@
   .world-at button.ag::before{content:"🤖 "}
   .world-at-picked{display:flex;flex-wrap:wrap;gap:5px;font-size:11px;color:var(--muted)}
   .world-at-picked:empty{display:none}
+  #atBtn{display:none}
+  main.world-mode #atBtn{display:inline-flex}
   #worldCardList .item{cursor:pointer}
   #worldCardList .item .txt small{color:var(--muted)}
   .wcard-vote{display:flex;gap:6px;align-items:center;margin-top:2px}
@@ -364,7 +366,8 @@
   /* ── 世界模式 (对齐 TS client.ts 世界流设计) ── */
   #worldView{display:none;flex:1;min-height:0;overflow:hidden;flex-direction:row}
   main.world-mode #chat{display:none}
-  main.world-mode .composer-wrap{display:none}
+  /* 世界模式的输入框 = 底部这一个 (leo: 发送的对话框还是底部那一个) */
+  main.world-mode .composer-wrap{display:flex}
   main.world-mode #worldView{display:flex}
   main.world-mode .hero{display:none}
   /* ── 通讯录 (2026-10-28): 网页端与桌面 App **同一个面板同一份代码** ──
@@ -808,10 +811,9 @@
       <aside class="world-side">
         <div style="font-weight:600;font-size:12px;margin-bottom:6px">我的意图</div>
         <div id="worldIntents"></div>
+        <!-- 输入统一在底部 composer (世界模式也用它); 这里只放 @ 候选与已选提示 -->
         <div style="display:flex;gap:6px;margin:8px 0">
-          <input id="worldIntentInput" placeholder="说一句 / 加意图…（@ 可指定接话的智能体或群组）" style="flex:1;font-size:12px;padding:5px 7px;border-radius:8px;background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn-border)" />
-          <button id="worldAtBtn" title="指定接话的智能体 / 群组（不指定=默认本机智能体回复）" style="font-size:11px;padding:5px 8px">@</button>
-          <button id="worldIntentAdd" style="font-size:11px;padding:5px 9px">发送</button>
+          <button id="worldAtBtn" title="指定接话的智能体 / 群组（不指定=默认本机智能体回复）" style="font-size:11px;padding:5px 8px">@ 指定接话</button>
         </div>
         <div class="world-stat" id="worldStats"></div>
       </aside>
@@ -890,6 +892,7 @@
           <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"></path>
         </svg>
       </button>
+      <button id="atBtn" class="edit-btn world-only" title="指定接话的智能体 / 群组（不指定=默认本机智能体）">@</button>
       <button class="primary" id="send">发送</button>
     </div>
     <div id="queueHint" class="hint" style="display:none"></div>
@@ -2381,9 +2384,14 @@ async function runUpdateFlow(){
 $('updateBtn').onclick=runUpdateFlow;
 $('groupMenuBtn').onclick=(e)=>openGroupMenu(e,activeGroupId);
 $('worldAtBtn').onclick=(e)=>{e.stopPropagation();renderWorldAt();$('worldAtPanel').classList.toggle('hidden');};
-// 既有「加」按钮现在同时: 记意图 + 发给世界 (谁接话由 @ 决定, 不指定=默认本机智能体)
-$('worldIntentAdd').onclick=()=>sendWorldSay();
-$('worldIntentInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();sendWorldSay();}});
+$('atBtn').onclick=(e)=>{e.stopPropagation();renderWorldAt();
+  const p=$('worldAtPanel'); p.classList.remove('hidden');
+  toast('点选要接话的智能体 / 群组（再点一次取消）');};
+// 输入统一在底部 composer ⇒ 右侧那两个元素已删除; 这里必须判空, 否则初始化会中断
+// (null.onclick 抛 TypeError 会让后面所有绑定与首屏渲染全部失效 —— 2026-10-30 实测)
+if($('worldIntentAdd'))$('worldIntentAdd').onclick=()=>sendWorldSay();
+if($('worldIntentInput'))$('worldIntentInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();sendWorldSay();}});
+
 document.addEventListener('click',()=>{const m=$('groupMenu');if(m)m.classList.add('hidden');});
 
 async function streamChat(payload,onDelta,signal,onThought){
@@ -2491,6 +2499,7 @@ async function submitMessage(text,images){
 async function send(){
   const text=$('input').value.trim();
   if(!text&&pendingImages.length===0)return;
+  if(inWorldMode()){ if(!text)return; await sendWorldSay(); return; }
   if(privacyBlocked(text)){
     const s=state.sessions.find(x=>x.id===state.active_session_id);
     if(s){s.messages=s.messages||[];s.messages.push({role:'assistant',text:'（隐私围栏：检测到私钥/凭据，消息未发送，也未写入会话）',time:new Date().toISOString()});renderChat();renderSidebar();}
@@ -2498,6 +2507,7 @@ async function send(){
   }
   const images=[...pendingImages];pendingImages=[];renderImgPreview();
   $('input').value='';
+  if(inWorldMode()){await sendWorldSay();return;} // 世界模式: 底部输入框发的是世界消息
   if(isBusy()){enqueueSend(text,images);return;} // 忙时入队，不丢弃
   const s=state.sessions.find(x=>x.id===state.active_session_id);
   if(s&&editingMessageIndex!=null&&editingSessionId===s.id){
@@ -2608,30 +2618,43 @@ function renderWorldSideCards(list){
   const box=$('worldCardList');
   if(!box)return;
   const rows=list||[];
+  // 卡片数据按 id 存起来: 菜单要用的 url 从表里取, **不走内联属性传参**
+  // (以前把 JSON 串直接塞进 onclick 属性 ⇒ 引号截断属性 ⇒ handler 语法错误 ⇒ 菜单永远空)
+  worldCardsById={};
+  rows.forEach(o=>{worldCardsById[o.id]=o;});
   box.innerHTML=rows.length?rows.slice(0,20).map(o=>{
-    const link=o.url?`<button class="dots" title="打开链接" onclick="event.stopPropagation();window.open('${escapeHTML(o.url)}','_blank')">↗</button>`:'';
+    const link=o.url?`<button class="dots" title="打开链接" onclick="event.stopPropagation();openWorldCardUrl('${o.id}')">↗</button>`:'';
     return `<div class="item" onclick="openWorldCard('${o.id}')">
       <div class="ava">${o.opened?'📖':'🎴'}</div>
       <div class="txt"><b>${escapeHTML((o.title||'').slice(0,22))}</b><small>${escapeHTML((o.why||o.reason||'').slice(0,24))}</small></div>
       ${link}
-      <button class="dots" title="卡片设置" onclick="event.stopPropagation();openWorldCardMenu(event,'${o.id}',${JSON.stringify(o.url||'').replace(/"/g,'&quot;')})">⋯</button>
+      <button class="dots" title="卡片设置" onclick="event.stopPropagation();openWorldCardMenu(event,'${o.id}')">⋯</button>
     </div>`;
   }).join(''):'<div class="hint">(世界流还没有真实卡片 — 在框里说一句，智能体回应后会生成)</div>';
   if($('worldSideNote'))$('worldSideNote').textContent=rows.length?('最近看过 / 可能有用 · '+rows.length):'';
 }
-let menuWorldCard='', menuWorldUrl='';
-function openWorldCardMenu(e,id,url){
-  e.stopPropagation();
-  menuWorldCard=id; menuWorldUrl=url||'';
+let menuWorldCard='', menuWorldUrl='', worldCardsById={};
+function openWorldCardUrl(id){
+  const url=(worldCardsById[id]||{}).url;
+  if(url)window.open(url,'_blank');
+  else toast('这张卡片没有外链');
+}
+function openWorldCardMenu(e,id){
+  if(e&&e.stopPropagation)e.stopPropagation();
+  menuWorldCard=id;
+  menuWorldUrl=(worldCardsById[id]||{}).url||'';
   const m=$('groupMenu');
-  if(!m)return;
+  if(!m){toast('菜单容器缺失');return;}
   m.innerHTML=`
     <button onclick="openWorldCard(menuWorldCard)">打开</button>
-    <button onclick="menuWorldUrl?window.open(menuWorldUrl,'_blank'):toast('这张卡片没有外链')">打开链接</button>
+    <button onclick="openWorldCardUrl(menuWorldCard)">${menuWorldUrl?'打开链接':'（无外链）'}</button>
+    <button onclick="voteWorldCard(menuWorldCard,'up')">赞一下（往前）</button>
+    <button onclick="voteWorldCard(menuWorldCard,'down')">踩一下（往后）</button>
     <button onclick="deleteWorldCard()">删除（本机）</button>`;
   m.classList.remove('hidden');
-  m.style.left=Math.min(e.clientX,innerWidth-190)+'px';
-  m.style.top=Math.min(e.clientY,innerHeight-140)+'px';
+  const w=196,h=210;
+  m.style.left=Math.max(8,Math.min(e.clientX,innerWidth-w))+'px';
+  m.style.top=Math.max(8,Math.min(e.clientY,innerHeight-h))+'px';
 }
 async function deleteWorldCard(){
   try{
@@ -2700,8 +2723,10 @@ async function addWorldIntent() {
   try { await api("/api/intents", { method: "POST", body: JSON.stringify({ tag: v }) }); loadWorld(); }
   catch (e) { alert(e.message); }
 }
-$("worldIntentAdd").addEventListener("click", addWorldIntent);
-$("worldIntentInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); addWorldIntent(); } });
+// 输入已统一到底部 composer ⇒ 右侧这两个元素不存在; 判空后再绑, 否则 null.addEventListener
+// 会在首屏抛错并把后面的初始化 (含 boot) 全部带走 (2026-10-30 实测)
+if ($("worldIntentAdd")) $("worldIntentAdd").addEventListener("click", addWorldIntent);
+if ($("worldIntentInput")) $("worldIntentInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); addWorldIntent(); } });
 
 // ── 2026-10-26 (用户): App 桌面三栏式侧边导航 (仅 Tauri 壳, ?app=desktop → body.desktop3col) ──
 // 第一栏 #primaryRail = 全局导航 (模块切换 + 全局入口, relay 到现有按钮, 不重复逻辑)
@@ -2760,7 +2785,8 @@ function initDesktopThreeCol() {
 }
 if (isDesktopShell) initDesktopThreeCol();
 // 侧栏标签页初始态 (智能体): 通讯录/群组默认收起
-try{ setSideTab('agents'); }catch(_){}
+// 必须延后一个 tick: `let sideTab` 声明在下面, 立刻调用会撞 TDZ (实测整段初始化中断)
+setTimeout(()=>{ try{ setSideTab('agents'); }catch(e){ console.error('setSideTab 初始化失败', e); } }, 0);
 
 
 // ── 2026-10-27 (用户): 通讯录模块 (第一栏 📒 → 第二栏: 好友 / 好友请求 / 群聊) ──
@@ -2801,8 +2827,13 @@ function setSideTab(tab){
     setPanel('world');                 // 世界流: 机会按意图重打分, 忽略的进校准环
     if(isDesktopShell)setDesktopModule('world');
     if(activeGroupId)closeGroup();
+    // 底部输入框就是世界模式的对话框 (leo 定) —— 直接设, 不跟 CSS 优先级打架
+    const cw=document.querySelector('.composer-wrap'); if(cw)cw.style.display='flex';
+    const ing=$('input'); if(ing){ing.placeholder='在世界里说一句话；Enter 发送，@ 指定接话的人';}
     return;
   }
+  const cwReset=document.querySelector('.composer-wrap'); if(cwReset)cwReset.style.display='';
+  const ingReset=$('input'); if(ingReset){ingReset.placeholder='发送消息；Enter 发送，Shift+Enter 换行';}
   if(showAgents){
     setPanel('chat');
     if(isDesktopShell)setDesktopModule('chat');
@@ -2865,7 +2896,8 @@ async function syncState(force){
   try{
     const j=await api('/api/bootstrap');
     const keepFocus=state&&state.active_session_id;
-    state=j.state;update=j.update;
+    if(j&&j.state)state=j.state;          // 拿不到就保持原值, 绝不清空
+    if(j&&j.update)update=j.update;
     if(keepFocus&&state.sessions&&state.sessions.some(x=>x.id===keepFocus))state.active_session_id=keepFocus;
     renderSidebar();renderUpdate();
     if(!isBusy())renderChat();           // 正在生成时别抢气泡
@@ -2932,8 +2964,10 @@ function toggleWorldTarget(ty,id){
   if(i>=0)worldTargets.splice(i,1);else worldTargets.push({type:ty,id});
   renderWorldAt();
 }
+function inWorldMode(){return document.querySelector('main').classList.contains('world-mode');}
 async function sendWorldSay(){
-  const inp=$('worldIntentInput'); // 世界模式唯一的对话框 (右侧「我的意图」)
+  // 世界模式唯一的对话框 = 底部 composer (#input); 非世界模式时才退回右侧意图框
+  const inp=inWorldMode()?$('input'):$('worldIntentInput');
   const text=(inp.value||'').trim();
   if(!text)return;
   inp.value='';
@@ -3583,7 +3617,8 @@ window.send = function () {
 };
 
 // 首屏就拉一次世界数 (徽章自动更新 — 世界在变化, 不用人进来看)
-loadWorld();
+// 延后到 boot 之后: 之前它抢在 boot 前面跑, state 还是空的, 抛错会把整个首屏带死 (2026-10-30)
+setTimeout(()=>{ try{ loadWorld(); }catch(_){} }, 0);
 setInterval(() => { if (!worldLoaded) loadWorld(); }, 60000);
 
 boot().finally(()=>{
@@ -3641,6 +3676,13 @@ boot().finally(()=>{
   pickSession=function(id){ _pickSession(id); app.classList.add('mob-detail'); };
   if(typeof pickAgent==='function'){ const _pickAgent=pickAgent; pickAgent=function(id){ _pickAgent(id); app.classList.add('mob-detail'); }; }
 })();
+</script>
+<script>
+// 封面页(plash) 硬兜底: 不管首屏脚本出什么事, 最多 4s 一定放开, 绝不把人锁在封面
+setTimeout(function(){var sp=document.getElementById('splash');if(sp){sp.classList.add('hide');setTimeout(function(){sp.remove();},650);}},4000);
+// 首屏脚本任何一处抛错都要能在控制台看到 (以前静默失败 = 只剩一个空白页)
+window.addEventListener('error', e=>console.error('[bolloon] 页面错误:', e.message, e.filename+':'+e.lineno));
+window.addEventListener('unhandledrejection', e=>console.error('[bolloon] 未处理的 promise 拒绝:', (e.reason&&e.reason.message)||e.reason));
 </script>
 </body>
 </html>
