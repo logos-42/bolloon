@@ -163,6 +163,11 @@
   /* 群页底部议程芯片: 选中才变绿 (绿=会在这个群接话) */
   .group-intro{padding:6px 14px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--line);line-height:1.45}
   .group-intro:empty{display:none}
+  /* 意图栏横向折叠: 收成右侧一条窄边, 竖排文字, 点一下再展开 (不是上下折叠) */
+  main.world-mode .world-side{transition:width .16s ease}
+  main.world-mode.side-fold .world-side{width:30px;min-width:30px;padding:10px 4px;overflow:hidden}
+  main.world-mode.side-fold .world-side > *{display:none}
+  main.world-mode.side-fold .world-side::before{content:"意 图";writing-mode:vertical-rl;color:var(--muted);font-size:11.5px;letter-spacing:2px;cursor:pointer}
   .world-thread{margin-top:14px;display:flex;flex-direction:column;gap:6px}
   .world-thread #worldThread{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto}
   .wmsg{font-size:12.5px;line-height:1.5;border-radius:9px;padding:6px 9px;border:1px solid var(--line);max-width:92%}
@@ -827,10 +832,11 @@
         </div>
       </div>
       <aside class="world-side">
-        <details id="worldIntentBox" open style="margin-bottom:8px">
-          <summary style="font-weight:600;font-size:12px;cursor:pointer;margin-bottom:6px">我的意图 <span id="worldIntentCount" style="color:var(--muted);font-weight:400"></span></summary>
-          <div id="worldIntents"></div>
-        </details>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+          <span style="font-weight:600;font-size:12px">我的意图 <span id="worldIntentCount" style="color:var(--muted);font-weight:400"></span></span>
+          <button class="mini" id="worldSideToggle" title="把意图栏收进右侧" style="margin-left:auto;padding:1px 7px;font-size:11px">⟩</button>
+        </div>
+        <div id="worldIntents"></div>
         <!-- 输入统一在底部 composer (世界模式也用它); 这里只放 @ 候选与已选提示 -->
         <div style="display:flex;gap:6px;margin:8px 0">
           <button id="worldAtBtn" title="指定接话的智能体 / 群组（不指定=默认本机智能体回复）" style="font-size:11px;padding:5px 8px">@ 指定接话</button>
@@ -2431,6 +2437,15 @@ async function runUpdateFlow(){
 $('updateBtn').onclick=runUpdateFlow;
 $('groupMenuBtn').onclick=(e)=>openGroupMenu(e,activeGroupId);
 $('worldAtBtn').onclick=(e)=>{e.stopPropagation();renderWorldAt();$('worldAtPanel').classList.toggle('hidden');};
+$('worldSideToggle').onclick=(e)=>{e.stopPropagation();
+  const m=document.querySelector('main');m.classList.toggle('side-fold');
+  try{localStorage.setItem('worldSideFold',m.classList.contains('side-fold')?'1':'0');}catch(_){}
+};
+document.querySelector('.world-side').addEventListener('click',(e)=>{
+  const m=document.querySelector('main');
+  if(m.classList.contains('side-fold')){ m.classList.remove('side-fold'); try{localStorage.setItem('worldSideFold','0');}catch(_){} }
+});
+try{ if(localStorage.getItem('worldSideFold')==='1')document.querySelector('main').classList.add('side-fold'); }catch(_){}
 $('atBtn').onclick=(e)=>{e.stopPropagation();renderWorldAt();
   const p=$('worldAtPanel'); p.classList.remove('hidden');
   toast('点选要接话的智能体 / 群组（再点一次取消）');};
