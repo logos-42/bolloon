@@ -2970,6 +2970,16 @@ async function toggleGroupChip(id){
   }
 }
 document.querySelectorAll('#sideTabs .side-tab').forEach(b=>{b.onclick=()=>setSideTab(b.dataset.side);});
+// 2026-10-30 (leo): 折叠后的图标 = **桌面 rail 的同一份 SVG**, web 直接复用, 不再手写第二套
+(function reuseRailIcons(){
+  const map={agents:'chat',contacts:'contacts',world:'world'};
+  document.querySelectorAll('#sideTabs .side-tab').forEach(tab=>{
+    const mod=map[tab.dataset.side];
+    const src=mod?document.querySelector(`#primaryRail .rail-btn[data-module="${mod}"] svg`):null;
+    const dst=tab.querySelector('svg.ico');
+    if(src&&dst){ dst.innerHTML=src.innerHTML; dst.setAttribute('viewBox',src.getAttribute('viewBox')||'0 0 24 24'); }
+  });
+})();
 // ─────────────────────────────────────────────────────────────
 // 状态同步: 智能体 / 会话 / 群组以**本机服务端**为准, 界面不留旧快照
 // (2026-10-30 leo: 加载的 agent 数据和本地不同步)
