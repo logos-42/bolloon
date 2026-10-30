@@ -145,6 +145,9 @@ enum PayAction {
         /// 凭证: 交易哈希 / 交易号
         #[arg(long)]
         proof: String,
+        /// 收款人节点地址 (如 http://1.2.3.4:54188): 填了他那边立刻看到这笔待核销
+        #[arg(long, default_value = "")]
+        owner: String,
         #[arg(long, default_value_t = 54188)]
         port: u16,
         #[arg(long, default_value = "")]
@@ -559,11 +562,14 @@ fn run_pay(action: PayAction) -> anyhow::Result<()> {
                 }
             }
         }
-        PayAction::Claim { amount, channel, proof, port, account } => {
+        PayAction::Claim { amount, channel, proof, owner, port, account } => {
             let base = format!("http://127.0.0.1:{port}");
             let r = post(
                 format!("{base}/api/pay/claim"),
-                serde_json::json!({ "amount_usd": amount, "channel": channel, "proof": proof, "account": account }),
+                serde_json::json!({
+                    "amount_usd": amount, "channel": channel, "proof": proof,
+                    "account": account, "owner_url": owner,
+                }),
             )?;
             if let Some(e) = r["error"].as_str() {
                 anyhow::bail!("提交失败: {e}");
@@ -574,6 +580,15 @@ fn run_pay(action: PayAction) -> anyhow::Result<()> {
                 amount,
                 channel
             );
+            if let Some(f) = r.get("forwarded") {
+                if !f.is_null() {
+                    if let Some(err) = f["error"].as_str() {
+                        println!("⚠ 发到收款人节点失败: {err}");
+                    } else if let Some(pid) = f["pending_id"].as_str() {
+                        println!("已发到收款人节点 · 他那边待核销 id: {pid}");
+                    }
+                }
+            }
             println!("核对到账后运行: bolloon pay confirm {}", r["pending"]["id"].as_str().unwrap_or(""));
         }
         PayAction::Credit { did, amount, channel, proof, note, port } => {

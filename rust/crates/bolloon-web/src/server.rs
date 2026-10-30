@@ -381,6 +381,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/pay/summary", get(crate::pay::pay_summary))
         .route("/api/pay/upstream", get(crate::pay::pay_upstream))
         .route("/api/pay/claim", post(crate::pay::pay_claim))
+        // 收款人节点: 收跨机充值申报 (DID 签名验过才落 pending)
+        .route("/api/pay/claim/inbound", post(crate::pay::pay_claim_inbound))
         .route("/api/pay/confirm", post(crate::pay::pay_confirm))
         .route("/api/phone/bind", post(crate::native::bind_phone))
         .route("/api/phone", get(crate::native::phone_status))

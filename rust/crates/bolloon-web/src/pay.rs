@@ -184,8 +184,16 @@ pub async fn pay_info(
 ) -> Json<serde_json::Value> {
     let account = q.get("account").cloned().unwrap_or_default();
     let path = ledger_path(&st);
-    let events = for_account(&read_events(&path), &account);
-    let (balance, pending, charged, topped) = summarize(&events);
+    let all = read_events(&path);
+    // 余额永远按「谁的账户」算; 但列表分两种视角 ——
+    // 空 account = 收款人视角 (要看**所有**人交上来的待核销, 否则跨机申报看不见);
+    // 带 account = 那个用户自己看自己的账。
+    let events = if account.is_empty() {
+        all.clone()
+    } else {
+        for_account(&all, &account)
+    };
+    let (balance, pending, charged, topped) = summarize(&for_account(&all, &account));
     let (balance, pending, charged, topped) = (
         balance as f64 / MICRO as f64,
         pending as f64 / MICRO as f64,
@@ -243,10 +251,111 @@ pub async fn pay_claim(
     if let Err(e) = append(&path, &ev) {
         return Json(serde_json::json!({ "error": e.to_string() }));
     }
+
+    // 2026-10-30 (用户批准的三步): 有 owner_url 就同时签好名发到**收款人节点**,
+    // 让他那边直接看到 pending 并确认 —— 不然他永远只知道"收到钱", 不知道是谁交的。
+    let mut forwarded = serde_json::Value::Null;
+    if let Some(owner) = req["owner_url"].as_str().map(|s| s.trim_end_matches('/')) {
+        if !owner.is_empty() {
+            let did = st.identity.did.as_str().to_string();
+            let ts = now_ms();
+            let msg = claim_message(&did, ev.amount_micro, &ev.channel, &ev.proof, ts);
+            let sig = hex::encode(st.identity.sign(msg.as_bytes()));
+            let body = serde_json::json!({
+                "did": did, "amount_usd": amount_usd, "channel": ev.channel,
+                "proof": ev.proof, "ts_ms": ts, "sig": sig,
+            });
+            forwarded = match ureq::post(&format!("{owner}/api/pay/claim/inbound"))
+                .timeout(std::time::Duration::from_secs(8))
+                .send_json(body)
+            {
+                Ok(r) => r.into_json().unwrap_or(serde_json::Value::Null),
+                Err(e) => serde_json::json!({ "error": format!("发给收款人节点失败: {e}") }),
+            };
+        }
+    }
     Json(serde_json::json!({
         "ok": true,
         "pending": ev,
+        "forwarded": forwarded,
         "note": "已登记待核销 —— 核对到账后在本机「确认到账」才计入余额 (不自动加钱)",
+    }))
+}
+
+
+/// 跨机充值请求的签名载荷 —— 收款人节点只凭 did:pi: 反解公钥验签, 不信任请求体自述身份。
+fn claim_message(did: &str, amount_micro: i64, channel: &str, proof: &str, ts_ms: u64) -> String {
+    format!("pay_claim|{did}|{amount_micro}|{channel}|{proof}|{ts_ms}")
+}
+
+/// POST /api/pay/claim/inbound —— **收款人节点**收单口。
+///
+/// 用户在自己机器上点「我已转账」时, 由他的节点签名后把这一条发过来, 这里验签 + 时间窗,
+/// 然后落成 pending (account = 用户 did)。**不自动加钱**: 只有收款人本机 confirm 才入账。
+pub async fn pay_claim_inbound(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or("").trim().to_string();
+    let amount_usd = req["amount_usd"].as_f64().unwrap_or(0.0);
+    let channel = req["channel"].as_str().unwrap_or("").trim().to_string();
+    let proof = req["proof"].as_str().unwrap_or("").trim().to_string();
+    let ts_ms = req["ts_ms"].as_u64().unwrap_or(0);
+    let sig_hex = req["sig"].as_str().unwrap_or("");
+    if did.is_empty() || !(0.01..=100_000.0).contains(&amount_usd) || proof.len() < 4 {
+        return Json(serde_json::json!({ "error": "字段不全 (did / amount_usd / proof)" }));
+    }
+    let Some(pk) = bolloon_p2p::Did::new(did.clone()).pubkey() else {
+        return Json(serde_json::json!({ "error": "这个 did 不是本命 did:pi:, 无法验签" }));
+    };
+    let sig = match hex::decode(sig_hex) {
+        Ok(v) if v.len() == 64 => {
+            let mut a = [0u8; 64];
+            a.copy_from_slice(&v);
+            a
+        }
+        _ => return Json(serde_json::json!({ "error": "签名格式不对" })),
+    };
+    let amount_micro = (amount_usd * MICRO as f64).round() as i64;
+    let msg = claim_message(&did, amount_micro, &channel, &proof, ts_ms);
+    if !bolloon_p2p::KeyPair::verify(&pk, msg.as_bytes(), &sig) {
+        return Json(serde_json::json!({ "error": "签名验不过 (身份或内容被改过)" }));
+    }
+    let now = now_ms();
+    if ts_ms == 0 || now.abs_diff(ts_ms) > 10 * 60 * 1000 {
+        return Json(serde_json::json!({ "error": "请求过期 (超过 10 分钟), 让他重新提交" }));
+    }
+    // 同一笔凭证只收一次 (防重放)
+    let path = ledger_path(&st);
+    if read_events(&path)
+        .iter()
+        .any(|e| e.kind == "topup_pending" && e.proof == proof && e.account == did)
+    {
+        return Json(serde_json::json!({ "error": "这笔凭证已经提交过了" }));
+    }
+    let ev = PayEvent {
+        id: format!("topup-{now}"),
+        kind: "topup_pending".into(),
+        amount_micro,
+        channel,
+        proof,
+        note: format!("来自 {} 的跨机提交", did),
+        ts_ms: now,
+        account: did.clone(),
+        model: String::new(),
+        tokens_in: 0,
+        tokens_out: 0,
+        ref_id: String::new(),
+    };
+    if let Err(e) = append(&path, &ev) {
+        return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "pending_id": ev.id,
+        "did": did,
+        "amount_usd": amount_usd,
+        "note": "已收到你的充值申报, 等收款人核对到账后确认",
     }))
 }
 

@@ -12,6 +12,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use axum::{extract::State, Json};
+// trait 必须在作用域里, 否则 `PublicKey::to_encoded_point` 报 E0599 —— 放在模块级,
+// 不要只放在 generate_evm 里 (别处再调就又踩一次)。
+use k256::elliptic_curve::sec1::ToEncodedPoint;
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
@@ -82,7 +85,6 @@ fn is_evm_address(a: &str) -> bool {
 /// 生成本地 EVM 钱包: 返回 (地址, 私钥 hex)
 pub fn generate_evm() -> Result<(String, String), String> {
     use k256::elliptic_curve::rand_core::OsRng;
-    use k256::elliptic_curve::sec1::ToEncodedPoint;
     use sha3::{Digest, Keccak256};
 
     let sk = k256::SecretKey::random(&mut OsRng);
