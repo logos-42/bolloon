@@ -50,12 +50,6 @@ pub struct AgentView {
     pub global_dir: String,
     pub created_at_ms: u64,
 
-    /// 所属权: 主人 DID (谁签的这个智能体)
-    #[serde(default)]
-    pub owner_did: String,
-    /// 用户对 (agent.id|did|owner_did) 的 Ed25519 签名 (hex)。空 = 尚未签名
-    #[serde(default)]
-    pub owner_signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1076,42 +1070,6 @@ const WEB_SYSTEM_PROMPT: &str = "你是 Bolloon 智能体，运行在去中心�
 /// 回复永远自称 "Bolloon 智能体" (leo: 用户设计的私有身份应该覆盖)。
 /// 现在: agent 选了谁就用谁 (agent.id 决定 persona 目录), 名字/persona 作为**最高优先级**的
 /// 私有身份块放在最前面, 压过默认身份描述。
-/// 智能体的所属权凭证内容 (签这个名字, 改任何一项都验不过)
-pub fn agent_owner_payload(agent_id: &str, agent_did: &str, owner_did: &str) -> String {
-    format!("bolloon-agent-owner|{agent_id}|{agent_did}|{owner_did}")
-}
-
-/// 用**用户 DID 的密钥**给智能体签所属权 (2026-10-30 leo: 智能体会被用户签名)
-pub fn sign_agent_ownership(
-    identity: &bolloon_p2p::identity::Identity,
-    agent_id: &str,
-    agent_did: &str,
-) -> (String, String) {
-    let owner = identity.did.as_str().to_string();
-    let payload = agent_owner_payload(agent_id, agent_did, &owner);
-    let sig = hex::encode(identity.sign(payload.as_bytes()));
-    (owner, sig)
-}
-
-/// 给所有还没有所属权签名的智能体补签 (幂等; 已签过的不动)
-pub async fn ensure_agent_ownership(st: &AppState) -> usize {
-    let mut fs = st.forge.lock().await;
-    let mut signed = 0usize;
-    let identity = st.identity.clone();
-    for a in fs.agents.iter_mut() {
-        if a.owner_signature.is_empty() || a.owner_did.is_empty() {
-            let (did, sig) = sign_agent_ownership(&identity, &a.id, &a.did);
-            a.owner_did = did;
-            a.owner_signature = sig;
-            signed += 1;
-        }
-    }
-    if signed > 0 {
-        fs.save(&data_dir());
-    }
-    signed
-}
-
 pub async fn build_web_system(
     st: &AppState,
     query: &str,
