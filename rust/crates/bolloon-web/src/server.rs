@@ -2627,10 +2627,18 @@ async fn world_say(
                 .map(|v| v + 1)
                 .unwrap_or(1);
             fs.inbox.retain(|c| c["key"].as_str() != Some(key.as_str()));
+            // 标题 = **内容摘要** (leo 2026-10-30): 取正文第一句/前 28 字, 不写"谁 · 主题"
+            let headline: String = {
+                let flat = reply.split('\n').map(|l| l.trim()).find(|l| !l.is_empty()).unwrap_or("");
+                let flat = flat.trim_start_matches(|c: char| c == '#' || c == '-' || c == '*' || c == ' ');
+                let first = flat.split(|c: char| c == '。' || c == '！' || c == '？' || c == '.').next().unwrap_or(flat);
+                first.chars().take(28).collect()
+            };
             fs.inbox.insert(0, serde_json::json!({
                 "id": key.clone(),
                 "key": key,
-                "title": format!("{} · {}", agent.name, topic),
+                "title": if headline.is_empty() { format!("{} · {}", agent.name, topic) } else { headline },
+                "by": agent.name.clone(),
                 "summary": short,
                 // 模型自己给出的链接, 只提取不编造 (抽不到就是空数组)
                 "links": crate::native::extract_links(&reply),

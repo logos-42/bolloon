@@ -2716,7 +2716,7 @@ async function loadWorld() {
       return `<div class="cover tier-image"><img src="${escapeHTML(u)}" alt="" loading="lazy" style="max-height:190px;object-fit:cover"></div>`;
     }).join("");
       return `<div class="opp-card ${cv.tier}">
-        <div class="oh"><b>${escapeHTML(o.title)}</b><span class="scope">${scopeIcon} ${escapeHTML(o.kind || "world")}</span><span class="score">${(o.score ?? 0).toFixed(2)}</span></div>
+        <div class="oh"><b>${escapeHTML(o.title)}</b><span class="scope">${o.by?('by '+escapeHTML(o.by)):(scopeIcon + ' ' + escapeHTML(o.kind || "world"))}</span><span class="score">${(o.score ?? 0).toFixed(2)}</span></div>
         <div class="sum">${escapeHTML(o.summary || "")}${url}</div>
         ${cv.html}
         ${mediaHtml}

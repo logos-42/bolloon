@@ -1591,7 +1591,25 @@ pub async fn reply_with_model(
     text: &str,
     agent: Option<&AgentView>,
 ) -> Result<String, String> {
-    let system_prompt = build_web_system(st, text, agent, "").await;
+    let mut system_prompt = build_web_system(st, text, agent, "").await;
+    // 2026-10-30 (leo: 判断力和意图在世界/群组/智能体三种模式都会调用):
+    // 同一份落盘权重直接进系统提示 —— 智能体私聊时也知道"主人现在最在意什么"。
+    {
+        let fs = st.forge.lock().await;
+        let mut ws: Vec<(String, f64)> = fs
+            .intent_weights
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        ws.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        if !ws.is_empty() {
+            let top: Vec<String> = ws.iter().take(3).map(|(k, v)| format!("{k}({v:.2})")).collect();
+            system_prompt.push_str(&format!(
+                "\n\n【当前意图权重】(由真实反馈累积: 赞/点开抬, 踩/忽略压) {} —— 相关内容优先, 无关的不硬凑。",
+                top.join(" / ")
+            ));
+        }
+    }
     let mut messages: Vec<ChatMessage> = Vec::new();
     {
         let msgs = st.messages.lock().await;
@@ -3285,6 +3303,8 @@ pub async fn list_opportunities(
             "url": item.get("url").cloned().unwrap_or(serde_json::Value::Null),
             "kind": item.get("kind").and_then(|k| k.as_str()).unwrap_or("card"),
             "source": item.get("from").and_then(|f| f.as_str()).unwrap_or("world-card"),
+            // 作者 (标题现在是内容摘要, 谁说的放这里)
+            "by": item.get("by").cloned().unwrap_or(serde_json::Value::Null),
             "verification": item.get("verification").cloned().unwrap_or(serde_json::json!("unverified")),
             "ts": item.get("ts").cloned().unwrap_or(serde_json::Value::Null),
             // 版本号: 同一 (智能体, 主题) 的卡片被后续答复覆盖时 +1
