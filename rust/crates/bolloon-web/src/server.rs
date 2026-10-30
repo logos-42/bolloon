@@ -327,6 +327,16 @@ pub fn app(state: AppState) -> Router {
         .route("/api/wallet/authorize", post(crate::native::authorize_wallet))
         // 眼镜端钱包视图: 地址 + 链上余额（真实 RPC）
         .route("/api/wallet", get(crate::wallet::wallet))
+        // ── 充值 / 按量扣费 (2026-10-30) ──────────────────────────────
+        // 收费口径: 先充值 (USDC/支付宝/微信/PayPal, 人工核销) → 余额 → 按量扣减。
+        // 未核销的充值只进 pending, 不计入余额; confirm 只在本机做 (收款人本人核对到账)。
+        .route("/api/pay/info", get(crate::pay::pay_info))
+        // 只卖两款 (DeepSeek V4.1 Flash / V4 Pro), 单价 + 用户等级从这里读
+        .route("/api/pay/pricing", get(crate::pay::pay_pricing))
+        // 给特定用户定等级/配额 (本机管理, 收款人本人操作)
+        .route("/api/pay/user", post(crate::pay::pay_set_user))
+        .route("/api/pay/claim", post(crate::pay::pay_claim))
+        .route("/api/pay/confirm", post(crate::pay::pay_confirm))
         .route("/api/phone/bind", post(crate::native::bind_phone))
         .route("/api/phone", get(crate::native::phone_status))
         // 手机号登录 = 挑战-应答 + 公钥验签 (证明手机号与 DID 同一个身份; 不是短信登录)

@@ -11,6 +11,7 @@ pub mod archive;
 pub mod asr;
 pub mod avatar;
 pub mod native;
+pub mod pay;
 pub mod qr_login;
 pub mod room_bus;
 pub mod server;

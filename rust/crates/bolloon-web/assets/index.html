@@ -509,6 +509,32 @@
   #mobTabs button.on{color:var(--accent);font-weight:600}
   #mobBack{display:none;position:fixed;top:calc(8px + env(safe-area-inset-top));left:8px;z-index:81;width:38px;height:38px;border-radius:50%;background:var(--panel);border:1px solid var(--line);color:var(--text);font-size:20px;line-height:1}
   body.mobile #app.mob-detail #mobBack{display:block}
+
+  /* ── 2026-10-30: 订阅/充值弹窗 ── */
+  #payDlg{width:min(560px,94vw);padding:0;border-radius:16px;overflow:hidden}
+  .pay-head{display:flex;align-items:center;gap:10px;padding:16px 18px 12px;border-bottom:1px solid var(--line)}
+  .pay-head b{font-size:15px}
+  .pay-head .pay-sub{margin-left:8px;font-size:11px;color:var(--muted)}
+  .pay-x{margin-left:auto;width:28px;height:28px;padding:0;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer}
+  .pay-x:hover{color:var(--text);border-color:var(--accent)}
+  .pay-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:14px 18px 4px}
+  .pay-stats>div{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+  .pay-stats small{display:block;font-size:11px;color:var(--muted);margin-bottom:2px}
+  .pay-stats b{font-size:17px;letter-spacing:.2px}
+  .pay-channels{display:flex;gap:8px;flex-wrap:wrap;padding:14px 18px 6px}
+  .pay-channels button{padding:7px 12px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:12px;cursor:pointer}
+  .pay-channels button.on{border-color:var(--accent);color:var(--accent);font-weight:600}
+  .pay-channels button:disabled{opacity:.45;cursor:not-allowed}
+  .pay-target{margin:4px 18px 0;padding:12px;border:1px dashed var(--line);border-radius:12px;font-size:12px;line-height:1.6;word-break:break-all}
+  .pay-target .pay-addr{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--text)}
+  .pay-target .pay-copy{margin-left:6px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:11px;cursor:pointer}
+  .pay-form{display:flex;flex-direction:column;gap:8px;padding:12px 18px 6px}
+  .pay-form input{padding:9px 11px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px}
+  .pay-pricing{padding:8px 18px 0;font-size:12px;color:var(--muted)}
+  .pay-pricing table{width:100%;border-collapse:collapse;margin-top:4px}
+  .pay-pricing td{padding:3px 0;border-bottom:1px solid var(--line)}
+  .pay-pricing td:last-child{text-align:right;color:var(--text)}
+  .pay-note{padding:0 18px 16px;line-height:1.6}
 </style>
 <script>if(window.__TAURI__&&window.__TAURI__.core&&window.__TAURI__.core.invoke)document.documentElement.classList.add('tauri');</script>
 </head>
@@ -529,6 +555,32 @@
   <div class="hint" id="askHint" style="color:var(--muted);font-size:12px;margin:0 0 8px"></div>
   <input id="askInput" />
   <div class="row"><button id="askCancel">取消</button><button class="primary" id="askOk">确定</button></div>
+</dialog>
+<!-- 2026-10-30 (用户): 订阅/充值弹窗 —— 按量计费, 先充值后扣费; 默认加密钱包, 也支持支付宝/微信/PayPal (人工核销) -->
+<dialog id="payDlg">
+  <div class="pay-head">
+    <div><b>Bolloon 额度</b><span class="pay-sub">按量计费 · 先充值后使用</span></div>
+    <button class="pay-x" id="payClose" aria-label="关闭">✕</button>
+  </div>
+  <div class="pay-stats">
+    <div><small>可用余额</small><b id="payBalance">$0.00</b></div>
+    <div><small>待核销</small><b id="payPending">$0.00</b></div>
+    <div><small>已用</small><b id="payCharged">$0.00</b></div>
+  </div>
+  <div class="pay-channels" id="payChannels">
+    <button data-ch="crypto" class="on">USDC 钱包</button>
+    <button data-ch="alipay">支付宝</button>
+    <button data-ch="wechat">微信</button>
+    <button data-ch="paypal">PayPal</button>
+  </div>
+  <div class="pay-target" id="payTarget"></div>
+  <div class="pay-form">
+    <input id="payAmount" inputmode="decimal" placeholder="充值金额（USD，如 5）" />
+    <input id="payProof" placeholder="凭证：交易哈希 / 支付宝交易号 / PayPal 交易号" />
+    <button class="primary" id="paySubmit">我已转账，提交待核销</button>
+  </div>
+  <div class="pay-pricing" id="payPricing"></div>
+  <div class="hint pay-note">未核销的充值不计入余额；本机核对到账后才记账。不发代币、不做充值赠币，余额只用于抵扣 Bolloon 自身的模型用量。</div>
 </dialog>
 <div id="app">
   <!-- 2026-10-26 (用户): 桌面三栏 — 第一栏: 全局导航栏 (= 窗口外壳本身, 毛玻璃)。
@@ -1575,6 +1627,64 @@ async function retryMessage(i){
 
 // ── 智能体 ⋯ 菜单 (改默认全局名称 / 授权钱包 / 固定 ping / 分享 / 删除) ──
 let menuAgentId='';
+// ── 2026-10-30 (用户): 订阅/充值弹窗 —— 按量计费: 先充值 (加密钱包默认, 也支持支付宝/微信/PayPal),
+//    人工核销后才计入余额; 余额不足时 backend 拒绝执行 (不静默欠费)。不发代币, 不做充值赠币。
+let payInfo=null, payChannel='crypto';
+const PAY_LABEL={crypto:'USDC 钱包', alipay:'支付宝', wechat:'微信', paypal:'PayPal'};
+const PAY_CHAIN_LABEL={base:'BASE 链 (USDC)', 'base-sepolia':'BASE 测试网'};
+async function openPayDialog(){
+  const d=$('payDlg'); if(!d) return;
+  if(!d.open) d.showModal();
+  $('payTarget').innerHTML='<span class="hint">正在读取收款信息…</span>';
+  try{ payInfo=await api('/api/pay/info'); }catch(e){ payInfo=null; }
+  if(!payInfo) $('payTarget').innerHTML='<span class="hint">读不到收款信息（后端 /api/pay/info 不可达）</span>';
+  renderPay();
+}
+function renderPay(){
+  const info=payInfo||{}, cfg=info.config||{};
+  const usd=v=>'$'+Number(v||0).toFixed(2);
+  $('payBalance').textContent=usd(info.balance_usd);
+  $('payPending').textContent=usd(info.pending_usd);
+  $('payCharged').textContent=usd(info.charged_usd);
+  // 通道: 只把本机**真配了收款信息**的通道点亮, 没配的禁用并写清原因 (不假装能用)
+  document.querySelectorAll('#payChannels button').forEach(b=>{
+    const ch=b.dataset.ch, c=cfg[ch]||{};
+    const ready=(ch==='crypto'&&c.address)||(ch==='alipay'&&c.qr)||(ch==='wechat'&&c.qr)||(ch==='paypal'&&c.link);
+    b.classList.toggle('on', ch===payChannel);
+    b.disabled=!ready;
+    b.title=ready?'':'本机还没配置 '+PAY_LABEL[ch]+' 的收款信息 (data_dir/pay/config.json)';
+  });
+  const c=cfg[payChannel]||{};
+  const t=$('payTarget');
+  if(payChannel==='crypto'){
+    t.innerHTML = c.address
+      ? `<div>转到 <b>${PAY_CHAIN_LABEL[c.chain]||c.chain||'链上'}</b> · ${c.asset||'USDC'} 地址：</div>
+         <div><span class="pay-addr">${c.address}</span><button class="pay-copy" id="payCopy">复制</button></div>
+         <div class="hint" style="margin-top:6px">${c.note||''}</div>`
+      : `<span class="hint">还没配置收款地址：在 data_dir/pay/config.json 填 crypto.address，或用环境变量 BOLLOON_PAY_USDC_ADDRESS。</span>`;
+    const cp=$('payCopy'); if(cp) cp.onclick=()=>{ try{navigator.clipboard.writeText(c.address);toast('地址已复制');}catch(_){toast('复制失败，请手动选中');} };
+  } else if(payChannel==='paypal'){
+    t.innerHTML = c.link
+      ? `<div>PayPal 收款链接：</div><div><span class="pay-addr">${c.link}</span></div><div class="hint" style="margin-top:6px">${c.note||''}</div>`
+      : `<span class="hint">还没配置 PayPal 链接（config.paypal.link）</span>`;
+  } else {
+    const label=PAY_LABEL[payChannel];
+    t.innerHTML = c.qr
+      ? `<div>扫${label}收款码转账，然后填写交易号提交。</div>
+         <div style="margin-top:8px"><img src="${c.qr}" alt="${label}收款码" style="width:170px;border-radius:10px;border:1px solid var(--line)" /></div>
+         <div class="hint" style="margin-top:6px">${c.note||''}</div>`
+      : `<span class="hint">还没配置${label}收款码（config.${payChannel}.qr 填图片地址或 data URL）</span>`;
+  }
+  const pr=cfg.pricing||{};
+  const tiers=pr.tiers||[];
+  $('payPricing').innerHTML = tiers.length
+    ? `<div>单价（每 1K tokens，按量扣费）</div><table>${tiers.map(x=>`<tr><td>${x.tier==='cheap'?'轻量模型':x.tier==='standard'?'标准模型':'旗舰模型'}</td><td>输入 $${(x.per_1k_in/1e6).toFixed(4)} · 输出 $${(x.per_1k_out/1e6).toFixed(4)}</td></tr>`).join('')}</table>`
+    : '';
+}
+document.addEventListener('click',e=>{
+  const b=e.target.closest&&e.target.closest('#payChannels button');
+  if(b&&!b.disabled){ payChannel=b.dataset.ch; renderPay(); }
+});
 function toast(msg){
   const t=$('toast'); t.textContent=msg; t.classList.remove('hidden');
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.add('hidden'), 3200);
@@ -1757,7 +1867,22 @@ async function pinSession(){
 }
 
 // 2026-10-28 (用户): 最右上龙形订阅按钮 — 订阅 Bolloon 更新推送 (后端订阅端点待接, 先给诚实占位反馈)
-$('dragonSubBtn').onclick=()=>{ toast('已订阅 Bolloon 更新（帛龙）— 有新版本会通过「下载更新」按钮提示你'); };
+$('dragonSubBtn').onclick=()=>openPayDialog();
+$('payClose').onclick=()=>$('payDlg').close();
+$('paySubmit').onclick=async()=>{
+  const amount=parseFloat($('payAmount').value||'0');
+  const proof=$('payProof').value.trim();
+  if(!(amount>0)){ toast('请填充值金额'); return; }
+  if(proof.length<4){ toast('请填凭证（交易哈希/交易号）'); return; }
+  try{
+    const r=await api('/api/pay/claim',{method:'POST',body:JSON.stringify({amount_usd:amount,channel:payChannel,proof})});
+    if(r&&r.error){ toast(r.error); return; }
+    toast('已提交待核销 · 核对到账后计入余额');
+    $('payAmount').value=''; $('payProof').value='';
+    await openPayDialog();
+  }catch(e){ toast('提交失败：'+e.message); }
+};
+
 $('newSessionBtn').onclick=async()=>{
   try{
     cancelEdit();
