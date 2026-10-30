@@ -384,6 +384,7 @@ dependencies = [
 name = "bolloon-tauri"
 version = "0.7.0"
 dependencies = [
+ "bolloon-agent",
  "bolloon-llm",
  "bolloon-web",
  "rand 0.8.8",

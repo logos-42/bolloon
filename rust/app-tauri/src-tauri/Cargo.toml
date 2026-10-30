@@ -26,6 +26,7 @@ rand = "0.8"
 # 内嵌业务服务 (核心 crate 直连, 不 spawn 子进程)
 bolloon-web = { path = "../../crates/bolloon-web" }
 bolloon-llm = { path = "../../crates/bolloon-llm" }
+bolloon-agent = { path = "../../crates/bolloon-agent" }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

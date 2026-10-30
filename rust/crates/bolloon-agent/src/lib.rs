@@ -44,6 +44,7 @@ pub mod skills_runtime;
 pub mod bootstrap;
 pub mod prompt;
 pub mod builtin_tools;
+pub mod poll;
 pub mod shell_tool;
 pub mod permission_mode;
 pub mod file_tools;

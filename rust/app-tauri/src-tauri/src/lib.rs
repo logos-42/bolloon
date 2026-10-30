@@ -84,7 +84,21 @@ pub fn run() {
             //    2026-10-26: URL 带 ?app=desktop — UI 侧据此启用三栏式侧边导航
             //    (浏览器直接访问同一端口不带该参数, 仍是原单侧栏布局, 网页端不变)
             #[cfg(desktop)]
-            build_main_window(app.handle(), port)?;
+            {
+                // 2026-10-30: 建窗前用 poll 的同步退避版确认端口真可连 (bind 已完成 ⇒ 通常第一次就过),
+                // 与 CLI/Web 用同一套节奏; 起不来也照建窗口 (但会记日志, 不再静默白页)。
+                let addr = format!("127.0.0.1:{port}");
+                match bolloon_agent::poll::wait_tcp_blocking(
+                    &addr,
+                    bolloon_agent::poll::PollConfig::default().max_retries(6),
+                ) {
+                    bolloon_agent::poll::PollResult::Success => {
+                        tracing::info!("[boot] {addr} 已可连, 建主窗口");
+                    }
+                    other => tracing::error!("[boot] {addr} 连不上 ({other:?}), 仍建窗口"),
+                }
+                build_main_window(app.handle(), port)?;
+            }
 
             #[cfg(mobile)]
             {

@@ -3179,22 +3179,35 @@ async fn post_lookup_replies(
             continue;
         };
         let url = format!("{base}/api/directory/rpc");
-        let url_c = url.clone();
-        // spawn_blocking 返回 JoinHandle（不是 Result）—— 失败在 await 处体现（任务异常）
-        let handle = tokio::task::spawn_blocking(move || {
-            let resp = ureq::post(&url_c)
-                .timeout(std::time::Duration::from_millis(
-                    bolloon_agent::directory::DIRECTORY_LOOKUP_TIMEOUT_MS,
-                ))
-                .send_json(body)
-                .map_err(|e| format!("不可达/超时: {e}"))?;
-            resp.into_json::<bolloon_agent::directory::LookupReply>()
-                .map_err(|e| format!("reply 解析不了: {e}"))
-        });
-        match handle.await {
-            Ok(Ok(reply)) => replies.push(reply),
-            Ok(Err(e)) => notes.push(format!("{base}: {e}")),
-            Err(e) => notes.push(format!("{base}: 任务异常 {e}")),
+        // 2026-10-30: 每个对端用统一退避轮询重试 (poll 模块的同一套节奏),
+        // 一次瞬时超时不再直接判「不可达」; 重试完仍失败才把原因写进 notes。
+        let mut last_err = String::new();
+        let mut got: Option<bolloon_agent::directory::LookupReply> = None;
+        for delay in std::iter::once(0u64).chain(bolloon_agent::poll::POLL_INTERVALS.iter().copied().take(2)) {
+            if delay > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            }
+            let url_c = url.clone();
+            let body_c = body.clone();
+            let handle = tokio::task::spawn_blocking(move || {
+                let resp = ureq::post(&url_c)
+                    .timeout(std::time::Duration::from_millis(
+                        bolloon_agent::directory::DIRECTORY_LOOKUP_TIMEOUT_MS,
+                    ))
+                    .send_json(body_c)
+                    .map_err(|e| format!("不可达/超时: {e}"))?;
+                resp.into_json::<bolloon_agent::directory::LookupReply>()
+                    .map_err(|e| format!("reply 解析不了: {e}"))
+            });
+            match handle.await {
+                Ok(Ok(reply)) => { got = Some(reply); break; }
+                Ok(Err(e)) => last_err = e,
+                Err(e) => last_err = format!("任务异常 {e}"),
+            }
+        }
+        match got {
+            Some(reply) => replies.push(reply),
+            None => notes.push(format!("{base}: {last_err}")),
         }
     }
     (replies, notes)

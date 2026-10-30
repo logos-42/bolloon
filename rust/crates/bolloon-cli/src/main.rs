@@ -486,7 +486,22 @@ async fn run_web(port: u16) -> anyhow::Result<()> {
         );
     }
 
-    bolloon_web::serve(state, port).await
+    // 2026-10-30: 先自己 bind (端口此刻已在 listen), 再交给 serve_on;
+    // 然后用 poll 模块的同一套退避节奏确认「真能连上」才报 ready —— 不再靠 sleep 猜。
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
+    listener.set_nonblocking(true)?;
+    let listener = tokio::net::TcpListener::from_std(listener)?;
+    let addr = format!("127.0.0.1:{port}");
+    match bolloon_agent::poll::wait_tcp(&addr, bolloon_agent::poll::PollConfig::default().max_retries(8)).await {
+        bolloon_agent::poll::PollResult::Success => {
+            eprintln!("[bolloon] web ready · http://{addr}");
+        }
+        bolloon_agent::poll::PollResult::MaxRetriesExceeded => {
+            eprintln!("[bolloon] web 端口 {addr} 起不来 (退避轮询已放弃)");
+        }
+        bolloon_agent::poll::PollResult::Interrupted => {}
+    }
+    bolloon_web::serve_on(state, listener).await
 }
 
 /// 状态 —— 面板走**品牌仪表盘** (`tui::render_dashboard`)
