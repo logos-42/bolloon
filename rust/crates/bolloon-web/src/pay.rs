@@ -33,6 +33,9 @@ pub struct PayEvent {
     #[serde(default)]
     pub note: String,
     pub ts_ms: u64,
+    /// 归属账户: 用户 DID (空 = 本机主人自己)
+    #[serde(default)]
+    pub account: String,
     /// 针对哪条 pending 的确认 (kind=topup_confirmed 时)
     #[serde(default)]
     pub ref_id: String,
@@ -72,6 +75,15 @@ fn append(path: &std::path::Path, ev: &PayEvent) -> std::io::Result<()> {
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(f, "{}", serde_json::to_string(ev).unwrap_or_default())
+}
+
+/// 只保留某个账户的事件 (account 为空 = 本机主人)
+pub fn for_account(events: &[PayEvent], account: &str) -> Vec<PayEvent> {
+    events
+        .iter()
+        .filter(|e| e.account == account)
+        .cloned()
+        .collect()
 }
 
 /// 账本汇总: (余额, 待核销合计, 已扣费合计, 已充值合计)
@@ -134,9 +146,13 @@ fn config() -> serde_json::Value {
         "paypal": { "link": "", "note": "PayPal.Me 个人收款链接; 到账后填交易号" },
         // 只卖两款 (2026-10-30 用户定): DeepSeek V4.1 Flash / V4 Pro —— 都从本人的私有 key 扣。
         // 单价是 micro-USD / 1K tokens (1e6 = 1 美元), 按档位乘数再打折。
+        // 单价按 DeepSeek 官方**人民币**高峰价 × 毛利系数 (默认 1.3), 内部仍折成 micro-USD 记账。
+        // 官价 (元/1M tokens): Flash 输入未命中 2 / 输出 8;  Pro 输入 9 / 输出 27。
+        "fx_cny_per_usd": 7.1,
+        "markup": 1.3,
         "models": [
-            { "id": "deepseek-flash",  "label": "DeepSeek V4.1 Flash", "per_1k_in": 140,  "per_1k_out": 560 },
-            { "id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro",     "per_1k_in": 560,  "per_1k_out": 2240 }
+            { "id": "deepseek-flash",  "label": "DeepSeek V4.1 Flash", "cny_per_1k_in": 0.0026, "cny_per_1k_out": 0.0104 },
+            { "id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro",     "cny_per_1k_in": 0.0117, "cny_per_1k_out": 0.0351 }
         ],
         // 用户等级: multiplier 是折扣乘数 (1.0 原价 / 0.7 打七折 / 0 免费)
         "tiers": [
@@ -154,9 +170,13 @@ fn config() -> serde_json::Value {
 }
 
 /// GET /api/pay/info → 收款信息 + 余额 + 待核销 + 已用 + 单价表
-pub async fn pay_info(State(st): State<AppState>) -> Json<serde_json::Value> {
+pub async fn pay_info(
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let account = q.get("account").cloned().unwrap_or_default();
     let path = ledger_path(&st);
-    let events = read_events(&path);
+    let events = for_account(&read_events(&path), &account);
     let (balance, pending, charged, topped) = summarize(&events);
     let (balance, pending, charged, topped) = (
         balance as f64 / MICRO as f64,
@@ -166,6 +186,7 @@ pub async fn pay_info(State(st): State<AppState>) -> Json<serde_json::Value> {
     );
     Json(serde_json::json!({
         "ok": true,
+        "account": account,
         "config": config(),
         "balance_usd": balance,
         "pending_usd": pending,
@@ -204,6 +225,7 @@ pub async fn pay_claim(
         proof,
         note: req["note"].as_str().unwrap_or("").to_string(),
         ts_ms: now_ms(),
+        account: req["account"].as_str().unwrap_or("").trim().to_string(),
         ref_id: String::new(),
     };
     let path = ledger_path(&st);
@@ -249,6 +271,7 @@ pub async fn pay_confirm(
         proof: target.proof.clone(),
         note: format!("人工核销: {}", req["note"].as_str().unwrap_or("")),
         ts_ms: now_ms(),
+        account: target.account.clone(),
         ref_id: target.id.clone(),
     };
     if let Err(e) = append(&path, &ev) {
@@ -264,13 +287,19 @@ pub async fn pay_confirm(
     }))
 }
 
-/// 扣费 (按量): 余额不足返回 false, 调用方必须据此拒绝执行 (fail-closed)
+/// 扣费 (按量, 本机主人账户): 见 charge_for
 pub fn charge(st: &AppState, micro_usd: i64, note: &str) -> Result<i64, String> {
+    charge_for(st, "", micro_usd, note)
+}
+
+/// 扣费 (按量): 余额不足返回 Err, 调用方必须据此拒绝执行 (fail-closed)。
+/// `account` = 用户 DID (空 = 本机主人); **余额按账户各算各的**, 不会串账。
+pub fn charge_for(st: &AppState, account: &str, micro_usd: i64, note: &str) -> Result<i64, String> {
     if micro_usd <= 0 {
         return Ok(0);
     }
     let path = ledger_path(st);
-    let events = read_events(&path);
+    let events = for_account(&read_events(&path), account);
     let (balance, _, _, _) = summarize(&events);
     if balance < micro_usd {
         return Err(format!(
@@ -287,6 +316,7 @@ pub fn charge(st: &AppState, micro_usd: i64, note: &str) -> Result<i64, String> 
         proof: String::new(),
         note: note.to_string(),
         ts_ms: now_ms(),
+        account: account.to_string(),
         ref_id: String::new(),
     };
     append(&path, &ev).map_err(|e| e.to_string())?;
@@ -309,15 +339,20 @@ fn tier_multiplier(cfg: &serde_json::Value, tier: &str) -> f64 {
         .unwrap_or(1.0)
 }
 
-fn model_price(cfg: &serde_json::Value, model: &str) -> Option<(i64, i64)> {
+fn fx(cfg: &serde_json::Value) -> f64 {
+    cfg.get("fx_cny_per_usd").and_then(|v| v.as_f64()).unwrap_or(7.1)
+}
+
+/// 模型价 (元 / 1K tokens, 输入, 输出)
+fn model_price(cfg: &serde_json::Value, model: &str) -> Option<(f64, f64)> {
     cfg.get("models")?
         .as_array()?
         .iter()
         .find(|m| m["id"] == model)
         .map(|m| {
             (
-                m["per_1k_in"].as_i64().unwrap_or(0),
-                m["per_1k_out"].as_i64().unwrap_or(0),
+                m["cny_per_1k_in"].as_f64().unwrap_or(0.0),
+                m["cny_per_1k_out"].as_f64().unwrap_or(0.0),
             )
         })
 }
@@ -337,8 +372,10 @@ pub fn price_for(
     if mult <= 0.0 {
         return Ok(0);
     }
-    let raw = (tokens_in as f64 / 1000.0) * pin as f64 + (tokens_out as f64 / 1000.0) * pout as f64;
-    Ok((raw * mult).ceil() as i64)
+    let cny = (tokens_in as f64 / 1000.0) * pin + (tokens_out as f64 / 1000.0) * pout;
+    let usd = cny / fx(cfg);
+    // 至少扣 1 micro-USD (0.000001 美元), 免得大量小调用被四舍五入成免费
+    Ok(((usd * 1_000_000.0) * mult).ceil().max(1.0) as i64)
 }
 
 /// 按模型 + 用户等级扣费 (余额不足返回 Err; 0 元只落用量事件, 不动余额)
@@ -366,13 +403,14 @@ pub fn charge_model(
             proof: String::new(),
             note,
             ts_ms: now_ms(),
+            account: did.to_string(),
             ref_id: String::new(),
         };
         append(&path, &ev).map_err(|e| e.to_string())?;
-        let events = read_events(&path);
+        let events = for_account(&read_events(&path), did);
         return Ok(summarize(&events).0);
     }
-    charge(st, micro, &note)
+    charge_for(st, did, micro, &note)
 }
 
 /// GET /api/pay/pricing → 两款模型单价 + 等级 + 用户覆盖 (给官网/控制台展示用)
@@ -435,16 +473,20 @@ mod tests {
             proof: "0xabc".into(),
             note: String::new(),
             ts_ms: 0,
+            account: String::new(),
             ref_id: ref_id.into(),
         }
     }
 
 
     fn cfg_with_users() -> serde_json::Value {
+        // 官方价 (元/1M) 折成元/1K, 已含 1.3 毛利: Flash 2/8 → 0.0026/0.0104; Pro 9/27 → 0.0117/0.0351
         serde_json::json!({
+            "fx_cny_per_usd": 7.1,
+            "markup": 1.3,
             "models": [
-                { "id": "deepseek-flash", "per_1k_in": 140, "per_1k_out": 560 },
-                { "id": "deepseek-v4-pro", "per_1k_in": 560, "per_1k_out": 2240 }
+                { "id": "deepseek-flash", "cny_per_1k_in": 0.0026, "cny_per_1k_out": 0.0104 },
+                { "id": "deepseek-v4-pro", "cny_per_1k_in": 0.0117, "cny_per_1k_out": 0.0351 }
             ],
             "tiers": [
                 { "id": "free", "multiplier": 0.0 },
@@ -458,14 +500,23 @@ mod tests {
     #[test]
     fn price_follows_model_and_tier() {
         let cfg = cfg_with_users();
-        // 标准用户 10k in + 2k out on flash: 10*140 + 2*560 = 1400+1120 = 2520 micro (=$0.00252)
-        assert_eq!(price_for(&cfg, "did:pi:who", "deepseek-flash", 10_000, 2_000).unwrap(), 2520);
-        // 同一用量换 pro: 10*560 + 2*2240 = 5600+4480 = 10080
-        assert_eq!(price_for(&cfg, "did:pi:who", "deepseek-v4-pro", 10_000, 2_000).unwrap(), 10080);
-        // 朋友 7 折: 2520*0.7 = 1764
-        assert_eq!(price_for(&cfg, "did:pi:friend", "deepseek-flash", 10_000, 2_000).unwrap(), 1764);
+        // 标准用户 10k in + 2k out: flash 0.0468 元 ÷ 7.1 ⇒ 6592 micro-USD;  pro 0.1872 元 ⇒ 26367
+        assert_eq!(price_for(&cfg, "did:pi:who", "deepseek-flash", 10_000, 2_000).unwrap(), 6592);
+        assert_eq!(price_for(&cfg, "did:pi:who", "deepseek-v4-pro", 10_000, 2_000).unwrap(), 26367);
+        // 朋友 7 折
+        assert_eq!(price_for(&cfg, "did:pi:friend", "deepseek-flash", 10_000, 2_000).unwrap(), 4615);
         // 免费档 = 0 (只记用量, 不扣钱)
         assert_eq!(price_for(&cfg, "did:pi:free", "deepseek-flash", 10_000, 2_000).unwrap(), 0);
+        // Pro 必须比 Flash 贵 (防「两个模型一个价」)
+        assert!(price_for(&cfg, "did:pi:who", "deepseek-v4-pro", 1000, 1000).unwrap()
+            > price_for(&cfg, "did:pi:who", "deepseek-flash", 1000, 1000).unwrap());
+    }
+
+    #[test]
+    fn tiny_call_still_costs_at_least_one_micro() {
+        let cfg = cfg_with_users();
+        // 1 token 也要扣 >= 1 micro-USD, 不能被四舍五入成免费
+        assert!(price_for(&cfg, "did:pi:who", "deepseek-flash", 1, 0).unwrap() >= 1);
     }
 
     #[test]
