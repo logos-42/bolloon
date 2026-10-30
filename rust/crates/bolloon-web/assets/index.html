@@ -3042,6 +3042,7 @@ function openGroupMenu(e,id){
     <button onclick="fixGroupPing()">固定 ping${g.ping_secs?`（${g.ping_secs}s）`:''}</button>
     <button onclick="shareGroup()">分享</button>
     <button onclick="inviteGroup()">邀请</button>
+    <button onclick="publishGroup()">推到世界</button>
     <button onclick="deleteGroup()">删除（本机列表）</button>`;
   m.classList.remove('hidden');
   const w=190,h=230;
@@ -3088,6 +3089,14 @@ async function inviteGroup(){
     await copyText(link);
     toast('邀请链接已复制 — 对方 POST /api/groups/join 即加入');
   }catch(e){toast('邀请失败: '+e.message);}
+}
+async function publishGroup(){
+  try{
+    const r=await api('/api/groups/'+encodeURIComponent(menuGroupId)+'/publish',{method:'POST',body:JSON.stringify({topic:'群聊'})});
+    if(r.error)throw new Error(r.error);
+    toast('已推到世界（版本 '+r.version+'，链接 '+r.links+' 条）— 同主题再推会覆盖');
+    await loadWorld();
+  }catch(e){toast('推送失败: '+e.message);}
 }
 async function deleteGroup(){
   const g=((contactGroups&&contactGroups.groups)||[]).find(x=>x.id===menuGroupId)||{};

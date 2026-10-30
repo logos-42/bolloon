@@ -491,6 +491,7 @@ pub fn app(state: AppState) -> Router {
                 .route("/api/groups/{id}/participants", post(set_group_participants))
         .route("/api/groups/{id}/update", post(update_group))
         .route("/api/groups/{id}/delete", post(delete_group))
+        .route("/api/groups/{id}/publish", post(crate::native::publish_group_to_world))
                 .route("/api/econ/probe", get(crate::native::econ_probe))
                 .route("/api/econ/reputation/{principal}", get(econ_reputation))
                 .route("/api/econ/immune/report", post(immune_report))

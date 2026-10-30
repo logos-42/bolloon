@@ -3546,6 +3546,75 @@ pub async fn vote_world_card(
     Json(serde_json::json!({ "ok": true, "id": id, "up": votes.0, "down": votes.1 }))
 }
 
+/// POST /api/groups/{id}/publish {topic?} → 把群聊推成世界卡片 (信箱可见)
+///
+/// 取该群最近几条 agent 汇报做正文: 标题=摘要(与个人卡片同一口径), by=群名,
+/// key=`group:<gid>:<topic>` ⇒ 同一主题再推一次是**覆盖**(版本 +1), 不是刷屏。
+pub async fn publish_group_to_world(
+    State(st): State<AppState>,
+    AxumPath(gid): AxumPath<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let group_name = st
+        .groups
+        .list_groups()
+        .iter()
+        .find(|g| g.id == gid)
+        .map(|g| g.name.clone())
+        .unwrap_or_else(|| gid.clone());
+    let history = st.groups.history(&gid, 12).unwrap_or_default();
+    let mut texts: Vec<String> = vec![];
+    for m in history.iter().rev() {
+        if texts.len() >= 3 {
+            break;
+        }
+        let t = m.text.trim();
+        if !t.is_empty() && !m.kind.eq_ignore_ascii_case("message") {
+            texts.push(t.to_string());
+        }
+    }
+    if texts.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "这个群还没有可推的汇报内容" }));
+    }
+    let body = texts.join("\n\n");
+    let headline: String = {
+        let flat = texts[0].lines().next().unwrap_or("").trim().trim_start_matches(['#', '-', '*', ' ']);
+        let first = flat.split(|c: char| c == '。' || c == '！' || c == '？').next().unwrap_or(flat);
+        first.chars().take(28).collect()
+    };
+    let topic = req["topic"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "群聊".to_string());
+    let key = format!("group:{gid}:{topic}");
+    let links = extract_links(&body);
+    let ts = chrono::Utc::now().timestamp_millis();
+    let mut fs = st.forge.lock().await;
+    let version = fs
+        .inbox
+        .iter()
+        .find(|c| c["key"].as_str() == Some(key.as_str()))
+        .and_then(|c| c["version"].as_u64())
+        .map(|v| v + 1)
+        .unwrap_or(1);
+    fs.inbox.retain(|c| c["key"].as_str() != Some(key.as_str()));
+    let summary: String = body.chars().take(160).collect();
+    fs.inbox.insert(0, serde_json::json!({
+        "id": key.clone(),
+        "key": key,
+        "title": if headline.is_empty() { format!("群聊 · {group_name}") } else { headline },
+        "summary": summary,
+        "by": group_name,
+        "from": gid,
+        "links": links,
+        "ts": ts,
+        "version": version,
+        "verification": "unverified",
+    }));
+    if fs.inbox.len() > 50 {
+        fs.inbox.truncate(50);
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true, "key": key, "version": version, "links": links.len() }))
+}
+
 /// POST /api/opportunities/{id}/ignore → 校准环 (忽略后同源不再流入)
 pub async fn ignore_opportunity(
     State(st): State<AppState>,
@@ -3624,6 +3693,12 @@ pub async fn world_inbox_post(
             "title": req["title"], "summary": req["summary"],
             "cover": req["cover"], "media": req["media"],
             "provider": req["provider"], "scope": req["scope"],
+            // 外推卡片保留真实链接/键/版本 (以前这几项被丢掉, 推来的链接在流里看不见)
+            "links": req["links"].clone(),
+            "key": req["key"].clone(),
+            "version": req["version"].clone(),
+            "by": req["by"].clone(),
+            "ts": req["ts"].clone(),
         })
     };
     // 验签结论: 信封路径由 unpack 写入 verified, 裸卡一律 unverified
