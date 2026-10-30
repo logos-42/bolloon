@@ -218,6 +218,9 @@ pub struct NativeState {
     /// 各群警长 (group_id → 当选智能体 id); 计分直选结果, 开页/发起交流时计算 (特质分本身不出行)
     #[serde(default)]
     pub sheriff_by_group: std::collections::HashMap<String, String>,
+    /// 置顶的智能体 (顺序排最前; 与"固定 ping"是同一件事: 置顶并立刻 ping 一次)
+    #[serde(default)]
+    pub agent_pin: Vec<String>,
     /// 群组设置覆盖: 改名 / 置顶 / 简介 (本节点视图; OrbitDB 内容本身不可改)
     #[serde(default)]
     pub group_overrides: std::collections::HashMap<String, GroupOverride>,
@@ -239,6 +242,12 @@ pub struct NativeState {
     /// 卡片反馈票: card_id → (赞, 踩)。推荐流拿它排序 (拉踩直接改变推荐顺序)
     #[serde(default)]
     pub world_votes: std::collections::HashMap<String, (i64, i64)>,
+    /// 意图权重 (intent → 权重): 由赞/踩/点开/忽略反馈持续调整, 三个模式共用
+    #[serde(default)]
+    pub intent_weights: std::collections::HashMap<String, f64>,
+    /// 判断力落盘 (append-only): 每次世界/群组/智能体决策都记下"按什么意图选了谁、为什么"
+    #[serde(default)]
+    pub judgments: Vec<serde_json::Value>,
     // ── 人类目录 (手机号/邮箱盲化 + 跨机查询/加好友) ──
     /// 盲化目录条目 (HMAC; 明文与 pepper 都不在这里)
     pub directory: Vec<bolloon_agent::directory::DirectoryEntry>,
@@ -373,6 +382,8 @@ pub async fn bootstrap_native(State(st): State<AppState>) -> Json<serde_json::Va
     let payload = serde_json::json!({
         "state": {
             "agents": fs.agents,
+            // 置顶(固定)的智能体: 前端按它排序 + 菜单显示「取消置顶」
+            "agent_pin": fs.agent_pin,
             "sessions": fs.sessions,
             "profile": fs.profile,
             "settings": fs.settings,
@@ -3276,6 +3287,8 @@ pub async fn list_opportunities(
             "source": item.get("from").and_then(|f| f.as_str()).unwrap_or("world-card"),
             "verification": item.get("verification").cloned().unwrap_or(serde_json::json!("unverified")),
             "ts": item.get("ts").cloned().unwrap_or(serde_json::Value::Null),
+            // 版本号: 同一 (智能体, 主题) 的卡片被后续答复覆盖时 +1
+            "version": item.get("version").cloned().unwrap_or(serde_json::json!(1)),
             "accepted": fs.accepted.contains(&id),
             "opened": opened,
             "up": up,
@@ -3300,6 +3313,60 @@ pub async fn list_opportunities(
         ""
     };
     Json(serde_json::json!({ "opportunities": items, "intent_tags": use_tags, "note": note }))
+}
+
+/// 意图权重更新 (纯函数, 好测): 赞/点开抬权重, 踩/忽略压权重, 收敛在 [0.1, 5.0]
+///
+/// 为什么要权重: 判断力不能只靠"这次排序", 它得**记住**哪些意图真的给我带来了东西。
+/// 三个模式(世界/群组/智能体)都读同一份权重, 所以"我在意什么"是一致的。
+pub fn bump_intent_weight(cur: f64, signal: &str) -> f64 {
+    let delta = match signal {
+        "up" => 0.25,
+        "open" => 0.08,
+        "down" => -0.30,
+        "ignore" => -0.40,
+        _ => 0.0,
+    };
+    (cur + delta).clamp(0.1, 5.0)
+}
+
+/// 判断力: 给候选智能体打分并给出人话理由 (**纯函数**)
+///
+/// 分 = 意图权重 × 名字/人设是否命中 × (被赞过的历史加成)
+/// 返回 (选中列表, 理由)。都不命中时**不臆造** —— 交给调用方走默认(前两个)。
+pub fn judge_candidates(
+    intent_tags: &[String],
+    candidates: &[(String, String, i64)], // (id, name, 历史赞数)
+    weights: &std::collections::HashMap<String, f64>,
+) -> (Vec<String>, String) {
+    if intent_tags.is_empty() || candidates.is_empty() {
+        return (vec![], "没有意图标签 → 走默认".to_string());
+    }
+    let w: f64 = intent_tags
+        .iter()
+        .map(|t| weights.get(t).copied().unwrap_or(1.0))
+        .sum::<f64>()
+        / intent_tags.len() as f64;
+    let mut scored: Vec<(f64, String)> = vec![];
+    for (id, name, ups) in candidates {
+        let hit = intent_tags.iter().any(|t| name.contains(t.as_str()));
+        if !hit {
+            continue;
+        }
+        scored.push((w * (1.0 + 0.1 * (*ups as f64)), id.clone()));
+    }
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let picked: Vec<String> = scored.iter().take(2).map(|(_, id)| id.clone()).collect();
+    if picked.is_empty() {
+        return (vec![], "意图与智能体名字都不沾边 → 走默认".to_string());
+    }
+    (
+        picked,
+        format!(
+            "意图权重 {w:.2} · 命中 {} 个候选 · 取前 2",
+            scored.len()
+        ),
+    )
 }
 
 /// 世界推荐流排序参数 (改权重就改这一处, 面板上的 `why` 会跟着说清楚)
@@ -3357,6 +3424,24 @@ pub fn rank_card(
     (total, why.join(" · "))
 }
 
+/// 从回复正文里抽**真实 URL** (模型自己给出的链接, 我们只做提取, 不编造)
+pub fn extract_links(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for raw in text.split(|c: char| c.is_whitespace() || ",;，；、）)】]\"'".contains(c)) {
+        let t = raw.trim_end_matches(['.', '。', ')', ']', '>', '`']);
+        if (t.starts_with("http://") || t.starts_with("https://"))
+            && t.len() > 12
+            && !out.iter().any(|x| x == t)
+        {
+            out.push(t.to_string());
+        }
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    out
+}
+
 /// 打分用的标签: 中文 1–3 字滑窗 + 英文/数字词 (只用于把卡片文本喂给意图打分)
 fn tokenize_for_score(text: &str) -> Vec<String> {
     let mut out: Vec<String> = vec![];
@@ -3403,6 +3488,14 @@ pub async fn mark_world_opened(
     }
     let mut fs = st.forge.lock().await;
     fs.world_opened.retain(|o| o != &id);
+    // 点开 = "这个意图对我有用" 的弱信号 (权重里记着)
+    let intents = fs.intents.clone();
+    for i in intents {
+        if id.contains(i.as_str()) {
+            let cur = fs.intent_weights.get(&i).copied().unwrap_or(1.0);
+            fs.intent_weights.insert(i.clone(), bump_intent_weight(cur, "open"));
+        }
+    }
     fs.world_opened.insert(0, id.clone()); // 最近的在最前
     if fs.world_opened.len() > 50 {
         fs.world_opened.truncate(50);
@@ -3441,6 +3534,14 @@ pub async fn ignore_opportunity(
     let mut fs = st.forge.lock().await;
     if !fs.ignored.contains(&id) {
         fs.ignored.push(id.clone());
+    }
+    // 忽略 = 强负信号: 对应意图权重下调 (下次判断不再优先这类)
+    let intents = fs.intents.clone();
+    for i in intents {
+        if id.contains(i.as_str()) {
+            let cur = fs.intent_weights.get(&i).copied().unwrap_or(1.0);
+            fs.intent_weights.insert(i.clone(), bump_intent_weight(cur, "ignore"));
+        }
     }
     fs.save(&data_dir());
     Json(serde_json::json!({ "ignored": id }))
@@ -5453,6 +5554,37 @@ pub async fn share_agent(
         "url": format!("/share/{token}"),
         "token": token,
         "name": agent.name,
+    }))
+}
+
+/// POST /api/agents/pin {id, pinned?} → 置顶(固定)该智能体, 并**立刻 ping 一次**
+///
+/// leo 的口径: 「固定 = 放在首位 ping 一下」, 不是 cron 间隔 ⇒ 这里不写任何定时器。
+pub async fn pin_agent(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let id = req["id"].as_str().unwrap_or("").to_string();
+    if id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 id" }));
+    }
+    let want = req["pinned"].as_bool();
+    let mut fs = st.forge.lock().await;
+    if !fs.agents.iter().any(|a| a.id == id) {
+        return Json(serde_json::json!({ "ok": false, "error": "没有这个智能体" }));
+    }
+    let was = fs.agent_pin.iter().any(|x| x == &id);
+    let pinned = want.unwrap_or(!was);
+    fs.agent_pin.retain(|x| x != &id);
+    if pinned {
+        fs.agent_pin.insert(0, id.clone());
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({
+        "ok": true,
+        "id": id,
+        "pinned": pinned,
+        "pinged_at": chrono::Utc::now().timestamp_millis(),
     }))
 }
 

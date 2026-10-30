@@ -353,6 +353,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/agents/delete", post(crate::native::delete_agent))
         .route("/api/agents/share", post(crate::native::share_agent))
         .route("/api/agents/ping", post(crate::native::set_agent_ping))
+        // 置顶(固定) = 排最前 + 立刻 ping 一次 (不是 cron 间隔)
+        .route("/api/agents/pin", post(crate::native::pin_agent))
         // 智能体档案（DID 缩写 + soul 介绍 + 功能简介），眼镜端详情页用
         .route("/api/agents/{id}/profile", get(crate::native::agent_profile))
         .route("/api/wallet/authorize", post(crate::native::authorize_wallet))
@@ -560,6 +562,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/world/say", post(world_say))
         .route("/api/world/thread", get(world_thread))
         .route("/api/world/intents", get(world_intents))
+        .route("/api/world/judgment", get(judgment)) // 世界侧意图权重+决策记录 (原有的 /api/judgment 是另一套判断账本)
         .route("/api/world/opened", post(crate::native::mark_world_opened))
         .route("/api/world/vote", post(crate::native::vote_world_card))
         // x402 付费信息 (402 报价 → 直付判定 → 交付)
@@ -2495,6 +2498,19 @@ async fn world_say(
         }
         fs.save(&data_dir());
     }
+    // 卡片键用的"主题": 命中最近意图就用它, 都没命中就用文本前 12 字 ——
+    // 同一主题的答复落到同一张卡上 (卡片是活的文档, 后续答复覆盖并升版本)
+    let topic_key: String = {
+        let fs = st.forge.lock().await;
+        let mut hit: Option<String> = None;
+        for i in &fs.intents {
+            if text.contains(i.as_str()) && hit.as_ref().map_or(true, |h| i.chars().count() > h.chars().count()) {
+                hit = Some(i.clone());
+            }
+        }
+        hit.unwrap_or_else(|| text.chars().take(12).collect())
+    };
+
     // @ 目标: [{type:"agent"|"group", id}] —— 空 = 默认 (先在文本里找名字, 再退前两个)
     let req_targets: Vec<(String, String)> = req["targets"]
         .as_array()
@@ -2511,7 +2527,7 @@ async fn world_say(
     let mut targets: Vec<crate::native::AgentView> = vec![];
     let mut groups: Vec<String> = vec![];
     {
-        let fs = st.forge.lock().await;
+        let mut fs = st.forge.lock().await;
         for (ty, id) in &req_targets {
             if ty == "group" {
                 groups.push(id.clone());
@@ -2520,11 +2536,44 @@ async fn world_say(
             }
         }
         if targets.is_empty() && groups.is_empty() {
-            // @ 都没给: 文本里点到谁就谁来; 谁都没点到 ⇒ 默认本机前两个 (世界里不能没人接话)
-            targets = fs.agents.iter().filter(|a| text.contains(&a.name)).cloned().collect();
-            if targets.is_empty() {
+            // @ 都没给 ⇒ 走**判断力**: 意图权重 × 名字命中 × 历史被赞, 挑前 2; 都不沾边走默认
+            let cands: Vec<(String, String, i64)> = fs
+                .agents
+                .iter()
+                .map(|a| {
+                    let ups = fs
+                        .world_votes
+                        .iter()
+                        .filter(|(k, _)| k.contains(&a.id))
+                        .map(|(_, (u, _))| *u)
+                        .sum::<i64>();
+                    (a.id.clone(), a.name.clone(), ups)
+                })
+                .collect();
+            let tags = tokenize_for_score(&text);
+            let (picked, reason) = crate::native::judge_candidates(&tags, &cands, &fs.intent_weights);
+            if picked.is_empty() {
                 targets = fs.agents.iter().take(2).cloned().collect();
+            } else {
+                targets = fs
+                    .agents
+                    .iter()
+                    .filter(|a| picked.contains(&a.id))
+                    .cloned()
+                    .collect();
             }
+            // 判断力落盘: 谁被选中、按什么意图、为什么 (三个模式共读同一份)
+            fs.judgments.push(serde_json::json!({
+                "ts": now,
+                "surface": "world",
+                "intent": topic_key,
+                "picked": targets.iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
+                "reason": reason,
+            }));
+            if fs.judgments.len() > 200 {
+                fs.judgments.remove(0);
+            }
+            fs.save(&data_dir());
         }
     }
     // 群组: 把这句话投进群, 由群的议程成员回应 (与群页发言同一套推举)
@@ -2553,6 +2602,8 @@ async fn world_say(
     for agent in targets {
         let st2 = st.clone();
         let q = text.clone();
+        let topic = topic_key.clone(); // 闭包要 move, 每轮克隆 */
+
         tokio::spawn(async move {
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let sid = format!("world:{}", agent.id);
@@ -2566,11 +2617,26 @@ async fn world_say(
                 "role": "agent", "from": agent.id, "name": agent.name,
                 "text": reply, "ts": ts,
             }));
+            // upsert: 同一 (智能体, 主题) 只留一张卡, 后到的答复覆盖内容并把版本 +1
+            let key = format!("world:{}:{}", agent.id, topic);
+            let version = fs
+                .inbox
+                .iter()
+                .find(|c| c["key"].as_str() == Some(key.as_str()))
+                .and_then(|c| c["version"].as_u64())
+                .map(|v| v + 1)
+                .unwrap_or(1);
+            fs.inbox.retain(|c| c["key"].as_str() != Some(key.as_str()));
             fs.inbox.insert(0, serde_json::json!({
-                "title": format!("{} 回应了世界", agent.name),
+                "id": key.clone(),
+                "key": key,
+                "title": format!("{} · {}", agent.name, topic),
                 "summary": short,
+                // 模型自己给出的链接, 只提取不编造 (抽不到就是空数组)
+                "links": crate::native::extract_links(&reply),
                 "from": agent.id,
                 "ts": ts,
+                "version": version,
                 "verification": "unverified",
             }));
             if fs.inbox.len() > 50 {
@@ -2601,6 +2667,26 @@ async fn world_intents(State(st): State<AppState>) -> Json<serde_json::Value> {
             "signed_cards": "/api/world/cards/push",
             "note": "带签名的信封会记 verification=verified, 裸卡如实标 unverified"
         }
+    }))
+}
+
+/// GET /api/judgment → 判断力与意图权重 (三个模式共读同一份落盘事实)
+///
+/// 返回: 每个意图的权重(0.1–5.0)、最近的决策记录(按什么意图选了谁/为什么)、以及权重来源说明。
+/// 世界/群组/智能体都从这一个端点读, 不再各算一套。
+async fn judgment(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    let mut weights: Vec<(String, f64)> = fs
+        .intent_weights
+        .iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
+    weights.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let recent: Vec<serde_json::Value> = fs.judgments.iter().rev().take(20).cloned().collect();
+    Json(serde_json::json!({
+        "weights": weights.into_iter().map(|(k,v)| serde_json::json!({"intent": k, "weight": v})).collect::<Vec<_>>(),
+        "recent": recent,
+        "note": "权重只由真实反馈调整(赞 +0.25 / 点开 +0.08 / 踩 -0.30 / 忽略 -0.40, 收敛 0.1–5.0); 判断=意图权重×名字命中×历史被赞",
     }))
 }
 

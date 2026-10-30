@@ -173,6 +173,18 @@
   .world-at-picked:empty{display:none}
   #atBtn{display:none}
   main.world-mode #atBtn{display:inline-flex}
+  /* 世界流 = 自媒体式瀑布流: 多列错落, 卡片高度随内容但**有上限**, 视频/音频/图片各占一档 */
+  #worldOpportunities{column-count:3;column-gap:10px}
+  @media (max-width:1100px){#worldOpportunities{column-count:2}}
+  @media (max-width:760px){#worldOpportunities{column-count:1}}
+  #worldOpportunities .opp-card{display:inline-block;width:100%;margin:0 0 10px;break-inside:avoid-page}
+  #worldOpportunities .opp-card .cover{max-height:190px;overflow:hidden}
+  #worldOpportunities .opp-card .cover img,#worldOpportunities .opp-card .cover video{width:100%;height:100%;object-fit:cover;display:block}
+  #worldOpportunities .opp-card audio{width:100%;height:32px}
+  .opp-links{border-top:1px dashed var(--line);margin-top:6px;padding-top:5px;font-size:11.5px}
+  .opp-links summary{cursor:pointer;color:var(--muted)}
+  .opp-links a{display:block;color:var(--accent);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .opp-links a:hover{text-decoration:underline}
   #worldCardList .item{cursor:pointer}
   #worldCardList .item .txt small{color:var(--muted)}
   .wcard-vote{display:flex;gap:6px;align-items:center;margin-top:2px}
@@ -1501,7 +1513,13 @@ const iconPencil=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const iconRetry=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>`;
 
 function renderSidebar(){
-  $('agents').innerHTML=state.agents.map(a=>`
+  const pinnedIds=state.agent_pin||[];
+  const agentsSorted=state.agents.slice().sort((a,b)=>{
+    const pa=pinnedIds.indexOf(a.id), pb=pinnedIds.indexOf(b.id);
+    const wa=pa<0?1e9:pa, wb=pb<0?1e9:pb;
+    return wa-wb;
+  });
+  $('agents').innerHTML=agentsSorted.map(a=>`
     <div class="item ${a.id===state.active_agent_id?'active':''}" onclick="pickAgent('${a.id}')">
       <div class="ava" title="编辑名字和头像" onclick="event.stopPropagation();editAgent('${a.id}')">${avaHTML(a.avatar,a.id)}</div>
       <div class="txt"><b>${escapeHTML(a.name)}</b><small>${a.did.slice(0,20)}…</small></div>
@@ -1921,8 +1939,8 @@ function openAgentMenu(e,id){
   m.innerHTML=`
     <button onclick="renameAgentGlobal()">改默认全局名称</button>
     <button onclick="openWallet(menuAgentId)">钱包（创建 / 绑定）</button>
-    <button onclick="fixAgentPing()">固定 ping${ip[id]?`（${ip[id]}s）`:''}</button>
-    <button onclick="shareAgent(menuAgentId)">分享</button>
+    <button onclick="pinAgent()">${(state.agent_pin||[]).includes(id)?'取消置顶':'固定（置顶 + ping 一次）'}</button>
+    <button onclick="shareAgentDid(menuAgentId)">分享 DID</button>
     <button onclick="deleteAgent(menuAgentId)">删除</button>`;
   m.classList.remove('hidden');
   const w=180,h=190;
@@ -1951,6 +1969,24 @@ async function authorizeWallet(){
     if(r.error)throw new Error(r.error);
     toast(`钱包已授权 ${r.address.slice(0,6)}…${r.address.slice(-4)} · 签名 ${String(r.signature).slice(0,10)}… · 验签 ${r.verified?'通过':'失败'}`);
   }catch(err){toast('授权失败: '+err.message);}
+}
+
+async function pinAgent(){
+  try{
+    const r=await api('/api/agents/pin',{method:'POST',body:JSON.stringify({id:menuAgentId})});
+    if(r.error)throw new Error(r.error);
+    state.agent_pin=(state.agent_pin||[]).filter(x=>x!==r.id);
+    if(r.pinned)state.agent_pin.unshift(r.id);
+    renderSidebar();
+    toast(r.pinned?'已置顶在最前，并 ping 了一次':'已取消置顶');
+  }catch(e){toast('操作失败: '+e.message);}
+}
+async function shareAgentDid(id){
+  const a=(state.agents||[]).find(x=>x.id===id)||{};
+  const did=a.did||'';
+  if(!did){toast('这个智能体还没有 DID');return;}
+  try{ await copyText(did); toast('DID 已复制: '+did); }
+  catch(_){ const v=await askText('智能体 DID（手动复制）',did,'身份是 DID，不是链接'); if(v===null)return; }
 }
 
 async function fixAgentPing(){
@@ -2672,10 +2708,18 @@ async function loadWorld() {
       const scopeIcon = o.kind === "card" ? "🎴" : (o.scope === "public" ? "🌐" : "🌍");
       const url = o.url ? ` <a href="${escapeHTML(o.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">链接</a>` : "";
       const cv = cardCover(o);
+    // 有真实媒体链接就顺手渲染 (视频/音频/图片各一档高度, 不放大)
+    const mediaLinks=(o.links||[]).filter(u=>/\.(mp4|webm|m4v)$/i.test(u)||/\.(mp3|m4a|wav|ogg)$/i.test(u)||/\.(png|jpe?g|webp|gif)$/i.test(u));
+    const mediaHtml=mediaLinks.slice(0,1).map(u=>{
+      if(/\.(mp4|webm|m4v)$/i.test(u))return `<video src="${escapeHTML(u)}" controls preload="metadata" style="width:100%;max-height:190px;border-radius:8px"></video>`;
+      if(/\.(mp3|m4a|wav|ogg)$/i.test(u))return `<audio src="${escapeHTML(u)}" controls preload="none"></audio>`;
+      return `<div class="cover tier-image"><img src="${escapeHTML(u)}" alt="" loading="lazy" style="max-height:190px;object-fit:cover"></div>`;
+    }).join("");
       return `<div class="opp-card ${cv.tier}">
         <div class="oh"><b>${escapeHTML(o.title)}</b><span class="scope">${scopeIcon} ${escapeHTML(o.kind || "world")}</span><span class="score">${(o.score ?? 0).toFixed(2)}</span></div>
         <div class="sum">${escapeHTML(o.summary || "")}${url}</div>
         ${cv.html}
+        ${mediaHtml}
         ${cardLine(o)}
         ${cardMedia(o.card && o.card.media)}
         <div class="tags">${tags}</div>
@@ -2684,6 +2728,7 @@ async function loadWorld() {
           <button data-act="ignore" data-id="${o.id}">忽略</button>
           <span class="wcard-vote"><button class="up" onclick="voteWorldCard('${o.id}','up')">👍 ${o.up||0}</button><button onclick="voteWorldCard('${o.id}','down')">👎 ${o.down||0}</button></span>
           <span class="why">${escapeHTML(o.why || o.reason || "")}</span>
+          ${(o.links && o.links.length) ? `<details class="opp-links"><summary>链接 ${o.links.length} 条</summary>${o.links.map(u=>`<a href="${escapeHTML(u)}" target="_blank" rel="noopener noreferrer">${escapeHTML(u)}</a>`).join('')}</details>` : `<details class="opp-links"><summary>链接</summary><span style="color:var(--muted)">这条内容没有给出链接</span></details>`}
         </div>
       </div>`;
     }).join("") || '<div class="hint">世界正在持续送来 — 稍等一下。</div>';
