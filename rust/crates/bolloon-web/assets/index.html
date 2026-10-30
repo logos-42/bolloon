@@ -724,8 +724,6 @@
     <div class="brand">
       <span class="brand-icon" id="brandLogo" role="img" aria-label="Bolloon"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#effb06"/><ellipse cx="15.9" cy="17.6" rx="6.5" ry="7.7" fill="none" stroke="#1b1a19" stroke-width="4.2"/><circle cx="15.9" cy="5.6" r="2.5" fill="#1b1a19"/></svg></span>
       <span>Bolloon</span>
-      <!-- 2026-10-30 (leo 两次问「没有订阅栏按钮」): 订阅/额度放在品牌行, 网页端一眼可见 -->
-      <button id="subBtn" title="帛龙订阅 / 额度（按量计费 · 先充值后使用）" aria-label="帛龙订阅" style="margin-left:self;font-size:12px;padding:3px 9px;border-radius:9px;border:1px solid var(--line);background:transparent;color:var(--accent);cursor:pointer;white-space:nowrap">帛龙订阅</button>
       <button id="collapseBtn" title="折叠侧边栏" aria-label="折叠侧边栏">☰</button>
     </div>
     <div class="side-actions">
@@ -827,6 +825,8 @@
 <button id="worldTabBtn" class="mini" style="display:none" hidden aria-hidden="true">🌍 世界 <span id="worldBadge" style="display:none"></span></button>
       <button id="contactsTabBtn" class="mini" style="display:none">通讯录</button>
       <button id="roomBtn" class="mini" style="display:none">内部商议</button>
+      <!-- 2026-10-30 (leo: 订阅放在右上角) -->
+      <button id="subBtn" class="mini" title="帛龙订阅 / 额度（按量计费 · 先充值后使用）" aria-label="帛龙订阅" style="margin-left:auto;color:var(--accent);white-space:nowrap">帛龙订阅</button>
     </header>
     <div id="chat"><div class="empty"><h1>我们要做什么？</h1></div></div>
     <div id="worldView">

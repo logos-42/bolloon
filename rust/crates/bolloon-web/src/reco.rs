@@ -39,6 +39,9 @@ pub struct Interest {
 pub struct Interests {
     #[serde(default)]
     pub topics: HashMap<String, Interest>,
+    /// 向量化原型 (主题 token 的特征哈希向量 + 权重), 由 `absorb` 累积、`dream_consolidate` 整理
+    #[serde(default)]
+    pub prototypes: HashMap<String, Proto>,
 }
 
 fn decay(weight: f64, age_h: f64, half_life_h: f64) -> f64 {
@@ -121,6 +124,171 @@ impl Interests {
     }
 }
 
+
+// ─────────────── 向量化: 主题→特征哈希稀疏向量 (无外部依赖, 确定性可复现) ───────────────
+
+/// 向量维度 (512 维足够区分主题; 特征哈希把 token 映到某一维)
+pub const VEC_DIM: usize = 512;
+
+fn hash_token(tok: &str) -> usize {
+    // FNV-1a (稳定, 跨平台一致; 不能换 DefaultHasher —— 它每个进程的种子不同)
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in tok.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    (h % VEC_DIM as u64) as usize
+}
+
+/// 一批主题 token → L2 归一化的稀疏向量 (只存非零项)
+pub fn hash_vector(tokens: &[String]) -> Vec<(usize, f32)> {
+    let mut v: Vec<f32> = vec![0.0; VEC_DIM];
+    for t in tokens {
+        if t.trim().is_empty() {
+            continue;
+        }
+        v[hash_token(t)] += 1.0;
+    }
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for x in v.iter_mut() {
+            *x /= norm;
+        }
+    }
+    v.iter()
+        .enumerate()
+        .filter(|(_, x)| x.abs() > 1e-6)
+        .map(|(i, x)| (i, *x))
+        .collect()
+}
+
+/// 余弦相似度 (稀疏 × 稀疏)
+pub fn cosine(a: &[(usize, f32)], b: &[(usize, f32)]) -> f32 {
+    let mut dot = 0.0f32;
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < a.len() && j < b.len() {
+        match a[i].0.cmp(&b[j].0) {
+            std::cmp::Ordering::Equal => {
+                dot += a[i].1 * b[j].1;
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+        }
+    }
+    dot.clamp(-1.0, 1.0)
+}
+
+impl Interests {
+    /// 让兴趣支持"向量召回": 把卡片主题向量与兴趣**原型向量**做余弦
+    ///
+    /// 为什么需要: 主题字符串匹配只认完全相同/包含的词, 用户说过"聚变"就召回不了"磁约束"。
+    /// 向量化后按语义近邻召回 (这里用特征哈希 + 原型累积, 无外部 embedding 服务)。
+    pub fn affinity_vector(&self, topics: &[String], now_ms: i64) -> f64 {
+        if topics.is_empty() || self.prototypes.is_empty() {
+            return 0.0;
+        }
+        let q = hash_vector(topics);
+        let mut best = 0.0f64;
+        for (name, proto) in &self.prototypes {
+            // 原型也按时间衰减: 老兴趣的原型不再主导
+            let age_h = ((now_ms - proto.updated_ms).max(0) as f64) / 3_600_000.0;
+            let w = decay(proto.weight, age_h, INTEREST_HALF_LIFE_H).clamp(0.0, W_MAX);
+            if w <= 0.0 {
+                continue;
+            }
+            let sim = cosine(&q, &proto.vec) as f64;
+            let _ = name;
+            if sim * w > best {
+                best = sim * w;
+            }
+        }
+        best.clamp(0.0, 1.0)
+    }
+
+    /// 把一次反馈的**主题向量**并入原型 (同名原型累积并重算权重/时间)
+    pub fn absorb(&mut self, topics: &[String], signal: &str, now_ms: i64) {
+        let vec = hash_vector(topics);
+        if vec.is_empty() {
+            return;
+        }
+        let key = topics.iter().take(2).cloned().collect::<Vec<_>>().join(" ");
+        let step = match signal {
+            "up" => STEP_UP,
+            "open" => STEP_OPEN,
+            "down" => STEP_DOWN,
+            "ignore" => STEP_IGNORE,
+            _ => 0.0,
+        };
+        let e = self.prototypes.entry(key.clone()).or_insert(Proto {
+            vec,
+            weight: 0.0,
+            updated_ms: now_ms,
+        });
+        let age_h = ((now_ms - e.updated_ms).max(0) as f64) / 3_600_000.0;
+        e.weight = (decay(e.weight, age_h, INTEREST_HALF_LIFE_H) + step).clamp(W_MIN, W_MAX);
+        e.updated_ms = now_ms;
+        self.topics.entry(key).or_insert(Interest { weight: e.weight, updated_ms: now_ms });
+    }
+
+    /// 做梦期更新: 全量衰减 → 剪掉长期不用/负权重的原型 → 合并相近原型 (余弦 > 0.92)
+    ///
+    /// 这是"做梦时整理记忆"在推荐引擎上的对应动作: 不在请求路径上做重活, 由 dream 调用。
+    /// 返回 (保留条数, 删除条数, 合并条数)。
+    pub fn dream_consolidate(&mut self, now_ms: i64, keep_ratio: f64) -> (usize, usize, usize) {
+        // ① 衰减 + 剪枝
+        let mut dropped = 0usize;
+        self.prototypes.retain(|_, p| {
+            let age_h = ((now_ms - p.updated_ms).max(0) as f64) / 3_600_000.0;
+            p.weight = decay(p.weight, age_h, INTEREST_HALF_LIFE_H);
+            let keep = p.weight > 0.05 * keep_ratio.max(0.1);
+            if !keep {
+                dropped += 1;
+            }
+            keep
+        });
+        // ② 相近原型合并 (贪心, O(n^2) 但原型数量很小: 兴趣是几十个, 不是几十万)
+        let keys: Vec<String> = self.prototypes.keys().cloned().collect();
+        let mut merged = 0usize;
+        let mut dead: Vec<String> = vec![];
+        for i in 0..keys.len() {
+            for j in (i + 1)..keys.len() {
+                if dead.contains(&keys[i]) || dead.contains(&keys[j]) {
+                    continue;
+                }
+                let (a, b) = (self.prototypes[&keys[i]].clone(), self.prototypes[&keys[j]].clone());
+                if cosine(&a.vec, &b.vec) > 0.92 {
+                    let w = (a.weight + b.weight).clamp(W_MIN, W_MAX);
+                    let e = self.prototypes.get_mut(&keys[i]).unwrap();
+                    e.weight = w;
+                    e.updated_ms = now_ms.max(a.updated_ms).max(b.updated_ms);
+                    dead.push(keys[j].clone());
+                    merged += 1;
+                }
+            }
+        }
+        for k in &dead {
+            self.prototypes.remove(k);
+        }
+        // ③ 同步 topics 视图 (外部/面板读的是它)
+        for (k, p) in &self.prototypes {
+            self.topics.insert(k.clone(), Interest { weight: p.weight, updated_ms: p.updated_ms });
+        }
+        self.topics.retain(|k, _| self.prototypes.contains_key(k));
+        (self.prototypes.len(), dropped, merged)
+    }
+}
+
+/// 兴趣原型 (向量 + 权重 + 更新时间)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Proto {
+    #[serde(default)]
+    pub vec: Vec<(usize, f32)>,
+    pub weight: f64,
+    pub updated_ms: i64,
+}
+
 /// 待排序的一张卡 (引擎只看到这些字段)
 #[derive(Debug, Clone)]
 pub struct Candidate {
@@ -177,7 +345,10 @@ impl Engine {
         let mut base: Vec<Ranked> = cards
             .iter()
             .map(|c| {
-                let aff = interests.affinity(&c.topics, now_ms);
+                // 亲和 = max(主题字面匹配, 向量近邻) —— 向量化后能召回"没说过但相近"的主题
+                let aff = interests
+                    .affinity(&c.topics, now_ms)
+                    .max(interests.affinity_vector(&c.topics, now_ms));
                 let rec = 0.5f64.powf(c.age_h.max(0.0) / 72.0);
                 let score = self.w_affinity * aff
                     + self.w_quality * c.quality.clamp(0.0, 1.0)
@@ -307,6 +478,37 @@ mod tests {
         let out = Engine::default().rank(&i, &cards, now());
         assert_eq!(out[0].id, "liked");
         assert!(out[0].why.contains("你赞过"));
+    }
+
+    #[test]
+    fn vector_affinity_recalls_neighbour_topics() {
+        let mut i = Interests::default();
+        i.absorb(&["聚变".into(), "磁约束".into()], "up", now());
+        // 完全相同主题: 相似度 1.0 × 权重 (首票 = 0.25) ⇒ 亲和 = 0.25
+        let same = i.affinity_vector(&["聚变".into(), "磁约束".into()], now());
+        assert!(same > 0.2, "同主题向量亲和应等于 相似度×权重: {same}");
+        // 多赞几次后权重抬上去, 同主题亲和必须跟着变高
+        for _ in 0..3 {
+            i.absorb(&["聚变".into(), "磁约束".into()], "up", now());
+        }
+        let same2 = i.affinity_vector(&["聚变".into(), "磁约束".into()], now());
+        assert!(same2 > same, "权重上升要抬高向量亲和: {same2} vs {same}");
+        // 完全无关主题: 接近 0 (特征哈希的碰撞只会给很小的值)
+        let other = i.affinity_vector(&["做菜".into()], now());
+        assert!(other < same, "无关主题必须低于同主题: {other} vs {same}");
+    }
+
+    #[test]
+    fn dream_consolidates_and_prunes_prototypes() {
+        let mut i = Interests::default();
+        i.absorb(&["聚变".into()], "up", now());
+        i.absorb(&["噪声".into()], "ignore", now());   // 负权重, 会被剪掉
+        let (kept, dropped, _merged) = i.dream_consolidate(now(), 1.0);
+        assert!(kept >= 1, "正向原型要留: {kept}");
+        assert!(dropped >= 1, "负权重原型要被剪: {dropped}");
+        // 很久以后做梦: 全部衰减到阈值以下 ⇒ 清空 (兴趣是会过期的)
+        let (kept2, _d2, _m2) = i.dream_consolidate(now() + 3650 * 24 * 3_600_000, 1.0);
+        assert_eq!(kept2, 0, "十年不用的兴趣不该继续影响推荐");
     }
 
     #[test]
