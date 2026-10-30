@@ -11,8 +11,10 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// 当前版本 (与 workspace 0.6.13 一致)
-pub const CURRENT_VERSION: &str = "0.6.13";
+/// 当前版本 —— 直接取 crate 版本 (workspace 统一), 不再手写数字。
+///
+/// 以前这里硬编码 "0.6.13", 升到 0.7.x 之后智能体仍自称 0.6.13 (leo 看到的就是这个)。
+pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 更新错误
 #[derive(Debug, thiserror::Error, PartialEq)]
