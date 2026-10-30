@@ -49,6 +49,13 @@ pub struct AgentView {
     #[serde(default)]
     pub global_dir: String,
     pub created_at_ms: u64,
+
+    /// 所属权: 主人 DID (谁签的这个智能体)
+    #[serde(default)]
+    pub owner_did: String,
+    /// 用户对 (agent.id|did|owner_did) 的 Ed25519 签名 (hex)。空 = 尚未签名
+    #[serde(default)]
+    pub owner_signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1069,6 +1076,42 @@ const WEB_SYSTEM_PROMPT: &str = "你是 Bolloon 智能体，运行在去中心�
 /// 回复永远自称 "Bolloon 智能体" (leo: 用户设计的私有身份应该覆盖)。
 /// 现在: agent 选了谁就用谁 (agent.id 决定 persona 目录), 名字/persona 作为**最高优先级**的
 /// 私有身份块放在最前面, 压过默认身份描述。
+/// 智能体的所属权凭证内容 (签这个名字, 改任何一项都验不过)
+pub fn agent_owner_payload(agent_id: &str, agent_did: &str, owner_did: &str) -> String {
+    format!("bolloon-agent-owner|{agent_id}|{agent_did}|{owner_did}")
+}
+
+/// 用**用户 DID 的密钥**给智能体签所属权 (2026-10-30 leo: 智能体会被用户签名)
+pub fn sign_agent_ownership(
+    identity: &bolloon_p2p::identity::Identity,
+    agent_id: &str,
+    agent_did: &str,
+) -> (String, String) {
+    let owner = identity.did.as_str().to_string();
+    let payload = agent_owner_payload(agent_id, agent_did, &owner);
+    let sig = hex::encode(identity.sign(payload.as_bytes()));
+    (owner, sig)
+}
+
+/// 给所有还没有所属权签名的智能体补签 (幂等; 已签过的不动)
+pub async fn ensure_agent_ownership(st: &AppState) -> usize {
+    let mut fs = st.forge.lock().await;
+    let mut signed = 0usize;
+    let identity = st.identity.clone();
+    for a in fs.agents.iter_mut() {
+        if a.owner_signature.is_empty() || a.owner_did.is_empty() {
+            let (did, sig) = sign_agent_ownership(&identity, &a.id, &a.did);
+            a.owner_did = did;
+            a.owner_signature = sig;
+            signed += 1;
+        }
+    }
+    if signed > 0 {
+        fs.save(&data_dir());
+    }
+    signed
+}
+
 pub async fn build_web_system(
     st: &AppState,
     query: &str,
@@ -1089,6 +1132,22 @@ pub async fn build_web_system(
     // 每轮现读, 不走记忆条目 —— 钱包变了就是变了, 不该等压缩/召回才生效。
     let wallet_block = crate::agent_wallet::prompt_block(&agent_key);
     // 一行指路, 不贴长路径: 智能体自查走 CLI/接口, 不占常驻上下文。
+    // 主人身份 (2026-10-30 leo: 用户昵称与 DID 全局本地智能体都知道, DID 签名一切智能体所属权)。
+    // 每个智能体的系统提示都带这一块 —— 不是"某个智能体的私有记忆", 而是全局事实。
+    let (owner_name, owner_did) = {
+        let fs = st.forge.lock().await;
+        let name = fs.profile.name.trim().to_string();
+        let did = if fs.profile.did.trim().is_empty() {
+            st.identity.did.as_str().to_string()
+        } else {
+            fs.profile.did.clone()
+        };
+        (if name.is_empty() { "主人".to_string() } else { name }, did)
+    };
+    let owner_block = format!(
+        "\n## 主人（全局事实，所有本机智能体都知道）\n- 昵称：{owner_name}\n- DID：{owner_did}\n- 所属权：本机**全部智能体**的归属由这个 DID 签名确认（DID 即所有权凭证）；你代表这位主人说话，也向这位主人负责。\n"
+    );
+
     let self_hint = "\n## 自查\n你的 DID、persona、memory、workspace、钱包文件位置**不**常驻在这里；\n需要时跑 `bolloon self --json`（与 GET /api/agents/<你的id>/paths 同源）。\n";
 
     // 记忆召回 (top-N, 不是全量): 复用 MemoryStore::recall 的 importance×decay 打分
@@ -1113,9 +1172,11 @@ pub async fn build_web_system(
         Err(_) => WEB_SYSTEM_PROMPT.to_string(),
     };
     format!(
-        "{}{}{}{}{}{}",
+        "{}{}{}{}{}{}{}",
         private_identity_block(agent),
         base,
+        // 主人昵称 + DID + 所属权 (全局事实, 每个智能体都带)
+        owner_block,
         intent_block(st),
         wallet_block,
         self_hint,
@@ -3334,6 +3395,8 @@ pub async fn list_opportunities(
             "source": item.get("from").and_then(|f| f.as_str()).unwrap_or("world-card"),
             // 作者 (标题现在是内容摘要, 谁说的放这里)
             "by": item.get("by").cloned().unwrap_or(serde_json::Value::Null),
+            // 媒体槽: 外部智能体推来的视频/图片/音频 (原样透出, 不做二次加工)
+            "media": item.get("media").cloned().unwrap_or(serde_json::Value::Null),
             "verification": item.get("verification").cloned().unwrap_or(serde_json::json!("unverified")),
             "ts": item.get("ts").cloned().unwrap_or(serde_json::Value::Null),
             // 版本号: 同一 (智能体, 主题) 的卡片被后续答复覆盖时 +1
@@ -3761,6 +3824,8 @@ pub async fn world_inbox_post(
             "provider": req["provider"], "scope": req["scope"],
             // 外推卡片保留真实链接/键/版本 (以前这几项被丢掉, 推来的链接在流里看不见)
             "links": req["links"].clone(),
+            // 媒体槽: [{kind:"video"|"image"|"audio", url, poster?, live?, duration_s?}]
+            "media": req["media"].clone(),
             "key": req["key"].clone(),
             "version": req["version"].clone(),
             "by": req["by"].clone(),

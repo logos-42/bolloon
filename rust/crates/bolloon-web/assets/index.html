@@ -192,6 +192,13 @@
   #worldOpportunities .opp-card .cover{max-height:190px;overflow:hidden}
   #worldOpportunities .opp-card .cover img,#worldOpportunities .opp-card .cover video{width:100%;height:100%;object-fit:cover;display:block}
   #worldOpportunities .opp-card audio{width:100%;height:32px}
+  .mslot{position:relative;width:100%;border-radius:9px;overflow:hidden;background:#000;margin:4px 0}
+  .mslot-video{aspect-ratio:16/9;max-height:200px}
+  .mslot-image{aspect-ratio:4/3;max-height:200px}
+  .mslot video,.mslot img{width:100%;height:100%;object-fit:cover;display:block}
+  .mslot-audio{background:transparent;padding:2px 0}
+  .mslot-audio audio{width:100%;height:32px}
+  .live-badge{position:absolute;left:8px;top:8px;z-index:2;background:#e11d48;color:#fff;font-size:10px;padding:1px 6px;border-radius:6px;letter-spacing:.5px}
   .opp-links{border-top:1px dashed var(--line);margin-top:6px;padding-top:5px;font-size:11.5px}
   .opp-links summary{cursor:pointer;color:var(--muted)}
   .opp-links a{display:block;color:var(--accent);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -2744,12 +2751,20 @@ async function loadWorld() {
       const scopeIcon = o.kind === "card" ? "🎴" : (o.scope === "public" ? "🌐" : "🌍");
       const url = o.url ? ` <a href="${escapeHTML(o.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">链接</a>` : "";
       const cv = cardCover(o);
-    // 有真实媒体链接就顺手渲染 (视频/音频/图片各一档高度, 不放大)
-    const mediaLinks=(o.links||[]).filter(u=>/\.(mp4|webm|m4v)$/i.test(u)||/\.(mp3|m4a|wav|ogg)$/i.test(u)||/\.(png|jpe?g|webp|gif)$/i.test(u));
-    const mediaHtml=mediaLinks.slice(0,1).map(u=>{
-      if(/\.(mp4|webm|m4v)$/i.test(u))return `<video src="${escapeHTML(u)}" controls preload="metadata" style="width:100%;max-height:190px;border-radius:8px"></video>`;
-      if(/\.(mp3|m4a|wav|ogg)$/i.test(u))return `<audio src="${escapeHTML(u)}" controls preload="none"></audio>`;
-      return `<div class="cover tier-image"><img src="${escapeHTML(u)}" alt="" loading="lazy" style="max-height:190px;object-fit:cover"></div>`;
+    // 媒体槽 (2026-10-30 leo: 卡片里预留视频流/图片格式, 外部智能体可推)
+    // 优先用推送里的 media[]; 没有就从 links 里认出扩展名 (只认不猜)
+    const mediaList=(Array.isArray(o.media)&&o.media.length)?o.media
+      :(o.links||[]).filter(u=>/\.(mp4|webm|m4v|mp3|m4a|wav|ogg|png|jpe?g|webp|gif)(\?|$)/i.test(u))
+          .map(u=>({kind:/\.(mp4|webm|m4v)(\?|$)/i.test(u)?'video':(/\.(mp3|m4a|wav|ogg)(\?|$)/i.test(u)?'audio':'image'),url:u}));
+    const mediaHtml=mediaList.slice(0,1).map(m=>{
+      const u=escapeHTML(m.url||'');
+      const kind=(m.kind||'image');
+      if(kind==='video'){
+        const live=m.live?'<span class="live-badge">LIVE</span>':'';
+        return `<div class="mslot mslot-video">${live}<video src="${u}" ${m.live?'autoplay muted playsinline':'controls preload="metadata"'} poster="${escapeHTML(m.poster||'')}"></video></div>`;
+      }
+      if(kind==='audio')return `<div class="mslot mslot-audio"><audio src="${u}" controls preload="none"></audio></div>`;
+      return `<div class="mslot mslot-image"><img src="${u}" alt="${escapeHTML(m.alt||'')}" loading="lazy"></div>`;
     }).join("");
       return `<div class="opp-card ${cv.tier}" data-oid="${escapeHTML(o.id)}" onclick="toggleCardDetail(event,'${escapeHTML(o.id)}')">
         <div class="oh"><b>${escapeHTML(o.title)}</b><span class="scope">${o.by?('by '+escapeHTML(o.by)):(scopeIcon + ' ' + escapeHTML(o.kind || "world"))}</span><span class="score">${(o.score ?? 0).toFixed(2)}</span></div>
