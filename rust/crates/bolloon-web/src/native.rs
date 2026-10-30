@@ -5298,3 +5298,24 @@ pub async fn intent_observe(
         Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("{e}") })),
     }
 }
+
+/// GET /api/notify/count → 菜单栏角标: 待处理好友请求 + 待核销充值。
+/// 只报「真的需要人处理」的数量, 不拿浏览过没过当消息数 (没有已读状态就不编)。
+pub async fn notify_count(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let friends = {
+        let fs = st.forge.lock().await;
+        fs.friends.pending().len()
+    };
+    let topups = {
+        let path = crate::pay::ledger_path(&st);
+        crate::pay::read_events(&path)
+            .iter()
+            .filter(|e| e.kind == "topup_pending")
+            .count()
+    };
+    Json(serde_json::json!({
+        "count": friends + topups,
+        "friends": friends,
+        "topups": topups,
+    }))
+}

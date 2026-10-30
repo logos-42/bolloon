@@ -98,6 +98,7 @@ pub fn run() {
                     other => tracing::error!("[boot] {addr} 连不上 ({other:?}), 仍建窗口"),
                 }
                 build_main_window(app.handle(), port)?;
+                spawn_tray_badge(app.handle().clone(), port);
             }
 
             #[cfg(mobile)]
@@ -161,9 +162,17 @@ fn install_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder};
     use tauri::tray::TrayIconBuilder;
 
-    let show = MenuItemBuilder::with_id("tray-show", "显示主窗口").build(app)?;
+    let show = MenuItemBuilder::with_id("tray-show", "打开 Bolloon").build(app)?;
+    let theme_sys = MenuItemBuilder::with_id("theme-system", "主题：跟随系统").build(app)?;
+    let theme_dark = MenuItemBuilder::with_id("theme-dark", "主题：深色").build(app)?;
+    let theme_light = MenuItemBuilder::with_id("theme-light", "主题：浅色").build(app)?;
     let quit = MenuItemBuilder::with_id("tray-quit", "退出 Bolloon").build(app)?;
-    let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
+    let theme_menu = tauri::menu::SubmenuBuilder::new(app, "主题外观")
+        .items(&[&theme_sys, &theme_dark, &theme_light])
+        .build()?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&show, &theme_menu, &quit])
+        .build()?;
 
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
 
@@ -176,19 +185,87 @@ fn install_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "tray-show" => reveal_main_window(app),
             "tray-quit" => app.exit(0),
+            "theme-system" | "theme-dark" | "theme-light" => {
+                let mode = event
+                    .id()
+                    .as_ref()
+                    .trim_start_matches("theme-")
+                    .to_string();
+                apply_theme(app, &mode);
+            }
             _ => {}
         })
-        .on_tray_icon_event(|tray, event| {
-            if let tauri::tray::TrayIconEvent::Click { button, button_state, .. } = event {
-                if button == tauri::tray::MouseButton::Left
-                    && button_state == tauri::tray::MouseButtonState::Up
-                {
-                    reveal_main_window(tray.app_handle());
-                }
+        // 2026-10-30 (用户: 点菜单栏图标没反应): 左键 **按下就响应**, 不再只等 Up ——
+        // 某些 macOS 配置/模板图只发 Down; 双击也一并兜住。
+        .on_tray_icon_event(|tray, event| match event {
+            tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. } => {
+                reveal_main_window(tray.app_handle());
             }
+            tauri::tray::TrayIconEvent::DoubleClick { .. } => {
+                reveal_main_window(tray.app_handle());
+            }
+            _ => {}
         })
         .build(app)?;
     Ok(())
+}
+
+
+/// 从菜单改主题: 直接写进页面 (localStorage + data-theme), 不整页重载。
+#[cfg(desktop)]
+fn apply_theme(app: &tauri::AppHandle, mode: &str) {
+    let Some(w) = app.get_webview_window("main") else { return };
+    let m = if mode == "system" { "" } else { mode };
+    let js = format!(
+        r#"(function(){{try{{localStorage.setItem('bolloon_theme',{m:?});var r=document.documentElement;{m:?}?r.setAttribute('data-theme',{m:?}):r.removeAttribute('data-theme');}}catch(e){{}}}})()"#,
+        m = m
+    );
+    let _ = w.eval(&js);
+}
+
+/// 菜单栏角标: 每 20 秒问一次本机节点「有多少待处理」, >0 才显示数字。
+#[cfg(desktop)]
+fn spawn_tray_badge(app: tauri::AppHandle, port: u16) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+            // 不引 HTTP 客户端依赖: 本机回环上一条最小 GET 就够 (壳只读一个数)
+            let n = tokio::task::spawn_blocking(move || -> u64 {
+                use std::io::{Read, Write};
+                let addr = format!("127.0.0.1:{port}");
+                let Ok(mut s) = std::net::TcpStream::connect(&addr) else { return 0 };
+                let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(3)));
+                let req = format!(
+                    "GET /api/notify/count HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+                );
+                if s.write_all(req.as_bytes()).is_err() {
+                    return 0;
+                }
+                let mut buf = String::new();
+                let _ = s.read_to_string(&mut buf);
+                // body 里取 "count": N
+                buf.find("\"count\"")
+                    .and_then(|i| {
+                        let rest = &buf[i..];
+                        let colon = rest.find(':')?;
+                        rest[colon + 1..]
+                            .chars()
+                            .skip_while(|c| c.is_whitespace())
+                            .take_while(|c| c.is_ascii_digit())
+                            .collect::<String>()
+                            .parse::<u64>()
+                            .ok()
+                    })
+                    .unwrap_or(0)
+            })
+            .await
+            .unwrap_or(0);
+            if let Some(tray) = app.tray_by_id("bolloon-tray") {
+                let title = if n > 0 { Some(n.to_string()) } else { None };
+                let _ = tray.set_title(title);
+            }
+        }
+    });
 }
 
 /// 把主窗口拉回前台 (最小化/被盖住/被关掉都适用; 关掉时重建)。

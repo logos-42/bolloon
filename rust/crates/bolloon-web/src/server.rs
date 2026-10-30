@@ -330,6 +330,8 @@ pub fn app(state: AppState) -> Router {
         // ── 充值 / 按量扣费 (2026-10-30) ──────────────────────────────
         // 收费口径: 先充值 (USDC/支付宝/微信/PayPal, 人工核销) → 余额 → 按量扣减。
         // 未核销的充值只进 pending, 不计入余额; confirm 只在本机做 (收款人本人核对到账)。
+        // 菜单栏角标: 待处理好友请求 + 待核销充值
+        .route("/api/notify/count", get(crate::native::notify_count))
         .route("/api/pay/info", get(crate::pay::pay_info))
         // 只卖两款 (DeepSeek V4.1 Flash / V4 Pro), 单价 + 用户等级从这里读
         .route("/api/pay/pricing", get(crate::pay::pay_pricing))

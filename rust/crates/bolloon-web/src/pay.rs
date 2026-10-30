@@ -60,7 +60,7 @@ fn pay_dir(_st: &AppState) -> PathBuf {
     crate::server::data_dir().join("pay")
 }
 
-fn ledger_path(st: &AppState) -> PathBuf {
+pub(crate) fn ledger_path(st: &AppState) -> PathBuf {
     let d = pay_dir(st);
     let _ = std::fs::create_dir_all(&d);
     d.join("ledger.jsonl")

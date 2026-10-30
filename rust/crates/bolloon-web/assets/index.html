@@ -1981,15 +1981,18 @@ function editAgent(id){
   renderAvatarChoices('agentAvatarPresets',a.id,a.avatar);
   document.getElementById('agentDlg').showModal();
 }
-$('newAgentBtn').onclick=()=>{
-  editingAgentId='';
-  $('agentDlgTitle').textContent='创建新智能体';
-  $('agentSave').textContent='创建';
-  $('agentNameInput').value='';$('agentPersona').value='';$('agentWorkspace').value='';$('agentGlobalDir').value='';
-  $('agentAvatarFile').dataset.avatar='';
-  // 新建时还没有 agent id: 预览按名字生成, 建好后按 id 生成 (同一家族不变)
-  renderAvatarChoices('agentAvatarPresets',$('agentNameInput').value||'bolloon','');
-  document.getElementById('agentDlg').showModal();
+// 2026-10-30 (用户): 点「创建智能体」= **直接创建** (头像按 id 自动生成, DID 由服务端配好),
+// 建完再打开编辑框让人改名/简介 —— 不再先弹空表单要人填一堆。
+$('newAgentBtn').onclick=async()=>{
+  const n=state.agents.filter(a=>/^新智能体/.test(a.name||'')).length+1;
+  try{
+    const j=await api('/api/agents',{method:'POST',body:JSON.stringify({name:'新智能体 '+n,avatar:''})});
+    state.agents.push(j.agent); state.sessions.push(j.session);
+    state.active_agent_id=j.agent.id; state.active_session_id=j.session.id;
+    renderAll();
+    toast('已创建 '+j.agent.name+' · 可以改名/写简介');
+    editAgent(j.agent.id);   // 立刻给出改名/人设入口, 不填也能用
+  }catch(e){ toast('创建失败：'+e.message); }
 };
 $('agentSave').onclick=async()=>{
   try{
