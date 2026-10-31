@@ -231,6 +231,13 @@ pub fn load_from_with(dir: &Path, backend: &dyn SecretBackend) -> LlmConfig {
             }
             // 旧 .bak 是明文快照 —— 迁移成功就删掉
             let _ = std::fs::remove_file(path.with_extension("json.bak"));
+            // 2026-10-31 (复测发现): 旧版本还留过 `bolloon-config.json.bak-key-<ts>` /
+            // `llm-config.json.bak-<ts>` 这类带时间戳的备份, 里面同样是**明文 key**。
+            // 只删自己写的那份 .bak 不够 —— 整个目录扫一遍, 把还能解析的备份里的 key 清空。
+            let scrubbed = scrub_plaintext_backups(dir);
+            if scrubbed > 0 {
+                tracing::info!(count = scrubbed, "已清空历史备份里的明文 apiKey");
+            }
             tracing::info!(count = moved, "已把明文 apiKey 迁进系统凭据库");
         }
     }
@@ -251,6 +258,60 @@ pub fn load_from_with(dir: &Path, backend: &dyn SecretBackend) -> LlmConfig {
         }
     }
     cfg
+}
+
+/// 把目录下**所有** `*.bak*` / `*.bak-*` 里的明文 `apiKey` 清空（原地重写, 保留其余字段）。
+///
+/// 为什么需要: 旧版本除了 `bolloon-config.json.bak` 还写过带时间戳的备份,
+/// 迁移时只删标准那份会让历史 key 一直躺在磁盘上（复测就是这么发现的）。
+/// 返回清掉的 key 个数。
+fn scrub_plaintext_backups(dir: &Path) -> usize {
+    let mut cleaned = 0usize;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !(name.contains(".bak")) {
+            continue;
+        }
+        let path = e.path();
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        let mut touched = 0usize;
+        for grp in ["providers", "customProviders"] {
+            if let Some(map) = v.get_mut(grp).and_then(|m| m.as_object_mut()) {
+                for (_, p) in map.iter_mut() {
+                    if let Some(k) = p.get("apiKey").and_then(|k| k.as_str()) {
+                        if !k.trim().is_empty() {
+                            p["apiKey"] = serde_json::Value::String(String::new());
+                            touched += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if touched > 0 {
+            if let Ok(text) = serde_json::to_string_pretty(&v) {
+                let tmp = path.with_extension("bak.tmp");
+                if std::fs::write(&tmp, text).is_ok() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+                    }
+                    if std::fs::rename(&tmp, &path).is_ok() {
+                        cleaned += touched;
+                    }
+                }
+            }
+        }
+    }
+    cleaned
 }
 
 /// 这份配置里是否还有明文 key（决定旧 `.bak` 能不能留）
@@ -1031,6 +1092,30 @@ mod tests {
         // 读回来时 key 从凭据库补齐 (runtime 才拿得到)
         let back = load_from_with(&dir, &mem);
         assert_eq!(back.providers["deepseek"].api_key, "sk-secret-123");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **带时间戳的历史备份也要洗**: 旧版本留过 `*.bak-key-<ts>` / `*.bak-<ts>`,
+    /// 只删标准 `.bak` 会让老 key 一直躺在盘上（2026-10-31 复测发现的真实漏点）。
+    #[test]
+    fn timestamped_plaintext_backups_are_scrubbed() {
+        let dir = temp_dir("bakscan");
+        let live = r#"{"activeProvider":"deepseek","providers":{"deepseek":{"enabled":true,"apiKey":"sk-live-key"}}}"#;
+        let old = r#"{"providers":{"deepseek":{"apiKey":"sk-bak-secret"}}}"#;
+        std::fs::write(dir.join(CONFIG_FILE), live).unwrap();
+        std::fs::write(dir.join("bolloon-config.json.bak-key-1790159466324"), old).unwrap();
+        std::fs::write(dir.join("llm-config.json.bak-2026-10-02"), old).unwrap();
+
+        let mem = MemBackend::new();
+        let _ = load_from_with(&dir, &mem);
+
+        for f in [
+            "bolloon-config.json.bak-key-1790159466324",
+            "llm-config.json.bak-2026-10-02",
+        ] {
+            let raw = std::fs::read_to_string(dir.join(f)).unwrap();
+            assert!(!raw.contains("sk-bak-secret"), "{f} 里仍有明文: {raw}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

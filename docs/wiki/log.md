@@ -7029,7 +7029,15 @@ provider 的默认模型与目录（223 家 / 2026-09-27 快照）都旧了。
 `GET /api/models` 报 **238 家**且 deepseek/goaichat `has_key=true`（key 是**从钥匙串读回来的**，
 不是内存残留 —— 盘上已经是空串）；真发一句 6.3s 得到正常回答（无 401/400）⇒ 读取路径通。
 
-**门禁**: `cargo test -p bolloon-llm --lib` **57/57** · `cargo test -p bolloon-agent --lib` **432/432** ·
+**复测补漏（2026-10-31 二次，来自对 AI 回复的核对）**: 明文并不只在 `bolloon-config.json` ——
+同目录还躺着旧版本留下的 `bolloon-config.json.bak-key-<ts>` 与 `llm-config.json.bak-<ts>`，
+两份里各有 2 个 `apiKey` 明文（迁移只删了自己写的标准 `.bak`，扫不到带时间戳的）。
+修法: `load_from` 迁移成功后调 `scrub_plaintext_backups(dir)` —— 目录下所有 `*.bak*` 里能解析的
+JSON, 把 `apiKey` 清空并原地重写（0600，其余字段保留）；新测试
+`timestamped_plaintext_backups_are_scrubbed`。真机已把这两份备份洗掉（复查 `sk-` 命中 0 次）。
+**仍未解决**: 备份里的旧 key 曾以明文存在过 ⇒ **只有在 provider 端吊销才算真清**（需用户操作）。
+
+**门禁**: `cargo test -p bolloon-llm --lib` **58/58** · `cargo test -p bolloon-agent --lib` **432/432** ·
 `cargo check --workspace --all-targets` 0 错 · `cargo clippy -p bolloon-llm --all-targets` 0 警告。
 **诚实边界**: Windows/Linux 后端只做了**编译级**验证（本机是 macOS，没有真跑 DPAPI/secret-tool）；
 迁移只在 macOS 真机跑过；环境变量仍是最低依赖路径（没本地凭据库时 key 只能走 env）。
