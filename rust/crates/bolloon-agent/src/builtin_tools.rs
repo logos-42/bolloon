@@ -21,14 +21,16 @@
 //!      依据决策 2: **无法验证的结果不得报告为已验证成功**。
 
 use async_trait::async_trait;
-use bolloon_harness::{Budget, EffectKind, Harness, ToolCall, ToolDef, ToolExecutor, ToolRegistry, ToolResult};
+use bolloon_harness::{
+    Budget, EffectKind, Harness, ToolCall, ToolDef, ToolExecutor, ToolRegistry, ToolResult,
+};
 use bolloon_llm::{FunctionSchema, ToolSchema};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use crate::tool_contract::{ErrorCode, error_evidence, with_error};
 
-pub use crate::shell_tool::{shell_def, ShellExecutor};
+pub use crate::shell_tool::{ShellExecutor, shell_def};
 
 /// 单次读取输出上限（字符）—— 超出截断并标注
 pub const MAX_OUTPUT_CHARS: usize = 200_000;
@@ -56,9 +58,7 @@ const SENSITIVE_PATTERNS: &[&str] = &[
 
 fn is_sensitive(path: &str) -> bool {
     let p = path.replace('\\', "/");
-    SENSITIVE_PATTERNS.iter().any(|s| p.contains(s))
-        || p.ends_with(".pem")
-        || p.ends_with(".key")
+    SENSITIVE_PATTERNS.iter().any(|s| p.contains(s)) || p.ends_with(".pem") || p.ends_with(".key")
 }
 
 /// `read_file` 执行器（只读）
@@ -194,6 +194,8 @@ pub fn builtin_tool_defs() -> Vec<ToolDef> {
     // 经济层工具：只有注入了 econ 上下文才真正可用（否则执行时如实说未启用）
     defs.extend(crate::econ_tools::econ_tool_defs());
     defs.extend(crate::invite_tools::invite_tool_defs());
+    // IPFS 原语 (2026-10-31): TS 侧早有, Rust 版智能体一直没有 ⇒ 现在补上并默认授予
+    defs.extend(crate::ipfs_tools::ipfs_tool_defs());
     defs
 }
 
@@ -266,6 +268,38 @@ impl ToolExecutor for BuiltinExecutor {
             | "immune_status" => {
                 crate::invite_tools::execute_sync(&call)
             }
+            "ipfs_add" | "ipfs_cat" | "ipfs_ls" | "ipns_publish" | "ipns_resolve" => {
+                let args = call.arguments.clone();
+                let name = call.name.clone();
+                let started = std::time::Instant::now();
+                match tokio::task::spawn_blocking(move || {
+                    crate::ipfs_tools::IpfsExecutor.run(&name, &args)
+                })
+                .await
+                {
+                    Ok(Ok(out)) => ToolResult {
+                        ok: true,
+                        output: out,
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        verified: Some(true),
+                        evidence: None,
+                    },
+                    Ok(Err(e)) => ToolResult {
+                        ok: false,
+                        output: e,
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        verified: Some(false),
+                        evidence: Some(serde_json::json!({ "ipfs": "failed" })),
+                    },
+                    Err(e) => ToolResult {
+                        ok: false,
+                        output: format!("ipfs 工具线程失败: {e}"),
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        verified: Some(false),
+                        evidence: None,
+                    },
+                }
+            }
             "econ_probe" | "econ_claim" => match self.econ.as_ref() {
                 Some(t) => crate::econ_tools::try_execute(t, &call).unwrap_or_else(|| ToolResult {
                     ok: false,
@@ -330,6 +364,12 @@ pub const DEFAULT_GRANTED_TOOLS: &[&str] = &[
     "git_add",
     "git_commit",
     "run_scratch_script",
+    // IPFS 原语: 只碰本地节点, 可逆 (内容寻址, 不改本机文件)
+    "ipfs_add",
+    "ipfs_cat",
+    "ipfs_ls",
+    "ipns_publish",
+    "ipns_resolve",
 ];
 
 /// 按权限模式把已注册工具授进 Harness 的 permission 门。
@@ -367,7 +407,11 @@ pub async fn builtin_harness(
     let budget = Budget::new(calls, budget_ms);
     let reg = Arc::new(ToolRegistry::new());
     register_builtin_tools(&reg).await;
-    let exec = Arc::new(BuiltinExecutor::new(cancel, bypass, crate::scratch::ScriptRunPort::noop()));
+    let exec = Arc::new(BuiltinExecutor::new(
+        cancel,
+        bypass,
+        crate::scratch::ScriptRunPort::noop(),
+    ));
     let h = Arc::new(Harness::new(reg.clone(), exec, budget));
     // 授权必须在这里落一次: Harness 只放行 `default_allowed` 或**显式授予**的工具,
     // 不授予 ⇒ shell/write_file 一律 `DENIED (policy=permission)`。
@@ -391,7 +435,11 @@ pub async fn builtin_harness_with_econ(
     register_builtin_tools(&reg).await;
     let exec = Arc::new(
         BuiltinExecutor::new(cancel, bypass, crate::scratch::ScriptRunPort::noop()).with_econ(
-            crate::econ_tools::EconTools { econ, principal, group },
+            crate::econ_tools::EconTools {
+                econ,
+                principal,
+                group,
+            },
         ),
     );
     let h = Arc::new(Harness::new(reg.clone(), exec, budget));
@@ -405,8 +453,8 @@ mod tests {
     use super::*;
 
     fn tmp_file(name: &str, content: &str) -> std::path::PathBuf {
-        let p = std::env::temp_dir()
-            .join(format!("bolloon_read_file_{}_{}", std::process::id(), name));
+        let p =
+            std::env::temp_dir().join(format!("bolloon_read_file_{}_{}", std::process::id(), name));
         std::fs::write(&p, content).expect("写临时文件");
         p
     }
@@ -431,7 +479,13 @@ mod tests {
     /// **有意安全升级**（决策 1）: 凭据类文件即便是只读也不许进模型上下文
     #[tokio::test]
     async fn sensitive_credentials_are_refused() {
-        for p in [".env", "a/b.pem", ".bolloon/keypair.json", "x.key", "dir/.env.local"] {
+        for p in [
+            ".env",
+            "a/b.pem",
+            ".bolloon/keypair.json",
+            "x.key",
+            "dir/.env.local",
+        ] {
             let r = ReadFileExecutor
                 .execute(call(serde_json::json!({ "path": p })))
                 .await;
@@ -460,7 +514,9 @@ mod tests {
     async fn limit_caps_lines() {
         let p = tmp_file("limit.txt", "l1\nl2\nl3\nl4");
         let r = ReadFileExecutor
-            .execute(call(serde_json::json!({ "path": p.display().to_string(), "limit": 2 })))
+            .execute(call(
+                serde_json::json!({ "path": p.display().to_string(), "limit": 2 }),
+            ))
             .await;
         assert!(r.ok, "{}", r.output);
         assert!(r.output.contains("l1") && r.output.contains("l2"));
@@ -509,7 +565,11 @@ mod tests {
     async fn registration_puts_tool_in_registry() {
         let reg = ToolRegistry::new();
         register_builtin_tools(&reg).await;
-        assert!(reg.len().await >= 29, "read_file + shell + 文件 + 搜索 + Git + 网络 + 领域 + 更新: {}", reg.len().await);
+        assert!(
+            reg.len().await >= 29,
+            "read_file + shell + 文件 + 搜索 + Git + 网络 + 领域 + 更新: {}",
+            reg.len().await
+        );
         assert!(reg.get("read_file").await.is_some());
         assert!(reg.get("shell").await.is_some());
         assert!(reg.get("write_file").await.is_some());
@@ -523,9 +583,16 @@ mod tests {
         register_builtin_tools(&reg).await;
         let schemas = tool_defs_to_schemas(&reg.list().await);
         // 工具族会持续迁移增长 ⇒ 只断言下限与关键成员（不断言精确数量）
-        assert!(schemas.len() >= 29, "read_file+shell+文件+搜索+Git+网络+领域+更新: {}", schemas.len());
+        assert!(
+            schemas.len() >= 29,
+            "read_file+shell+文件+搜索+Git+网络+领域+更新: {}",
+            schemas.len()
+        );
         let names: Vec<&str> = schemas.iter().map(|s| s.function.name.as_str()).collect();
-        assert!(names.contains(&"read_file") && names.contains(&"shell"), "{names:?}");
+        assert!(
+            names.contains(&"read_file") && names.contains(&"shell"),
+            "{names:?}"
+        );
         assert!(names.contains(&"write_file"), "{names:?}");
 
         let harness = bolloon_harness::Harness::new(
@@ -541,7 +608,11 @@ mod tests {
                 arguments: serde_json::json!({ "path": p.display().to_string() }),
             })
             .await;
-        assert!(out.denied.is_none(), "已注册只读工具不该被拒: {:?}", out.denied);
+        assert!(
+            out.denied.is_none(),
+            "已注册只读工具不该被拒: {:?}",
+            out.denied
+        );
         let r = out.result.expect("非 denied 必有 result");
         assert!(r.ok, "{}", r.output);
         assert!(r.output.contains("hello closed loop"));
@@ -575,7 +646,11 @@ mod tests {
         };
 
         // ① 未授予 ⇒ permission 门拒，零执行
-        let h = bolloon_harness::Harness::new(reg.clone(), exec(), bolloon_harness::Budget::new(5, 10_000));
+        let h = bolloon_harness::Harness::new(
+            reg.clone(),
+            exec(),
+            bolloon_harness::Budget::new(5, 10_000),
+        );
         let out = h
             .gate(ToolCall {
                 id: "c1".into(),
@@ -588,8 +663,12 @@ mod tests {
         assert!(out.result.is_none(), "被拒 = 零执行");
 
         // ② 授予后可写
-        let h2 = bolloon_harness::Harness::new(reg.clone(), exec(), bolloon_harness::Budget::new(5, 10_000))
-            .with_granted(&["write_file"]);
+        let h2 = bolloon_harness::Harness::new(
+            reg.clone(),
+            exec(),
+            bolloon_harness::Budget::new(5, 10_000),
+        )
+        .with_granted(&["write_file"]);
         let p = std::env::temp_dir().join(format!("bolloon_grant_{}.txt", std::process::id()));
         let out2 = h2
             .gate(ToolCall {
@@ -610,7 +689,10 @@ mod tests {
                 arguments: serde_json::json!({ "path": p.display().to_string() }),
             })
             .await;
-        assert!(out3.denied.is_some(), "不可逆 delete 不该随 write 一起被授予");
+        assert!(
+            out3.denied.is_some(),
+            "不可逆 delete 不该随 write 一起被授予"
+        );
         let _ = std::fs::remove_file(&p);
     }
 
@@ -643,7 +725,11 @@ mod tests {
                 arguments: serde_json::json!({ "path": p.display().to_string(), "content": "daily" }),
             })
             .await;
-        assert!(out.denied.is_none(), "默认模式 write_file 被拒: {:?}", out.denied);
+        assert!(
+            out.denied.is_none(),
+            "默认模式 write_file 被拒: {:?}",
+            out.denied
+        );
         assert!(out.result.expect("有结果").ok, "写文件应成功");
         assert!(p.exists());
 
@@ -662,7 +748,10 @@ mod tests {
 
         // ④ 完全访问: 同一台 harness 的构造函数, 换 bypass ⇒ 不可逆也放行
         let (h2, _s2) = builtin_harness(20, 30_000, cancel, true).await;
-        assert!(h2.is_granted("delete_file").await, "完全访问必须授予 delete_file");
+        assert!(
+            h2.is_granted("delete_file").await,
+            "完全访问必须授予 delete_file"
+        );
         let out3 = h2
             .gate(ToolCall {
                 id: "d2".into(),
@@ -670,7 +759,11 @@ mod tests {
                 arguments: serde_json::json!({ "path": p.display().to_string() }),
             })
             .await;
-        assert!(out3.denied.is_none(), "完全访问下 delete_file 应放行: {:?}", out3.denied);
+        assert!(
+            out3.denied.is_none(),
+            "完全访问下 delete_file 应放行: {:?}",
+            out3.denied
+        );
         assert!(out3.result.expect("有结果").ok);
         assert!(!p.exists());
     }
@@ -684,7 +777,10 @@ mod tests {
             arguments: args,
         };
         let r = ReadFileExecutor.execute(c(serde_json::json!({}))).await;
-        assert_eq!(r.evidence.as_ref().unwrap()["error"]["code"], "invalid_argument");
+        assert_eq!(
+            r.evidence.as_ref().unwrap()["error"]["code"],
+            "invalid_argument"
+        );
 
         let r = ReadFileExecutor
             .execute(c(serde_json::json!({ "path": ".env" })))

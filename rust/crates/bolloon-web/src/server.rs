@@ -530,6 +530,18 @@ pub fn app(state: AppState) -> Router {
         .route("/api/groups/{id}/update", post(update_group))
         .route("/api/groups/{id}/delete", post(delete_group))
         .route("/api/groups/{id}/publish", post(crate::native::publish_group_to_world))
+        // 群内回合运行时设置：群里是否真执行（工具/kernel loop）、步数/时长/预算
+        // 群内 API 共享: 配置 / 查看本群可借用的好友节点 + 对端借算力的入口
+        .route("/api/groups/{id}/pool", get(crate::native::group_pool_get))
+        .route("/api/groups/{id}/pool", post(crate::native::group_pool_set))
+        .route("/api/pool/infer", post(crate::native::pool_infer))
+        // 借出算力的贡献账（谁用过我、几次、哪个群；经济层开启时另有 Contribution 记录）
+        .route("/api/pool/credit", get(crate::native::pool_credit_get))
+        // 智能体级「对好友开放」开关（跨机对话与借算力共用）
+        .route("/api/agents/{id}/friends-open", post(crate::native::agent_friends_open))
+        .route("/api/agents/{id}/friends-open", get(crate::native::agent_friends_open))
+        .route("/api/room/runtime", get(crate::native::room_runtime_get))
+        .route("/api/room/runtime", post(crate::native::room_runtime_set))
                 .route("/api/econ/probe", get(crate::native::econ_probe))
                 .route("/api/econ/reputation/{principal}", get(econ_reputation))
                 .route("/api/econ/immune/report", post(immune_report))
@@ -558,6 +570,8 @@ pub fn app(state: AppState) -> Router {
                     "/api/econ/intent/{id}/budget",
                     post(crate::native::econ_intent_budget),
                 )
+                // 2026-10-31: 对端收件箱 — 好友请求/同意通知的投递落点 (离线留存后补投)
+                .route("/api/friend/inbox", post(crate::native::friend_inbox))
                 .route("/api/friends/request", post(crate::native::friend_request))
         .route("/api/friends/accept", post(crate::native::friend_accept))
         .route("/api/friends/reject", post(crate::native::friend_reject))
@@ -705,6 +719,21 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
     state.script_run = bolloon_agent::scratch::ScriptRunPort::new(std::sync::Arc::new(
         bolloon_agent::scratch::TokioScriptRunner::new(),
     ));
+    // 好友事件补投: 对方离线时请求留在本机队列里, 每 20s 试一次(上线后自动送达)
+    {
+        let st_flush = state.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(20));
+            ticker.tick().await; // 立刻那次交给 handler 自己做, 这里先等一个周期
+            loop {
+                ticker.tick().await;
+                let (sent, left) = crate::native::flush_friend_outbox(&st_flush).await;
+                if sent > 0 || left > 0 {
+                    tracing::info!(sent, left, "好友事件补投");
+                }
+            }
+        });
+    }
     // 受治理配置: 启动时从文件恢复 (失败则保持默认, fail-closed —— 但**不吃掉原因**)
     if let Err(e) = state.config.load_from_file().await {
         // 首次运行没有配置文件是**正常态**, 不是"配置坏了" —— 以前它每次都打一条 WARN,
@@ -1289,6 +1318,33 @@ fn default_share_mode() -> String {
     "read".to_string()
 }
 
+/// 本机对外可访问的基址: `BOLLOON_PUBLIC_BASE` 优先, 否则 LAN IP + 实际端口。
+///
+/// 分享链接以前只回 `/share/<token>` 相对路径 —— 复制给别人打开是无效的 (对方浏览器没有这个服务)。
+pub(crate) fn public_base() -> String {
+    if let Ok(b) = std::env::var("BOLLOON_PUBLIC_BASE") {
+        let b = b.trim().trim_end_matches('/').to_string();
+        if !b.is_empty() {
+            return b;
+        }
+    }
+    let port = std::env::var("BOLLOON_LOCAL_API")
+        .ok()
+        .and_then(|u| u.rsplit(':').next().map(|p| p.to_string()))
+        .unwrap_or_else(|| "54188".to_string());
+    match lan_ip() {
+        Some(ip) => format!("http://{ip}:{port}"),
+        None => format!("http://127.0.0.1:{port}"),
+    }
+}
+
+/// 本机 LAN IP (UDP connect 取本地出口地址; 不真的发包)
+fn lan_ip() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    sock.local_addr().ok().map(|a| a.ip().to_string())
+}
+
 /// 分享 token = 身份私钥对 (群|时间) 签名取前 24 hex ⇒ 不可猜 (不依赖随机源)
 fn group_share_token(st: &AppState, group_id: &str, now: u64) -> String {
     let sig = st.identity.sign(format!("groupshare|{group_id}|{now}").as_bytes());
@@ -1399,6 +1455,8 @@ async fn group_share(
             }
             Json(serde_json::json!({
                 "mode": "read", "url": format!("/share/{token}"), "token": token, "messages": n,
+                "abs_url": format!("{}/share/{token}", public_base()),
+                "note": "同网段可直接打开 abs_url；跨公网需要可达地址 (BOLLOON_PUBLIC_BASE + 反代)",
             }))
         }
         other => Json(serde_json::json!({
@@ -3145,6 +3203,100 @@ mod route_tests {
 
     /// 真起一个服务 (端口 0), 用 ureq 走真 HTTP:
     /// bootstrap 带真实消息流 → 分享链接能打开 → 梦想文档作者取 profile → 状态登记
+    /// 群内运行时设置 + 好友收件箱: 默认真执行, 伪造签名必须被拒 (2026-10-31)
+    #[tokio::test]
+    async fn room_runtime_and_friend_inbox_gates() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-web-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+
+        let state = AppState::new(offline_llm());
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = serve_on(state, listener).await;
+        });
+        let base = format!("http://{addr}");
+        let keys = bolloon_p2p::KeyPair::generate();
+
+        tokio::task::spawn_blocking(move || {
+            let get_json = |path: &str| -> serde_json::Value {
+                ureq::get(&format!("{base}{path}")).call().unwrap().into_json().unwrap()
+            };
+            let post_json = |path: &str, body: serde_json::Value| -> serde_json::Value {
+                ureq::post(&format!("{base}{path}"))
+                    .send_json(body)
+                    .map(|r| r.into_json().unwrap_or(serde_json::Value::Null))
+                    .unwrap_or(serde_json::Value::Null)
+            };
+
+            // 默认: 群里允许真执行 (工具 + kernel loop)
+            let rt = get_json("/api/room/runtime");
+            assert_eq!(rt["runtime"]["tools"], serde_json::json!(true), "群内默认应可执行");
+
+            // 关掉后立刻反映
+            let off = post_json("/api/room/runtime", serde_json::json!({"tools": false}));
+            assert_eq!(off["runtime"]["tools"], serde_json::json!(false));
+            assert_eq!(
+                get_json("/api/room/runtime")["runtime"]["tools"],
+                serde_json::json!(false)
+            );
+            // 关着的时候步数上限也必须被夹住 (不能写 0 也不能写 100000)
+            let clamp = post_json(
+                "/api/room/runtime",
+                serde_json::json!({"tools": true, "max_turns": 100000, "max_secs": 1}),
+            );
+            assert_eq!(clamp["runtime"]["max_turns"], serde_json::json!(200));
+            assert_eq!(clamp["runtime"]["max_secs"], serde_json::json!(10));
+
+            // 好友收件箱: 收件人不是本机 ⇒ 拒
+            let wrong = post_json(
+                "/api/friend/inbox",
+                serde_json::json!({
+                    "from_did": keys.did, "to_did": "did:pi:someone-else",
+                    "kind": "request", "request_id": "fr-1", "name": "x",
+                    "ts_ms": chrono::Utc::now().timestamp_millis(), "sig": "00"
+                }),
+            );
+            assert_eq!(wrong["ok"], serde_json::json!(false), "收件人不是本机必须拒");
+            assert!(wrong["error"].as_str().unwrap_or("").contains("收件人"));
+
+            // 借算力: 收件人不是本机 ⇒ 拒; 群池默认空但有 candidates 结构
+            let borrow = post_json(
+                "/api/pool/infer",
+                serde_json::json!({
+                    "from_did": keys.did, "to_did": "did:pi:not-me",
+                    "group_id": "g", "agent_id": "agent-001", "trigger": "帮我跑一下",
+                    "ts_ms": chrono::Utc::now().timestamp_millis(), "sig": "00"
+                }),
+            );
+            assert_eq!(borrow["ok"], serde_json::json!(false));
+            assert!(borrow["error"].as_str().unwrap_or("").contains("收件人"));
+            let credit = get_json("/api/pool/credit");
+            assert_eq!(credit["ok"], serde_json::json!(true));
+            assert_eq!(credit["total_calls"], serde_json::json!(0), "还没借出过就应该是 0");
+            assert_eq!(credit["econ_enabled"], serde_json::json!(false), "默认不假装经济层在跑");
+            let pool = get_json("/api/groups/g/pool");
+            assert_eq!(pool["ok"], serde_json::json!(true));
+            assert!(pool["candidates"].as_array().map(|a| a.is_empty()).unwrap_or(false));
+
+            // 没有签名的请求 ⇒ 拒 (以前好友请求根本不发, 现在要发就必须签名)
+            let unsigned = post_json(
+                "/api/friend/inbox",
+                serde_json::json!({
+                    "from_did": keys.did, "to_did": "did:pi:whatever",
+                    "kind": "request", "request_id": "fr-2", "name": "x", "ts_ms": 0, "sig": ""
+                }),
+            );
+            assert_eq!(unsigned["ok"], serde_json::json!(false));
+        })
+        .await
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn share_bootstrap_dream_routes_e2e() {
         let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());

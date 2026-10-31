@@ -7037,6 +7037,33 @@ JSON, 把 `apiKey` 清空并原地重写（0600，其余字段保留）；新测
 `timestamped_plaintext_backups_are_scrubbed`。真机已把这两份备份洗掉（复查 `sk-` 命中 0 次）。
 **仍未解决**: 备份里的旧 key 曾以明文存在过 ⇒ **只有在 provider 端吊销才算真清**（需用户操作）。
 
+### 2026-10-31 群组闭环（三期）
+
+1. **群聊面板顶部标签点了切不过去** — `GET /api/room` 从不读 `?group=`，永远回落落盘的 `active_group`，
+   前端 `loadRoom` 又用回包覆盖本地选择 ⇒ 点标签等于没点。现在请求里的 group 合法就以它为准并落盘。
+2. **分享/邀请没做完** — 前端 `shareGroup()` 发的是 `{scope:'group'}`，后端读 `mode`（join|read）⇒
+   每次都报"未知分享模式"。分享改发 `mode:'read'`，并在响应里补 `abs_url`（LAN 绝对地址；
+   跨公网需 `BOLLOON_PUBLIC_BASE` + 反代，这一点在 `note` 里如实写明，不假装能通公网）。
+3. **加好友是单向的** — `friend_request` 只写本机库、什么都不投递；`friend_accept` 只改本地。
+   新增 `POST /api/friend/inbox`（DID 签名 + 收件人绑定，窗口 14 天）、`NativeState.friend_outbox`
+   待投递队列、`flush_friend_outbox`（请求当场试投 + 后台每 20s 补投 ⇒ **对方离线也留存**），
+   同意后回投 `accept` 事件让对方也变好友。
+4. **群内回合只说不做** — `agent_turn` 以前是单次 `call_model_metered`（无工具）。新增
+   `TurnOptions` / `reply_with_agent_cfg` 把 harness + KernelLoop 接进群：`RoomRuntime`
+   （tools/max_turns/max_secs/tool_budget/max_retries，默认开）+ `GET/POST /api/room/runtime`；
+   `room_stop` 真的取消正在跑的那一轮（`chat_runs.cancel("room-<gid>")`）。
+5. **警长在用、但不独占闸门** — 选举分改为 特质 65% + **本群参与分** 35%（按该群最近 200 条发言），
+   不同群各自算 ⇒ 可以选出不同警长；任务单 `RoomTask{source,status}`：人类命令 / 警长派单**立即执行**，
+   智能体提案先挂 `proposed`，警长可 `[[veto:目标]]` 否掉，**60s 没人处理自动派单**（主动性）。
+
+**双向好友实测（两真实节点，`/tmp/bolloon-node-a|b` + `web --port 54298/54299`）**:
+B 离线时 A 发请求 → `requests_out` 1 条（留存）→ B 上线后 **14s 补投到达** → B 同意
+`notified:true / queued:0` → A **0s 内**出现在好友列表。过程中修掉两个真 bug：
+① `POST /api/directory/peers` 在对端离线时被 QUIC 同步挂死（现在最多等 3s，超时只记日志）；
+② 收件方根本不知道请求方节点地址 ⇒ 同意投不回去。现在请求体带 `from_base`（对外基址，
+参与签名）+ `alt_base`（本机实际监听地址，仅当备用拨号目标、仍校验 DID），收方学到后按它回投。
+
+**门禁**: `cargo test -p bolloon-web --lib` **62/62**（含 `room_runtime_and_friend_inbox_gates`）
 **门禁**: `cargo test -p bolloon-llm --lib` **58/58** · `cargo test -p bolloon-agent --lib` **432/432** ·
 `cargo check --workspace --all-targets` 0 错 · `cargo clippy -p bolloon-llm --all-targets` 0 警告。
 **诚实边界**: Windows/Linux 后端只做了**编译级**验证（本机是 macOS，没有真跑 DPAPI/secret-tool）；

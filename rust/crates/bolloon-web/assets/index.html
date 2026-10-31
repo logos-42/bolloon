@@ -3203,8 +3203,10 @@ function openGroupMenu(e,id){
     <button onclick="renameGroup()">改名</button>
     <button onclick="pinGroup(${g.pinned?'false':'true'})">${g.pinned?'取消置顶':'置顶'}</button>
     <button onclick="fixGroupPing()">固定 ping${g.ping_secs?`（${g.ping_secs}s）`:''}</button>
-    <button onclick="shareGroup()">分享</button>
-    <button onclick="inviteGroup()">邀请</button>
+    <button onclick="shareGroup()">分享（只读链接）</button>
+    <button onclick="inviteGroup()">邀请（进同一个群）</button>
+    <button onclick="toggleRoomRuntime()">群里真执行：${(roomRuntime&&roomRuntime.tools)?'开':'关'}</button>
+    <button onclick="toggleGroupPool()">借用好友算力（API 共享）</button>
     <button onclick="publishGroup()">推到世界</button>
     <button onclick="deleteGroup()">删除（本机列表）</button>`;
   m.classList.remove('hidden');
@@ -3235,13 +3237,54 @@ async function fixGroupPing(){
   if(!(secs>=5&&secs<=86400)){toast('间隔要在 5–86400 秒之间');return;}
   try{await patchGroup({ping:secs});toast(`已固定 ping = ${secs}s`);}catch(e){toast('设置失败: '+e.message);}
 }
+// ── 群内回合运行时 (2026-10-31): 默认允许真执行 —— 群里说了要跑命令就真的跑 ──
+let roomRuntime=null;
+async function loadRoomRuntime(){
+  try{ const r=await api('/api/room/runtime'); roomRuntime=(r&&r.runtime)||null; }catch(_){ roomRuntime=null; }
+  return roomRuntime;
+}
+async function toggleRoomRuntime(){
+  try{
+    if(!roomRuntime) await loadRoomRuntime();
+    const want=!(roomRuntime&&roomRuntime.tools);
+    const r=await api('/api/room/runtime',{method:'POST',body:JSON.stringify({tools:want})});
+    if(r&&r.error)throw new Error(r.error);
+    roomRuntime=r.runtime;
+    toast('群内真执行已'+(roomRuntime.tools?'开启（工具+kernel loop）':'关闭（只发言）'));
+  }catch(e){ toast('设置失败: '+e.message); }
+}
+
+// ── 群内 API 共享 (2026-10-31): 本机没模型通路时, 借本群好友节点的通路跑一轮 ──
+let groupPoolMemo=null;
+async function toggleGroupPool(){
+  try{
+    const gid=menuGroupId;
+    if(!gid){ toast('先打开一个群'); return; }
+    const g=await api('/api/groups/'+encodeURIComponent(gid)+'/pool');
+    const cands=((g&&g.candidates)||[]).filter(c=>c.is_friend);
+    if(!cands.length){
+      toast('还没有可借的好友节点：先在通讯录登记对方节点地址，并互加好友');
+      return;
+    }
+    const on=cands.filter(c=>c.enabled).length;
+    const urls = on ? [] : cands.map(c=>c.url);
+    const r=await api('/api/groups/'+encodeURIComponent(gid)+'/pool',{method:'POST',body:JSON.stringify({urls})});
+    if(r&&r.error)throw new Error(r.error);
+    groupPoolMemo=r;
+    toast(urls.length ? ('已开启借用好友算力：'+urls.length+' 个好友节点') : '已关闭借用好友算力');
+  }catch(e){ toast('设置失败: '+e.message); }
+}
+
 async function shareGroup(){
   try{
-    const r=await api('/api/groups/'+encodeURIComponent(menuGroupId)+'/share',{method:'POST',body:JSON.stringify({scope:'group'})});
-    const link=r.link||r.url||'';
-    if(!link)throw new Error(r.error||'没有拿到链接');
+    // 2026-10-31 修: 后端读 `mode` (join|read), 这里以前发的是 `scope` ⇒ 每次都"未知分享模式"。
+    // 分享 = 只读快照 (不加入也能看); 需要对方进群请用「邀请」(mode=join)。
+    const r=await api('/api/groups/'+encodeURIComponent(menuGroupId)+'/share',{method:'POST',body:JSON.stringify({mode:'read'})});
+    if(r&&r.error)throw new Error(r.error);
+    const link=r.abs_url||r.url||'';
+    if(!link)throw new Error('没有拿到链接');
     await copyText(link);
-    toast('分享链接已复制');
+    toast('只读分享链接已复制（'+((r&&r.messages)||0)+' 条消息）');
   }catch(e){toast('分享失败: '+e.message);}
 }
 async function inviteGroup(){
@@ -3250,7 +3293,8 @@ async function inviteGroup(){
     const link=r.link||'';
     if(!link)throw new Error(r.error||'没有拿到邀请链接');
     await copyText(link);
-    toast('邀请链接已复制 — 对方 POST /api/groups/join 即加入');
+    // 复制的是 bolloon:// 邀请串 — 对方粘进「加群」框(或 POST /api/groups/join)才开出同一个 store
+    toast('邀请串已复制 — 对方粘进「加群」即进同一个群'+(r.abs_link?'；网页版: '+r.abs_link:''));
   }catch(e){toast('邀请失败: '+e.message);}
 }
 async function publishGroup(){
@@ -3289,14 +3333,21 @@ function renderContacts(){
       <div class="ava">👤</div>
       <div class="txt"><b>${escapeHTML(nm||shortDid(did))}</b><small>${escapeHTML(nm?'好友 · 点开看对方智能体':'好友 · 点开看对方智能体')}</small></div>
     </div>`;}).join(''):'<div class="hint">(还没有好友 — 点「＋ 加好友」搜索手机号 / DID / 邮箱)</div>';
-  const reqs=((contacts&&contacts.requests)||[]).filter(r=>String(r.status).toLowerCase()==='pending');
+  const pend=(arr)=>((arr)||[]).filter(r=>String(r.status).toLowerCase()==='pending');
+  const reqIn=pend(contacts&&contacts.requests_in);
+  const reqOut=pend(contacts&&contacts.requests_out);
+  const reqs=reqIn.concat(reqOut);
   $('secFriendReq').style.display=reqs.length?'':'none';
-  rl.innerHTML=reqs.map(r=>`
+  rl.innerHTML=reqIn.map(r=>`
     <div class="item">
       <div class="ava">✉️</div>
       <div class="txt"><b>${escapeHTML(shortDid(r.from_did))}</b><small>请求加好友</small></div>
       <button class="dots" title="接受" onclick="decideFriend('${r.request_id}','accept')">✓</button>
       <button class="dots" title="拒绝" onclick="decideFriend('${r.request_id}','reject')">✕</button>
+    </div>`).join('') + reqOut.map(r=>`
+    <div class="item">
+      <div class="ava">📤</div>
+      <div class="txt"><b>${escapeHTML(shortDid(r.from_did))}</b><small>已发出 · 等对方同意</small></div>
     </div>`).join('');
   const groups=(contactGroups&&contactGroups.groups)||[];
   gl.innerHTML=groups.length?groups.map(g=>`
@@ -3767,7 +3818,10 @@ async function ctAddFriend(contact) {
   try {
     const r = await api("/api/friends/request", { method: "POST", body: JSON.stringify({ contact }) });
     if (r && r.error) throw new Error(r.error);
-    if (st) st.textContent = "✓ 好友申请已发出 (需对方同意)" + ((r && r.detail) ? " · " + r.detail : "");
+    const how = (r && r.delivered)
+      ? "· 已送到对方节点，等它同意"
+      : ((r && r.queued) ? "· 对方现在不可达，已排队（它上线后自动补投）" : "");
+    if (st) st.textContent = "✓ 好友申请已记录 " + how + ((r && r.detail) ? " · " + r.detail : "");
     await ctSearch();
   } catch (e) {
     if (st) st.textContent = "加好友失败: " + String((e && e.message) || e);

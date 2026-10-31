@@ -335,7 +335,7 @@ pub fn spawn_reports(
             st.room_bus.end(&gid, &agent.id);
 
             // 解析控制标记: [[terminate]] 宣布散会 / [[task:id:desc]] 派任务 (纯解析, 不触碰 I/O)
-            let (clean, terminate, tasks) = parse_control(&text);
+            let (clean, terminate, tasks, vetoes) = parse_control(&text);
             let now = chrono::Utc::now().timestamp_millis() as u64;
 
             // 终止: 群回到待命 + 落一条系统消息
@@ -372,25 +372,101 @@ pub fn spawn_reports(
                 }
             }
 
-            // 警长派发的任务: 分给对应成员后台执行（仍是"只汇报不跑进程"）
-            for (tid, desc) in tasks {
-                let target = {
-                    let fs = st.forge.lock().await;
-                    fs.agents
-                        .iter()
-                        .find(|a| a.id == tid || a.name == tid)
-                        .cloned()
-                };
-                if let Some(t) = target {
-                    spawn_reports(
-                        st.clone(),
-                        gid.clone(),
-                        format!("（任务分配）{} 交给你：{}", agent.name, desc),
-                        vec![t],
-                        group_intent(&gid, chrono::Utc::now().timestamp_millis() as u64),
+            // ── 群内任务：**只有警长派单才执行** ──
+            // 2026-10-31 (leo: 跑任务时警长的作用没出现): 以前谁写 [[task:…]] 都直接派下去。
+            // 现在非警长的任务只进"待派"队列并在群里留提案，警长下一轮会在自己的上下文里
+            // 看到这些提案，用 [[task:…]] 正式派单 (或明确否掉)。
+            if !tasks.is_empty() {
+                let sheriff = crate::native::elect_group_sheriff(&st, &gid).await;
+                let is_sheriff = sheriff.as_deref() == Some(agent.id.as_str());
+                // 人类这一轮的命令 ⇒ 直接执行（leo: 用户的命令也要执行, 不能等警长）
+                let human_origin = !trigger.starts_with("（系统）")
+                    && !trigger.starts_with("（任务分配")
+                    && !trigger.starts_with("（任务分配·");
+                let immediate = is_sheriff || human_origin;
+                let now_t = chrono::Utc::now().timestamp_millis() as u64;
+                for (tid, desc) in tasks {
+                    let target = {
+                        let fs = st.forge.lock().await;
+                        fs.agents
+                            .iter()
+                            .find(|a| a.id == tid || a.name == tid)
+                            .cloned()
+                    };
+                    let Some(t) = target else { continue };
+                    {
+                        let mut fs = st.forge.lock().await;
+                        let seq = fs.room_tasks.len() + 1;
+                        fs.room_tasks.push(crate::native::RoomTask {
+                            id: format!("rt-{now_t}-{seq}"),
+                            group_id: gid.clone(),
+                            target: t.id.clone(),
+                            desc: desc.clone(),
+                            proposed_by: agent.id.clone(),
+                            status: if immediate { "dispatched" } else { "proposed" }.into(),
+                            source: if human_origin { "human" } else { "agent" }.into(),
+                            created_at_ms: now_t,
+                        });
+                        if fs.room_tasks.len() > 200 {
+                            let cut = fs.room_tasks.len() - 200;
+                            fs.room_tasks.drain(0..cut);
+                        }
+                        fs.save(&crate::server::data_dir());
+                    }
+                    if immediate {
+                        spawn_reports(
+                            st.clone(),
+                            gid.clone(),
+                            format!("（任务分配·警长派单）{} 交给你：{}", agent.name, desc),
+                            vec![t],
+                            group_intent(&gid, chrono::Utc::now().timestamp_millis() as u64),
+                        );
+                    } else {
+                        // 留提案: 警长下一轮会看到 (见 agent_turn 里的待派队列)
+                        let sh_name = sheriff.clone().unwrap_or_default();
+                        let _ = st.groups.append(
+                            &gid,
+                            &st.identity,
+                            "system",
+                            &agent.id,
+                            &format!(
+                                "（提案）{} 建议把「{}」交给 {} —— 警长 {} 可否掉；{}s 内没人处理就自动执行",
+                                agent.name,
+                                desc,
+                                t.name,
+                                if sh_name.is_empty() { "（未选出）" } else { sh_name.as_str() },
+                                crate::native::ROOM_TASK_AUTO_DISPATCH_MS / 1000
+                            ),
+                            None,
+                            now_t,
+                        );
+                    }
+                }
+            }
+
+            // 警长否决: 把该目标还挂着的提案标成 rejected (真的不执行, 不是嘴上说)
+            if !vetoes.is_empty() {
+                let mut fs = st.forge.lock().await;
+                let mut hit = 0usize;
+                for v in &vetoes {
+                    for t in fs.room_tasks.iter_mut() {
+                        if t.group_id == gid && t.status == "proposed" && (&t.target == v || t.desc.contains(v.as_str())) {
+                            t.status = "rejected".into();
+                            hit += 1;
+                        }
+                    }
+                }
+                if hit > 0 {
+                    fs.save(&crate::server::data_dir());
+                    drop(fs);
+                    let _ = st.groups.append(
+                        &gid, &st.identity, "system", &agent.id,
+                        &format!("{}（警长）否掉了 {} 条待派提案。", agent.name, hit), None, now,
                     );
                 }
             }
+            // 到期的提案自动派下去 (主动性: 警长忙/不在场也不停摆)
+            sweep_due_tasks(st.clone(), gid.clone()).await;
 
             // 监督器: 本轮最后一个完成 && 群仍运行 && 距人类发言已沉默 → 自驱下一轮（无限推进）
             if st.room_bus.group_idle(&gid) {
@@ -417,6 +493,55 @@ pub fn spawn_reports(
 
 /// 监督器续轮: 群仍运行则让候选成员继续推进（警长自驱）。自驱的回合本身结束后会再次被监督器续上,
 /// 形成"无限次"持续推进, 直到某智能体 [[terminate]] 收尾。
+/// 扫描到期的提案任务, 自动派给目标成员后台执行（不收钱、不等警长）。
+///
+/// 主动性规则: 智能体可以自己提议/自己动手; 警长拥有的是**优先派单**和**否决权**,
+/// 而不是唯一的闸门 —— 否则警长一忙, 整场就静止。
+pub async fn sweep_due_tasks(st: AppState, gid: String) {
+    let now = chrono::Utc::now().timestamp_millis() as u64;
+    let mut due: Vec<crate::native::RoomTask> = Vec::new();
+    {
+        let mut fs = st.forge.lock().await;
+        for t in fs.room_tasks.iter_mut() {
+            if t.group_id == gid && crate::native::should_auto_dispatch(t, now) {
+                t.status = "dispatched".into();
+                due.push(t.clone());
+            }
+        }
+        if !due.is_empty() {
+            fs.save(&crate::server::data_dir());
+        }
+    }
+    for t in due {
+        let target = {
+            let fs = st.forge.lock().await;
+            fs.agents.iter().find(|a| a.id == t.target).cloned()
+        };
+        let Some(tg) = target else { continue };
+        let _ = st.groups.append(
+            &gid,
+            &st.identity,
+            "system",
+            "system",
+            &format!(
+                "（自动派单）提案「{}」等待 {}s 无人处理，按主动性规则交给 {}。",
+                t.desc,
+                crate::native::ROOM_TASK_AUTO_DISPATCH_MS / 1000,
+                tg.name
+            ),
+            None,
+            now,
+        );
+        spawn_reports(
+            st.clone(),
+            gid.clone(),
+            format!("（任务分配·提案到期）交给你：{}", t.desc),
+            vec![tg],
+            group_intent(&gid, now),
+        );
+    }
+}
+
 pub async fn continue_round(st: AppState, gid: String) {
     let running = st
         .forge
@@ -438,6 +563,7 @@ pub async fn continue_round(st: AppState, gid: String) {
     }
     let trigger = "（系统）请继续推进本群议题：可继续发言、分配任务，或若已无共识空间则用 [[terminate]] 宣布散会。".to_string();
     let intent = group_intent(&gid, chrono::Utc::now().timestamp_millis() as u64);
+    sweep_due_tasks(st.clone(), gid.clone()).await;
     spawn_reports(st, gid, trigger, targets, intent);
 }
 
@@ -477,6 +603,33 @@ async fn agent_turn(
          - 若你认为本场已无共识空间，可在结尾写上 [[terminate]] 宣布散会\n\
          - 警长可在结尾写上 [[task:智能体id或名字:任务描述]] 把任务分配给某位成员后台执行"
     );
+    // 警长能看到"待派"提案: 这样"别人提、警长批"才真的闭环
+    let (extra, proposals) = {
+        let fs = st.forge.lock().await;
+        let sheriff = fs.sheriff_by_group.get(gid).cloned().unwrap_or_default();
+        if sheriff == agent.id {
+            let pend: Vec<String> = fs
+                .room_tasks
+                .iter()
+                .filter(|t| t.group_id == gid && t.status == "proposed")
+                .map(|t| format!("- {} 想让 {} 做：{}", t.proposed_by, t.target, t.desc))
+                .collect();
+            if pend.is_empty() {
+                (extra, String::new())
+            } else {
+                let mut e = extra;
+                e.push_str("\n\n# 你是本群警长，有待派任务单\n");
+                e.push_str(&pend.join("\n"));
+                e.push_str(
+                    "\n要派就用 [[task:智能体id:任务描述]] 写进回复；不认可的可以明确说不派。",
+                );
+                (e, pend.join(" | "))
+            }
+        } else {
+            (extra, String::new())
+        }
+    };
+    let _ = &proposals;
     let system = crate::native::build_web_system(st, trigger, Some(agent), &extra).await;
     let messages = vec![ChatMessage {
         role: "user".into(),
@@ -487,6 +640,16 @@ async fn agent_turn(
         images: vec![],
     reasoning_content: None,
 }];
+    // 2026-10-31 (leo: 群里说要跑 find 却没真的跑): 群内回合以前只调一次模型 ⇒ **只说不做**。
+    // 现在按运行时设置走 harness + kernel loop：能真读文件、真跑命令、真的自纠多步。
+    // 关掉 `runtime.tools` 才退回"纯发言"那条单次调用 (计量口径不变, 只是不执行)。
+    let rt = {
+        let fs = st.forge.lock().await;
+        fs.room_runtime.clone()
+    };
+    if rt.tools {
+        return crate::native::room_turn_exec(st, gid, agent, trigger, &extra, intent_id).await;
+    }
     // 走**计量咽喉**：一条人类消息触发的多个 agent 调用共用同一个根意图
     crate::native::call_model_metered(
         st,
@@ -569,9 +732,10 @@ pub fn strip_tool_noise(text: &str) -> String {
 }
 
 /// 解析汇报里的控制标记（纯函数）。返回 (去掉标记后的正文, 是否终止, 派发的任务列表)。
-pub fn parse_control(text: &str) -> (String, bool, Vec<(String, String)>) {
+pub fn parse_control(text: &str) -> (String, bool, Vec<(String, String)>, Vec<String>) {
     let mut terminate = false;
     let mut tasks: Vec<(String, String)> = Vec::new();
+    let mut vetoes: Vec<String> = Vec::new();
     let mut out = String::new();
     let mut i = 0usize;
     let len = text.len();
@@ -599,6 +763,11 @@ pub fn parse_control(text: &str) -> (String, bool, Vec<(String, String)>) {
                             if let Some((id, desc)) = spec.split_once(':') {
                                 tasks.push((id.trim().to_string(), desc.trim().to_string()));
                             }
+                        } else if let Some(spec) = inner.strip_prefix("veto:").map(|s| s.trim()) {
+                            // 警长否决: [[veto:<目标 id 或名字>]] ⇒ 该目标待派提案一律不执行
+                            if !spec.is_empty() {
+                                vetoes.push(spec.to_string());
+                            }
                         }
                         i = end + 2;
                     }
@@ -606,7 +775,7 @@ pub fn parse_control(text: &str) -> (String, bool, Vec<(String, String)>) {
             }
         }
     }
-    (out.trim().to_string(), terminate, tasks)
+    (out.trim().to_string(), terminate, tasks, vetoes)
 }
 
 fn short(s: &str) -> String {
@@ -616,6 +785,45 @@ fn short(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 主动性: 提案到期自动派单; 已派发/被否决的不重复派
+    #[test]
+    fn proposals_auto_dispatch_after_window_but_not_before() {
+        let t = crate::native::RoomTask {
+            id: "rt-1".into(),
+            group_id: "g".into(),
+            target: "a1".into(),
+            desc: "跑 ls".into(),
+            proposed_by: "a2".into(),
+            status: "proposed".into(),
+            source: "agent".into(),
+            created_at_ms: 1_000,
+        };
+        assert!(
+            !crate::native::should_auto_dispatch(&t, 1_000 + 59_999),
+            "窗口内先等警长"
+        );
+        assert!(
+            crate::native::should_auto_dispatch(&t, 1_000 + 60_000),
+            "到期必须自动执行, 不能因为警长没空就永远不派"
+        );
+        let mut done = t.clone();
+        done.status = "dispatched".into();
+        assert!(!crate::native::should_auto_dispatch(&done, u64::MAX), "已派发不重复派");
+        let mut rej = t;
+        rej.status = "rejected".into();
+        assert!(!crate::native::should_auto_dispatch(&rej, u64::MAX), "被警长否掉的不执行");
+    }
+
+    /// 警长否决标记: 解析出来并从正文里去掉
+    #[test]
+    fn veto_marker_is_parsed_and_stripped() {
+        let (clean, term, tasks, vetoes) = parse_control("这条先不派 [[veto:agent-002]]");
+        assert!(tasks.is_empty());
+        assert_eq!(vetoes, vec!["agent-002".to_string()]);
+        assert!(!term);
+        assert!(!clean.contains("veto"), "否决标记不该出现在群里: {clean}");
+    }
 
     /// 大群组织：警长 1 + 小组长 5 + 领班 12 = 18 人可直接回复，其余只接任务。
     #[test]
@@ -753,13 +961,13 @@ mod tests {
     /// 控制标记解析: terminate + task
     #[test]
     fn parse_control_markers() {
-        let (clean, term, tasks) =
+        let (clean, term, tasks, _vetoes) =
             parse_control("我觉得可以推进。[[terminate]]");
         assert!(term);
         assert_eq!(clean, "我觉得可以推进。");
         assert!(tasks.is_empty());
 
-        let (clean, term, tasks) = parse_control(
+        let (clean, term, tasks, _vetoes) = parse_control(
             "请你去查一下资料[[task:agent-002:调研竞品定价]]，我同步整理结论。",
         );
         assert!(!term);
@@ -785,7 +993,7 @@ mod tests {
 
     #[test]
     fn parse_control_no_markers() {
-        let (clean, term, tasks) = parse_control("普通发言，没有标记。");
+        let (clean, term, tasks, _vetoes) = parse_control("普通发言，没有标记。");
         assert!(!term);
         assert!(tasks.is_empty());
         assert_eq!(clean, "普通发言，没有标记。");

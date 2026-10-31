@@ -13,7 +13,10 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// 归一化手机号 (去空白 + 保留数字与 +)
 pub fn normalize_phone(phone: &str) -> String {
-    let cleaned: String = phone.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect();
+    let cleaned: String = phone
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '+')
+        .collect();
     if cleaned.starts_with('+') {
         cleaned
     } else if cleaned.len() == 11 && cleaned.starts_with('1') {
@@ -38,8 +41,8 @@ pub fn blind_hash(pepper: &str, phone: &str) -> Result<String, DirectoryError> {
     if norm.len() < 11 {
         return Err(DirectoryError::InvalidPhone);
     }
-    let mut mac = HmacSha256::new_from_slice(pepper.as_bytes())
-        .map_err(|_| DirectoryError::InvalidPhone)?;
+    let mut mac =
+        HmacSha256::new_from_slice(pepper.as_bytes()).map_err(|_| DirectoryError::InvalidPhone)?;
     mac.update(norm.as_bytes());
     Ok(hex::encode(mac.finalize().into_bytes()))
 }
@@ -89,7 +92,11 @@ impl HumanDirectory {
     }
 
     /// 本机查询 (用本机 pepper 重算; 跨机条目要靠 P2P RPC 到对方查)
-    pub fn lookup(&self, pepper: &str, phone: &str) -> Result<Option<&DirectoryEntry>, DirectoryError> {
+    pub fn lookup(
+        &self,
+        pepper: &str,
+        phone: &str,
+    ) -> Result<Option<&DirectoryEntry>, DirectoryError> {
         let blind = blind_hash(pepper, phone)?;
         Ok(self.entries.iter().find(|e| e.blind == blind))
     }
@@ -120,8 +127,15 @@ pub struct FriendRequest {
     /// 请求方自报盲化手机号
     pub from_blind: String,
     pub status: FriendRequestStatus,
+    /// `inbound` 别人发给我 / `outbound` 我发给别人（本机先记一条，投递后由对方同意）
+    #[serde(default = "default_direction")]
+    pub direction: String,
     pub created_at_ms: u64,
     pub decided_at_ms: Option<u64>,
+}
+
+fn default_direction() -> String {
+    "inbound".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,10 +189,57 @@ impl FriendBook {
             from_did: from_did.into(),
             from_blind: from_blind.into(),
             status: FriendRequestStatus::Pending,
+            direction: "inbound".into(),
             created_at_ms: now_ms,
             decided_at_ms: None,
         });
         self.requests.last().unwrap().clone()
+    }
+
+    /// 发出请求时**本机记账** (方向 outbound: UI 不该把它列成"请求加好友"让我点同意)。
+    pub fn outbound(&mut self, to_did: &str, note: &str, now_ms: u64) -> FriendRequest {
+        if let Some(existing) = self
+            .requests
+            .iter()
+            .find(|r| r.from_did == to_did && r.direction == "outbound")
+        {
+            return existing.clone();
+        }
+        let id = format!("fr-{:06}", self.requests.len() + 1);
+        self.requests.push(FriendRequest {
+            request_id: id,
+            from_did: to_did.into(),
+            from_blind: note.into(),
+            status: FriendRequestStatus::Pending,
+            direction: "outbound".into(),
+            created_at_ms: now_ms,
+            decided_at_ms: None,
+        });
+        self.requests.last().unwrap().clone()
+    }
+
+    /// 标记某个 DID 待处理请求的方向（`remote_add_friend` 内部按 inbound 建, 发送方要改 outbound）
+    pub fn mark_direction(&mut self, did: &str, direction: &str) -> usize {
+        let mut n = 0;
+        for r in self.requests.iter_mut() {
+            if r.from_did == did
+                && r.status == FriendRequestStatus::Pending
+                && r.direction != direction
+            {
+                r.direction = direction.to_string();
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// 待处理请求（可按方向筛）
+    pub fn pending_of(&self, direction: &str) -> Vec<FriendRequest> {
+        self.requests
+            .iter()
+            .filter(|r| r.status == FriendRequestStatus::Pending && r.direction == direction)
+            .cloned()
+            .collect()
     }
 
     /// 批准 (幂等拒绝重复决定)
@@ -199,7 +260,11 @@ impl FriendBook {
             .unwrap()
             .from_did
             .clone();
-        if let Some(r) = self.requests.iter_mut().find(|r| r.request_id == request_id) {
+        if let Some(r) = self
+            .requests
+            .iter_mut()
+            .find(|r| r.request_id == request_id)
+        {
             r.status = FriendRequestStatus::Accepted;
             r.decided_at_ms = Some(now_ms);
         }
@@ -220,7 +285,11 @@ impl FriendBook {
         if status != FriendRequestStatus::Pending {
             return Err(FriendRequestError::AlreadyDecided(status));
         }
-        if let Some(r) = self.requests.iter_mut().find(|r| r.request_id == request_id) {
+        if let Some(r) = self
+            .requests
+            .iter_mut()
+            .find(|r| r.request_id == request_id)
+        {
             r.status = FriendRequestStatus::Rejected;
             r.decided_at_ms = Some(now_ms);
         }
@@ -232,164 +301,174 @@ impl FriendBook {
     }
 
     pub fn pending(&self) -> Vec<&FriendRequest> {
-        self.requests.iter().filter(|r| r.status == FriendRequestStatus::Pending).collect()
+        self.requests
+            .iter()
+            .filter(|r| r.status == FriendRequestStatus::Pending)
+            .collect()
     }
 
     pub fn friend_count(&self) -> usize {
         self.friends.len()
     }
+}
+
+// ────────────────────────── 通讯录名片本 (2026-10-28) ──────────────────────────
+//
+// 需求: 「通讯录 —— 顶部搜索框, 搜手机号或名称找出特定的人」。
+//
+// 手机号/邮箱那条路本身就是**跨机**的 (真 HTTP 打到已登记对端的 /api/directory/rpc,
+// 对端用自己的 pepper 查自己的目录), 不需要本结构体参与。
+//
+// 但「**按名称搜**」此前没有任何数据可搜: `FriendBook.friends` 只存裸 DID 字符串。
+// 名称不像联系方式那样能做盲化索引 —— 所以这里新增一张**本机名片本**:
+// DID → 名字的映射, 它就是「这个名字叫什么」的唯一真源 (不是再开的全局 Map /
+// 不是 session singleton)。名字**只在本地**, 不随任何对外协议同步出去。
+
+/// 通讯录里的一张名片
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContactCard {
+    /// 好友 DID (身份唯一锚; 名字可变, DID 不变)
+    pub did: String,
+    /// 备注名 / 昵称 (用户可控)
+    pub name: String,
+    /// 名字来源: `user` 手填 · `directory` 目录命中带来的自报名
+    #[serde(default = "default_card_source")]
+    pub source: String,
+    #[serde(default)]
+    pub added_at_ms: u64,
+}
+
+fn default_card_source() -> String {
+    "user".into()
+}
+
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum ContactError {
+    #[error("DID 与名字都不能为空 (空名字不算搜索结果)")]
+    Empty,
+}
+
+/// 本机名片本 (持久化; 名字的唯一出处)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContactBook {
+    #[serde(default)]
+    entries: Vec<ContactCard>,
+}
+
+/// 名称命中判定 (纯函数): 名字或 DID 的子串, 大小写不敏感; 空查询命中全部。
+pub fn card_matches(card: &ContactCard, query: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    card.name.to_lowercase().contains(&q) || card.did.to_lowercase().contains(&q)
+}
+
+impl ContactBook {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    // ────────────────────────── 通讯录名片本 (2026-10-28) ──────────────────────────
-    //
-    // 需求: 「通讯录 —— 顶部搜索框, 搜手机号或名称找出特定的人」。
-    //
-    // 手机号/邮箱那条路本身就是**跨机**的 (真 HTTP 打到已登记对端的 /api/directory/rpc,
-    // 对端用自己的 pepper 查自己的目录), 不需要本结构体参与。
-    //
-    // 但「**按名称搜**」此前没有任何数据可搜: `FriendBook.friends` 只存裸 DID 字符串。
-    // 名称不像联系方式那样能做盲化索引 —— 所以这里新增一张**本机名片本**:
-    // DID → 名字的映射, 它就是「这个名字叫什么」的唯一真源 (不是再开的全局 Map /
-    // 不是 session singleton)。名字**只在本地**, 不随任何对外协议同步出去。
-
-    /// 通讯录里的一张名片
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct ContactCard {
-        /// 好友 DID (身份唯一锚; 名字可变, DID 不变)
-        pub did: String,
-        /// 备注名 / 昵称 (用户可控)
-        pub name: String,
-        /// 名字来源: `user` 手填 · `directory` 目录命中带来的自报名
-        #[serde(default = "default_card_source")]
-        pub source: String,
-        #[serde(default)]
-        pub added_at_ms: u64,
+    pub fn all(&self) -> &[ContactCard] {
+        &self.entries
     }
 
-    fn default_card_source() -> String {
-        "user".into()
+    pub fn len(&self) -> usize {
+        self.entries.len()
     }
 
-    #[derive(Debug, thiserror::Error, PartialEq)]
-    pub enum ContactError {
-        #[error("DID 与名字都不能为空 (空名字不算搜索结果)")]
-        Empty,
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
-    /// 本机名片本 (持久化; 名字的唯一出处)
-    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-    pub struct ContactBook {
-        #[serde(default)]
-        entries: Vec<ContactCard>,
+    /// 这个 DID 叫啥 (没备注 = None, UI 回退显示短 DID)
+    pub fn name_of(&self, did: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|c| c.did == did)
+            .map(|c| c.name.as_str())
     }
 
-    /// 名称命中判定 (纯函数): 名字或 DID 的子串, 大小写不敏感; 空查询命中全部。
-    pub fn card_matches(card: &ContactCard, query: &str) -> bool {
-        let q = query.trim().to_lowercase();
-        if q.is_empty() {
-            return true;
+    /// 新增或改名 —— 同一 DID 只留一条 (改名不产生重影)
+    pub fn upsert(
+        &mut self,
+        did: &str,
+        name: &str,
+        source: &str,
+        now_ms: u64,
+    ) -> Result<ContactCard, ContactError> {
+        let name = name.trim();
+        if did.trim().is_empty() || name.is_empty() {
+            return Err(ContactError::Empty);
         }
-        card.name.to_lowercase().contains(&q) || card.did.to_lowercase().contains(&q)
+        if let Some(c) = self.entries.iter_mut().find(|c| c.did == did) {
+            c.name = name.to_string();
+            c.source = source.to_string();
+            return Ok(c.clone());
+        }
+        let card = ContactCard {
+            did: did.to_string(),
+            name: name.to_string(),
+            source: source.to_string(),
+            added_at_ms: now_ms,
+        };
+        self.entries.push(card.clone());
+        Ok(card)
     }
 
-    impl ContactBook {
-        pub fn new() -> Self {
-            Self::default()
-        }
-
-        pub fn all(&self) -> &[ContactCard] {
-            &self.entries
-        }
-
-        pub fn len(&self) -> usize {
-            self.entries.len()
-        }
-
-        pub fn is_empty(&self) -> bool {
-            self.entries.is_empty()
-        }
-
-        /// 这个 DID 叫啥 (没备注 = None, UI 回退显示短 DID)
-        pub fn name_of(&self, did: &str) -> Option<&str> {
-            self.entries.iter().find(|c| c.did == did).map(|c| c.name.as_str())
-        }
-
-        /// 新增或改名 —— 同一 DID 只留一条 (改名不产生重影)
-        pub fn upsert(
-            &mut self,
-            did: &str,
-            name: &str,
-            source: &str,
-            now_ms: u64,
-        ) -> Result<ContactCard, ContactError> {
-            let name = name.trim();
-            if did.trim().is_empty() || name.is_empty() {
-                return Err(ContactError::Empty);
-            }
-            if let Some(c) = self.entries.iter_mut().find(|c| c.did == did) {
-                c.name = name.to_string();
-                c.source = source.to_string();
-                return Ok(c.clone());
-            }
-            let card = ContactCard {
-                did: did.to_string(),
-                name: name.to_string(),
-                source: source.to_string(),
-                added_at_ms: now_ms,
-            };
-            self.entries.push(card.clone());
-            Ok(card)
-        }
-
-        pub fn remove(&mut self, did: &str) -> bool {
-            let before = self.entries.len();
-            self.entries.retain(|c| c.did != did);
-            before != self.entries.len()
-        }
-
-        /// 名称/DID 子串搜索 (大小写不敏感; 空串 = 全量)
-        pub fn search(&self, query: &str) -> Vec<ContactCard> {
-            self.entries
-                .iter()
-                .filter(|c| card_matches(c, query))
-                .cloned()
-                .collect()
-        }
+    pub fn remove(&mut self, did: &str) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|c| c.did != did);
+        before != self.entries.len()
     }
 
-    /// 合并视图: 好友 (裸 DID) ∪ 名片本 ⇒ 每个 DID 一条, 名字以名片本为准。
-    ///
-    /// 好友不一定有备注; 没备注的名片 `name` 为空串, 由展示层回退显示短 DID
-    /// (**不在这里伪造一个名字**)。
-    pub fn merge_directory_view(book: &ContactBook, friends: &[String]) -> Vec<ContactCard> {
-        let mut out: Vec<ContactCard> = vec![];
-        for did in friends {
-            if out.iter().any(|c| c.did == *did) {
-                continue;
-            }
-            let known = book.name_of(did);
-            out.push(ContactCard {
-                did: did.clone(),
-                name: known.unwrap_or("").to_string(),
-                source: if known.is_some() { "friend".into() } else { "".into() },
-                added_at_ms: 0,
-            });
-        }
-        // 名片本里有、但还不是好友的 (搜之前先"存个名字"或目录命中过)
-        for c in book.all() {
-            if out.iter().any(|x| x.did == c.did) {
-                continue;
-            }
-            out.push(c.clone());
-        }
-        out
+    /// 名称/DID 子串搜索 (大小写不敏感; 空串 = 全量)
+    pub fn search(&self, query: &str) -> Vec<ContactCard> {
+        self.entries
+            .iter()
+            .filter(|c| card_matches(c, query))
+            .cloned()
+            .collect()
     }
+}
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
+/// 合并视图: 好友 (裸 DID) ∪ 名片本 ⇒ 每个 DID 一条, 名字以名片本为准。
+///
+/// 好友不一定有备注; 没备注的名片 `name` 为空串, 由展示层回退显示短 DID
+/// (**不在这里伪造一个名字**)。
+pub fn merge_directory_view(book: &ContactBook, friends: &[String]) -> Vec<ContactCard> {
+    let mut out: Vec<ContactCard> = vec![];
+    for did in friends {
+        if out.iter().any(|c| c.did == *did) {
+            continue;
+        }
+        let known = book.name_of(did);
+        out.push(ContactCard {
+            did: did.clone(),
+            name: known.unwrap_or("").to_string(),
+            source: if known.is_some() {
+                "friend".into()
+            } else {
+                "".into()
+            },
+            added_at_ms: 0,
+        });
+    }
+    // 名片本里有、但还不是好友的 (搜之前先"存个名字"或目录命中过)
+    for c in book.all() {
+        if out.iter().any(|x| x.did == c.did) {
+            continue;
+        }
+        out.push(c.clone());
+    }
+    out
+}
 
-        const PEPPER: &str = "本机随机pepper";
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PEPPER: &str = "本机随机pepper";
 
     #[test]
     fn normalize_phone_cn() {
@@ -412,20 +491,28 @@ impl FriendBook {
 
     #[test]
     fn blind_hash_rejects_invalid_phone() {
-        assert_eq!(blind_hash(PEPPER, "123").unwrap_err(), DirectoryError::InvalidPhone);
+        assert_eq!(
+            blind_hash(PEPPER, "123").unwrap_err(),
+            DirectoryError::InvalidPhone
+        );
     }
 
     #[test]
     fn directory_publish_lookup_retract() {
         let mut dir = HumanDirectory::new();
-        dir.publish(PEPPER, "13115718038", "Leo", "did:pi:leo", 1).unwrap();
+        dir.publish(PEPPER, "13115718038", "Leo", "did:pi:leo", 1)
+            .unwrap();
         assert_eq!(dir.len(), 1);
         let hit = dir.lookup(PEPPER, "13115718038").unwrap().unwrap();
         assert_eq!(hit.label, "Leo");
         // 重复发布 = 更新
-        dir.publish(PEPPER, "13115718038", "Leo2", "did:pi:leo", 2).unwrap();
+        dir.publish(PEPPER, "13115718038", "Leo2", "did:pi:leo", 2)
+            .unwrap();
         assert_eq!(dir.len(), 1, "同人不重复");
-        assert_eq!(dir.lookup(PEPPER, "13115718038").unwrap().unwrap().label, "Leo2");
+        assert_eq!(
+            dir.lookup(PEPPER, "13115718038").unwrap().unwrap().label,
+            "Leo2"
+        );
         // 撤回
         assert!(dir.retract(PEPPER, "13115718038").unwrap());
         assert!(dir.lookup(PEPPER, "13115718038").unwrap().is_none());
@@ -437,7 +524,10 @@ impl FriendBook {
         let r = book.inbound("did:pi:stranger", "abc", 1).clone();
         assert_eq!(r.status, FriendRequestStatus::Pending);
         // 同人重复请求幂等
-        assert_eq!(book.inbound("did:pi:stranger", "abc", 2).request_id, r.request_id);
+        assert_eq!(
+            book.inbound("did:pi:stranger", "abc", 2).request_id,
+            r.request_id
+        );
         assert_eq!(book.pending().len(), 1);
 
         book.accept(&r.request_id, 3).unwrap();
@@ -461,7 +551,10 @@ impl FriendBook {
     #[tokio::test]
     async fn unknown_request_id_rejected() {
         let mut book = FriendBook::new();
-        assert_eq!(book.accept("nope", 1).unwrap_err(), FriendRequestError::NotFound);
+        assert_eq!(
+            book.accept("nope", 1).unwrap_err(),
+            FriendRequestError::NotFound
+        );
     }
 
     // ── 通讯录名片本 (2026-10-28) ──
@@ -498,10 +591,25 @@ impl FriendBook {
         b.upsert("did:pi:a", "Leo", "user", 1).unwrap();
         b.upsert("did:pi:b", "张三", "user", 2).unwrap();
         assert_eq!(b.search("").len(), 2, "空查询 = 全量");
-        assert!(card_matches(&ContactCard { did: "d".into(), name: "n".into(), source: "u".into(), added_at_ms: 0 }, ""));
+        assert!(card_matches(
+            &ContactCard {
+                did: "d".into(),
+                name: "n".into(),
+                source: "u".into(),
+                added_at_ms: 0
+            },
+            ""
+        ));
 
-        assert_eq!(b.upsert("", "Leo", "user", 3).unwrap_err(), ContactError::Empty);
-        assert_eq!(b.upsert("did:pi:c", "  ", "user", 4).unwrap_err(), ContactError::Empty, "空名字不算结果");
+        assert_eq!(
+            b.upsert("", "Leo", "user", 3).unwrap_err(),
+            ContactError::Empty
+        );
+        assert_eq!(
+            b.upsert("did:pi:c", "  ", "user", 4).unwrap_err(),
+            ContactError::Empty,
+            "空名字不算结果"
+        );
         assert_eq!(b.len(), 2, "拒绝时不落库");
     }
 
@@ -525,12 +633,22 @@ impl FriendBook {
         let named = view.iter().find(|c| c.did == "did:pi:named").unwrap();
         assert_eq!(named.name, "Leo");
         let bare = view.iter().find(|c| c.did == "did:pi:bare").unwrap();
-        assert_eq!(bare.name, "", "没备注的好友名字为空串, 由展示层回退短 DID — 不在这里编名字");
+        assert_eq!(
+            bare.name, "",
+            "没备注的好友名字为空串, 由展示层回退短 DID — 不在这里编名字"
+        );
         // 名片本里不是好友的人也要在通讯录里可见
         b.upsert("did:pi:stranger", "阿强", "directory", 5).unwrap();
         let view2 = merge_directory_view(&b, &friends);
         assert_eq!(view2.len(), 3);
-        assert_eq!(view2.iter().find(|c| c.did == "did:pi:stranger").unwrap().name, "阿强");
+        assert_eq!(
+            view2
+                .iter()
+                .find(|c| c.did == "did:pi:stranger")
+                .unwrap()
+                .name,
+            "阿强"
+        );
     }
 
     #[test]

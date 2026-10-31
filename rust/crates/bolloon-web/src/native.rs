@@ -190,6 +190,144 @@ pub struct GroupOverride {
     pub ping_secs: Option<u64>,
 }
 
+/// 一次"借出算力"的记账条目（本地账本，永远记；经济层开启时同时写贡献账本）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PoolCredit {
+    /// 借用方 DID
+    pub served_to: String,
+    pub group_id: String,
+    /// 累计借出次数
+    pub calls: u32,
+    /// 最近一次时间
+    pub last_at_ms: u64,
+}
+
+/// 群内任务单：**警长派单才真执行**，其他人提的先进"待派"队列等警长。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RoomTask {
+    pub id: String,
+    pub group_id: String,
+    pub target: String,
+    pub desc: String,
+    pub proposed_by: String,
+    /// `proposed` 待派单 / `dispatched` 已执行 / `rejected` 被警长否掉
+    pub status: String,
+    /// 谁发起的: `human` 人类命令(立即执行) / `agent` 智能体提案(可被警长否掉,
+    /// 但**不会因为警长没空就一直不执行** —— 过了等待窗口自动派下去)
+    #[serde(default)]
+    pub source: String,
+    pub created_at_ms: u64,
+}
+
+/// 提案的等待窗口: 警长在这个时间内没否掉/没亲手派, 就自动派下去执行。
+///
+/// 为什么不"警长批了才执行": 群里的智能体要有主动性 (leo 2026-10-31) ——
+/// 警长是**协调者与可否决者**, 不是唯一闸门; 否则警长一忙整场就停摆。
+pub const ROOM_TASK_AUTO_DISPATCH_MS: u64 = 60_000;
+
+/// 一条 `proposed` 任务现在是否该自动派下去（纯函数）
+pub fn should_auto_dispatch(task: &RoomTask, now_ms: u64) -> bool {
+    task.status == "proposed" && now_ms.saturating_sub(task.created_at_ms) >= ROOM_TASK_AUTO_DISPATCH_MS
+}
+
+/// 群内回合的运行时设置（默认**允许真执行**：说了要跑命令就真跑）
+///
+/// 以前群聊只调一次模型（`call_model_metered`），智能体只能说、不能做 ——
+/// 群里会出现"我现在跑 find …"然后什么都没发生。现在这一层把 kernel loop 接进群。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RoomRuntime {
+    /// 群里是否允许工具 + 内核循环（关掉就退回纯发言）
+    pub tools: bool,
+    /// 单回合最多几轮工具循环
+    pub max_turns: u32,
+    /// 单回合最长秒数
+    pub max_secs: u64,
+    /// 单回合工具调用预算
+    pub tool_budget: u32,
+    /// 自纠重试上限
+    pub max_retries: u32,
+}
+
+impl Default for RoomRuntime {
+    fn default() -> Self {
+        Self {
+            tools: true,
+            max_turns: 24,
+            max_secs: 240,
+            tool_budget: 60,
+            max_retries: 2,
+        }
+    }
+}
+
+/// 本机实际监听地址（`BOLLOON_LOCAL_API`，serve_on 启动时注入）—— 同机的另一条路
+fn local_api_base() -> String {
+    std::env::var("BOLLOON_LOCAL_API")
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .unwrap_or_default()
+}
+
+/// 借用请求的签名原文: `pool|from|to|group|agent|sha256(trigger)|ts`
+pub(crate) fn pool_message(
+    from: &str,
+    to: &str,
+    group: &str,
+    agent: &str,
+    trigger: &str,
+    ts_ms: u64,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(trigger.as_bytes());
+    let digest = hex::encode(h.finalize());
+    format!("pool|{from}|{to}|{group}|{agent}|{digest}|{ts_ms}")
+}
+
+/// 每天最多替某个 DID 免费跑几次（超过就如实拒绝，不悄悄扣别人的额度）
+pub const POOL_DAILY_CALLS: u32 = 30;
+
+/// 一条待投递的好友事件 (`kind`: `request` 请求 / `accept` 同意通知)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FriendOutbox {
+    pub to_did: String,
+    pub kind: String,
+    pub request_id: String,
+    #[serde(default)]
+    pub name: String,
+    pub ts_ms: u64,
+    pub sig: String,
+    /// 已知的收件方节点基址 (从对方请求里学到的; 空 = 用 directory_peers 反查)
+    #[serde(default)]
+    pub to_base: String,
+    /// 我方基址 (随请求发出去, 让对方能把「同意」投回来)
+    #[serde(default)]
+    pub from_base: String,
+    /// 备用拨号地址 (本机实际监听地址; 只当"另一条路试一下", 对端 DID 仍会校验)
+    #[serde(default)]
+    pub alt_base: String,
+    #[serde(default)]
+    pub tries: u32,
+    #[serde(default)]
+    pub last_error: String,
+    #[serde(default)]
+    pub created_at_ms: u64,
+}
+
+/// 好友事件的签名原文: `friend|kind|from|to|request_id|name|ts`
+///
+/// 带收件人 did ⇒ 同一份签名重放到别人的节点上无效 (与跨机对话同一条纪律)。
+pub(crate) fn friend_message(
+    from: &str,
+    to: &str,
+    kind: &str,
+    request_id: &str,
+    name: &str,
+    ts_ms: u64,
+    from_base: &str,
+) -> String {
+    format!("friend|{kind}|{from}|{to}|{request_id}|{name}|{ts_ms}|{from_base}")
+}
+
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct NativeState {
     pub agents: Vec<AgentView>,
@@ -202,6 +340,32 @@ pub struct NativeState {
     /// 已关闭的群组 (从商议面板移除; OrbitDB 数据保留, 可重新加入)
     #[serde(default)]
     pub room_closed: Vec<String>,
+    /// 从好友请求里学到的对端节点基址: DID → base（同意时按它回投，不必事先登记）
+    #[serde(default)]
+    pub peer_bases: std::collections::HashMap<String, String>,
+    /// 备用对端基址 (本机监听地址那一路): DID → base
+    #[serde(default)]
+    pub peer_alt_bases: std::collections::HashMap<String, String>,
+    /// 群内 API 共享: group_id → 允许借用的好友节点基址（对方有模型通路时帮本群跑一轮）
+    #[serde(default)]
+    pub group_pools: std::collections::HashMap<String, Vec<String>>,
+    /// 借出算力的**贡献账**: (对方 DID, 群) → 累计次数 (来源可追溯, 不是一句"已共享")
+    #[serde(default)]
+    pub pool_credit: Vec<PoolCredit>,
+    /// 对外借出算力的计数: 借用方 DID → (日期, 当天调用数)。默认每天 30 次, 防被当免费 API 池
+    #[serde(default)]
+    pub pool_calls: std::collections::HashMap<String, (String, u32)>,
+    /// 群内任务单（提案 → 警长派单 → 执行）
+    #[serde(default)]
+    pub room_tasks: Vec<RoomTask>,
+    /// 群内回合的运行时设置（工具/步数/时长/预算）
+    #[serde(default)]
+    pub room_runtime: RoomRuntime,
+    /// 好友请求 / 同意通知的**待投递队列**（对方离线时留在本机, 起来后自动补投）。
+    /// 2026-10-31: 以前 friend_request 只写本机库、什么都不发 ⇒ 加好友是单向的,
+    /// 对方不在线更没有任何留存。现在入队 + 立即试投 + 后台每 20s 重试。
+    #[serde(default)]
+    pub friend_outbox: Vec<FriendOutbox>,
     /// 上次推举的接话人 (group_id → 名字), 让"推举"在面板上留痕
     #[serde(default)]
     pub room_last_speaker: std::collections::HashMap<String, String>,
@@ -1625,13 +1789,24 @@ pub async fn roster_of(st: &AppState, gid: &str) -> RosterTerm {
         let fs = st.forge.lock().await;
         room_candidate_agents(&fs, gid)
     };
+    // 2026-10-31 (leo: 不同群推选的警长全都一样): 以前只按**静态特质分**排 —— 特质跟群无关,
+    // 两个群候选人一致 ⇒ 选出来必然同一个人, "每个群各自走一遍选举"就变成了走过场。
+    // 现在 = 特质分 65% + **本群参与分** 35%（该成员在这个群最近 200 条里的发言条数, 归一化）,
+    // 每个群用自己的历史算 ⇒ 不同群可以选出不同警长。
+    let hist = st.groups.history(gid, 200).unwrap_or_default();
+    let mut speak: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for m in &hist {
+        *speak.entry(m.from.clone()).or_insert(0) += 1;
+    }
+    let max_speak = speak.values().copied().max().unwrap_or(0).max(1) as f64;
     let base = crate::server::data_dir().join("agents");
     let mut scored: Vec<(String, f64)> = agents
         .iter()
         .map(|a| {
             let dir = base.join(&a.id).join("archive");
             let t = bolloon_agent::character::score_agent(&dir);
-            (a.id.clone(), t.weighted_total())
+            let activity = (*speak.get(&a.id).unwrap_or(&0) as f64) / max_speak * 35.0;
+            (a.id.clone(), t.weighted_total() * 0.65 + activity)
         })
         .collect();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -1800,6 +1975,45 @@ pub enum StreamChunk {
 /// 模型可反复调用 read_file/search/execute 等工具, 无工具时自问自答反思, 收尾前用目标 review 对齐用户意图。
 ///
 /// `sink` 为 None 时不外发增量（非流式调用）；`cancel` 置位即中止（工具门 + 轮次边界双检）。
+/// 一轮"带工具"的回合参数（私聊用它默认值；群聊用它把现场/步数上限/经济归属传进来）
+#[derive(Debug, Clone)]
+pub struct TurnOptions {
+    /// 追加在系统提示词后面的现场说明（群聊现场/跨机来访等）
+    pub extra_system: String,
+    /// 直接给的历史（空 ⇒ 按 session_id 自己取，保持私聊语义）
+    pub history: Vec<ChatMessage>,
+    /// 会话 id（也是 chat_runs 里计数/取消的键）
+    pub session_id: String,
+    /// 最多几轮工具循环
+    pub max_turns: u32,
+    /// 自纠重试上限
+    pub max_retries: u32,
+    /// 工具调用预算（次）
+    pub tool_budget: u32,
+    /// 整轮最长秒数
+    pub max_secs: u64,
+    /// 经济层归属（群聊把 intent/群/智能体挂在这里）
+    pub econ: Option<EconCtx>,
+    /// 计量用的表面名
+    pub surface: &'static str,
+}
+
+impl Default for TurnOptions {
+    fn default() -> Self {
+        Self {
+            extra_system: String::new(),
+            history: vec![],
+            session_id: String::new(),
+            max_turns: 120,
+            max_retries: 4,
+            tool_budget: 300,
+            max_secs: 900,
+            econ: None,
+            surface: "web",
+        }
+    }
+}
+
 pub async fn reply_with_agent_stages(
     st: &AppState,
     text: &str,
@@ -1808,9 +2022,33 @@ pub async fn reply_with_agent_stages(
     sink: Option<tokio::sync::mpsc::Sender<StreamChunk>>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<String, String> {
-    let system_prompt = build_web_system(st, text, agent, "").await;
+    let opts = TurnOptions {
+        session_id: session_id.to_string(),
+        ..Default::default()
+    };
+    reply_with_agent_cfg(st, text, agent, opts, sink, cancel).await
+}
+
+/// 真正干活的那一层：`TurnOptions` 决定现场、步数上限、工具预算与经济归属。
+///
+/// 群聊以前走的是**单次 call_model**（只说不做），这里让它也能走同一条
+/// Harness 九步门控 + KernelLoop 的执行通路 —— 说了要跑 `find` 就真的跑。
+pub async fn reply_with_agent_cfg(
+    st: &AppState,
+    text: &str,
+    agent: Option<&AgentView>,
+    opts: TurnOptions,
+    sink: Option<tokio::sync::mpsc::Sender<StreamChunk>>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<String, String> {
+    let session_id = opts.session_id.as_str();
+    let system_prompt = build_web_system(st, text, agent, &opts.extra_system).await;
     // 组装历史 + 当前句：**按会话取**（不同会话/不同智能体可并行，历史不串味）
-    let mut messages: Vec<ChatMessage> = chat_history(st, session_id, text).await;
+    let mut messages: Vec<ChatMessage> = if opts.history.is_empty() {
+        chat_history(st, session_id, text).await
+    } else {
+        opts.history.clone()
+    };
     messages.push(ChatMessage {
         role: "user".into(),
         content: text.to_string(),
@@ -1878,8 +2116,8 @@ pub async fn reply_with_agent_stages(
     //   现在按**当前**开关值传入, 每次请求重建 harness ⇒ 开关即时生效。
     let full_access = st.full_access.load(Ordering::SeqCst);
     let (mut harness, schemas) = bolloon_agent::builtin_tools::builtin_harness(
-        300,
-        900_000,
+        opts.tool_budget,
+        opts.max_secs.saturating_mul(1000),
         cancel.clone(),
         full_access,
     )
@@ -1897,7 +2135,7 @@ pub async fn reply_with_agent_stages(
     });
     let reviewer = Arc::new(LlmGoalReviewer::new(llm.clone(), provider_id.clone(), model.clone()));
     let loop_ = KernelLoop::new(strategy, harness)
-        .with_limits(120, 4)
+        .with_limits(opts.max_turns, opts.max_retries)
         .with_goal_review(reviewer)
         // 真实测量计数: 供 AI 优化闭环读取 `llm.failure_rate`
         .with_health(st.llm_health.clone())
@@ -1922,7 +2160,7 @@ pub async fn reply_with_agent_stages(
     let econ_obs = econ_arc.as_ref().map(|e| {
         bolloon_agent::econ_shadow::EconomyObserver::new(
             e.clone(),
-            bolloon_econ::CallCtx::new(&task_id, "web").with_surface("web"),
+            bolloon_econ::CallCtx::new(&task_id, opts.surface).with_surface(opts.surface),
             provider_id.clone(),
             model.clone(),
         )
@@ -2508,8 +2746,18 @@ pub async fn chat_stop(
 
 // ────────────────────────── room (群聊兼容层) ──────────────────────────
 
-/// GET /api/room → {messages, members, groups, state, active_group_id}
-pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
+/// GET /api/room?group=<id> → {messages, members, groups, state, active_group_id}
+///
+/// 2026-10-31 修 **「群聊面板顶部那排群组标签点了切不过去」**:
+/// 以前这个 handler **不读 `?group=`**，永远回落在落盘的 `active_group`（或第一个群），
+/// 前端 `loadRoom` 又用回包里的 `active_group_id` 覆盖本地选择 ⇒ 点标签等于没点。
+/// 现在：请求里的 group 合法（存在且未关闭）就以它为准，并顺手落盘，
+/// 让其它面板/下一次请求看到的是同一个"当前群"。
+pub async fn room(
+    State(st): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let requested = q.get("group").cloned().unwrap_or_default();
     // 关闭 = 从面板移除 (以前 close 只清 active_group, 列表还在 ⇒ 点 × 像没反应)
     let (closed, active_pref) = {
         let fs = st.forge.lock().await;
@@ -2521,7 +2769,18 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
         .into_iter()
         .filter(|g| !closed.contains(&g.id))
         .collect();
-    let active = if !active_pref.is_empty() && !closed.contains(&active_pref) {
+    let requested_ok = !requested.is_empty()
+        && !closed.contains(&requested)
+        && groups.iter().any(|g| g.id == requested);
+    let active = if requested_ok {
+        if active_pref != requested {
+            // 用户切了群组 ⇒ 落盘, 否则下一次轮询又跳回旧群
+            let mut fs = st.forge.lock().await;
+            fs.active_group = requested.clone();
+            fs.save(&data_dir());
+        }
+        requested
+    } else if !active_pref.is_empty() && !closed.contains(&active_pref) {
         active_pref
     } else {
         groups.first().map(|g| g.id.clone()).unwrap_or_default()
@@ -2620,12 +2879,24 @@ pub async fn room(State(st): State<AppState>) -> Json<serde_json::Value> {
             chosen
         }
     };
+    let tasks_view: Vec<RoomTask> = {
+        let fs = st.forge.lock().await;
+        fs.room_tasks
+            .iter()
+            .filter(|t| t.group_id == active)
+            .rev()
+            .take(20)
+            .cloned()
+            .collect()
+    };
     Json(serde_json::json!({
         "messages": msgs,
         "members": members,
         "groups": group_views,
         "sheriff": sheriff_id,
         "sheriff_name": sheriff_name,
+        // 任务单: proposed=等警长派单, dispatched=已派下去真执行
+        "tasks": tasks_view,
         "state": {
             "running": running || !thinking.is_empty(),
             "turn": 0, "max_turns": 0, "topic": "",
@@ -2770,6 +3041,414 @@ pub async fn elect_group_sheriff(st: &AppState, gid: &str) -> Option<String> {
 
 /// POST /api/room/start —— 真正发起交流: 记录所选参与者, 并让选中的智能体立刻开场 (后台并发)。
 /// 根因: 之前这里只把 `room_running` 置 true, 不发任何消息 ⇒ 点「发起交流」群里毫无反应。
+/// GET /api/room/runtime → 群内回合的运行时设置
+pub async fn room_runtime_get(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    let rt = &fs.room_runtime;
+    Json(serde_json::json!({
+        "ok": true,
+        "runtime": {
+            "tools": rt.tools, "max_turns": rt.max_turns,
+            "max_secs": rt.max_secs, "tool_budget": rt.tool_budget,
+            "max_retries": rt.max_retries,
+        },
+        "note": "tools=true 时群里每个回合都走 harness+kernel loop（能真读文件/跑命令）；false 退回只发言",
+    }))
+}
+
+/// POST /api/room/runtime {tools?, max_turns?, max_secs?, tool_budget?, max_retries?}
+pub async fn room_runtime_set(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    let mut rt = fs.room_runtime.clone();
+    if let Some(b) = req["tools"].as_bool() {
+        rt.tools = b;
+    }
+    if let Some(n) = req["max_turns"].as_u64() {
+        rt.max_turns = n.clamp(1, 200) as u32;
+    }
+    if let Some(n) = req["max_secs"].as_u64() {
+        rt.max_secs = n.clamp(10, 1800);
+    }
+    if let Some(n) = req["tool_budget"].as_u64() {
+        rt.tool_budget = n.clamp(0, 500) as u32;
+    }
+    if let Some(n) = req["max_retries"].as_u64() {
+        rt.max_retries = n.clamp(0, 10) as u32;
+    }
+    fs.room_runtime = rt.clone();
+    fs.save(&data_dir());
+    Json(serde_json::json!({
+        "ok": true,
+        "runtime": {
+            "tools": rt.tools, "max_turns": rt.max_turns,
+            "max_secs": rt.max_secs, "tool_budget": rt.tool_budget,
+            "max_retries": rt.max_retries,
+        }
+    }))
+}
+
+/// **对被借方**: 好友节点把本机的模型通路借给某个群跑一轮
+///
+/// 门禁（缺一不可）：签名、收件人是本机、`from_did` 是本机好友、目标智能体对好友开放、
+/// 当天借用次数未超 `POOL_DAILY_CALLS`。**密钥永远不出本机** —— 对外只回文本结果。
+pub async fn pool_infer(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let from_did = req["from_did"].as_str().unwrap_or_default().trim().to_string();
+    let to_did = req["to_did"].as_str().unwrap_or_default().trim().to_string();
+    let gid = req["group_id"].as_str().unwrap_or_default().trim().to_string();
+    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
+    let trigger = req["trigger"].as_str().unwrap_or_default().to_string();
+    let ts = req["ts_ms"].as_u64().unwrap_or(0);
+    let sig_hex = req["sig"].as_str().unwrap_or_default().trim().to_string();
+    if from_did.is_empty() || sig_hex.is_empty() || ts == 0 || trigger.trim().is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 from_did / trigger / ts_ms / sig" }));
+    }
+    if to_did != st.identity.did.as_str() {
+        return Json(serde_json::json!({ "ok": false, "error": "收件人不是本机 — 拒绝借用" }));
+    }
+    if now_ms().abs_diff(ts) > 180_000 {
+        return Json(serde_json::json!({ "ok": false, "error": "签名时间戳过期 (>180s): 可能被重放" }));
+    }
+    let expect = pool_message(&from_did, &to_did, &gid, &agent_id, &trigger, ts);
+    let ok_sig = hex::decode(&sig_hex)
+        .ok()
+        .and_then(|v| <[u8; 64]>::try_from(v).ok())
+        .zip(bolloon_p2p::identity::pubkey_of_did(&from_did))
+        .map(|(sig, pk)| bolloon_p2p::KeyPair::verify(&pk, expect.as_bytes(), &sig))
+        .unwrap_or(false);
+    if !ok_sig {
+        return Json(serde_json::json!({ "ok": false, "error": "签名验不过 (冒充或内容被改)" }));
+    }
+    if !is_local_friend(&st, &from_did).await {
+        return Json(serde_json::json!({ "ok": false, "error": "不是本机好友, 不借算力" }));
+    }
+    // 智能体: 空 = 用第一个对好友开放的
+    let agent = {
+        let fs = st.forge.lock().await;
+        fs.agents
+            .iter()
+            .find(|a| a.id == agent_id && agent_open_to_friends(&a.id))
+            .or_else(|| fs.agents.iter().find(|a| agent_open_to_friends(&a.id)))
+            .cloned()
+    };
+    let Some(agent) = agent else {
+        return Json(serde_json::json!({ "ok": false, "error": "本机没有对好友开放的智能体" }));
+    };
+    // 当天额度
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    {
+        let mut fs = st.forge.lock().await;
+        let e = fs.pool_calls.entry(from_did.clone()).or_insert((today.clone(), 0));
+        if e.0 != today {
+            *e = (today.clone(), 0);
+        }
+        if e.1 >= POOL_DAILY_CALLS {
+            let left = 0;
+            drop(fs);
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": format!("今天的借用额度用完了 ({POOL_DAILY_CALLS}/天)"),
+                "daily_left": left,
+            }));
+        }
+        e.1 += 1;
+        fs.save(&data_dir());
+    }
+    let sid = format!("pool-{}-{}", short_did(&from_did), gid);
+    let text = reply_with_agent_stages(
+        &st,
+        &trigger,
+        Some(&agent),
+        &sid,
+        None,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+    .await;
+    let left = {
+        let fs = st.forge.lock().await;
+        fs.pool_calls
+            .get(&from_did)
+            .map(|(_, n)| POOL_DAILY_CALLS.saturating_sub(*n))
+            .unwrap_or(POOL_DAILY_CALLS)
+    };
+    match text {
+        Ok(t) => {
+            let credit = record_pool_credit(&st, &from_did, &gid, &agent.id).await;
+            Json(serde_json::json!({
+                "ok": true, "text": t, "agent_id": agent.id, "agent_name": agent.name,
+                "served_by": st.identity.did.as_str(), "daily_left": left,
+                "credit": credit,
+            }))
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("本机也跑不通: {e}") })),
+    }
+}
+
+/// 记一笔"我替谁跑了一次"：本地账本永久累计；经济层开启时再写一条贡献记录。
+///
+/// 为什么要两处都记：本地账本保证**没开经济层也有账**（共享不是白干，能查是谁用的）；
+/// 经济层的 `Contribution{LocalInference}` 才能进入池子/验收流程，两者口径不同不互相替代。
+async fn record_pool_credit(
+    st: &AppState,
+    served_to: &str,
+    gid: &str,
+    agent_id: &str,
+) -> serde_json::Value {
+    let now = now_ms();
+    let calls = {
+        let mut fs = st.forge.lock().await;
+        let e = fs
+            .pool_credit
+            .iter_mut()
+            .find(|c| c.served_to == served_to && c.group_id == gid);
+        let calls = match e {
+            Some(c) => {
+                c.calls += 1;
+                c.last_at_ms = now;
+                c.calls
+            }
+            None => {
+                fs.pool_credit.push(PoolCredit {
+                    served_to: served_to.to_string(),
+                    group_id: gid.to_string(),
+                    calls: 1,
+                    last_at_ms: now,
+                });
+                1
+            }
+        };
+        if fs.pool_credit.len() > 500 {
+            let cut = fs.pool_credit.len() - 500;
+            fs.pool_credit.drain(0..cut);
+        }
+        fs.save(&data_dir());
+        calls
+    };
+    // 经济层贡献账本 (默认关闭 ⇒ 只留本地账, 不假装进池)
+    let mut econ_recorded = false;
+    if let Some(econ) = st.econ.get().filter(|e| e.enabled()) {
+        let c = bolloon_econ::Contribution {
+            id: format!("pool-{now}-{}", &st.identity.did.as_str()[..12.min(st.identity.did.as_str().len())]),
+            contributor: st.identity.did.as_str().to_string(),
+            kind: bolloon_econ::ContributionKind::LocalInference,
+            cash_usd: None,
+            units: Some(1.0),
+            unit_kind: "call".to_string(),
+            state: bolloon_econ::ContributionState::Executed,
+            at: chrono::Utc::now().to_rfc3339(),
+            verified_by: None,
+            evidence_refs: vec![format!("group:{gid}"), format!("agent:{agent_id}")],
+            note: format!("借给 {served_to} 跑了一轮群内推理"),
+        };
+        match econ.contributions().pledge(c) {
+            Ok(_) => econ_recorded = true,
+            Err(e) => tracing::warn!(error = %e, "贡献记录写不进去"),
+        }
+    }
+    serde_json::json!({ "calls_to_peer": calls, "econ_recorded": econ_recorded })
+}
+
+/// GET /api/pool/credit → 本机借出算力的贡献账（谁用过我、多少次、哪个群）
+pub async fn pool_credit_get(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let (rows, econ_on) = {
+        let fs = st.forge.lock().await;
+        (fs.pool_credit.clone(), false)
+    };
+    let econ_on = econ_on || st.econ.get().map(|e| e.enabled()).unwrap_or(false);
+    let total: u32 = rows.iter().map(|r| r.calls).sum();
+    Json(serde_json::json!({
+        "ok": true,
+        "total_calls": total,
+        "by_peer": rows,
+        "econ_enabled": econ_on,
+        "note": if econ_on {
+            "本地账本 + 经济层 Contribution{LocalInference} 双记"
+        } else {
+            "经济层未启用：只记本地账本（没有假装进池子）"
+        },
+    }))
+}
+
+/// GET /api/groups/{id}/pool → 这个群可以借用哪些好友节点的算力
+pub async fn group_pool_get(
+    State(st): State<AppState>,
+    AxumPath(gid): AxumPath<String>,
+) -> Json<serde_json::Value> {
+    let (peers, friends, enabled) = {
+        let fs = st.forge.lock().await;
+        (
+            fs.directory_peers.clone(),
+            fs.friends.friends().to_vec(),
+            fs.group_pools.get(&gid).cloned().unwrap_or_default(),
+        )
+    };
+    let mut candidates = Vec::new();
+    for url in peers {
+        let did = fetch_remote_did(&url).await.unwrap_or_default();
+        candidates.push(serde_json::json!({
+            "url": url.clone(),
+            "did": did.clone(),
+            "is_friend": friends.iter().any(|f| f == &did),
+            "enabled": enabled.contains(&url),
+        }));
+    }
+    Json(serde_json::json!({
+        "ok": true, "group_id": gid, "enabled": enabled, "candidates": candidates,
+        "note": "只有好友节点可借（对方也要求其智能体对好友开放）; 借来的只是模型通路, 密钥不出对方机器",
+    }))
+}
+
+/// POST /api/groups/{id}/pool {urls:[...]} → 设定本群可以借哪几个好友节点
+pub async fn group_pool_set(
+    State(st): State<AppState>,
+    AxumPath(gid): AxumPath<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let urls: Vec<String> = req["urls"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.trim().trim_end_matches('/').to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut fs = st.forge.lock().await;
+    if urls.is_empty() {
+        fs.group_pools.remove(&gid);
+    } else {
+        fs.group_pools.insert(gid.clone(), urls.clone());
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true, "group_id": gid, "enabled": urls }))
+}
+
+/// 群内一轮**真执行**（工具 + kernel loop）。`room_bus` 在 `tools=true` 时走这里。
+///
+/// 取消键 = `room-<gid>`：`room_stop` 一置位，正在跑的工具轮会在下一个边界停下。
+pub async fn room_turn_exec(
+    st: &AppState,
+    gid: &str,
+    agent: &AgentView,
+    trigger: &str,
+    extra: &str,
+    intent_id: &str,
+) -> Result<String, String> {
+    let rt = {
+        let fs = st.forge.lock().await;
+        fs.room_runtime.clone()
+    };
+    let sid = format!("room-{gid}");
+    let cancel = st.chat_runs.begin(&sid);
+    let opts = TurnOptions {
+        extra_system: extra.to_string(),
+        history: vec![],
+        session_id: sid.clone(),
+        max_turns: rt.max_turns,
+        max_retries: rt.max_retries,
+        tool_budget: rt.tool_budget,
+        max_secs: rt.max_secs,
+        econ: Some(EconCtx {
+            intent_id: intent_id.to_string(),
+            group_id: Some(gid.to_string()),
+            agent_id: Some(agent.id.clone()),
+            bill_did: None,
+            surface: "web-room".to_string(),
+        }),
+        surface: "web-room",
+    };
+    let out = reply_with_agent_cfg(st, trigger, Some(agent), opts, None, cancel).await;
+    // **群内 API 共享**: 本机没有可用模型通路时, 借本群配置的好友节点跑一轮
+    // (密钥不出对方机器; 对方也可按天限额拒绝)
+    let out = match out {
+        Ok(t) => Ok(t),
+        Err(e) if looks_like_no_model(&e) => match borrow_from_pool(st, gid, agent, trigger).await {
+            Ok((t, by)) => Ok(format!(
+                "{t}\n\n（本机没有可用模型通路，本轮由好友节点 {} 代跑）",
+                short_did(&by)
+            )),
+            Err(pe) => Err(format!("{e}｜借用好友算力也失败: {pe}")),
+        },
+        Err(e) => Err(e),
+    };
+    match &out {
+        Ok(t) => st.chat_runs.finish(&sid, "Finished", t),
+        Err(e) => st.chat_runs.finish(&sid, "Failed", e),
+    }
+    out
+}
+
+/// 这条错误是不是"本机没有模型通路"（只有这种才值得去借好友算力）
+fn looks_like_no_model(e: &str) -> bool {
+    [
+        "还没有可用的模型供应商",
+        "没装进模型通路",
+        "还没选模型",
+        "API Key",
+        "401",
+    ]
+    .iter()
+    .any(|k| e.contains(k))
+}
+
+/// 按本群配置依次向好友节点借算力; 返回 (文本, 提供方 DID)
+async fn borrow_from_pool(
+    st: &AppState,
+    gid: &str,
+    agent: &AgentView,
+    trigger: &str,
+) -> Result<(String, String), String> {
+    let urls = {
+        let fs = st.forge.lock().await;
+        fs.group_pools.get(gid).cloned().unwrap_or_default()
+    };
+    if urls.is_empty() {
+        return Err("本群还没配置可借用的好友节点（群设置 → 借用好友算力）".to_string());
+    }
+    let our = st.identity.did.as_str().to_string();
+    let mut last = String::new();
+    for url in urls {
+        let peer_did = match fetch_remote_did(&url).await {
+            Some(d) => d,
+            None => {
+                last = format!("{url} 不在线");
+                continue;
+            }
+        };
+        let ts = now_ms();
+        let msg = pool_message(&our, &peer_did, gid, &agent.id, trigger, ts);
+        let sig = hex::encode(st.identity.sign(msg.as_bytes()));
+        let body = serde_json::json!({
+            "from_did": our, "to_did": peer_did, "group_id": gid, "agent_id": agent.id,
+            "trigger": trigger, "ts_ms": ts, "sig": sig,
+        });
+        match peer_json("POST", format!("{}/api/pool/infer", url.trim_end_matches('/')), Some(body)).await {
+            Ok(v) if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) => {
+                let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                if !text.trim().is_empty() {
+                    return Ok((text, peer_did));
+                }
+                last = format!("{url} 回了空内容");
+            }
+            Ok(v) => {
+                last = v
+                    .get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("对端拒绝")
+                    .to_string();
+            }
+            Err(e) => last = format!("{url}: {e}"),
+        }
+    }
+    Err(last)
+}
+
 pub async fn room_start(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
@@ -2859,7 +3538,9 @@ pub async fn room_stop(
 ) -> Json<serde_json::Value> {
     let gid = req["group_id"].as_str().unwrap_or_default().to_string();
     st.forge.lock().await.room_running.insert(gid.clone(), false);
-    Json(serde_json::json!({ "ok": true }))
+    // 正在跑的工具轮立刻停 (以前 stop 只翻一个 flag, 已经在执行的那一轮照跑不误)
+    let stopped = st.chat_runs.cancel(&format!("room-{gid}"));
+    Json(serde_json::json!({ "ok": true, "stopped_turn": stopped }))
 }
 
 /// POST /api/room/close
@@ -4387,17 +5068,29 @@ pub async fn directory_peers_add(
             "error": "缺 url (对端节点基址, 例 http://192.168.1.9:54188)"
         }));
     }
-    let mut fs = st.forge.lock().await;
-    if !fs.directory_peers.iter().any(|p| p == &url) {
-        fs.directory_peers.push(url.clone());
-    }
-    fs.save(&data_dir());
-    // 直连全自动: 新登记的对端, 立刻拉它的 QUIC 地址并喂给直连端点
+    let peers = {
+        let mut fs = st.forge.lock().await;
+        if !fs.directory_peers.iter().any(|p| p == &url) {
+            fs.directory_peers.push(url.clone());
+        }
+        fs.save(&data_dir());
+        fs.directory_peers.clone()
+    };
+    // 直连全自动: 新登记的对端, 拉它的 QUIC 地址并喂给直连端点。
+    // 2026-10-31 实测: 对端**离线**时这一步会把整个请求挂死 (sync 会逐个连所有对端) ⇒
+    // 现在最多等 3s, 超时就先记下地址, 等对端上线再由后台 30s 同步补上。
     #[cfg(feature = "quic-transport")]
     if let Some(q) = &st.quic {
-        crate::native::sync_quic_peers(&st, q).await;
+        let synced = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            crate::native::sync_quic_peers(&st, q),
+        )
+        .await;
+        if synced.is_err() {
+            tracing::info!(%url, "QUIC 同步超时（对端可能离线）—— 地址已登记, 后台会重试");
+        }
     }
-    Json(serde_json::json!({ "added": url, "peers": fs.directory_peers }))
+    Json(serde_json::json!({ "added": url, "peers": peers }))
 }
 
 /// DELETE /api/directory/peers → 移除对端
@@ -5198,8 +5891,62 @@ pub async fn friend_request(
         now_ms(),
     ) {
         Ok(msg) => {
+            // 本机记下"我要加他", 再把**请求本身**投递给对方 (以前漏了这一步 ⇒ 单向)
+            let peer = hit.did.clone().unwrap_or_default();
+            // 方向必须区分: 这是**我发出去的**, 不是别人来加我 (以前混成 inbound,
+            // 发送方自己界面上就出现"请求加好友 ✓/✕", 而收方什么都看不到)。
+            fs.friends.mark_direction(&peer, "outbound");
+            let rid = fs
+                .friends
+                .pending_of("outbound")
+                .iter()
+                .find(|r| r.from_did == peer)
+                .map(|r| r.request_id.clone())
+                .unwrap_or_default();
+            if !peer.is_empty() {
+                let ts = now_ms();
+                let name = st.identity.did.as_str().to_string();
+                let base = crate::server::public_base();
+                let sig = hex::encode(st.identity.sign(
+                    friend_message(
+                        st.identity.did.as_str(),
+                        &peer,
+                        "request",
+                        &rid,
+                        &name,
+                        ts,
+                        &base,
+                    )
+                    .as_bytes(),
+                ));
+                fs.friend_outbox.push(FriendOutbox {
+                    to_did: peer.clone(),
+                    kind: "request".into(),
+                    request_id: rid.clone(),
+                    name,
+                    ts_ms: ts,
+                    sig,
+                    to_base: String::new(),
+                    from_base: base,
+                    alt_base: local_api_base(),
+                    tries: 0,
+                    last_error: String::new(),
+                    created_at_ms: ts,
+                });
+                // 队列不无限增长: 只留最近 500 条
+                if fs.friend_outbox.len() > 500 {
+                    let cut = fs.friend_outbox.len() - 500;
+                    fs.friend_outbox.drain(0..cut);
+                }
+            }
             fs.save(&data_dir());
-            Json(serde_json::json!({ "ok": true, "detail": msg, "hit": hit, "notes": notes }))
+            drop(fs);
+            // 立即试投一次 (对方在线就当场通; 离线就留在队列里, 后台继续补投)
+            let (sent, left) = flush_friend_outbox(&st).await;
+            Json(serde_json::json!({
+                "ok": true, "detail": msg, "hit": hit, "notes": notes,
+                "delivered": sent > 0, "queued": left,
+            }))
         }
         Err(e) => Json(serde_json::json!({ "error": e, "hit": hit, "notes": notes })),
     }
@@ -5212,13 +5959,233 @@ pub async fn friend_accept(
 ) -> Json<serde_json::Value> {
     let rid = req["request_id"].as_str().unwrap_or_default().to_string();
     let mut fs = st.forge.lock().await;
+    // 同意前先记下是谁发的 —— 同意后要把"我也同意了"投递回去, 否则只有我这边是好友
+    let peer = fs
+        .friends
+        .pending()
+        .iter()
+        .find(|r| r.request_id == rid)
+        .map(|r| r.from_did.clone())
+        .unwrap_or_default();
     match fs.friends.accept(&rid, now_ms()) {
         Ok(()) => {
+            if !peer.is_empty() {
+                let ts = now_ms();
+                let name = st.identity.did.as_str().to_string();
+                let base = crate::server::public_base();
+                // 请求是对方投过来的 ⇒ 我们已经从请求里学到它的基址, 直接往那投
+                let to_base = fs.peer_bases.get(&peer).cloned().unwrap_or_default();
+                let peer_alt = fs
+                    .peer_alt_bases
+                    .get(&peer)
+                    .cloned()
+                    .unwrap_or_else(local_api_base);
+                let sig = hex::encode(st.identity.sign(
+                    friend_message(
+                        st.identity.did.as_str(),
+                        &peer,
+                        "accept",
+                        &rid,
+                        &name,
+                        ts,
+                        &base,
+                    )
+                    .as_bytes(),
+                ));
+                fs.friend_outbox.push(FriendOutbox {
+                    to_did: peer,
+                    kind: "accept".into(),
+                    request_id: rid.clone(),
+                    name,
+                    ts_ms: ts,
+                    sig,
+                    to_base,
+                    from_base: base.clone(),
+                    alt_base: peer_alt,
+                    tries: 0,
+                    last_error: String::new(),
+                    created_at_ms: ts,
+                });
+            }
             fs.save(&data_dir());
-            Json(serde_json::json!({ "accepted": rid, "friends": fs.friends.friends() }))
+            let friends = fs.friends.friends().to_vec();
+            drop(fs);
+            let (sent, left) = flush_friend_outbox(&st).await;
+            Json(serde_json::json!({
+                "accepted": rid, "friends": friends,
+                "notified": sent > 0, "queued": left,
+            }))
         }
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
+}
+
+/// **对端收件箱**: 收好友请求 / 同意通知 (对方离线时由它重投到这里)
+///
+/// 安全: 必须由 `from_did` 私钥签名, 签名覆盖 收件人 did ⇒ 不可冒充、不可重放到别人节点。
+pub async fn friend_inbox(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let from_did = req["from_did"].as_str().unwrap_or_default().trim().to_string();
+    let to_did = req["to_did"].as_str().unwrap_or_default().trim().to_string();
+    let kind = req["kind"].as_str().unwrap_or_default().trim().to_string();
+    let rid = req["request_id"].as_str().unwrap_or_default().to_string();
+    let name = req["name"].as_str().unwrap_or_default().to_string();
+    let ts = req["ts_ms"].as_u64().unwrap_or(0);
+    let sig_hex = req["sig"].as_str().unwrap_or_default().trim().to_string();
+    // 对方节点基址: 有了它,"同意"才投得回去 (不必事先互登记)
+    let from_base = req["from_base"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let alt_base = req["alt_base"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    if from_did.is_empty() || sig_hex.is_empty() || ts == 0 {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 from_did / ts_ms / sig" }));
+    }
+    if to_did != st.identity.did.as_str() {
+        return Json(serde_json::json!({ "ok": false, "error": "收件人不是本机 — 拒绝" }));
+    }
+    // 离线留存 ⇒ 允许迟到, 但给出窗口: 不接受未来 1h 之外, 也不接受 14 天之前
+    let now = now_ms();
+    if ts > now + 3_600_000 || now.saturating_sub(ts) > 14 * 24 * 3_600_000 {
+        return Json(serde_json::json!({ "ok": false, "error": "签名时间戳超出窗口 (重放?)" }));
+    }
+    let expect = friend_message(&from_did, &to_did, &kind, &rid, &name, ts, &from_base);
+    let ok_sig = hex::decode(&sig_hex)
+        .ok()
+        .and_then(|v| <[u8; 64]>::try_from(v).ok())
+        .zip(bolloon_p2p::identity::pubkey_of_did(&from_did))
+        .map(|(sig, pk)| bolloon_p2p::KeyPair::verify(&pk, expect.as_bytes(), &sig))
+        .unwrap_or(false);
+    if !ok_sig {
+        return Json(serde_json::json!({ "ok": false, "error": "签名验不过 (冒充或内容被改)" }));
+    }
+    let mut fs = st.forge.lock().await;
+    // 记住对方基址 (同 DID 只留一个; 之后「同意」就按它回投)
+    if !from_base.is_empty() {
+        fs.peer_bases.insert(from_did.clone(), from_base.clone());
+        if !fs.directory_peers.iter().any(|p| p == &from_base) {
+            fs.directory_peers.push(from_base.clone());
+        }
+    }
+    if !alt_base.is_empty() {
+        fs.peer_alt_bases.insert(from_did.clone(), alt_base.clone());
+    }
+    match kind.as_str() {
+        "request" => {
+            let r = fs.friends.inbound(&from_did, &name, now);
+            fs.save(&data_dir());
+            Json(serde_json::json!({
+                "ok": true, "kind": "request", "request_id": r.request_id,
+                "status": format!("{:?}", r.status),
+            }))
+        }
+        "accept" => {
+            // 对方同意了我的请求 ⇒ 我这边也直接成为好友 (闭环的另一半)
+            let mine = fs
+                .friends
+                .pending_of("outbound")
+                .iter()
+                .find(|r| r.from_did == from_did)
+                .map(|r| r.request_id.clone());
+            let Some(mine) = mine else {
+                // 我没发过请求 (或已经处理过) —— 幂等, 不当作错误
+                return Json(serde_json::json!({
+                    "ok": true, "kind": "accept", "already_friends": true,
+                    "note": "本机没有来自该 DID 的待处理请求 (可能早已是好友)",
+                }));
+            };
+            match fs.friends.accept(&mine, now) {
+                Ok(()) => {
+                    fs.save(&data_dir());
+                    Json(serde_json::json!({
+                        "ok": true, "kind": "accept", "mutual": true,
+                        "friends": fs.friends.friends(),
+                    }))
+                }
+                Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+            }
+        }
+        other => Json(serde_json::json!({ "ok": false, "error": format!("未知 kind: {other}") })),
+    }
+}
+
+/// 把待投递的好友事件逐条试投 (对方离线就留着, 20s 后再来)
+///
+/// 网络调用**不持锁**: 先取快照, 投完再回写。
+pub async fn flush_friend_outbox(st: &AppState) -> (usize, usize) {
+    let pending: Vec<FriendOutbox> = {
+        let fs = st.forge.lock().await;
+        fs.friend_outbox.clone()
+    };
+    if pending.is_empty() {
+        return (0, 0);
+    }
+    let mut sent: Vec<FriendOutbox> = Vec::new();
+    let mut failed: Vec<(String, String)> = Vec::new();
+    for e in pending.iter() {
+        // 已知对方基址就直接探它 (省一次全对端扫描); 探不通再回落 directory_peers
+        let mut resolved = Err(String::new());
+        for cand in [e.to_base.clone(), e.alt_base.clone()] {
+            if cand.is_empty() {
+                continue;
+            }
+            if fetch_remote_did(&cand).await.as_deref() == Some(e.to_did.as_str()) {
+                resolved = Ok(cand);
+                break;
+            }
+        }
+        if resolved.is_err() {
+            resolved = peer_url_for_did(st, &e.to_did).await;
+        }
+        match resolved {
+            Ok(url) => {
+                let body = serde_json::json!({
+                    "from_did": st.identity.did.as_str(), "to_did": e.to_did,
+                    "kind": e.kind, "request_id": e.request_id, "name": e.name,
+                    "ts_ms": e.ts_ms, "sig": e.sig, "from_base": e.from_base, "alt_base": e.alt_base,
+                });
+                match peer_json("POST", format!("{url}/api/friend/inbox"), Some(body)).await {
+                    Ok(v) if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) => {
+                        sent.push(e.clone())
+                    }
+                    Ok(v) => failed.push((
+                        e.request_id.clone(),
+                        v.get("error").and_then(|s| s.as_str()).unwrap_or("对端拒收").to_string(),
+                    )),
+                    Err(err) => failed.push((e.request_id.clone(), err)),
+                }
+            }
+            Err(err) => failed.push((e.request_id.clone(), err)),
+        }
+    }
+    let mut fs = st.forge.lock().await;
+    fs.friend_outbox.retain(|e| {
+        !sent
+            .iter()
+            .any(|s| s.request_id == e.request_id && s.kind == e.kind && s.ts_ms == e.ts_ms)
+    });
+    for (rid, msg) in failed {
+        if let Some(e) = fs
+            .friend_outbox
+            .iter_mut()
+            .find(|e| e.request_id == rid)
+        {
+            e.tries += 1;
+            e.last_error = msg;
+        }
+    }
+    fs.save(&data_dir());
+    let left = fs.friend_outbox.len();
+    (sent.len(), left)
 }
 
 /// POST /api/friends/reject → 拒绝
@@ -5243,8 +6210,14 @@ pub async fn friend_list(State(st): State<AppState>) -> Json<serde_json::Value> 
     Json(serde_json::json!({
         "friends": fs.friends.friends(),
         "requests": fs.friends.requests(),
+        // 方向分开给 (2026-10-31): inbound 才该出现「同意/拒绝」, outbound 只显示"已发出，等对方"。
+        // 以前全混在 requests 里 ⇒ 自己发出去的请求在界面上长得像"别人来加我"。
+        "requests_in": fs.friends.pending_of("inbound"),
+        "requests_out": fs.friends.pending_of("outbound"),
         // 2026-10-28: 名字来自名片本; 没备注的 name 为空串, 展示层回退显示短 DID (不编名字)
         "items": bolloon_agent::contacts::merge_directory_view(&fs.contacts, fs.friends.friends()),
+        // 待投递的好友事件 (对方离线时留在这里, 后台每 20s 重试)
+        "outbox": fs.friend_outbox,
     }))
 }
 
@@ -5264,6 +6237,9 @@ pub async fn contact_list(State(st): State<AppState>) -> Json<serde_json::Value>
         "items": bolloon_agent::contacts::merge_directory_view(&fs.contacts, fs.friends.friends()),
         "friends": fs.friends.friends(),
         "requests": fs.friends.pending(),
+        // 分开给: inbound 才该出现"同意/拒绝"; outbound 只显示"已发出，等对方"
+        "requests_in": fs.friends.pending_of("inbound"),
+        "requests_out": fs.friends.pending_of("outbound"),
     }))
 }
 
@@ -5531,6 +6507,33 @@ pub async fn dream_topic(
 /// 关掉的方式 = 在该智能体目录下放一个 `private.json` 标记 (不猜、不改持久化 schema)。
 fn agent_open_to_friends(id: &str) -> bool {
     !data_dir().join("agents").join(id).join("private.json").exists()
+}
+
+/// GET/POST /api/agents/{id}/friends-open → 这个智能体是否对好友开放（跨机对话 / 借算力共用这一个开关）
+pub async fn agent_friends_open(
+    State(_st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let dir = data_dir().join("agents").join(&id);
+    if !dir.is_dir() {
+        return Json(serde_json::json!({ "ok": false, "error": format!("没有这个智能体: {id}") }));
+    }
+    let mark = dir.join("private.json");
+    let Some(open) = req["open"].as_bool() else {
+        return Json(serde_json::json!({ "ok": true, "open": !mark.exists() }));
+    };
+    let r = if open {
+        std::fs::remove_file(&mark).or_else(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }
+        })
+    } else {
+        std::fs::write(&mark, "{\"private\":true}\n")
+    };
+    match r {
+        Ok(()) => Json(serde_json::json!({ "ok": true, "open": open })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
 }
 
 /// 本机是否把 `did` 当好友 (跨机对话的唯一门禁依据)
