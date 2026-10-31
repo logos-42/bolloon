@@ -7099,6 +7099,17 @@ Kubo 不在时就如实报错（含启动方式），不假装发布成功。
 （改为优先用真实监听地址 `BOLLOON_LOCAL_API`），以及 outbox 里 `alt_base` 语义混用
 （我方备用地址 vs 对端备用拨号拆成 `alt_base` / `to_alt`）。
 
+### 2026-10-31 发布 0.7.5（App + npm，取代 0.7.4）
+
+**0.7.4 的缺陷（自查发现，必须说清）**: npm 0.7.4 已上线，但包内 `bin/bolloon-native-darwin-*`
+还是 0.7.3 的 Rust 构建 ⇒ 装 0.7.4 的人跑 `bolloon --version` 得到 `0.7.3`。
+`npm unpublish 0.7.4` 被 token 策略拒绝（403），所以改用 **0.7.5** 覆盖发布，并把这一漏点做成门：
+`scripts/check-native-artifacts.mjs` 新增「npm 自带 x64/arm64 二进制版本 == npm 版本」检查
+（以前完全没有这条，正是它让 0.7.4 带着旧二进制发出去）。
+
+本版版本声明点：`package.json` / `package-lock.json`(两处) / `rust/Cargo.toml`(workspace) /
+`rust/app-tauri/src-tauri/Cargo.toml` / `tauri.conf.json`，并**重编两个架构的 CLI** 放进 `bin/`。
+
 ### 2026-10-31 发布 0.7.4（App + npm）
 
 leo 要「0.7.3.1」，但四段式不是合法 semver（npm/cargo 都拒）⇒ 确认后发 **0.7.4**。

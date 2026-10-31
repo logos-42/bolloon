@@ -46,6 +46,23 @@ const iosBuild = [...new Set([...pbx.matchAll(/CURRENT_PROJECT_VERSION\s*=\s*([^
 if (iosBuild.length === 1 && Number(iosBuild[0]) === wantCode) ok('iOS CURRENT_PROJECT_VERSION 与 versionCode 同一整数', `${iosBuild[0]} (= ${wantCode})`);
 else bad('iOS CURRENT_PROJECT_VERSION 与 versionCode 不同一整数', `ios=${iosBuild.join('/')} 期望=${wantCode}`);
 
+// ── ①b 随 npm 分发的 Rust 二进制版本 ────────────────────────────────────────
+// 2026-10-31 实测踩过: package.json 已是 0.7.4, 但 bin/bolloon-native-darwin-* 还是 0.7.3 的构建
+// ⇒ 用户装 0.7.4 得到的 CLI 仍自报 0.7.3 (`bolloon --version`)。bump 版本时**必须重编 CLI**。
+for (const arch of ['x64', 'arm64']) {
+  const bin = path.join(ROOT, 'bin', `bolloon-native-darwin-${arch}`);
+  if (!fs.existsSync(bin)) { bad(`缺 ${arch} 原生二进制`, 'bin/bolloon-native-darwin-' + arch); continue; }
+  const hostArch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  if (arch !== hostArch) { skip(`${arch} 原生二进制版本（本机架构跑不了）`, `spec ${want}`); continue; }
+  try {
+    const out = execFileSync(bin, ['--version'], { encoding: 'utf8', timeout: 15000 }).trim();
+    if (out.includes(want)) ok(`npm 自带的 ${arch} 二进制版本与 npm 对齐`, out);
+    else bad(`npm 自带的 ${arch} 二进制版本不对`, `${out} ≠ ${want}（重编: cargo build --release -p bolloon-cli）`);
+  } catch (e) {
+    bad(`${arch} 原生二进制跑不起来`, String(e.message || e).slice(0, 120));
+  }
+}
+
 // ── ② 产物自检 ──────────────────────────────────────────────────────────────
 const ipa = path.join(ROOT, 'build/ipa/Bolloon-unsigned.ipa');
 const hasIpa = fs.existsSync(ipa);
