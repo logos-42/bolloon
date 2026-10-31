@@ -317,6 +317,31 @@ pub fn spawn_reports(
     targets: Vec<AgentView>,
     intent_id: String,
 ) {
+    // 2026-10-31 实测到的问题: 人类在「开场轮」还没跑完时说话, 忙的成员会被静默跳过 ⇒
+// 那句话只有 transcript 里有、却没人接。现在记下被跳过的人数, 没有人接就在 5s 后补一轮。
+    let busy: Vec<AgentView> = targets
+        .iter()
+        .filter(|a| st.room_bus.is_thinking(&gid, &a.id))
+        .cloned()
+        .collect();
+    if !busy.is_empty() {
+        let st_r = st.clone();
+        let gid_r = gid.clone();
+        let trigger_r = trigger.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let still: Vec<AgentView> = busy
+                .into_iter()
+                .filter(|a| !st_r.room_bus.is_thinking(&gid_r, &a.id))
+                .collect();
+            if still.is_empty() {
+                return;
+            }
+            tracing::info!(group = %gid_r, n = still.len(), "开场轮忙 ⇒ 5s 后补派这几位接话");
+            let intent = group_intent(&gid_r, chrono::Utc::now().timestamp_millis() as u64);
+            spawn_reports(st_r, gid_r, trigger_r, still, intent);
+        });
+    }
     for agent in targets {
         let st = st.clone();
         let gid = gid.clone();

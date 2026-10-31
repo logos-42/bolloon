@@ -7063,6 +7063,12 @@ B 离线时 A 发请求 → `requests_out` 1 条（留存）→ B 上线后 **14
 ② 收件方根本不知道请求方节点地址 ⇒ 同意投不回去。现在请求体带 `from_base`（对外基址，
 参与签名）+ `alt_base`（本机实际监听地址，仅当备用拨号目标、仍校验 DID），收方学到后按它回投。
 
+**真 App 验收（群内真的会执行工具）**: 把随机串只写进 `/tmp/bolloon-group-exec-proof.txt`
+（提示词里不出现），让群里跑 `cat` —— 真 App 里两个智能体都回了 `PROOF-…` + `[exit 0]`，
+`/api/room/runtime` tools=true、`/api/pool/credit` 正常返回、`/api/friends` 有
+`requests_in/requests_out/outbox`。同时发现并修掉：人类在开场轮未跑完时说话，忙的成员会被
+**静默跳过** ⇒ 现在 5s 后补派一轮。
+
 **门禁**: `cargo test -p bolloon-web --lib` **62/62**（含 `room_runtime_and_friend_inbox_gates`）
 **门禁**: `cargo test -p bolloon-llm --lib` **58/58** · `cargo test -p bolloon-agent --lib` **432/432** ·
 `cargo check --workspace --all-targets` 0 错 · `cargo clippy -p bolloon-llm --all-targets` 0 警告。
