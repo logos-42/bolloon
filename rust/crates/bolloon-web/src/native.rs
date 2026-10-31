@@ -289,6 +289,15 @@ pub const POOL_DAILY_CALLS: u32 = 30;
 /// 本机同时跑的任务超过这个数就当"在峰值"，不再外借算力
 pub const POOL_MAX_CONCURRENT: usize = 2;
 
+/// 我今天最多能替 `peer` 跑几次（纯函数，便于验证互惠规则）。
+///
+/// 规则（leo: 池子是"峰值用不完的给别人、别人以后也分给自己"）：
+/// 基础 `POOL_DAILY_CALLS`；我欠对方多少次（借过 − 已还）× 2 就是加成，最多 5 倍封顶。
+pub fn pool_allowance(base: u32, borrowed: u32, served: u32) -> u32 {
+    let owed = borrowed.saturating_sub(served);
+    base + (owed * 2).min(base * 4)
+}
+
 /// 一条待投递的好友事件 (`kind`: `request` 请求 / `accept` 同意通知)
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FriendOutbox {
@@ -3171,9 +3180,7 @@ pub async fn pool_infer(
             .filter(|c| c.served_to == from_did)
             .map(|c| c.calls)
             .sum::<u32>();
-        // 互惠: 我曾向他借过、还没还够的，每次多给 2 次额度（上限 base 的 5 倍）
-        let owed = borrowed.saturating_sub(served);
-        let cap = POOL_DAILY_CALLS + (owed * 2).min(POOL_DAILY_CALLS * 4);
+        let cap = pool_allowance(POOL_DAILY_CALLS, borrowed, served);
         let e = fs.pool_calls.entry(from_did.clone()).or_insert((today.clone(), 0));
         if e.0 != today {
             *e = (today.clone(), 0);
@@ -7738,5 +7745,20 @@ mod tests {
         let mut seqs: Vec<u64> = handles.into_iter().map(|hd| hd.join().unwrap()).collect();
         seqs.sort_unstable();
         assert_eq!(seqs, (1..=24).collect::<Vec<_>>());
+    }
+}
+
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    /// 互惠规则: 没借过 = 基础额度; 借过没还 = 加额度; 加成有上限
+    #[test]
+    fn allowance_grows_with_unrepaid_borrowing_and_caps() {
+        assert_eq!(pool_allowance(30, 0, 0), 30, "谁也没欠谁 ⇒ 基础 30");
+        assert_eq!(pool_allowance(30, 5, 2), 36, "欠 3 次 ⇒ +6");
+        assert_eq!(pool_allowance(30, 2, 5), 30, "还多了不加额度");
+        assert_eq!(pool_allowance(30, 100, 0), 150, "加成封顶 4×base");
     }
 }
