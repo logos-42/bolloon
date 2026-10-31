@@ -6971,6 +6971,11 @@ assistant 回音拼回 `messages` 就 `continue` 再问，**请求以 assistant 
   加载时用 `GET /api/permission` 回填勾选状态 —— 因为值已落盘，所以"开关默认开着、且记住上次"。
   取消的是**工具开关页面**（设置页的「工具开关」入口 + 弹窗里逐项勾选的 `#toolList`）：
   工具默认全部授予，不再需要逐项打勾（弹窗只留「添加图片」）。
+  **真 App 验收（重启新 bundle 后，浏览器实测）**: `#clarityToggleSlot` 在、`checked=true`；
+  点开关本体 ⇒ `POST /api/permission` 立即改、`permission.json` 同步变（再点回 true）；
+  `#settingsToolsBtn` / `#toolList` 均不存在、"＋" 按钮 title 变为「添加图片」；
+  点消息复制 ⇒ 图标换对勾 + `.copied` + title「已复制」，1.2s 复原；
+  换智能体落在它的**最近**会话，聊天区滚到 300 后切走再切回仍是 300（不再跳到底）。
   **语义提醒**: `full_access=true` 在 Rust 侧同样会跳过 shell 的命令白名单与 denylist
   （`shell_tool::precheck` 的 bypass 分支）—— 这是「完全访问」本来的定义；敏感凭据路径
   （`.env` / `*.pem` / `.bolloon/{identity,llm-config,…}`）仍由执行器硬边界拦住。
