@@ -288,79 +288,103 @@ impl Harness {
 
         // 2. permission：默认只放行 default_allowed；高风险工具须**显式授权**才能过
         //    + A 类安全紧急控制 (emergency_stop / revoked_tools) 经独立安全路径, 可覆盖任务级快照
-        {
-            let snap = self.config.as_ref().map(|v| v.read().unwrap().clone());
-            if let Some(snap) = snap.as_ref() {
-                if snap.config.safety.emergency_stop {
-                    let denial = Denial {
-                        reason: "emergency_stop 已生效：所有工具调用被拒".into(),
-                        tool: call.name.clone(),
-                        effect: def.effect,
-                        policy: "safety.emergency_stop".into(),
-                    };
-                    self.record_event(GateEvent::Denied {
-                        tool: call.name.clone(),
-                        reason: denial.reason.clone(),
-                        call_id: call.id.clone(),
-                    })
-                    .await;
-                    return GateOutcome {
-                        call_id: call.id.clone(),
-                        tool: call.name.clone(),
-                        denied: Some(denial),
-                        result: None,
-                        elapsed_ms: started.elapsed().as_millis() as u64,
-                    };
-                }
-                if snap
-                    .config
-                    .safety
-                    .revoked_tools
-                    .iter()
-                    .any(|t| t == &call.name)
-                {
-                    let denial = Denial {
-                        reason: format!("工具 {} 已被配置撤销", call.name),
-                        tool: call.name.clone(),
-                        effect: def.effect,
-                        policy: "safety.revoked".into(),
-                    };
-                    self.record_event(GateEvent::Denied {
-                        tool: call.name.clone(),
-                        reason: denial.reason.clone(),
-                        call_id: call.id.clone(),
-                    })
-                    .await;
-                    return GateOutcome {
-                        call_id: call.id.clone(),
-                        tool: call.name.clone(),
-                        denied: Some(denial),
-                        result: None,
-                        elapsed_ms: started.elapsed().as_millis() as u64,
-                    };
-                }
+        //    + **受治理配置的工具白名单** (`safety.granted_tools`) 也在这里生效 ——
+        //      2026-10-31 之前 `RuntimePolicy::effective_granted` 只有单测在调, 生产路径
+        //      根本没人用 ⇒ 在配置里写 granted_tools 等于没写。现在 permission 门用它算
+        //      有效授予集合: 配置非空 ⇒ 以配置为准 (覆盖底座授予), 再减去 revoked_tools。
+        let snap = self.config.as_ref().map(|v| v.read().unwrap().clone());
+        if let Some(snap) = snap.as_ref() {
+            if snap.config.safety.emergency_stop {
+                let denial = Denial {
+                    reason: "emergency_stop 已生效：所有工具调用被拒".into(),
+                    tool: call.name.clone(),
+                    effect: def.effect,
+                    policy: "safety.emergency_stop".into(),
+                };
+                self.record_event(GateEvent::Denied {
+                    tool: call.name.clone(),
+                    reason: denial.reason.clone(),
+                    call_id: call.id.clone(),
+                })
+                .await;
+                return GateOutcome {
+                    call_id: call.id.clone(),
+                    tool: call.name.clone(),
+                    denied: Some(denial),
+                    result: None,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                };
+            }
+            if snap
+                .config
+                .safety
+                .revoked_tools
+                .iter()
+                .any(|t| t == &call.name)
+            {
+                let denial = Denial {
+                    reason: format!("工具 {} 已被配置撤销", call.name),
+                    tool: call.name.clone(),
+                    effect: def.effect,
+                    policy: "safety.revoked".into(),
+                };
+                self.record_event(GateEvent::Denied {
+                    tool: call.name.clone(),
+                    reason: denial.reason.clone(),
+                    call_id: call.id.clone(),
+                })
+                .await;
+                return GateOutcome {
+                    call_id: call.id.clone(),
+                    tool: call.name.clone(),
+                    denied: Some(denial),
+                    result: None,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                };
             }
         }
-        if !def.default_allowed && !self.granted.lock().await.contains(&call.name) {
-            let denial = Denial {
-                reason: format!("工具 {} 非默认允许（effect={:?}），需显式授权", call.name, def.effect),
-                tool: call.name.clone(),
-                effect: def.effect,
-                policy: "permission".into(),
+        if !def.default_allowed {
+            // 有效授予集合 = 配置白名单(非空时) 或 底座授予, 再实时减去撤销项。
+            let base: Vec<String> = self.granted.lock().await.iter().cloned().collect();
+            let allowed: HashSet<String> = match snap.as_ref() {
+                Some(s) => RuntimePolicy::effective_granted(s, &base),
+                None => base.into_iter().collect(),
             };
-            self.record_event(GateEvent::Denied {
-                tool: call.name.clone(),
-                reason: denial.reason.clone(),
-                call_id: call.id.clone(),
-            })
-            .await;
-            return GateOutcome {
-                call_id: call.id.clone(),
-                tool: call.name.clone(),
-                denied: Some(denial),
-                result: None,
-                elapsed_ms: started.elapsed().as_millis() as u64,
-            };
+            if !allowed.contains(&call.name) {
+                let from_config = snap
+                    .as_ref()
+                    .map(|s| !s.config.safety.granted_tools.is_empty())
+                    .unwrap_or(false);
+                let denial = Denial {
+                    reason: if from_config {
+                        format!(
+                            "工具 {} 不在配置白名单 safety.granted_tools 内（effect={:?}）",
+                            call.name, def.effect
+                        )
+                    } else {
+                        format!(
+                            "工具 {} 非默认允许（effect={:?}），需显式授权",
+                            call.name, def.effect
+                        )
+                    },
+                    tool: call.name.clone(),
+                    effect: def.effect,
+                    policy: "permission".into(),
+                };
+                self.record_event(GateEvent::Denied {
+                    tool: call.name.clone(),
+                    reason: denial.reason.clone(),
+                    call_id: call.id.clone(),
+                })
+                .await;
+                return GateOutcome {
+                    call_id: call.id.clone(),
+                    tool: call.name.clone(),
+                    denied: Some(denial),
+                    result: None,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                };
+            }
         }
 
         // 3. policy：注入策略
@@ -582,6 +606,79 @@ mod tests {
             .await;
         let denial = outcome.denied.expect("写工具应被 permission 门拒绝");
         assert_eq!(denial.policy, "permission");
+    }
+
+    /// **配置白名单真生效 (2026-10-31)**: `safety.granted_tools` 以前只有单测在调,
+    /// 生产路径没人读 ⇒ 在配置里写白名单等于没写。现在 permission 门用
+    /// `RuntimePolicy::effective_granted` 算有效集合: 配置非空以配置为准, 再减撤销项。
+    #[tokio::test]
+    async fn config_granted_tools_whitelist_is_enforced() {
+        use bolloon_config::{ConfigSnapshot, ConfigView};
+        use std::sync::{Arc as StdArc, RwLock};
+
+        // ① 配置白名单只给 read_file ⇒ 即便 harness 显式授予了 shell, 也必须被拒
+        let mut cfg = bolloon_config::default_config();
+        cfg.safety.granted_tools = vec!["read_file".into()];
+        let snap = ConfigSnapshot::new(1, cfg, "test", "tester", "白名单只给只读");
+        let view: ConfigView = StdArc::new(RwLock::new(StdArc::new(snap)));
+        let h = Harness::new(
+            registry_with_read_tool().await,
+            Arc::new(EchoExecutor),
+            Budget::new(10, 60_000),
+        )
+        .with_granted(&["read_file", "shell"])
+        .with_config(view);
+        let out = h
+            .gate(ToolCall {
+                id: "c1".into(),
+                name: "shell".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await;
+        let d = out.denied.expect("配置白名单没给 shell ⇒ 必须拒");
+        assert_eq!(d.policy, "permission");
+        assert!(d.reason.contains("granted_tools"), "要如实说是配置白名单挡的: {}", d.reason);
+
+        // ② 配置白名单给了 shell ⇒ 不需要 with_granted 也放行
+        let mut cfg2 = bolloon_config::default_config();
+        cfg2.safety.granted_tools = vec!["shell".into()];
+        let snap2 = ConfigSnapshot::new(2, cfg2, "test", "tester", "白名单给 shell");
+        let view2: ConfigView = StdArc::new(RwLock::new(StdArc::new(snap2)));
+        let h2 = Harness::new(
+            registry_with_read_tool().await,
+            Arc::new(EchoExecutor),
+            Budget::new(10, 60_000),
+        )
+        .with_config(view2);
+        let out2 = h2
+            .gate(ToolCall {
+                id: "c2".into(),
+                name: "shell".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await;
+        assert!(out2.denied.is_none(), "配置白名单给了 shell 就该放行: {:?}", out2.denied);
+
+        // ③ 撤销优先于白名单
+        let mut cfg3 = bolloon_config::default_config();
+        cfg3.safety.granted_tools = vec!["shell".into()];
+        cfg3.safety.revoked_tools = vec!["shell".into()];
+        let snap3 = ConfigSnapshot::new(3, cfg3, "test", "tester", "撤销");
+        let view3: ConfigView = StdArc::new(RwLock::new(StdArc::new(snap3)));
+        let h3 = Harness::new(
+            registry_with_read_tool().await,
+            Arc::new(EchoExecutor),
+            Budget::new(10, 60_000),
+        )
+        .with_config(view3);
+        let out3 = h3
+            .gate(ToolCall {
+                id: "c3".into(),
+                name: "shell".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await;
+        assert_eq!(out3.denied.expect("撤销必须生效").policy, "safety.revoked");
     }
 
     #[tokio::test]

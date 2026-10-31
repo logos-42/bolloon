@@ -298,6 +298,9 @@
   .msg-row.user:hover .msg-actions{display:flex}
   .msg-actions button{display:grid;place-items:center;width:32px;height:32px;padding:0;border-radius:9px;background:transparent;border:1px solid transparent;color:var(--muted)}
   .msg-actions button:hover{background:var(--panel2);border-color:var(--line);color:var(--text)}
+  /* 复制成功: 按钮变对勾并高亮 (1.2s 后复原) */
+  .msg-actions button.copied{color:#3ddc84;border-color:rgba(61,220,132,.45);background:rgba(61,220,132,.10)}
+  .pay-copy.copied{color:#3ddc84;border-color:rgba(61,220,132,.45)}
   .msg-actions svg{width:18px;height:18px}
   .menu{position:fixed;z-index:30;min-width:158px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:5px;box-shadow:0 12px 32px rgba(0,0,0,.28)}
   .menu.hidden{display:none}
@@ -926,7 +929,7 @@
     </div>
     <div id="imgPreview"></div>
     <div class="composer">
-      <button id="toolsBtn" title="添加图片 / 工具">＋</button>
+      <button id="toolsBtn" title="添加图片">＋</button>
       <textarea id="input" placeholder="发送消息；Enter 发送，Shift+Enter 换行"></textarea>
       <button id="editBtn" class="edit-btn" title="编辑输入" aria-label="编辑输入">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -1000,7 +1003,6 @@
   <div class="settings-links">
     <button id="themeBtn" class="mini" title="主题（跟随系统/深/浅）">☾</button>
     <button id="settingsModelBtn" class="mini">模型：<span id="settingsModelLabel">…</span></button>
-    <button id="settingsToolsBtn" class="mini">工具开关</button>
     <button id="settingsUpdateBtn" class="mini">检查更新</button>
   </div>
   <div class="hint" id="settingsUpdateStatus"></div>
@@ -1022,11 +1024,10 @@
 </dialog>
 
 <dialog id="toolsDlg">
-  <h3 style="margin:0 0 6px">添加图片 / 工具</h3>
+  <h3 style="margin:0 0 6px">添加图片</h3>
   <label>图片（最多 4 张，单张 ≤1MB）</label>
   <input type="file" id="imgFile" accept="image/*" multiple />
-  <div class="hint">read / ls 等只读工具默认可用；shell、python.run、mem、tasks 写工具默认开启。插件工具加载后会显示在加号里。</div>
-  <div class="tools" id="toolList"></div>
+  <div class="hint">工具默认全部可用（不再逐项开关）；这里只管图片。</div>
   <div class="row"><button onclick="document.getElementById('toolsDlg').close()">取消</button><button class="primary" id="toolsSave">保存</button></div>
 </dialog>
 
@@ -1222,13 +1223,17 @@ async function decideAuth(id,decision){
   catch(e){alert(e.message);}
 }
 async function boot(){
+  // 2026-10-31 (用户: 页面加载有障碍): 以前 bootstrap→models→phone→avatars 四连串行 await,
+  // 期间整页是空框架(= 看起来卡住)。现在 bootstrap 一到就先画, 其余并行取回再刷一次。
   const j=await api('/api/bootstrap');
   state=j.state; update=j.update;
-  models=await api('/api/models');
-  // 手机号绑定状态 (左侧用户栏要显示"已绑定 / 身份一致")
-  try{state.phone=await api('/api/phone');}catch(_){state.phone={bound:false};}
-  await loadAvatarFamilies();
-  renderAll();
+  models=models||{providers:[],count:0};
+  try{renderAll();}catch(e){console.warn('首屏渲染:',e);}
+  const [m,p]=await Promise.allSettled([api('/api/models'),api('/api/phone')]);
+  if(m.status==='fulfilled'&&m.value)models=m.value;
+  state.phone=(p.status==='fulfilled'&&p.value)?p.value:{bound:false};
+  try{await loadAvatarFamilies();}catch(_){}
+  try{renderAll();}catch(e){console.warn('补齐渲染:',e);}
 }
 
 function renderAll(){ renderUpdate(); renderSidebar(); renderHeader(); renderChat(); renderModel(); renderRoomControls(); }
@@ -1537,6 +1542,8 @@ async function refreshUpdate(){
 
 const iconChat=()=>`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.5-4.5A8 8 0 1 1 21 12z"/></svg>`;
 const iconCopy=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`;
+const iconCheck=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`;
+const iconFail=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>`;
 const iconBranch=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 4-4 4-8 4"/></svg>`;
 const iconShare=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/></svg>`;
 const iconPencil=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`;
@@ -1581,15 +1588,28 @@ function renderHeader(){
 }
 
 function nearBottom(el){return el.scrollHeight-el.scrollTop-el.clientHeight<140;}
+/* 2026-10-31 (用户: 选中智能体会跳转): 每个会话记住自己的滚动位置。
+   以前 renderChat 每次都按"贴底"重画 ⇒ 切会话/切智能体回来时直接跳到底部。 */
+const chatScrollMemo=new Map();
+let lastRenderedSession=null;
 function renderChat(){
   const s=state.sessions.find(x=>x.id===state.active_session_id);
   const chat=$('chat');
   const msgs=(s&&s.messages)||[];
-  const stick=nearBottom(chat);
+  const sameSession=lastRenderedSession===state.active_session_id;
+  const prevTop=chat.scrollTop;
+  // 换会话的那一下: 此刻 DOM 里还是**上一个会话**的内容, 它的 scrollTop 仍然有效 ⇒ 先给它记账
+  if(lastRenderedSession)chatScrollMemo.set(lastRenderedSession,prevTop);
+  const stick=sameSession?nearBottom(chat):false;
   // 当前智能体的头像 (CSS 的 .msg.bot::before 读这个变量)
   const ag=state.agents.find(x=>x.id===state.active_agent_id)||{};
   chat.style.setProperty('--bot-ava',`url("${avatarURL(ag.id||'agent',ag.avatar)}")`);
-  if(!s||msgs.length===0){chat.innerHTML='<div class="empty"><h1>我们要做什么？</h1></div>';return;}
+  if(!s||msgs.length===0){
+    chat.innerHTML='<div class="empty"><h1>我们要做什么？</h1></div>';
+    chatScrollMemo.set(state.active_session_id,0);
+    lastRenderedSession=state.active_session_id;
+    return;
+  }
   chat.innerHTML=msgs.map((m,i)=>{
     const role=m.role==='user'?'user':'bot';
     const body=m.role==='user'?escapeHTML(String(m.text||'').trim()).replace(/\n/g,'<br>'):mdToHTML(m.text);
@@ -1603,26 +1623,63 @@ function renderChat(){
         ${(m.images||[]).map(im=>`<img src="${im}" alt="">`).join('')}
       </div>
       <div class="msg-actions">
-        <button title="复制" aria-label="复制" onclick="copyMessage(${i})">${iconCopy}</button>
+        <button title="复制" aria-label="复制" onclick="copyMessage(${i},this)">${iconCopy}</button>
         <button title="分支" aria-label="分支" onclick="branchMessage(${i})">${iconBranch}</button>
         <button title="分享链接" aria-label="分享链接" onclick="shareMessage(${i})">${iconShare}</button>
         ${edit}${retry}
       </div>
     </div>`;
   }).join('');
+  // 同一会话: 原来贴底就继续贴底, 否则留在原位置; 换会话: 用上次记住的位置, 没记过就看最新
+  const keep=sameSession?prevTop:chatScrollMemo.get(state.active_session_id);
   if(stick)chat.scrollTop=chat.scrollHeight;
+  else if(keep!=null)chat.scrollTop=Math.min(keep,Math.max(0,chat.scrollHeight-chat.clientHeight));
+  else chat.scrollTop=chat.scrollHeight;
+  chatScrollMemo.set(state.active_session_id,chat.scrollTop);
+  lastRenderedSession=state.active_session_id;
 }
+/* 2026-10-31 (用户: 流光渲染很容易卡住): 以前每个增量都 `msg.innerHTML=think+mdToHTML(text)`
+   —— 整块 DOM 重新解析 + 整段 markdown 重排, 长回复是 O(n²), 再叠上整块的流光动画就卡死。
+   现在: ① 增量先进缓冲, 每帧最多画一次 (requestAnimationFrame 合帧);
+        ② 想法块复用节点 + textContent (不走 HTML 解析);
+        ③ 正文只在内容真的变长时重排 markdown。 */
+const _streamBuf=new Map();
+let _streamRaf=0;
 function updateStreamingBubble(index,text,think){
+  _streamBuf.set(index,{text,think});
+  if(_streamRaf)return;
+  _streamRaf=requestAnimationFrame(()=>{
+    _streamRaf=0;
+    const items=[..._streamBuf];
+    _streamBuf.clear();
+    for(const [i,v] of items)paintStreamingBubble(i,v.text,v.think);
+  });
+}
+function paintStreamingBubble(index,text,think){
   const chat=$('chat');
   const row=chat.querySelector(`.msg-row[data-index="${index}"]`);
   if(!row){renderChat();return;}
   const msg=row.querySelector('.msg.bot');
   if(!msg)return;
-  // 想法块随流增长; 贴底时把它滚到底部, 保证眼睛跟得上最新一句
-  const thinkBox=think?`<div class="msg-think">${escapeHTML(think)}</div>`:'';
-  msg.innerHTML=thinkBox+mdToHTML(text);
-  const tb=msg.querySelector('.msg-think');
-  if(tb)tb.scrollTop=tb.scrollHeight;
+  let thinkBox=msg.querySelector(':scope > .msg-think');
+  if(think){
+    if(!thinkBox){
+      thinkBox=document.createElement('div');thinkBox.className='msg-think';
+      msg.insertBefore(thinkBox,msg.firstChild);
+    }
+    if(thinkBox.textContent!==think){thinkBox.textContent=think;thinkBox.scrollTop=thinkBox.scrollHeight;}
+  }
+  let body=msg.querySelector(':scope > .stream-body');
+  if(!body){
+    body=document.createElement('div');body.className='stream-body';
+    // 第一次进流式: 把 renderChat 画出来的空正文/旧节点让位给一个稳定容器, 之后只改它的内容
+    [...msg.childNodes].forEach(n=>{ if(n!==thinkBox&&!(n.tagName==='IMG'))msg.removeChild(n); });
+    msg.appendChild(body);
+  }
+  if(body.dataset.raw!==text){
+    body.dataset.raw=text;
+    body.innerHTML=mdToHTML(text);
+  }
   if(nearBottom(chat))chat.scrollTop=chat.scrollHeight;
 }
 
@@ -1681,20 +1738,17 @@ function renderModel(){
   $('apiKeyInput').placeholder=secretSet?'已保存密钥（留空不修改）':'粘贴 API Key';
   $('baseUrlInput').value='';
   $('baseUrlInput').placeholder=secretSet?'已保存端点（留空不修改）':'例如 https://api.deepseek.com/v1';
-  renderTools();
 }
 
-function renderTools(){
-  const box=$('toolList');
-  box.innerHTML=models.write_tools.map(t=>`
-    <label><input type="checkbox" value="${t}" ${(state.settings.tools||[]).includes(t)?'checked':''}> ${t}</label>`).join('');
-}
 
 function cancelEdit(){editingMessageIndex=null;editingSessionId='';}
 async function pickAgent(id){
   cancelEdit();
   state.active_agent_id=id;
-  let s=state.sessions.find(x=>x.agent_id===id);
+  // 2026-10-31 (用户: 选中智能体会跳转): 以前 `find` 拿数组里第一个会话 —— 往往是最老的那个,
+  // 点一下就像"跳到别的对话"。改成进这个智能体**最近**的会话 (没有才新建)。
+  let s=state.sessions.filter(x=>x.agent_id===id)
+    .sort((a,b)=>(b.created_at_ms||0)-(a.created_at_ms||0))[0];
   if(!s){s=await api('/api/sessions',{method:'POST',body:JSON.stringify({agent_id:id})});state.sessions.push(s);}
   state.active_session_id=s.id;renderSidebar();renderHeader();renderChat();flushQueue();renderSendState();resumeRunning();
 }
@@ -1708,13 +1762,33 @@ async function copyText(text){
   catch(e){
     const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.opacity='0';
     document.body.appendChild(ta);ta.select();
-    try{document.execCommand('copy');}catch(_){}
-    ta.remove();return true;
+    // 2026-10-31: 以前这里不管成没成都 return true ⇒ 「已复制」是假的。
+    // execCommand 在部分 WebView/无焦点窗口里返回 false, 必须如实回传。
+    let ok=false;
+    try{ok=document.execCommand('copy');}catch(_){ok=false;}
+    ta.remove();return ok;
   }
 }
-async function copyMessage(i){
+/** 复制按钮的成功反馈: 图标换成对勾 1.2s 再换回 (2026-10-31 用户: 点了复制没有对勾) */
+function flashCopied(btn,ok,prevHTML){
+  if(!btn)return;
+  btn.classList.toggle('copied',!!ok);
+  btn.innerHTML=ok?iconCheck:iconFail;
+  btn.title=ok?'已复制':'复制失败';
+  clearTimeout(btn._copyTimer);
+  btn._copyTimer=setTimeout(()=>{
+    btn.innerHTML=prevHTML!==undefined?prevHTML:iconCopy;
+    btn.classList.remove('copied');
+    btn.title='复制';
+  },1200);
+}
+async function copyMessage(i,btn){
   const s=state.sessions.find(x=>x.id===state.active_session_id);
-  if(s&&s.messages&&s.messages[i])await copyText(s.messages[i].text||'');
+  const text=(s&&s.messages&&s.messages[i]&&s.messages[i].text)||'';
+  const prev=btn?btn.innerHTML:undefined;
+  const ok=await copyText(text);
+  flashCopied(btn,ok,prev);
+  toast(ok?'已复制':'复制失败，请手动选中后再试');
 }
 function editMessage(i){
   const s=state.sessions.find(x=>x.id===state.active_session_id);
@@ -1864,7 +1938,11 @@ function renderPay(){
       ? `<div>任选一条链转账，转完把交易哈希填到下面：</div>${rows}<div class="hint" style="margin-top:6px">${c.note||''}</div>`
       : `<span class="hint">还没配置收款地址：在 data_dir/pay/config.json 填 crypto.address 或 crypto.chains。</span>`;
     t.querySelectorAll('.pay-copy').forEach(b=>b.onclick=()=>{
-      const a=b.dataset.addr||''; try{navigator.clipboard.writeText(a);toast('地址已复制');}catch(_){toast('复制失败，请手动选中');}
+      const a=b.dataset.addr||''; const label=b.textContent;
+      (async()=>{const ok=await copyText(a);
+        b.textContent=ok?'✓ 已复制':'✗ 失败';b.classList.toggle('copied',ok);
+        setTimeout(()=>{b.textContent=label;b.classList.remove('copied');},1200);
+        toast(ok?'地址已复制':'复制失败，请手动选中');})();
     });
   } else if(payChannel==='paypal'){
     t.innerHTML = c.link
@@ -2284,7 +2362,6 @@ function openSettings(){
 $('account').onclick=openSettings;
 $('settingsBtn').onclick=(e)=>{e.stopPropagation();openSettings();};
 $('settingsModelBtn').onclick=()=>{document.getElementById('profileDlg').close();document.getElementById('modelDlg').showModal();loadModelOptions();};
-$('settingsToolsBtn').onclick=()=>{document.getElementById('profileDlg').close();document.getElementById('toolsDlg').showModal();};
 $('settingsUpdateBtn').onclick=async()=>{
   const b=$('settingsUpdateBtn');
   b.disabled=true;b.textContent='检查中…';
@@ -2360,15 +2437,6 @@ $('modelSave').onclick=async()=>{
   }catch(e){alert(e.message);}
 };
 $('toolsBtn').onclick=()=>document.getElementById('toolsDlg').showModal();
-$('toolsSave').onclick=async()=>{
-  try{
-    const tools=[...document.querySelectorAll('#toolList input:checked')].map(x=>x.value);
-    state.settings=await api('/api/settings',{method:'POST',body:JSON.stringify({
-      provider:state.settings.provider,model:state.settings.model,tools
-    })});
-    document.getElementById('toolsDlg').close();renderModel();
-  }catch(e){alert(e.message);}
-};
 
 // 版本号归一: GitHub tag 是 "v0.6.10", /api/version 回 "0.6.10" — 直接 === 永远不等
 //  (旧实现因此恒判"重启超时", 自动重启这条链是断的)。

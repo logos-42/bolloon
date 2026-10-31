@@ -6947,3 +6947,35 @@ assistant 回音拼回 `messages` 就 `continue` 再问，**请求以 assistant 
   生产路径没人调 ⇒ 配置级白名单对工具门无效。撤销（`revoked_tools`）是另走 harness 独立安全路径，真生效。
 - `rust/app-tauri/src-tauri/Cargo.toml` 仍是 `0.7.1`，包版本走 `tauri.conf.json` 的 `0.7.3-0`；
   两份 `Cargo.lock` 的未暂存改动只是工作区版本 0.7.1→0.7.3 被构建重新生成，无源码语义变化。
+
+#### 2026-10-31 续：配置白名单接线 / 流光卡顿 / 复制对勾 / 完全访问默认开且有记忆
+
+- **配置级工具白名单真生效**（上一轮记的缺口，已补）：`bolloon-harness::Harness::gate` 的
+  permission 步现在用 `bolloon_config::policy::RuntimePolicy::effective_granted` 算有效授予集合 ——
+  配置 `safety.granted_tools` 非空 ⇒ 以配置为准（覆盖底座授予），再实时减去 `revoked_tools`；
+  拒绝原因会如实写「不在配置白名单 safety.granted_tools 内」。新测试
+  `config_granted_tools_whitelist_is_enforced`（白名单只给只读时 shell 即便被 `with_granted`
+  也要拒 / 白名单给了就放行 / 撤销优先），harness 17/17。
+- **流光渲染卡顿**：`updateStreamingBubble` 原先每个增量都 `msg.innerHTML=think+mdToHTML(text)`
+  —— 整块 DOM 重新解析 + 整段 markdown 重排（长回复 O(n²)），再叠整块流光动画就卡死。
+  改成：增量先进缓冲、`requestAnimationFrame` 每帧最多画一次；想法块复用节点 + `textContent`
+  （不走 HTML 解析）；正文只在内容真变时重排 md。
+- **页面加载卡顿**：`boot()` 原先 bootstrap→models→phone→avatars 四连串行 await，期间整页空框架。
+  改成 bootstrap 一到先 `renderAll()`，其余并行 `Promise.allSettled` 取回再刷一次。
+- **复制按钮没有对勾**：`copyMessage` 原先复制完什么都不显示；`copyText` 的回退分支更是
+  **不管成没成都 return true**（「已复制」是假的）。现在 `copyText` 如实回传结果，按钮换成
+  对勾（失败换叉）1.2s 后复原并高亮，同时 toast；钱包地址复制按钮同理。
+- **完全访问默认开 + 记忆**（leo: 默认给到，别每次重开）：`AppState.full_access` 启动时从
+  `~/.bolloon/rust/permission.json` 读，**缺文件/坏文件 ⇒ true**；`POST /api/permission` 落盘
+  （0600 + tmp + 原子 rename）。**Clarity 完全访问开关保留**（leo 明确: clarity 按钮不取消），
+  加载时用 `GET /api/permission` 回填勾选状态 —— 因为值已落盘，所以"开关默认开着、且记住上次"。
+  取消的是**工具开关页面**（设置页的「工具开关」入口 + 弹窗里逐项勾选的 `#toolList`）：
+  工具默认全部授予，不再需要逐项打勾（弹窗只留「添加图片」）。
+  **语义提醒**: `full_access=true` 在 Rust 侧同样会跳过 shell 的命令白名单与 denylist
+  （`shell_tool::precheck` 的 bypass 分支）—— 这是「完全访问」本来的定义；敏感凭据路径
+  （`.env` / `*.pem` / `.bolloon/{identity,llm-config,…}`）仍由执行器硬边界拦住。
+- **侧边栏选中智能体会「跳转」**（用户报）：两处叠加 —— ① `pickAgent` 用 `find` 取该智能体
+  **数组里第一个**会话（往往是最老的那个），点一下就像跳到别的对话；② `renderChat` 每次
+  重画都按「贴底」处理，切会话/切回来直接跳到底部。改成：进入该智能体**最近**的会话
+  （按 `created_at_ms` 降序），并给每个会话记住自己的滚动位置（`chatScrollMemo`）——
+  同一会话贴底就继续贴底、否则留在原位；换会话回到上次的位置，没记录过才看最新。

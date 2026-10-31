@@ -37,6 +37,39 @@ pub fn data_dir() -> std::path::PathBuf {
     bolloon_agent::home::BolloonHome::resolve().root().to_path_buf()
 }
 
+/// 完全访问开关的落盘位置（与其它小型运行态同目录: `~/.bolloon/rust/permission.json`）。
+fn full_access_path() -> std::path::PathBuf {
+    data_dir().join("permission.json")
+}
+
+/// 读完全访问开关。**缺文件 / 坏文件 ⇒ 默认开**（leo 2026-10-31: 默认给到，不要每次重开）。
+fn load_full_access() -> bool {
+    std::fs::read_to_string(full_access_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("full_access").and_then(|b| b.as_bool()))
+        .unwrap_or(true)
+}
+
+/// 落盘（0600 + tmp + 原子 rename，与其它状态文件同口径）。写失败只记日志，不改内存事实。
+fn save_full_access(on: bool) {
+    let p = full_access_path();
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = p.with_extension("json.tmp");
+    if std::fs::write(&tmp, serde_json::json!({ "full_access": on }).to_string()).is_ok() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        }
+        if let Err(e) = std::fs::rename(&tmp, &p) {
+            tracing::warn!("permission.json 落盘失败: {e}");
+        }
+    }
+}
+
 /// 服务状态（从上层注入）
 #[derive(Clone)]
 pub struct AppState {
@@ -128,7 +161,10 @@ impl AppState {
                 MemoryDb::open(dir.join("memory.db").to_str().unwrap_or("memory.db"))
                     .unwrap_or_else(|_| MemoryDb::open(":memory:").expect("内存库")),
             )),
-            full_access: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            full_access: Arc::new(std::sync::atomic::AtomicBool::new(
+                // 2026-10-31 (leo): 默认给到 —— 开关默认开, 且记住上次的选择。
+                load_full_access(),
+            )),
             room_bus: Arc::new(crate::room_bus::RoomBus::default()),
             chat_runs: Arc::new(crate::native::ChatRuns::default()),
             updating: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2281,6 +2317,8 @@ async fn set_permission(
 ) -> Json<serde_json::Value> {
     let on = req.get("full_access").copied().unwrap_or(false);
     st.full_access.store(on, std::sync::atomic::Ordering::SeqCst);
+    // 2026-10-31 (leo): 这个开关必须记得住 —— 以前只存在内存里, 每次启动都回落到默认。
+    save_full_access(on);
     // 开启时: 把已挂起的非敏感授权请求直接放行, 让 agent 立即不被门拦截
     if on {
         let mut fs = st.forge.lock().await;
