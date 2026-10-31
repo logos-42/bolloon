@@ -544,6 +544,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/agents/{id}/portal", get(crate::native::agent_portal))
         .route("/api/agents/{id}/portal/publish", post(crate::native::agent_portal_publish))
         .route("/api/agents/{id}/portal/resolve", get(crate::native::agent_portal_resolve))
+        // 通过门户加好友（门户里的 did/node_base 让"加入别人的智能体圈"不需要先交换地址）
+        .route("/api/portal/follow", post(crate::native::portal_follow))
         .route("/api/room/runtime", get(crate::native::room_runtime_get))
         .route("/api/room/runtime", post(crate::native::room_runtime_set))
                 .route("/api/econ/probe", get(crate::native::econ_probe))
@@ -1330,6 +1332,18 @@ pub(crate) fn public_base() -> String {
         let b = b.trim().trim_end_matches('/').to_string();
         if !b.is_empty() {
             return b;
+        }
+    }
+    // 用**实际监听地址**优先: 只有绑到 0.0.0.0 时 IP 才是不确定的, 这时才去猜 LAN IP。
+    // (2026-10-31 实测: 本机 UDP 探测拿到的是代理的 fake-ip 198.18.0.1, 对端根本拨不通)
+    if let Ok(api) = std::env::var("BOLLOON_LOCAL_API") {
+        let api = api.trim().trim_end_matches('/').to_string();
+        if let Some((host, port)) = api.rsplit_once(':') {
+            if let Some(h) = host.rsplit_once("//").map(|(_, h)| h) {
+                if h != "0.0.0.0" && h != "::" && !h.is_empty() {
+                    return format!("http://{h}:{port}");
+                }
+            }
         }
     }
     let port = std::env::var("BOLLOON_LOCAL_API")

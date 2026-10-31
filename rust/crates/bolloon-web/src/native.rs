@@ -314,9 +314,12 @@ pub struct FriendOutbox {
     /// 我方基址 (随请求发出去, 让对方能把「同意」投回来)
     #[serde(default)]
     pub from_base: String,
-    /// 备用拨号地址 (本机实际监听地址; 只当"另一条路试一下", 对端 DID 仍会校验)
+    /// 我方备用地址 (本机另一条可达路径, 随请求发出去)
     #[serde(default)]
     pub alt_base: String,
+    /// 收件方的备用拨号地址 (从对方请求里学到的; 空 = 不知道)
+    #[serde(default)]
+    pub to_alt: String,
     #[serde(default)]
     pub tries: u32,
     #[serde(default)]
@@ -6018,6 +6021,7 @@ pub async fn friend_request(
                     ts_ms: ts,
                     sig,
                     to_base: String::new(),
+                    to_alt: String::new(),
                     from_base: base,
                     alt_base: local_api_base(),
                     tries: 0,
@@ -6091,8 +6095,9 @@ pub async fn friend_accept(
                     ts_ms: ts,
                     sig,
                     to_base,
+                    to_alt: peer_alt,
                     from_base: base.clone(),
-                    alt_base: peer_alt,
+                    alt_base: local_api_base(),
                     tries: 0,
                     last_error: String::new(),
                     created_at_ms: ts,
@@ -6225,13 +6230,25 @@ pub async fn flush_friend_outbox(st: &AppState) -> (usize, usize) {
     for e in pending.iter() {
         // 已知对方基址就直接探它 (省一次全对端扫描); 探不通再回落 directory_peers
         let mut resolved = Err(String::new());
-        for cand in [e.to_base.clone(), e.alt_base.clone()] {
+        for cand in [e.to_base.clone(), e.to_alt.clone()] {
             if cand.is_empty() {
                 continue;
             }
             if fetch_remote_did(&cand).await.as_deref() == Some(e.to_did.as_str()) {
                 resolved = Ok(cand);
                 break;
+            }
+        }
+        if resolved.is_err() {
+            // 之前失败的旧条目: 只要我们现在**知道**对方基址, 就直接补投, 不再依赖对端登记
+            let known = {
+                let fs = st.forge.lock().await;
+                fs.peer_bases.get(&e.to_did).cloned()
+            };
+            if let Some(b) = known.filter(|b| !b.is_empty()) {
+                if fetch_remote_did(&b).await.as_deref() == Some(e.to_did.as_str()) {
+                    resolved = Ok(b);
+                }
             }
         }
         if resolved.is_err() {
@@ -6636,14 +6653,30 @@ pub async fn agent_portal_publish(
         return Json(serde_json::json!({ "ok": false, "error": format!("没有这个智能体: {id}") }));
     };
     let now = now_ms();
+    // 门户里放**好友 DID**（以及本节点基址）：这样别的智能体解析门户后，
+    // 能直接照着这些 DID 发好友请求，进到同一个智能体群/社交圈（leo 2026-10-31）。
+    let (friend_dids, peer_bases) = {
+        let fs = st.forge.lock().await;
+        (
+            fs.friends.friends().to_vec(),
+            fs.friends
+                .friends()
+                .iter()
+                .filter_map(|d| fs.peer_bases.get(d).map(|b| (d.clone(), b.clone())))
+                .collect::<Vec<(String, String)>>(),
+        )
+    };
     let doc = serde_json::json!({
-        "schema": "bolloon.agent.portal/1",
+        "schema": "bolloon.agent.portal/2",
         "agent_id": a.id,
         "did": a.did,
         "name": a.name,
         "persona": a.persona,
         "owner_did": a.owner_did,
         "node_did": st.identity.did.as_str(),
+        "node_base": crate::server::public_base(),
+        "friend_dids": friend_dids,
+        "friend_bases": peer_bases,
         "updated_at_ms": now,
     });
     let body = serde_json::to_string_pretty(&doc).unwrap_or_default();
@@ -6675,6 +6708,98 @@ pub async fn agent_portal_publish(
         Ok(Err(e)) => Json(serde_json::json!({ "ok": false, "error": e })),
         Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("门户发布线程失败: {e}") })),
     }
+}
+
+/// POST /api/portal/follow {ipns} → 解析某智能体门户，按里面的 DID 发好友请求
+///
+/// 这是"通过门户加入别人的智能体群/社交圈"的入口：门户文档带 `did` + `node_base`，
+/// 所以**不需要事先交换节点地址**，也不用人工转达。
+pub async fn portal_follow(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let ipns = req["ipns"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches("/ipns/")
+        .to_string();
+    if ipns.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 ipns（门户名）" }));
+    }
+    let name_for_task = ipns.clone();
+    let doc = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let path = bolloon_agent::ipfs_tools::resolve_ipns(&name_for_task)?;
+        let cid = path.trim_start_matches("/ipfs/").to_string();
+        let raw = bolloon_agent::ipfs_tools::cat_text(&cid)?;
+        serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| format!("门户文档不是 JSON: {e}"))
+    })
+    .await;
+    let doc = match doc {
+        Ok(Ok(d)) => d,
+        Ok(Err(e)) => return Json(serde_json::json!({ "ok": false, "error": e })),
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("线程失败: {e}") })),
+    };
+    let did = doc["did"].as_str().unwrap_or_default().to_string();
+    if did.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "门户文档里没有 did" }));
+    }
+    if did == st.identity.did.as_str() {
+        return Json(serde_json::json!({ "ok": false, "error": "这是你自己的门户" }));
+    }
+    let node_base = doc["node_base"].as_str().unwrap_or_default().trim_end_matches('/').to_string();
+    let display = doc["name"].as_str().unwrap_or("").to_string();
+    // 本机记一条 outbound + 入队（对方离线也留存）
+    let (rid, ts, sig, base, alt) = {
+        let mut fs = st.forge.lock().await;
+        fs.friends.mark_direction(&did, "outbound");
+        let mut rec = fs.friends.outbound(&did, &display, now_ms());
+        // 若之前已存在 inbound 记录，outbound 会返回它；统一改方向
+        fs.friends.mark_direction(&did, "outbound");
+        rec.direction = "outbound".into();
+        let ts = now_ms();
+        let base = crate::server::public_base();
+        let alt = local_api_base();
+        let sig = hex::encode(st.identity.sign(
+            friend_message(st.identity.did.as_str(), &did, "request", &rec.request_id, display.trim(), ts, &base)
+                .as_bytes(),
+        ));
+        // 从门户学到的地址要记住: 之前失败的旧条目、以后「同意」回投都要用它
+        if !node_base.is_empty() {
+            fs.peer_bases.insert(did.clone(), node_base.clone());
+            if !fs.directory_peers.iter().any(|p| p == &node_base) {
+                fs.directory_peers.push(node_base.clone());
+            }
+            for e in fs.friend_outbox.iter_mut() {
+                if e.to_did == did && e.to_base.is_empty() {
+                    e.to_base = node_base.clone();
+                }
+            }
+        }
+        fs.friend_outbox.push(FriendOutbox {
+            to_did: did.clone(),
+            kind: "request".into(),
+            request_id: rec.request_id.clone(),
+            name: display.clone(),
+            ts_ms: ts,
+            sig,
+            to_base: node_base.clone(),
+            to_alt: String::new(),
+            from_base: base.clone(),
+            alt_base: alt.clone(),
+            tries: 0,
+            last_error: String::new(),
+            created_at_ms: ts,
+        });
+        fs.save(&data_dir());
+        (rec.request_id, ts, String::new(), base, alt)
+    };
+    let _ = (ts, sig, base, alt);
+    let (sent, left) = flush_friend_outbox(&st).await;
+    Json(serde_json::json!({
+        "ok": true, "did": did, "name": display, "request_id": rid,
+        "node_base": node_base, "delivered": sent > 0, "queued": left,
+    }))
 }
 
 /// GET /api/agents/{id}/portal/resolve → 解析门户当前的 IPNS → CID（证明名字还在、指向最新内容）

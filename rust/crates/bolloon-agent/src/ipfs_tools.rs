@@ -27,6 +27,16 @@ fn not_running(e: impl std::fmt::Display) -> String {
     )
 }
 
+/// 把用户输入收拾成安全的 multipart filename：去掉会破坏 body 边界的字符
+/// （`"` 会提前闭合 quoted token；CR/LF 等控制字符会截断 header 行，造成请求体注入）。
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .filter(|c| !c.is_control() && *c != '"')
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 pub fn ipfs_tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
@@ -111,11 +121,12 @@ pub fn ipfs_tool_defs() -> Vec<ToolDef> {
 /// 上传一段文本，返回 CID
 pub fn add_text(content: &str, name: &str) -> Result<String, String> {
     let boundary = "----bolloonipfsboundary7MA4YWxkTrZu0gW";
+    let n = sanitize_filename(name);
     let body = format!(
         "--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{n}\"\r\n\
          Content-Type: application/octet-stream\r\n\r\n{c}\r\n--{b}--\r\n",
         b = boundary,
-        n = name,
+        n = n,
         c = content
     );
     let url = format!("{}/api/v0/add?pin=true&cid-version=1", api_base());
@@ -179,6 +190,16 @@ pub fn publish_ipns(cid: &str, key: &str) -> Result<String, String> {
     Ok(name)
 }
 
+/// 按 CID 读回文本（门户文档这类小 JSON 用）
+pub fn cat_text(cid: &str) -> Result<String, String> {
+    let url = format!("{}/api/v0/cat?arg={}", api_base(), urlencoding::encode(cid));
+    ureq::post(&url)
+        .call()
+        .map_err(not_running)?
+        .into_string()
+        .map_err(|e| format!("读回失败: {e}"))
+}
+
 /// 解析 IPNS 名字 → `/ipfs/<cid>`
 pub fn resolve_ipns(name: &str) -> Result<String, String> {
     let url = format!(
@@ -234,11 +255,12 @@ impl IpfsExecutor {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "data.txt".to_string());
         let boundary = "----bolloonipfsboundary7MA4YWxkTrZu0gW";
+        let n = sanitize_filename(&name);
         let body = format!(
             "--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{n}\"\r\n\
              Content-Type: application/octet-stream\r\n\r\n{c}\r\n--{b}--\r\n",
             b = boundary,
-            n = name,
+            n = n,
             c = content
         );
         let url = format!("{}/api/v0/add?pin=true&cid-version=1", api_base());
@@ -369,9 +391,22 @@ impl IpfsExecutor {
             .map_err(not_running)?
             .into_json()
             .map_err(|e| format!("Kubo 返回不是 JSON: {e}"))?;
-        let obj = &v["Objects"][0];
-        let links = obj["Links"].as_array().cloned().unwrap_or_default();
+        let objects = v.get("Objects").and_then(|o| o.as_array());
+        let links = objects
+            .and_then(|arr| arr.first())
+            .and_then(|obj| obj.get("Links"))
+            .and_then(|l| l.as_array())
+            .cloned()
+            .unwrap_or_default();
         if links.is_empty() {
+            // Kubo 没返回 Objects（CID 不存在/解析失败）→ 如实报错，别假报成「单个文件」
+            if objects.is_none() {
+                let msg = v
+                    .get("Message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("未知错误");
+                return Err(format!("ipfs_ls 失败: {msg}"));
+            }
             return Ok(format!("📄 {cid} 是单个文件，不是目录"));
         }
         let lines: Vec<String> = links

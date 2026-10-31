@@ -7090,6 +7090,15 @@ Kubo 不在时就如实报错（含启动方式），不假装发布成功。
 **Kubo**: 本机从 0.43.0 升到 **0.43.1**（GitHub latest，repo 仍 fs-repo@18 无需迁移），
 升级后门户 publish/resolve 与 `ipfs_cat`/`ipns_resolve` 真机复验通过。
 
+**门户即社交入口（leo 2026-10-31）**: 门户文档升到 `bolloon.agent.portal/2`，除名片外还带
+`node_base`（本节点可达基址）、`friend_dids`、`friend_bases` —— 别的智能体解析一个 IPNS 名，
+就能读到"这个人是谁、加过谁、往哪儿发请求"，不必先人工交换地址。新增
+`POST /api/portal/follow {ipns}`：解析门户 → 取 `did` + `node_base` → 用本机 DID 签名发好友请求
+（对方离线照样入队）。实测两节点：54295 解析 54296 的门户 → 请求**当场 delivered**，54296 的
+`requests_in` 出现该 DID；顺带修掉 `public_base` 用代理 fake-ip (198.18.0.1) 导致对端拨不通的问题
+（改为优先用真实监听地址 `BOLLOON_LOCAL_API`），以及 outbox 里 `alt_base` 语义混用
+（我方备用地址 vs 对端备用拨号拆成 `alt_base` / `to_alt`）。
+
 **门禁**: `cargo test -p bolloon-web --lib` **63/63**（含 `room_runtime_and_friend_inbox_gates`、`pool_tests`）
 **门禁**: `cargo test -p bolloon-llm --lib` **58/58** · `cargo test -p bolloon-agent --lib` **432/432** ·
 `cargo check --workspace --all-targets` 0 错 · `cargo clippy -p bolloon-llm --all-targets` 0 警告。
