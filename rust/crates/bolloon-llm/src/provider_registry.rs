@@ -150,19 +150,19 @@ struct Builtin {
 
 /// 与 TS `DEFAULT_PROVIDER_CONFIGS` 一一对应 (id/基址/默认模型逐条对齐)
 const BUILTINS: &[Builtin] = &[
-    Builtin { id: "openai", name: "OpenAI", protocol: Protocol::OpenAiCompatible, base_url: "https://api.openai.com/v1", model: "gpt-5.6", env: &["OPENAI_API_KEY"], requires_key: true, catalog_id: None },
-    Builtin { id: "anthropic", name: "Anthropic", protocol: Protocol::Anthropic, base_url: "https://api.anthropic.com/v1", model: "claude-sonnet-5", env: &["ANTHROPIC_API_KEY"], requires_key: true, catalog_id: None },
-    Builtin { id: "openrouter", name: "OpenRouter", protocol: Protocol::OpenAiCompatible, base_url: "https://openrouter.ai/api/v1", model: "anthropic/claude-sonnet-5", env: &["OPENROUTER_API_KEY"], requires_key: true, catalog_id: None },
-    Builtin { id: "gemini", name: "Google Gemini", protocol: Protocol::Gemini, base_url: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-3.5-flash", env: &["GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"], requires_key: true, catalog_id: Some("google") },
+    Builtin { id: "openai", name: "OpenAI", protocol: Protocol::OpenAiCompatible, base_url: "https://api.openai.com/v1", model: "gpt-6-astra", env: &["OPENAI_API_KEY"], requires_key: true, catalog_id: None },
+    Builtin { id: "anthropic", name: "Anthropic", protocol: Protocol::Anthropic, base_url: "https://api.anthropic.com/v1", model: "claude-sonnet-5-5", env: &["ANTHROPIC_API_KEY"], requires_key: true, catalog_id: None },
+    Builtin { id: "openrouter", name: "OpenRouter", protocol: Protocol::OpenAiCompatible, base_url: "https://openrouter.ai/api/v1", model: "anthropic/claude-sonnet-5-5", env: &["OPENROUTER_API_KEY"], requires_key: true, catalog_id: None },
+    Builtin { id: "gemini", name: "Google Gemini", protocol: Protocol::Gemini, base_url: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-3.8-flash", env: &["GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"], requires_key: true, catalog_id: Some("google") },
     Builtin { id: "ollama", name: "Ollama (本机)", protocol: Protocol::Ollama, base_url: "http://localhost:11434", model: "llama4", env: &[], requires_key: false, catalog_id: None },
-    Builtin { id: "minimax", name: "MiniMax", protocol: Protocol::OpenAiCompatible, base_url: "https://api.minimaxi.com/v1", model: "MiniMax-M3", env: &["MINIMAX_API_KEY"], requires_key: true, catalog_id: None },
-    Builtin { id: "deepseek", name: "DeepSeek", protocol: Protocol::OpenAiCompatible, base_url: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", env: &["DEEPSEEK_API_KEY"], requires_key: true, catalog_id: None },
-    Builtin { id: "kimi", name: "Kimi (Moonshot)", protocol: Protocol::OpenAiCompatible, base_url: "https://api.moonshot.cn/v1", model: "kimi-k3", env: &["MOONSHOT_API_KEY", "KIMI_API_KEY"], requires_key: true, catalog_id: Some("moonshotai") },
-    Builtin { id: "glm", name: "智谱 GLM", protocol: Protocol::OpenAiCompatible, base_url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2", env: &["ZHIPU_API_KEY", "GLM_API_KEY"], requires_key: true, catalog_id: Some("zhipuai") },
-    Builtin { id: "qwen", name: "通义千问 (DashScope)", protocol: Protocol::OpenAiCompatible, base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3-max", env: &["DASHSCOPE_API_KEY", "QWEN_API_KEY"], requires_key: true, catalog_id: Some("alibaba") },
-    Builtin { id: "mimo", name: "小米 MiMo", protocol: Protocol::OpenAiCompatible, base_url: "https://api.xiaomi.com/v1", model: "mimo-v2.5-pro", env: &["MIMO_API_KEY"], requires_key: true, catalog_id: Some("xiaomi") },
+    Builtin { id: "minimax", name: "MiniMax", protocol: Protocol::OpenAiCompatible, base_url: "https://api.minimaxi.com/v1", model: "MiniMax-M3.1-Flash", env: &["MINIMAX_API_KEY"], requires_key: true, catalog_id: None },
+    Builtin { id: "deepseek", name: "DeepSeek", protocol: Protocol::OpenAiCompatible, base_url: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", env: &["DEEPSEEK_API_KEY"], requires_key: true, catalog_id: None },
+    Builtin { id: "kimi", name: "Kimi (Moonshot)", protocol: Protocol::OpenAiCompatible, base_url: "https://api.moonshot.cn/v1", model: "kimi-k3.1-pro", env: &["MOONSHOT_API_KEY", "KIMI_API_KEY"], requires_key: true, catalog_id: Some("moonshotai") },
+    Builtin { id: "glm", name: "智谱 GLM", protocol: Protocol::OpenAiCompatible, base_url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.3", env: &["ZHIPU_API_KEY", "GLM_API_KEY"], requires_key: true, catalog_id: Some("zhipuai") },
+    Builtin { id: "qwen", name: "通义千问 (DashScope)", protocol: Protocol::OpenAiCompatible, base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.8-max", env: &["DASHSCOPE_API_KEY", "QWEN_API_KEY"], requires_key: true, catalog_id: Some("alibaba") },
+    Builtin { id: "mimo", name: "小米 MiMo", protocol: Protocol::OpenAiCompatible, base_url: "https://api.xiaomi.com/v1", model: "mimo-v2.6-pro", env: &["MIMO_API_KEY"], requires_key: true, catalog_id: Some("xiaomi") },
     Builtin { id: "local", name: "本地 (OpenAI 兼容)", protocol: Protocol::Ollama, base_url: "http://localhost:11434", model: "llama4", env: &[], requires_key: false, catalog_id: None },
-    Builtin { id: "grok", name: "xAI Grok", protocol: Protocol::OpenAiCompatible, base_url: "https://api.x.ai/v1", model: "grok-4.5", env: &["XAI_API_KEY", "GROK_API_KEY"], requires_key: true, catalog_id: Some("xai") },
+    Builtin { id: "grok", name: "xAI Grok", protocol: Protocol::OpenAiCompatible, base_url: "https://api.x.ai/v1", model: "grok-4.7", env: &["XAI_API_KEY", "GROK_API_KEY"], requires_key: true, catalog_id: Some("xai") },
 ];
 
 /// 内置 13 家 (顺序固定)
@@ -326,7 +326,7 @@ mod tests {
         assert_eq!(b.len(), 13, "内置 13 家 (与 TS DEFAULT_PROVIDER_CONFIGS 同数)");
         let ds = builtin("deepseek").unwrap();
         assert_eq!(ds.default_base_url, "https://api.deepseek.com/v1");
-        assert_eq!(ds.default_model, "deepseek-v4-flash");
+        assert_eq!(ds.default_model, "deepseek-v4-pro");
         assert_eq!(ds.protocol, Protocol::OpenAiCompatible);
         let anth = builtin("anthropic").unwrap();
         assert_eq!(anth.protocol, Protocol::Anthropic);
@@ -407,7 +407,7 @@ mod tests {
         // 内置与目录都有 openai 时, 取内置 (默认模型来自内置)
         let e = get("openai").expect("openai 必须查得到");
         assert_eq!(e.origin, Origin::Builtin);
-        assert_eq!(e.default_model, "gpt-5.6");
+        assert_eq!(e.default_model, "gpt-6-astra");
         assert!(get("definitely-not-a-provider").is_none());
     }
 }

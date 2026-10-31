@@ -1,7 +1,8 @@
 //! provider 目录 — 与 TS 版**同一份事实源** (223 家 / 8000+ 模型)
 //!
 //! 事实源: `src/llm/data/provider-catalog.json` (TS 构建期烘焙自 `https://models.dev/api.json`)。
-//! 这里 `include_str!` 直接读那一份, **不复制、不手抄** —— 两家共用同一事实, 目录刷新只改一处。
+//! 2026-10-31（leo: 只改 Rust）: 目录快照搬进本 crate (`data/provider-catalog.json`),
+//! 由 `scripts/gen-provider-catalog.ts` 生成后拷进来 —— **TS 树不再被这里依赖或改写**。
 //!
 //! 三件事:
 //! 1. **解析**: 形状不认就拒绝 (少于 `MIN_PROVIDERS_FOR_TRUST` 家 ⇒ 当坏文件, 不给用)
@@ -15,7 +16,7 @@ use std::sync::OnceLock;
 pub const MIN_PROVIDERS_FOR_TRUST: usize = 100;
 
 /// TS 烘焙的目录 (单一事实源)
-const CATALOG_JSON: &str = include_str!("../../../../src/llm/data/provider-catalog.json");
+const CATALOG_JSON: &str = include_str!("../data/provider-catalog.json");
 
 /// 一家 provider 的模型事实 (只记上游**声明过的**, 没写就不出现)
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]

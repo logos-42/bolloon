@@ -12,13 +12,16 @@
 //! - `provider_registry`: 内置 13 + 自定义 + 目录 → 同一形状；族/鉴权形状推断
 //! - `config_store`: `~/.bolloon/bolloon-config.json`（0600 原子写）+ 环境变量兜底
 //!
-//! 密钥纪律：api_key 只在构造时持有，不落日志、不序列化输出。
+//! 密钥纪律：api_key 只在构造时持有，不落日志、不序列化输出；
+//! **落盘进系统凭据库**（`secret_store`：macOS 钥匙串 / Windows DPAPI / Linux Secret Service），
+//! 配置文件里只留空串（2026-10-31）。
 
 pub mod compaction;
 pub mod config_store;
 pub mod provider_catalog;
 pub mod provider_registry;
 pub mod runtime;
+pub mod secret_store;
 
 pub use config_store::{
     active_resolved, resolve, LlmConfig, ProviderSettings, Resolved,

@@ -6984,3 +6984,52 @@ assistant 回音拼回 `messages` 就 `continue` 再问，**请求以 assistant 
   重画都按「贴底」处理，切会话/切回来直接跳到底部。改成：进入该智能体**最近**的会话
   （按 `created_at_ms` 降序），并给每个会话记住自己的滚动位置（`chatScrollMemo`）——
   同一会话贴底就继续贴底、否则留在原位；换会话回到上次的位置，没记录过才看最新。
+
+### 2026-10-31 凭据不再明文 + provider 目录/内置默认模型刷新（只改 Rust）
+
+**起因（用户报）**: `~/.bolloon/bolloon-config.json` 里两个 provider 的 `apiKey` 是明文，
+而 `read_file` 只拦 `.env` 与私钥 ⇒ 一条工具调用就能把 key 读进模型上下文；另外内置
+provider 的默认模型与目录（223 家 / 2026-09-27 快照）都旧了。
+
+**1. 凭据保护面扩大** (`bolloon-agent/src/builtin_tools.rs`): 敏感路径从「dotenv + 私钥」
+扩到本机凭据/配置/钱包/支付 —— 新增 `.bolloon/bolloon-config`、`.bolloon/config.json`、
+`.bolloon/keys`、`.bolloon/agent-keys`、`.bolloon/pay/`、`.bolloon/rust/identity`。
+`read_file` / `search_files` 一律拒（fail-closed，返回 `受保护路径`）。
+
+**2. key 不再落明文** (`bolloon-llm/src/secret_store.rs` 新 + `config_store.rs` 改造):
+- 三平台后端（只用 std + 系统自带命令，不加依赖，且**三个实现都无条件编译**，
+  任何平台 `cargo check` 都能发现坏代码）:
+  macOS `security -i`（命令与值都走 stdin，key 不进 argv/`ps`）·
+  Windows DPAPI(CurrentUser) 加密后落 `%USERPROFILE%\.bolloon\secrets\<acct>.bin`（PowerShell 调）·
+  Linux Secret Service `secret-tool`（没装就如实报错，**绝不退回明文**）。
+- `save_to` 先把 key 写进凭据库、JSON 里一律空串；**任何一个 key 写不进去 ⇒ 整次保存失败、
+  文件一个字节都不动**（宁可报错，也不退回明文）。旧 `.bak` 若含明文则不再写快照。
+- `load_from` 会把旧明文**自动迁移**进凭据库，然后把文件重写成不带 key、并删掉明文 `.bak`；
+  迁移失败也只留在内存，不写回文件。
+- 单测用可注入的 `MemBackend`（绝不碰开发机真钥匙串），新增三道门:
+  `api_key_never_lands_in_config_file` · `legacy_plaintext_is_migrated_and_bak_scrubbed` ·
+  `save_fails_loudly_instead_of_writing_plaintext`。
+
+**3. provider 目录刷新 + 只改 Rust**: `scripts/gen-provider-catalog.ts` 真取
+`models.dev`（2026-10-31 快照）→ **235 家 / 8936 模型**（原 223 家）。按 leo「只改 Rust」，
+产物**不再写进 TS 树**，而是落到 `rust/crates/bolloon-llm/data/provider-catalog.json`，
+`provider_catalog.rs` 的 `include_str!` 改读本地那份（TS 侧文件已还原，零改动）。
+
+**4. 内置默认模型跟上当前目录** (`provider_registry.rs`，按目录里最新一代、均带工具/推理):
+`gpt-5.6→gpt-6-astra`（1050k ctx）· `claude-sonnet-5→5-5` · openrouter 同步 ·
+`gemini-3.5-flash→3.8-flash` · `MiniMax-M3→M3.1-Flash` · `deepseek-v4-flash→v4-pro` ·
+`kimi-k3→k3.1-pro` · `glm-5.2→5.3` · `qwen3-max→qwen3.8-max` · `mimo-v2.5-pro→v2.6-pro` ·
+`grok-4.5→4.7`。`deepseek-v4-pro` 已用真实 `/models` 复核存在（该端点只列
+`deepseek-flash` 与 `deepseek-v4-pro`）。ollama/local 的 `llama4` 属本机模型，未动。
+
+**真机验收（macOS，重启新 bundle 后）**: 迁移前 `bolloon-config.json` 里 deepseek / goaichat
+（providers 与 customProviders 各一处）都是明文；重启后文件里三个 `apiKey` 全为 `""`、
+整份文件不再含 `sk-`、13:38 那份明文 `.bak` 已删；`security find-generic-password -s bolloon.llm -a …`
+三个账号（`provider:deepseek` / `provider:goaichat` / `custom:goaichat`）都在；
+`GET /api/models` 报 **238 家**且 deepseek/goaichat `has_key=true`（key 是**从钥匙串读回来的**，
+不是内存残留 —— 盘上已经是空串）；真发一句 6.3s 得到正常回答（无 401/400）⇒ 读取路径通。
+
+**门禁**: `cargo test -p bolloon-llm --lib` **57/57** · `cargo test -p bolloon-agent --lib` **432/432** ·
+`cargo check --workspace --all-targets` 0 错 · `cargo clippy -p bolloon-llm --all-targets` 0 警告。
+**诚实边界**: Windows/Linux 后端只做了**编译级**验证（本机是 macOS，没有真跑 DPAPI/secret-tool）；
+迁移只在 macOS 真机跑过；环境变量仍是最低依赖路径（没本地凭据库时 key 只能走 env）。

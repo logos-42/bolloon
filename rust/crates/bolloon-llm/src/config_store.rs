@@ -1,4 +1,4 @@
-//! provider 配置 — `~/.bolloon/bolloon-config.json` (0600, 明文 JSON, 不加密)
+//! provider 配置 — `~/.bolloon/bolloon-config.json` (0600; **不含 key**, key 在系统钥匙串)
 //!
 //! 与 TS `src/llm/config-store.ts` 同一路径同一形状 (camelCase), 两家共用一份配置:
 //! `{ activeProvider, providers: { <id>: {...} }, customProviders: { <id>: {...} } }`
@@ -6,7 +6,7 @@
 //! 纪律:
 //! - **单写入路径**: `save_to()` 里 tmp + 0600 + 原子 rename (不写坏半截配置)
 //! - **坏文件不冒充**: 解析失败 → 默认配置 (空), 不猜
-//! - **key 只从文件或环境变量读**, 绝不出现在日志/接口回显里
+//! - **key 落系统凭据库**（`secret_store`）, JSON 里只留空串; 旧明文在 load 时迁移; 绝不出现在日志/接口回显里
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::provider_catalog::AuthKind;
 use crate::provider_registry::{self, Protocol, ProviderRegistryEntry};
+use crate::secret_store::{self, SecretBackend};
 
 /// 配置文件名 (与 TS 同名)
 pub const CONFIG_FILE: &str = "bolloon-config.json";
@@ -175,31 +176,151 @@ pub fn config_path() -> PathBuf {
     config_dir().join(CONFIG_FILE)
 }
 
-/// 读配置 (坏文件 → 默认配置, 不猜)
+/// 读配置 (坏文件 → 默认配置, 不猜)。
+///
+/// **密钥迁移**（2026-10-31）: 旧文件里的明文 `apiKey` 在这里搬进系统钥匙串，
+/// 随后把文件重写成不带 key 的版本（旧的明文 `.bak` 也一并删掉）—— 历史明文不该留着。
 pub fn load_from(dir: &Path) -> LlmConfig {
+    load_from_with(dir, secret_store::default_backend())
+}
+
+/// 同 `load_from`，但凭据后端可注入（单测用内存实现，不碰真钥匙串）。
+pub fn load_from_with(dir: &Path, backend: &dyn SecretBackend) -> LlmConfig {
     let path = dir.join(CONFIG_FILE);
-    match std::fs::read_to_string(&path) {
+    let mut cfg = match std::fs::read_to_string(&path) {
         Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
             tracing::warn!(path = %path.display(), error = %e, "provider 配置解析失败 — 按空配置处理");
             LlmConfig::default()
         }),
         Err(_) => LlmConfig::default(),
+    };
+
+    // ① 旧明文 key → 凭据库；无论写没写成，内存与文件里都不再保留明文
+    let mut pending: Vec<(String, String)> = Vec::new();
+    for (id, p) in cfg.providers.iter() {
+        if !p.api_key.trim().is_empty() {
+            pending.push((secret_store::account_for_provider(id), p.api_key.clone()));
+        }
     }
+    for (id, p) in cfg.custom_providers.iter() {
+        if !p.api_key.trim().is_empty() {
+            pending.push((secret_store::account_for_custom(id), p.api_key.clone()));
+        }
+    }
+    if !pending.is_empty() {
+        let mut moved = 0usize;
+        for (acct, key) in &pending {
+            match backend.put(acct, key) {
+                Ok(()) => moved += 1,
+                Err(e) => tracing::warn!(
+                    account = %acct,
+                    error = %e,
+                    "明文 key 迁移失败 — 只留在内存, 不会写回文件"
+                ),
+            }
+        }
+        for p in cfg.providers.values_mut() {
+            p.api_key.clear();
+        }
+        for p in cfg.custom_providers.values_mut() {
+            p.api_key.clear();
+        }
+        if moved > 0 {
+            if let Err(e) = save_to_with(dir, &cfg, backend) {
+                tracing::warn!(error = %e, "迁移后重写配置失败");
+            }
+            // 旧 .bak 是明文快照 —— 迁移成功就删掉
+            let _ = std::fs::remove_file(path.with_extension("json.bak"));
+            tracing::info!(count = moved, "已把明文 apiKey 迁进系统凭据库");
+        }
+    }
+
+    // ② 从凭据库补齐 key（runtime 构造 provider 要用）
+    for (id, p) in cfg.providers.iter_mut() {
+        if p.api_key.trim().is_empty() {
+            if let Some(k) = backend.get(&secret_store::account_for_provider(id)) {
+                p.api_key = k;
+            }
+        }
+    }
+    for (id, p) in cfg.custom_providers.iter_mut() {
+        if p.api_key.trim().is_empty() {
+            if let Some(k) = backend.get(&secret_store::account_for_custom(id)) {
+                p.api_key = k;
+            }
+        }
+    }
+    cfg
 }
 
-/// 落盘 (tmp + 0600 + 原子 rename; 唯一写入路径)
+/// 这份配置里是否还有明文 key（决定旧 `.bak` 能不能留）
+fn has_plaintext(cfg: &LlmConfig) -> bool {
+    cfg.providers.values().any(|p| !p.api_key.trim().is_empty())
+        || cfg
+            .custom_providers
+            .values()
+            .any(|p| !p.api_key.trim().is_empty())
+}
+
+/// 落盘 (tmp + 0600 + 原子 rename; 唯一写入路径)。
+///
+/// **key 不进文件**: 先写进凭据库，文件里一律留空串；写凭据库失败 ⇒ 整次保存失败、
+/// 文件一个字节都不动（宁可报错，也不退回明文）。
 pub fn save_to(dir: &Path, cfg: &LlmConfig) -> std::io::Result<()> {
+    save_to_with(dir, cfg, secret_store::default_backend())
+}
+
+/// 同 `save_to`，但凭据后端可注入。
+pub fn save_to_with(
+    dir: &Path,
+    cfg: &LlmConfig,
+    backend: &dyn SecretBackend,
+) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join(CONFIG_FILE);
     let tmp = dir.join(format!("{CONFIG_FILE}.tmp"));
 
-    // **不许默默盖掉别人的配置**: 盘上那份解析不了 (例如 TS 改了形状) ⇒ 拒绝覆盖,
-    //   除非显式 BOLLOON_CONFIG_FORCE=1。能解析的则先留一份 .bak (只留最近一份)。
+    // ① 先把所有 key 放进凭据库（任一失败 ⇒ 整次放弃，绝不落明文）
+    let mut on_disk = cfg.clone();
+    for (id, p) in on_disk.providers.iter_mut() {
+        if p.api_key.trim().is_empty() {
+            continue;
+        }
+        backend
+            .put(&secret_store::account_for_provider(id), &p.api_key)
+            .map_err(|e| {
+                std::io::Error::other(format!(
+                    "provider {id} 的 key 无法写入本机凭据库（{e}）— 未保存任何改动"
+                ))
+            })?;
+        p.api_key.clear();
+    }
+    for (id, p) in on_disk.custom_providers.iter_mut() {
+        if p.api_key.trim().is_empty() {
+            continue;
+        }
+        backend
+            .put(&secret_store::account_for_custom(id), &p.api_key)
+            .map_err(|e| {
+                std::io::Error::other(format!(
+                    "自定义 provider {id} 的 key 无法写入本机凭据库（{e}）— 未保存任何改动"
+                ))
+            })?;
+        p.api_key.clear();
+    }
+
+    // ② **不许默默盖掉别人的配置**: 盘上那份解析不了 ⇒ 拒绝覆盖（除非 BOLLOON_CONFIG_FORCE=1）。
+    //    能解析的留一份 .bak —— 但**带明文 key 的旧文件不留快照**（快照本身就是泄露面）。
     if let Ok(existing) = std::fs::read_to_string(&path) {
         if !existing.trim().is_empty() {
             match serde_json::from_str::<LlmConfig>(&existing) {
-                Ok(_) => {
-                    let _ = std::fs::write(path.with_extension("json.bak"), existing.as_bytes());
+                Ok(old) => {
+                    if has_plaintext(&old) {
+                        tracing::warn!("旧配置里带明文 apiKey — 不写 .bak 快照");
+                    } else {
+                        let _ =
+                            std::fs::write(path.with_extension("json.bak"), existing.as_bytes());
+                    }
                 }
                 Err(e) => {
                     if std::env::var("BOLLOON_CONFIG_FORCE").is_err() {
@@ -217,7 +338,7 @@ pub fn save_to(dir: &Path, cfg: &LlmConfig) -> std::io::Result<()> {
         }
     }
 
-    let raw = serde_json::to_string_pretty(cfg)
+    let raw = serde_json::to_string_pretty(&on_disk)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     {
         let mut f = std::fs::File::create(&tmp)?;
@@ -401,20 +522,29 @@ pub fn resolve_with(cfg: &LlmConfig, entry: &ProviderRegistryEntry) -> Result<Re
             entry.default_model.clone()
         };
         if base_url.trim().is_empty() {
-            return Err(format!("{} 没有 base_url (自定义家必须填)", entry.display_name));
+            return Err(format!(
+                "{} 没有 base_url (自定义家必须填)",
+                entry.display_name
+            ));
         }
         if model.trim().is_empty() {
             return Err(format!("{} 还没选模型", entry.display_name));
         }
         return Ok(Resolved {
             id: entry.id.clone(),
-            protocol: custom.protocol.unwrap_or_else(|| Protocol::infer_from_base_url(&base_url)),
+            protocol: custom
+                .protocol
+                .unwrap_or_else(|| Protocol::infer_from_base_url(&base_url)),
             base_url,
             api_key: key.clone(),
             model,
             temperature: default_temperature(),
             max_tokens: default_max_tokens(),
-            key_source: if key.is_some() { KeySource::Config } else { KeySource::None },
+            key_source: if key.is_some() {
+                KeySource::Config
+            } else {
+                KeySource::None
+            },
         });
     }
 
@@ -464,7 +594,10 @@ pub fn resolve_with(cfg: &LlmConfig, entry: &ProviderRegistryEntry) -> Result<Re
         let hint = if entry.api_key_env_vars.is_empty() {
             "在 `bolloon model` 里填 key".to_string()
         } else {
-            format!("填 key 或设置环境变量 {}", entry.api_key_env_vars.join(" / "))
+            format!(
+                "填 key 或设置环境变量 {}",
+                entry.api_key_env_vars.join(" / ")
+            )
         };
         return Err(format!("{} 缺少 API key — {hint}", entry.display_name));
     }
@@ -475,8 +608,12 @@ pub fn resolve_with(cfg: &LlmConfig, entry: &ProviderRegistryEntry) -> Result<Re
         base_url,
         api_key,
         model,
-        temperature: settings.map(|s| s.temperature).unwrap_or_else(default_temperature),
-        max_tokens: settings.map(|s| s.max_tokens).unwrap_or_else(default_max_tokens),
+        temperature: settings
+            .map(|s| s.temperature)
+            .unwrap_or_else(default_temperature),
+        max_tokens: settings
+            .map(|s| s.max_tokens)
+            .unwrap_or_else(default_max_tokens),
         key_source,
     })
 }
@@ -498,7 +635,11 @@ pub fn resolve(cfg: &LlmConfig, id: &str) -> Result<Resolved, String> {
             default_base_url: custom.base_url.clone(),
             default_model: custom.model.clone(),
             api_key_env_vars: vec![],
-            auth: if custom.api_key.is_empty() { AuthKind::None } else { AuthKind::Bearer },
+            auth: if custom.api_key.is_empty() {
+                AuthKind::None
+            } else {
+                AuthKind::Bearer
+            },
             auth_supported: true,
             auth_note: "自定义 (自己填的 base_url/协议)".to_string(),
             requires_api_key: false,
@@ -525,9 +666,8 @@ pub fn resolve(cfg: &LlmConfig, id: &str) -> Result<Resolved, String> {
 /// 当前该用的那家 (active_provider; 没设 → 第一家能解析成功的)
 pub fn active_resolved(cfg: &LlmConfig) -> Result<Resolved, String> {
     if !cfg.active_provider.trim().is_empty() {
-        return resolve(cfg, cfg.active_provider.trim()).map_err(|e| {
-            format!("{e} (当前 activeProvider={})", cfg.active_provider)
-        });
+        return resolve(cfg, cfg.active_provider.trim())
+            .map_err(|e| format!("{e} (当前 activeProvider={})", cfg.active_provider));
     }
     usable(cfg)
         .into_iter()
@@ -558,6 +698,53 @@ pub fn usable(cfg: &LlmConfig) -> Vec<Resolved> {
 mod tests {
     use super::*;
 
+    /// 内存凭据后端: 单测绝不碰真钥匙串 (否则会在开发机上塞满测试 key)
+    struct MemBackend {
+        store: std::sync::Mutex<std::collections::HashMap<String, String>>,
+        fail: bool,
+    }
+    impl MemBackend {
+        fn new() -> Self {
+            Self {
+                store: Default::default(),
+                fail: false,
+            }
+        }
+        fn failing() -> Self {
+            Self {
+                store: Default::default(),
+                fail: true,
+            }
+        }
+        fn keys(&self) -> Vec<String> {
+            let mut v: Vec<String> = self.store.lock().unwrap().keys().cloned().collect();
+            v.sort();
+            v
+        }
+    }
+    impl SecretBackend for MemBackend {
+        fn put(&self, account: &str, secret: &str) -> Result<(), String> {
+            if self.fail {
+                return Err("假装本机没有凭据库".into());
+            }
+            self.store
+                .lock()
+                .unwrap()
+                .insert(account.to_string(), secret.to_string());
+            Ok(())
+        }
+        fn get(&self, account: &str) -> Option<String> {
+            self.store.lock().unwrap().get(account).cloned()
+        }
+        fn delete(&self, account: &str) -> Result<(), String> {
+            self.store.lock().unwrap().remove(account);
+            Ok(())
+        }
+        fn available(&self) -> bool {
+            true
+        }
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("bolloon-cfg-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -569,20 +756,38 @@ mod tests {
     fn save_load_roundtrip_0600() {
         let dir = temp_dir("rt");
         let mut cfg = LlmConfig::default();
-        apply_provider(&mut cfg, "deepseek", Some("sk-test"), None, Some("deepseek-v4-flash"));
-        save_to(&dir, &cfg).unwrap();
+        apply_provider(
+            &mut cfg,
+            "deepseek",
+            Some("sk-test"),
+            None,
+            Some("deepseek-v4-flash"),
+        );
+        let mem = MemBackend::new();
+        save_to_with(&dir, &cfg, &mem).unwrap();
 
-        let back = load_from(&dir);
+        let back = load_from_with(&dir, &mem);
         assert_eq!(back.active_provider, "deepseek");
         assert_eq!(back.providers["deepseek"].api_key, "sk-test");
         assert_eq!(back.providers["deepseek"].model, "deepseek-v4-flash");
-        assert!(!back.updated_at.is_empty(), "updatedAt 要写 ISO 字符串: {}", back.updated_at);
-        assert!(back.updated_at.contains('T'), "形如 2026-10-26T…Z: {}", back.updated_at);
+        assert!(
+            !back.updated_at.is_empty(),
+            "updatedAt 要写 ISO 字符串: {}",
+            back.updated_at
+        );
+        assert!(
+            back.updated_at.contains('T'),
+            "形如 2026-10-26T…Z: {}",
+            back.updated_at
+        );
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.join(CONFIG_FILE)).unwrap().permissions().mode();
+            let mode = std::fs::metadata(dir.join(CONFIG_FILE))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600, "配置文件必须 0600");
         }
         // 没有 tmp 残留 (原子写)
@@ -594,7 +799,8 @@ mod tests {
     fn bad_file_falls_back_to_default() {
         let dir = temp_dir("bad");
         std::fs::write(dir.join(CONFIG_FILE), "{not json").unwrap();
-        let cfg = load_from(&dir);
+        let mem = MemBackend::new();
+        let cfg = load_from_with(&dir, &mem);
         assert!(cfg.providers.is_empty(), "坏文件 → 空配置, 不猜");
         assert!(cfg.active_provider.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
@@ -607,7 +813,7 @@ mod tests {
         let r = resolve(&cfg, "deepseek").expect("应能解析");
         assert_eq!(r.protocol, Protocol::OpenAiCompatible);
         assert_eq!(r.base_url, "https://api.deepseek.com/v1");
-        assert_eq!(r.model, "deepseek-v4-flash", "没填模型 → 内置默认");
+        assert_eq!(r.model, "deepseek-v4-pro", "没填模型 → 内置默认");
         assert_eq!(r.key_source, KeySource::Config);
         assert_eq!(r.auth_ref(), "config", "回显只给 authRef, 不给 key");
     }
@@ -700,7 +906,11 @@ mod tests {
             Some("claude-x"),
         );
         let r = resolve(&cfg, "my-claude").unwrap();
-        assert_eq!(r.protocol, Protocol::Anthropic, "base_url 含 anthropic → 推 Anthropic");
+        assert_eq!(
+            r.protocol,
+            Protocol::Anthropic,
+            "base_url 含 anthropic → 推 Anthropic"
+        );
         assert_eq!(r.base_url, "https://proxy.example.com/anthropic");
         assert_eq!(r.api_key.as_deref(), Some("sk-custom"));
     }
@@ -737,10 +947,17 @@ mod tests {
         assert_eq!(cfg.active_provider, "goaichat");
         assert_eq!(cfg.updated_at, "2026-10-24T03:02:26.665Z");
         let r = resolve(&cfg, "goaichat").expect("自定义家可解析");
-        assert_eq!(r.protocol, Protocol::OpenAiCompatible, "protocol 串要与 TS 一致");
+        assert_eq!(
+            r.protocol,
+            Protocol::OpenAiCompatible,
+            "protocol 串要与 TS 一致"
+        );
         // 写回去仍是 ISO 字符串 + TS 认的协议名
         let out = serde_json::to_string(&cfg).unwrap();
-        assert!(out.contains("\"updatedAt\":\"2026-10-24T03:02:26.665Z\""), "{out}");
+        assert!(
+            out.contains("\"updatedAt\":\"2026-10-24T03:02:26.665Z\""),
+            "{out}"
+        );
         assert!(out.contains("\"protocol\":\"openai-compatible\""), "{out}");
     }
 
@@ -748,8 +965,22 @@ mod tests {
     #[test]
     fn apply_provider_mirrors_into_custom() {
         let mut cfg = LlmConfig::default();
-        upsert_custom(&mut cfg, "goaichat", "GoAI", "https://a/v1", None, Some("k1"), Some("m1"));
-        apply_provider(&mut cfg, "goaichat", Some("k2"), Some("https://b/v1"), Some("m2"));
+        upsert_custom(
+            &mut cfg,
+            "goaichat",
+            "GoAI",
+            "https://a/v1",
+            None,
+            Some("k1"),
+            Some("m1"),
+        );
+        apply_provider(
+            &mut cfg,
+            "goaichat",
+            Some("k2"),
+            Some("https://b/v1"),
+            Some("m2"),
+        );
         let c = &cfg.custom_providers["goaichat"];
         assert_eq!(c.api_key, "k2");
         assert_eq!(c.base_url, "https://b/v1");
@@ -768,10 +999,89 @@ mod tests {
         let path = dir.join(CONFIG_FILE);
         std::fs::write(&path, r#"{"activeProvider":"x","updatedAt":{"weird":1}}"#).unwrap();
         let cfg = LlmConfig::default();
-        let err = save_to(&dir, &cfg).expect_err("必须拒绝");
+        let mem = MemBackend::new();
+        let err = save_to_with(&dir, &cfg, &mem).expect_err("必须拒绝");
         assert!(err.to_string().contains("拒绝覆盖"), "{err}");
         // 原文件一个字节没动
         assert!(std::fs::read_to_string(&path).unwrap().contains("weird"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **key 绝不进配置文件**（2026-10-31）: 存完文件里是空串, 明文只在凭据库
+    #[test]
+    fn api_key_never_lands_in_config_file() {
+        let dir = temp_dir("nokey");
+        let mem = MemBackend::new();
+        let mut cfg = LlmConfig::default();
+        apply_provider(&mut cfg, "deepseek", Some("sk-secret-123"), None, None);
+        save_to_with(&dir, &cfg, &mem).unwrap();
+
+        let raw = std::fs::read_to_string(dir.join(CONFIG_FILE)).unwrap();
+        assert!(
+            !raw.contains("sk-secret-123"),
+            "配置文件里出现明文 key: {raw}"
+        );
+        assert!(raw.contains("\"apiKey\": \"\""), "apiKey 必须是空串: {raw}");
+        assert_eq!(
+            mem.keys(),
+            vec!["provider:deepseek".to_string()],
+            "key 应进凭据库"
+        );
+
+        // 读回来时 key 从凭据库补齐 (runtime 才拿得到)
+        let back = load_from_with(&dir, &mem);
+        assert_eq!(back.providers["deepseek"].api_key, "sk-secret-123");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **旧明文自动迁移**: load 时搬进凭据库, 文件清空, 明文 .bak 删掉
+    #[test]
+    fn legacy_plaintext_is_migrated_and_bak_scrubbed() {
+        let dir = temp_dir("migrate");
+        let legacy = r#"{
+          "activeProvider": "deepseek",
+          "providers": {
+            "deepseek": {"enabled": true, "apiKey": "sk-legacy-abc", "baseUrl": "", "model": "m", "temperature": 0.7, "maxTokens": 4096}
+          },
+          "updatedAt": "2026-10-31T00:00:00Z"
+        }"#;
+        std::fs::write(dir.join(CONFIG_FILE), legacy).unwrap();
+        std::fs::write(dir.join(format!("{CONFIG_FILE}.bak")), legacy).unwrap();
+
+        let mem = MemBackend::new();
+        let cfg = load_from_with(&dir, &mem);
+
+        assert_eq!(
+            cfg.providers["deepseek"].api_key, "sk-legacy-abc",
+            "内存里要有 key"
+        );
+        let raw = std::fs::read_to_string(dir.join(CONFIG_FILE)).unwrap();
+        assert!(
+            !raw.contains("sk-legacy-abc"),
+            "迁移后文件里不该再有明文: {raw}"
+        );
+        assert!(
+            !dir.join(format!("{CONFIG_FILE}.bak")).exists(),
+            "带明文的旧 .bak 必须删掉"
+        );
+        assert_eq!(mem.keys(), vec!["provider:deepseek".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 凭据库写不进去时 **整次保存失败**, 且绝不退回明文
+    #[test]
+    fn save_fails_loudly_instead_of_writing_plaintext() {
+        let dir = temp_dir("nobackend");
+        let mem = MemBackend::failing();
+        let mut cfg = LlmConfig::default();
+        apply_provider(&mut cfg, "deepseek", Some("sk-must-not-leak"), None, None);
+
+        let err = save_to_with(&dir, &cfg, &mem).expect_err("没有凭据库就必须失败");
+        assert!(err.to_string().contains("凭据库"), "{err}");
+        assert!(
+            !dir.join(CONFIG_FILE).exists(),
+            "失败时不该写文件 (更不能写明文)"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -783,9 +1093,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut cfg = LlmConfig::default();
         apply_provider(&mut cfg, "a", Some("k1"), None, Some("m1"));
-        save_to(&dir, &cfg).unwrap();
+        let mem = MemBackend::new();
+        save_to_with(&dir, &cfg, &mem).unwrap();
         apply_provider(&mut cfg, "b", Some("k2"), None, Some("m2"));
-        save_to(&dir, &cfg).unwrap();
+        save_to_with(&dir, &cfg, &mem).unwrap();
         let bak = std::fs::read_to_string(dir.join(format!("{CONFIG_FILE}.bak"))).unwrap();
         assert!(bak.contains("\"a\""), "备份里应有上一次的 a: {bak}");
         assert!(!bak.contains("\"b\""), "备份不该含本次: {bak}");

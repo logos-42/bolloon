@@ -39,10 +39,19 @@ const SENSITIVE_PATTERNS: &[&str] = &[
     ".bolloon/identity",
     ".bolloon/keypair",
     ".bolloon/llm-config",
-    ".bolloon/accounts",
+    // 2026-10-31: 实测 bolloon-config.json 里躺过两家 provider 的明文 apiKey,
+    // 而 read_file 只拦了 llm-config ⇒ 一条工具调用就能把 key 读进上下文。把
+    // 「本机的配置/凭据库/钱包/支付」整体划进禁区, 不只补单个文件名。
+    ".bolloon/bolloon-config",
+    ".bolloon/config.json",
+    ".bolloon/keys",
+    ".bolloon/agent-keys",
     ".bolloon/wallets",
+    ".bolloon/accounts",
     ".bolloon/bindings",
     ".bolloon/eas-bind",
+    ".bolloon/pay/",
+    ".bolloon/rust/identity",
 ];
 
 fn is_sensitive(path: &str) -> bool {
