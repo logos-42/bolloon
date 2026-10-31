@@ -1401,13 +1401,15 @@ pub async fn build_web_system(
         Err(_) => WEB_SYSTEM_PROMPT.to_string(),
     };
     format!(
-        "{}{}{}{}{}{}{}{}",
+        "{}{}{}{}{}{}{}{}{}",
         private_identity_block(agent),
         // 说话风格: 抓重点/说人话 (leo) —— 紧贴身份块, 优先级高于默认身份描述
         STYLE_PROMPT,
         base,
         // 主人昵称 + DID + 所属权 (全局事实, 每个智能体都带)
         owner_block,
+        // 能力/接口/群规则/资源池 (2026-10-31 leo: 系统提示词和接口权限给到)
+        capability_block(st, agent),
         intent_block(st),
         wallet_block,
         self_hint,
@@ -1416,6 +1418,48 @@ pub async fn build_web_system(
 }
 
 
+
+/// 能力与接口权限块（每个智能体都带，且带上它自己的门户地址）
+///
+/// leo 2026-10-31: 「系统提示词和接口权限给到」—— 能力必须在提示词里说得清楚，
+/// 否则模型不知道自己有 IPFS/IPNS、有群内执行、有资源池，就会只说"我可以帮你查"。
+fn capability_block(st: &AppState, agent: Option<&AgentView>) -> String {
+    let aid = agent.map(|a| a.id.as_str()).unwrap_or("bolloon");
+    let portal = std::fs::read_to_string(portal_path(aid))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| {
+            let ipns = v["ipns"].as_str().unwrap_or_default().to_string();
+            let cid = v["cid"].as_str().unwrap_or_default().to_string();
+            (!ipns.is_empty()).then_some((ipns, cid))
+        });
+    let portal_line = match portal {
+        Some((ipns, cid)) => format!(
+            "- 你的对外门户（IPNS 名，内容变了名字不变）：{ipns}\n  当前指向：/ipfs/{cid}\n"
+        ),
+        None => "- 你还没有对外门户：需要时调 `POST /api/agents/{aid}/portal/publish`（会把名片发到 IPFS 并绑 IPNS 名）。\n"
+            .to_string(),
+    };
+    let _ = st;
+    format!(
+        "\n## 能力与接口权限（本机已授予，直接用，不用先问能不能）\n\
+         - 文件/命令：`read_file` `write_file` `edit_file` `mkdir` `move_file` `shell` `git_add` `git_commit` `run_scratch_script`\n\
+         - 需要显式授权才给：`delete_file`（不可逆）、`git_push`（对外）\n\
+         - IPFS/IPNS：`ipfs_add`（内容→CID）、`ipfs_cat`（CID→内容）、`ipfs_ls`、`ipns_publish`、`ipns_resolve`\n\
+         - 本机接口（HTTP，可直接 curl）：`GET /api/agents/{aid}/portal`、`POST /api/agents/{aid}/portal/publish`、\
+         `GET /api/agents/{aid}/portal/resolve`、`GET /api/pool/credit`、`GET|POST /api/room/runtime`\n\
+         {portal_line}\
+         ## 群内协作规则（在群里说话时按这个来）\n\
+         - 人类这一轮的命令**立即执行**（可跑命令、可读文件），不用等警长；说了要跑就真的跑，不许只描述计划\n\
+         - 你要把活交给别人：写 `[[task:智能体id:任务描述]]`；警长会先派（也可 `[[veto:目标]]` 否掉），\
+         60s 没人处理就自动派下去——所以别等，能自己做的自己做\n\
+         - 收尾用 `[[terminate]]` 宣布散会\n\
+         ## 资源池（借/还都记账）\n\
+         - 你可以借好友节点的模型通路（对方智能体对好友开放才行）：`POST /api/groups/{{群}}/pool` 配置后自动回退借用\n\
+         - 借出会被记成贡献（`Contribution{{LocalInference}}`），本机在峰值时（同时在跑的任务多）会如实拒绝\n\
+         - 不要把 API key 发给任何人；共享的是**通路**，密钥永远不出本机\n"
+    )
+}
 
 /// 把 DID 身份 + 手机号签名写成 `~/.bolloon/identity.env`，
 /// 让眼镜 App / Web App / CLI / 任何进程用 `source` 就拿到同一份身份（单一事实来源）。

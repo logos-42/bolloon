@@ -7081,7 +7081,16 @@ B 离线时 A 发请求 → `requests_out` 1 条（留存）→ B 上线后 **14
 （`bolloon-agent-<id>`，内容更新名字不变），`GET .../portal/resolve` 由名字解析回最新 CID。
 Kubo 不在时就如实报错（含启动方式），不假装发布成功。
 
-**门禁**: `cargo test -p bolloon-web --lib` **62/62**（含 `room_runtime_and_friend_inbox_gates`）
+**系统提示词补「能力与接口权限」块（leo 2026-10-31）**: `capability_block` 随每个智能体注入：
+已授予的读写/命令工具、需显式授权的两项、IPFS/IPNS 五个工具、可直接 curl 的本机接口
+（portal/publish/resolve、pool/credit、room/runtime）、**它自己的 IPNS 门户名**（发布过就带上），
+以及群内派单规则（人类命令立即执行 / `[[task:]]` / 警长 `[[veto:]]` / 60s 自动派单）与资源池
+借还规则（密钥永不出本机）。实测：问它"你有哪些 IPFS 工具和接口权限"，能逐条复述正确。
+
+**Kubo**: 本机从 0.43.0 升到 **0.43.1**（GitHub latest，repo 仍 fs-repo@18 无需迁移），
+升级后门户 publish/resolve 与 `ipfs_cat`/`ipns_resolve` 真机复验通过。
+
+**门禁**: `cargo test -p bolloon-web --lib` **63/63**（含 `room_runtime_and_friend_inbox_gates`、`pool_tests`）
 **门禁**: `cargo test -p bolloon-llm --lib` **58/58** · `cargo test -p bolloon-agent --lib` **432/432** ·
 `cargo check --workspace --all-targets` 0 错 · `cargo clippy -p bolloon-llm --all-targets` 0 警告。
 **诚实边界**: Windows/Linux 后端只做了**编译级**验证（本机是 macOS，没有真跑 DPAPI/secret-tool）；
