@@ -6867,3 +6867,83 @@ server.mjs 与配置仍**只存在于机器上**(未镜像化) · 并发/长期�
 - 超时/重试直接中断回复: `WebStrategy::call` 一次失败就把错误当回答。改成网络类错误(超时/连接/429/5xx)退避重试 3 次(0.8s/3.2s/7.2s), 仍失败才回「已自动重试 3 次仍失败」。
 - 侧栏「结束」按钮移除(#sideEndBtn 及其处理器与 CSS 规则)。
 - 验证: 临时 home → 建会话 → 发一句 → native-state.json 里 msgs=2 且 title 自动取首句 → 重启后 `/api/bootstrap` 与 `/api/sessions` 都还看得到; App 自身端口 28585 上 `/api/sessions` 返回 7 条磁盘会话(修复前恒 `[]`)。
+
+### 2026-10-31 「完全访问」开了却不生效 —— 权限没落到工具门（Rust web/App）
+
+**现象（用户原话）**: 界面里打开「Clarity 完全访问」，`shell` / `write_file` 仍返回 `DENIED（effect=Shell / Write）`，只有 `read_file` / `git_status` 这类只读工具能用；顺带「回复没有出现」。
+
+**根因（读代码钉死，不是猜）**:
+
+1. `rust/crates/bolloon-web/src/native.rs` 的 `reply_with_agent_stages` 里，harness 是
+   `builtin_harness(300, 900_000, cancel, false)` —— **bypass 硬编码 false**；而
+   `builtin_harness` 本身**一把工具都不授予**（返回的空授予集）。
+2. `bolloon-harness` 的 permission 门（`harness.rs` gate 第 2 步）只放行
+   `default_allowed == true` 或**名字在 `granted` 集合里**的工具。授予集为空 ⇒
+   `shell`/`write_file`/`edit_file`/`mkdir`/`delete_file`/`run_scratch_script`
+   全部 `policy=permission` 拒，只读工具因为 `default_allowed=true` 才活下来。
+3. 界面那个开关只走到 `POST /api/permission` → `AppState.full_access`（AtomicBool），
+   而全仓只有两处读它：clarity 授权队列自动放行（`native.rs` `auth_request`）与
+   `/api/scratch/run` 门禁。**它从来没进过工具门** ⇒ 开关是「真开着、但没人接」。
+4. 对照：CLI 路径（`bolloon-cli/src/main.rs`）反而是对的 —— bypass 时把注册表全部工具
+   授予，默认时授予一份可逆写清单。所以问题只在 web/App 一条路上。
+
+**修法（机制留在 Harness/agent 层，接线在 web，不新造第二条路径）**:
+
+- `bolloon-agent/src/builtin_tools.rs`: 新增单一真源 `DEFAULT_GRANTED_TOOLS`
+  （shell / write_file / edit_file / mkdir / move_file / git_add / git_commit /
+  run_scratch_script；不可逆的 `delete_file`、对外的 `git_push` **不在**其中）
+  + `apply_mode_grants(&harness, &registry, bypass)`：bypass ⇒ 注册表全部；默认 ⇒ 上面那份。
+  `builtin_harness` / `builtin_harness_with_econ` 建完 harness **立刻**按模式授予。
+- `bolloon-web/src/native.rs`: 每次请求读 `st.full_access`，把它传进 `builtin_harness`
+  ⇒ 开关即时生效（harness 本来就每请求重建，不需要重启进程）。
+- `bolloon-cli/src/main.rs`: 删掉重复的那份授予清单，改调同一个 `apply_mode_grants`
+  （web/CLI 不再各写一套）。
+- `bolloon-harness/src/harness.rs`: 加只读自省 `is_granted()`，让「开了权限还 DENIED」
+  能当场问出是哪一层没落。
+- `bolloon-web/assets/index.html`: 流式输出只到思维链/连接就断时，以前**什么都不写**
+  ⇒ 空气泡（用户说的「回复没有出现」）。现在写一句实话
+  `（没有收到正文：<原因>）`，且不重跑整轮（重跑=重复烧 token）。
+
+**第二根因（「回复没有出现」的真凶，实测抓到）**: 首次验证时 agent 没回复，回包是
+`agent 循环失败: HTTP 400 … The reasoning_content in the thinking mode must be passed back`。
+开 debug 日志抓到请求形状: `… 14:assistant/tc=1/rc=76/len=0 15:tool/… 16:assistant/tc=0/rc=None/len=2`
+—— 最后一条是 **assistant**。根因在 `kernel_loop.rs` 的「目标未对齐自纠」分支: 它只把
+assistant 回音拼回 `messages` 就 `continue` 再问，**请求以 assistant 轮收尾且没有任何新指令**。
+思考模式上游一律 400，`runtime.rs` 的两级兜底（补空串 / 摊平工具协议）也救不回来，
+整轮就退化成一句报错。修法: 自纠时补一条明确的 user 继续指令（`CONTINUE_NUDGE`），
+请求形状回到「user/tool 轮收尾」，同时把「还没对齐、接着做」真正告诉模型；该消息只存在本轮内、不落会话。
+
+**顺手修掉的第三处（真跑里撞见的）**: 新建会话第一次提问会**继承别的会话的上下文** ——
+`chat_history` 在「给了 session_id 但会话还空」时掉进进程内全局 `st.messages`，
+实测新会话说"你知道自己的 did 吗"，它却在回答上一轮会话写过的 `bolloon-verify-default.txt`。
+串味既是隐私问题也是答非所问的来源。改为：给了 id 就只认这个会话，空就是空；
+只有完全没给 id 的老路径才回落到进程内历史。
+
+**门禁（真跑）**:
+
+- `cargo test -p bolloon-agent --lib` **432/432**（新增 `mode_grants_keep_daily_tools_usable`：
+  默认模式 `write_file` 真写文件 / `delete_file` 被 permission 拒且零执行 / 完全访问下
+  `delete_file` 真删；同时断言 `shell`/`edit_file` 等在默认模式确实进授予集；新增
+  `unaligned_retry_always_ends_with_user_turn`：自纠轮的每次请求都**不以 assistant 收尾**）
+- `cargo test -p bolloon-harness --lib` 16/16 · `cargo test -p bolloon-web --lib` 59/59
+- `cargo check --workspace --all-targets` 0 错 · `cargo clippy`（harness/agent/web/cli，all-targets）0 警告
+- App 侧真跑（重出 `target/release/bundle/macos/Bolloon.app` 14:32 后重启进程，端口随机）:
+  `GET /api/permission` → `POST {full_access:false}` 默认模式让 agent 用 `write_file` 写
+  `/Users/apple/.hermes/cache/scratch/bolloon-verify-default.txt` ⇒ 文件真落盘(15B `default-mode-ok`)、
+  回包是读回内容而非 DENIED；`POST {full_access:true}` 后让它用 `shell` 跑 `echo bolloon-perm-ok`
+  ⇒ 回包就是 `bolloon-perm-ok`（命令真执行）。修复前同一套操作回的是
+  `DENIED: 工具 shell 非默认允许（effect=Shell），需显式授权`。
+  另: 全新 session 第一句「你知道自己的 did 吗」8.5s 回出本机真 DID、
+  **没有任何上一会话的内容**（串味已闭）。
+
+**诚实边界**:
+
+- `full_access` 是**进程级** AtomicBool，不是按会话/按智能体 —— 「授权给了别的会话」这个
+  猜测不成立；真正的问题是它压根没接线。**重启 App 后开关会回到关闭**（不持久化，安全默认）。
+- 完全访问并不解除执行器侧硬边界：敏感凭据路径（`.env` / `*.pem` / `.bolloon/{identity,llm-config,…}`）
+  与 shell denylist 之外的超时/预算/取消/审计照旧；`delete_file`/`git_push` 在默认模式仍被拒。
+- 另发现一处**既存缺口**（本轮未动）：`bolloon-config::RuntimePolicy::tool_denied` /
+  `effective_granted`（配置里的 `safety.granted_tools` 白名单）只在测试里被调用，
+  生产路径没人调 ⇒ 配置级白名单对工具门无效。撤销（`revoked_tools`）是另走 harness 独立安全路径，真生效。
+- `rust/app-tauri/src-tauri/Cargo.toml` 仍是 `0.7.1`，包版本走 `tauri.conf.json` 的 `0.7.3-0`；
+  两份 `Cargo.lock` 的未暂存改动只是工作区版本 0.7.1→0.7.3 被构建重新生成，无源码语义变化。

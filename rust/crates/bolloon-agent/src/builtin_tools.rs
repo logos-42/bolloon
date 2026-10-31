@@ -307,6 +307,43 @@ pub fn tool_defs_to_schemas(defs: &[ToolDef]) -> Vec<ToolSchema> {
         .collect()
 }
 
+/// 默认（非完全访问）**显式授予**的高风险工具: 可逆写入 + 本地 git 写 + scratch。
+///
+/// 不可逆的 `delete_file` / 对外的 `git_push` **不在**此列（决策 2: 分级授权）。
+/// 与 CLI 默认授予同一份清单 —— 单一真源, 不许 web/CLI 各写一套
+/// （2026-10-31 实证: web/App 曾经一套都不授予 ⇒ shell/write_file 全被 permission 门拒）。
+pub const DEFAULT_GRANTED_TOOLS: &[&str] = &[
+    "shell",
+    "write_file",
+    "edit_file",
+    "mkdir",
+    "move_file",
+    "git_add",
+    "git_commit",
+    "run_scratch_script",
+];
+
+/// 按权限模式把已注册工具授进 Harness 的 permission 门。
+///
+/// - `bypass = true`（完全访问）⇒ 注册表里**全部**工具
+/// - `bypass = false`（默认）  ⇒ 只有 `DEFAULT_GRANTED_TOOLS`
+///
+/// **只影响 permission 门**: 高危命令 denylist / 受保护路径 / 预算 / 超时 / 审计照旧
+/// （敏感路径即便完全访问也读不到 —— 那是执行器侧的硬边界, 不在这里放）。
+pub async fn apply_mode_grants(h: &Harness, reg: &ToolRegistry, bypass: bool) {
+    if bypass {
+        for d in reg.list().await {
+            h.grant(&d.name).await;
+        }
+    } else {
+        for name in DEFAULT_GRANTED_TOOLS {
+            if reg.get(name).await.is_some() {
+                h.grant(name).await;
+            }
+        }
+    }
+}
+
 /// 生产即用: 注册全部内置工具 + 产出模型 schema + 建好 Harness (带九步门控)
 ///
 /// `calls` = 工具调用预算上限; `budget_ms` = 工具执行总预算(毫秒);
@@ -322,7 +359,10 @@ pub async fn builtin_harness(
     let reg = Arc::new(ToolRegistry::new());
     register_builtin_tools(&reg).await;
     let exec = Arc::new(BuiltinExecutor::new(cancel, bypass, crate::scratch::ScriptRunPort::noop()));
-    let h = Arc::new(Harness::new(reg, exec, budget));
+    let h = Arc::new(Harness::new(reg.clone(), exec, budget));
+    // 授权必须在这里落一次: Harness 只放行 `default_allowed` 或**显式授予**的工具,
+    // 不授予 ⇒ shell/write_file 一律 `DENIED (policy=permission)`。
+    apply_mode_grants(&h, &reg, bypass).await;
     let schemas = tool_defs_to_schemas(&builtin_tool_defs());
     (h, schemas)
 }
@@ -345,7 +385,8 @@ pub async fn builtin_harness_with_econ(
             crate::econ_tools::EconTools { econ, principal, group },
         ),
     );
-    let h = Arc::new(Harness::new(reg, exec, budget));
+    let h = Arc::new(Harness::new(reg.clone(), exec, budget));
+    apply_mode_grants(&h, &reg, bypass).await;
     let schemas = tool_defs_to_schemas(&builtin_tool_defs());
     (h, schemas)
 }
@@ -562,6 +603,67 @@ mod tests {
             .await;
         assert!(out3.denied.is_some(), "不可逆 delete 不该随 write 一起被授予");
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// **模式授予（2026-10-31 回归门）**: 默认模式必须让日常 shell/写文件可用,
+    /// 不可逆工具仍拒; 完全访问 ⇒ 全部放行。
+    ///
+    /// 真实 bug: web/App 用 `builtin_harness(.., false)` 却**一套都不授予** ⇒
+    /// 界面上「完全访问」开了也没用, `shell`/`write_file` 一律 `DENIED (policy=permission)`。
+    /// 所以这里断言的是 \*\*接线\*\*, 不只是 Harness 单门逻辑。
+    #[tokio::test]
+    async fn mode_grants_keep_daily_tools_usable() {
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        // ① 默认模式: 日常可逆工具确实进了授予集合
+        let (h, _s) = builtin_harness(20, 30_000, cancel.clone(), false).await;
+        for name in ["shell", "write_file", "edit_file", "mkdir", "move_file"] {
+            assert!(h.is_granted(name).await, "默认模式 {name} 必须被授予");
+        }
+        // 不可逆 / 对外副作用仍不授予 (决策 2 分级不能被\"顺手放宽\"抹掉)
+        for name in ["delete_file", "git_push"] {
+            assert!(!h.is_granted(name).await, "默认模式 {name} 不该被授予");
+        }
+
+        // ② 真执行: 默认模式 write_file 走完 discover→permission→…→execute
+        let p = std::env::temp_dir().join(format!("bolloon_mode_{}.txt", std::process::id()));
+        let out = h
+            .gate(ToolCall {
+                id: "w1".into(),
+                name: "write_file".into(),
+                arguments: serde_json::json!({ "path": p.display().to_string(), "content": "daily" }),
+            })
+            .await;
+        assert!(out.denied.is_none(), "默认模式 write_file 被拒: {:?}", out.denied);
+        assert!(out.result.expect("有结果").ok, "写文件应成功");
+        assert!(p.exists());
+
+        // ③ 默认模式: 不可逆 delete 被 permission 门拒 (零执行)
+        let out2 = h
+            .gate(ToolCall {
+                id: "d1".into(),
+                name: "delete_file".into(),
+                arguments: serde_json::json!({ "path": p.display().to_string() }),
+            })
+            .await;
+        let d = out2.denied.expect("默认模式 delete_file 必须被拒");
+        assert_eq!(d.policy, "permission");
+        assert!(out2.result.is_none());
+        assert!(p.exists(), "被拒 = 零执行, 文件不该被动过");
+
+        // ④ 完全访问: 同一台 harness 的构造函数, 换 bypass ⇒ 不可逆也放行
+        let (h2, _s2) = builtin_harness(20, 30_000, cancel, true).await;
+        assert!(h2.is_granted("delete_file").await, "完全访问必须授予 delete_file");
+        let out3 = h2
+            .gate(ToolCall {
+                id: "d2".into(),
+                name: "delete_file".into(),
+                arguments: serde_json::json!({ "path": p.display().to_string() }),
+            })
+            .await;
+        assert!(out3.denied.is_none(), "完全访问下 delete_file 应放行: {:?}", out3.denied);
+        assert!(out3.result.expect("有结果").ok);
+        assert!(!p.exists());
     }
 
     /// read_file 失败同样带结构化错误码（与 shell 同一套契约）

@@ -2,7 +2,7 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-10-30
+last_confirmed: 2026-10-31
 schema_version: 2
 audience: self
 stage: current
@@ -14,6 +14,8 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 ---
 
 ## 已支持 (✅ 生产可用)
+
+| **★ 完全访问开关真落到工具门 (2026-10-31, leo: 开了完全访问 shell/write_file 仍 DENIED)** | `rust/crates/bolloon-agent/src/builtin_tools.rs`(新增 `DEFAULT_GRANTED_TOOLS` 单一真源 + `apply_mode_grants`: bypass ⇒ 注册表全部 / 默认 ⇒ 可逆写清单; `builtin_harness`/`builtin_harness_with_econ` 建完即授予) · `rust/crates/bolloon-web/src/native.rs`(`reply_with_agent_stages` 每请求读 `st.full_access` 传进 `builtin_harness`, 不再硬编码 false) · `rust/crates/bolloon-cli/src/main.rs`(删重复清单, 改调同一 helper) · `rust/crates/bolloon-harness/src/harness.rs`(只读自省 `is_granted`) · `rust/crates/bolloon-agent/src/kernel_loop.rs`(自纠轮补 `CONTINUE_NUDGE` user 指令 —— 请求不再以 assistant 收尾, 修思考模式 400) · `rust/crates/bolloon-web/assets/index.html`(流式只到思维链就断时写「没有收到正文:<原因>」, 不再留空气泡) | **根因**: permission 门只放行 `default_allowed` 或**显式授予**的工具, 而 web 路径的授予集恒空、`bypass` 又被硬编码 false ⇒ `shell`/`write_file` 一律 `policy=permission` 拒, 只读工具因 `default_allowed=true` 存活; 界面开关只走到 clarity 授权队列与 `/api/scratch/run`, 从没进工具门。**验证**: `cargo test -p bolloon-agent --lib` 431/431 (新增 `mode_grants_keep_daily_tools_usable`: 默认模式 write_file 真写 · delete_file 被拒且零执行 · 完全访问下真删) · harness 16/16 · web 59/59 · `cargo check --workspace --all-targets` 0 错 · clippy 0 警告。**诚实边界**: `full_access` 是进程级开关且不持久化(重启回关) · 敏感凭据路径与 denylist/预算/超时不变 · 配置级 `safety.granted_tools` 白名单仍未接进 harness(既存缺口, 未动)。 | [log.md](./log.md) |
 
 | **★ 运行阶段流光 + Load failed 根因 + 并发槽位泄漏 + 群组议程统一 (2026-10-30, leo: 加载没中间进展 · 运行到一半停了 · 群聊警长不在选中里 · 创建群不要名字弹窗 · 不同会话要能并行)** | `rust/crates/bolloon-web/src/native.rs`(`ChatRuns` 每会话运行态 · `StageObserver` 只读观察者 · `chat_stream` 先吐字节再跑(SSE keep-alive 8s) · `chat_status`/`chat_stop` 真实现 · `chat_history` 按会话取历史 · `elect_group_targets` 唯一选举入口 · `auto_group_name` 默认群名) · `rust/crates/bolloon-llm/src/runtime.rs`(**并发闸改 RAII `GatePermit`** —— 旧手动 release 在 future 被丢弃时永久泄漏, max=2 泄漏两次后全进程模型调用无限排队 · `reasoning_content` 400 两级兜底(补空串 → 摊平工具协议) · 新增 2 条回归测试) · `rust/crates/bolloon-config/src/schema.rs`(max_steps 20→60 · budget_calls 20→120 · budget_ms 120s→15min) · `rust/crates/bolloon-web/src/room_bus.rs`(阶段表 `set_stage/thinking_detail` · `strip_tool_noise` · 小群全员并发常量) · `server.rs`(`group_messages` thinking 带阶段 · `create_group` 空名自动起名) · `assets/index.html`(阶段流光行 + 停止/续看 + 无名字弹窗创建) | **验证**: `cargo check --workspace --all-targets` 0 错 0 警告 · 544 测试全绿(web 45 · llm 53 · agent 430 · config 26) · 真二进制+严格假上游: 首字节 0.00s / 工具阶段 0.49s / done finished; 停止 1.4s 内 aborted; 状态接口运行中可见 stages; 6 次 reasoning_content 400 全部兜底恢复 · 群聊: 只选甲乙 ⇒ 警长在甲乙内、丙零汇报 · 真浏览器阶段行与无弹窗建群目验。 **诚实边界**: 阶段=工具/轮次粒度不是逐 token; 群内仍单轮; 停止在下次模型调用前生效; 真 DeepSeek 未直接复测(无 key, 用严格假上游复刻 400)。 | [log.md](./log.md) |
 | 功能 | 路径 | 验证 |

@@ -10,6 +10,13 @@ use bolloon_config::{policy::RuntimePolicy, ConfigView};
 use bolloon_harness::{GateOutcome, Harness, ToolCall};
 use bolloon_llm::{ChatMessage, GenerateParams, GenerateResult, LlmRuntime, ToolSchema};
 
+/// 目标未对齐时的自纠指令。**必须存在**：自纠轮如果把 assistant 回音拼回去就再问，
+/// 请求会以 assistant 消息收尾，思考模式的上游直接 400（"reasoning_content must be
+/// passed back"），整轮退化成一句报错 —— 用户那边就是「回复没有出现」。
+/// 这条消息只在本轮调用内生效，不落会话历史。
+const CONTINUE_NUDGE: &str =
+    "（自检：你刚才那一段还没对齐我最初的目标。接着做 —— 该用工具就用工具，别复述已完成的部分。）";
+
 /// 循环策略（模型调用的组成方式；Pi adapter 与 native adapter 共用）
 ///
 /// 流式渲染/中断监听这类"怎么调模型"的差异属于**策略**（在 `call` 内部自理），
@@ -544,6 +551,21 @@ impl<S: LoopStrategy> KernelLoop<S> {
                     // 思考模式的思维链必须原样回传 (DeepSeek 否则 400)
                     reasoning_content: resp.reasoning_content.clone(),
                 });
+                // 2026-10-31 修 **「回复没有出现」**: 自纠轮以前只把 assistant 回音拼回去就
+                // 直接再问 ⇒ 请求**以 assistant 消息收尾、且没有任何新指令**。思考模式的上游
+                // 直接 400 (`The reasoning_content in the thinking mode must be passed back`),
+                // 整轮就变成一句报错, 用户看到的是"没有回复"。这里补一条明确的继续指令:
+                // 请求形状回到「以 user 轮收尾」, 同时把「还没对齐, 接着做」真正告诉模型。
+                // 该消息只存在于本轮调用内, 不写会话历史、不入 UI。
+                messages.push(ChatMessage {
+                    role: "user".into(),
+                    content: CONTINUE_NUDGE.to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    images: vec![],
+                    tool_calls: None,
+                    reasoning_content: None,
+                });
                 continue;
             }
 
@@ -895,6 +917,112 @@ mod tests {
         let last = steps.last().unwrap();
         assert!(matches!(last.stop, Some(StopReason::Finished)), "最终应 Finished");
         assert!(steps.iter().filter(|s| !s.tool_calls.is_empty()).count() >= 2, "应至少调了 2 次工具");
+    }
+
+    /// **请求形状门 (2026-10-31)**: 目标未对齐的自纠轮, 每次模型调用都必须**以 user 轮收尾**。
+    ///
+    /// 真实故障: 之前只把 assistant 回音拼回就再问 ⇒ 请求末尾是 assistant 消息,
+    /// 思考模式上游 400（reasoning_content must be passed back）, 整轮变一句报错 =
+    /// 用户看到的「回复没有出现」。
+    #[tokio::test]
+    async fn unaligned_retry_always_ends_with_user_turn() {
+        use std::sync::Mutex;
+
+        struct RecordingStrategy {
+            calls: std::sync::atomic::AtomicUsize,
+            /// 每次调用时最后一条消息的角色
+            last_roles: Mutex<Vec<String>>,
+        }
+        #[async_trait]
+        impl LoopStrategy for RecordingStrategy {
+            async fn call(
+                &self,
+                _provider_id: &str,
+                _model: &str,
+                messages: Vec<ChatMessage>,
+                _tools: Vec<ToolSchema>,
+            ) -> Result<GenerateResult, String> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let idx = self.calls.load(std::sync::atomic::Ordering::SeqCst);
+                self.last_roles
+                    .lock()
+                    .unwrap()
+                    .push(messages.last().map(|m| m.role.clone()).unwrap_or_default());
+                // 第 1 轮先动一次工具 (否则"从没动过工具"的纯闲聊会直接收尾),
+                // 之后永远只回文本、永远"未对齐", 逼循环走自纠分支
+                let tool_calls = if idx == 1 {
+                    vec![bolloon_llm::ToolCallMsg {
+                        id: "call_1".into(),
+                        call_type: "function".into(),
+                        function: bolloon_llm::FunctionCall {
+                            name: "read_file".into(),
+                            arguments: "{}".into(),
+                        },
+                    }]
+                } else {
+                    vec![]
+                };
+                Ok(GenerateResult {
+                    content: "还没对齐".into(),
+                    tool_calls,
+                    finish_reason: "stop".into(),
+                    usage: bolloon_llm::Usage::default(),
+                    model: "m".into(),
+                    reasoning_content: None,
+                })
+            }
+        }
+
+        struct NeverAligned;
+        #[async_trait]
+        impl GoalReviewer for NeverAligned {
+            async fn is_aligned(
+                &self,
+                _p: &str,
+                _m: &str,
+                _intent: &str,
+                _transcript: &str,
+            ) -> Result<bool, String> {
+                Ok(false)
+            }
+        }
+
+        let (harness, _) = setup().await;
+        let strategy = Arc::new(RecordingStrategy {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            last_roles: Mutex::new(vec![]),
+        });
+        let loop_ = KernelLoop::new(strategy.clone(), harness)
+            .with_limits(10, 1)
+            .with_max_reflect(3)
+            .with_goal_review(Arc::new(NeverAligned));
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: "做件事".into(),
+            name: None,
+            tool_call_id: None,
+            images: vec![],
+            tool_calls: None,
+            reasoning_content: None,
+        }];
+        let _ = loop_.run("p", "m", messages, vec![], None).await.unwrap();
+
+        let roles = strategy.last_roles.lock().unwrap().clone();
+        assert!(roles.len() >= 3, "自纠应至少再问一次, 实际调用 {} 次", roles.len());
+        for (i, r) in roles.iter().enumerate() {
+            // 合法收尾: user (新指令) 或 tool (工具结果) —— **绝不能是 assistant**
+            assert!(
+                r == "user" || r == "tool",
+                "第 {i} 次模型调用以 {r} 轮收尾 —— 思考模式上游会 400 \
+                 (reasoning_content must be passed back), 整轮变一句报错: {roles:?}"
+            );
+        }
+        // 自纠轮必须是**带新指令**的 user 轮, 不是把 assistant 回音拼回去
+        assert_eq!(
+            roles.last().map(|s| s.as_str()),
+            Some("user"),
+            "自纠后应出现明确的继续指令: {roles:?}"
+        );
     }
 
     /// `run_observed`: 观察者拿到轮次/工具回调, 且返回被改写的历史 + 捕获的配置版本。

@@ -1623,26 +1623,6 @@ async fn send_one(
     // ── 工具运行时: 注册表 + 真实执行器 + Harness ──
     let registry = std::sync::Arc::new(bolloon_harness::ToolRegistry::new());
     bolloon_agent::builtin_tools::register_builtin_tools(&registry).await;
-    // 授予范围: 完全访问 = 所有已注册工具都不再逐次授权; 默认 = 只授予高风险 shell
-    let granted: Vec<String> = if bypass {
-        registry.list().await.iter().map(|d| d.name.clone()).collect()
-    } else {
-        vec![
-            // 高风险 shell + 可逆写入（显式授予，不是默认放行）
-            "shell".to_string(),
-            "write_file".to_string(),
-            "edit_file".to_string(),
-            "mkdir".to_string(),
-            "move_file".to_string(),
-            // delete_file **不在**此列: 不可逆 ⇒ 需显式授权（决策 2 分级）
-            // git: 本地写（add/commit）授予；git_push（不可逆外部）**不默认授予**
-            "git_add".to_string(),
-            "git_commit".to_string(),
-            // scratch 跑临时脚本与 shell 同级高风险 ⇒ 默认显式授予 (也可走完全访问)
-            "run_scratch_script".to_string(),
-        ]
-    };
-    let granted_refs: Vec<&str> = granted.iter().map(|s| s.as_str()).collect();
     // scratch 子系统: 注入真执行器 (tokio::process); 默认 noop
     let script_run = bolloon_agent::scratch::ScriptRunPort::new(std::sync::Arc::new(
         bolloon_agent::scratch::TokioScriptRunner::new(),
@@ -1658,11 +1638,13 @@ async fn send_one(
             // 预算 (B 类): 从受治理配置取, 不再各处硬编码
             bolloon_harness::Budget::new(snap.config.task.budget_calls, snap.config.task.budget_ms),
         )
-        // 高风险工具**显式授予**而非默认放行; 完全访问下授予全部（安全门由 bypass 跳过）
-        .with_granted(&granted_refs)
         // 受治理配置: 安全紧急控制 + 超时/重试覆盖 (只读, 不绕过既有门)
         .with_config(config_manager.view()),
     );
+    // 授予: 完全访问 ⇒ 注册表全部工具; 默认 ⇒ DEFAULT_GRANTED_TOOLS。
+    // 清单与 web/App 同一份 (`builtin_tools::DEFAULT_GRANTED_TOOLS`), 不各写一套。
+    // 高风险工具**显式授予**而非默认放行; 授权不等于无障碍 (denylist/路径/预算照旧)。
+    bolloon_agent::builtin_tools::apply_mode_grants(&harness, &registry, bypass).await;
     // `ToolDef → ToolSchema` 桥接: 注册表里的定义终于能发给模型
     let tool_schemas = bolloon_agent::builtin_tools::tool_defs_to_schemas(&registry.list().await);
 

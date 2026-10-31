@@ -2583,6 +2583,11 @@ async function submitMessage(text,images){
         if(e2.name==='AbortError')assistant.text=assistant.text||'（已停止）';
         else assistant.text='（错误）'+(e.message||e2.message);
       }
+    }else if(!assistant.text){
+      // 2026-10-31 (用户: 「回复没有出现」): 只流到思维链/连不上就断了的时候,
+      // 以前这里**什么都不写** ⇒ 空气泡, 用户分不清断网、模型报错还是被停。
+      // 不重跑整轮 (重跑 = 重复烧 token), 但必须留一句实话。
+      assistant.text='（没有收到正文：'+((e&&e.message)||'连接中断')+'）';
     }
   }finally{
     aborts.delete(s.id);assistant.streaming=false;setBusy(s.id,false);

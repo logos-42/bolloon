@@ -256,6 +256,12 @@ impl Harness {
         self.granted.lock().await.insert(name.to_string());
     }
 
+    /// 该工具当前是否被显式授予（只读自省；permission 门判定用的就是这份集合）。
+    /// 用于接线自检与测试: 「完全访问开了却还 DENIED」要能当场问出到底是哪一层没落。
+    pub async fn is_granted(&self, name: &str) -> bool {
+        self.granted.lock().await.contains(name)
+    }
+
     /// 唯一执行入口。管道:
     /// discover → permission → policy → budget → idempotency → execute → verify → evidence → event
     pub async fn gate(&self, call: ToolCall) -> GateOutcome {

@@ -1871,8 +1871,19 @@ pub async fn reply_with_agent_stages(
     // 2026-10-30 (leo: 运行到一半就停止了 / 中间进展看不到):
     //   ① 取消标志由调用方给 (前端「停止」直接置位) ⇒ 不再自己造一个没人能碰的
     //   ② 工具预算放宽 (300 次调用 / 900s) —— 以前 60 次/300s 的长任务会中途被掐
-    let (mut harness, schemas) =
-        bolloon_agent::builtin_tools::builtin_harness(300, 900_000, cancel.clone(), false).await;
+    // 2026-10-31 修 **「开了完全访问，shell/write_file 仍 DENIED」**:
+    //   这里以前把 `bypass` 硬编码成 false, 界面上那个「Clarity 完全访问」开关
+    //   (`st.full_access`) 只影响 clarity 授权队列与 scratch, 从来没送到工具门 ⇒
+    //   permission 门看到的是「零授予」, shell/write_file/edit_file 一律被拒。
+    //   现在按**当前**开关值传入, 每次请求重建 harness ⇒ 开关即时生效。
+    let full_access = st.full_access.load(Ordering::SeqCst);
+    let (mut harness, schemas) = bolloon_agent::builtin_tools::builtin_harness(
+        300,
+        900_000,
+        cancel.clone(),
+        full_access,
+    )
+    .await;
     // 受治理配置: 安全紧急控制 + 超时覆盖 (harness)
     let harness = {
         let h = std::sync::Arc::get_mut(&mut harness).expect("harness Arc 应唯一");
@@ -2332,7 +2343,14 @@ async fn chat_history(st: &AppState, session_id: &str, text: &str) -> Vec<ChatMe
         }
         return out;
     }
-    // 老路径：会话还没落过消息时用进程内历史（重启后由 bootstrap 补种）
+    // 2026-10-31 (实测): 给了 session_id 但那个会话还是空的时, 以前会**掉进进程内全局历史**
+    //   ⇒ 新会话第一次提问就继承了别的会话/别的智能体最后 12 条对话 (实测: 新建会话问
+    //   "你知道自己的 did 吗", 它却在回答上一条会话里写过的 `bolloon-verify-default.txt`)。
+    //   串味既是隐私问题也是答非所问的根源。给了 id 就只认这个会话 —— 空就是空。
+    if !session_id.is_empty() {
+        return out;
+    }
+    // 没有 session_id 的老路径: 用进程内历史 (重启后由 bootstrap 补种)。
     let msgs = st.messages.lock().await;
     let start = msgs.len().saturating_sub(12);
     let last = msgs.len().saturating_sub(1);
