@@ -7069,6 +7069,18 @@ B 离线时 A 发请求 → `requests_out` 1 条（留存）→ B 上线后 **14
 `requests_in/requests_out/outbox`。同时发现并修掉：人类在开场轮未跑完时说话，忙的成员会被
 **静默跳过** ⇒ 现在 5s 后补派一轮。
 
+**资源池 = 峰值富余 + 互惠（leo 2026-10-31 定调）**: 不是"每人每天 30 次"的静态额度，而是
+"自己峰值用不完的给别人、别人以后也分给自己"。落地：
+① 借出前先看本机负载（`chat_runs.running_count()`），≥ `POOL_MAX_CONCURRENT`(2) 就如实拒绝
+"此刻没有富余算力"；② 额度 = 基础 30 + **互惠加成**（我借过对方几次还没还够 ×2，上限 5 倍）；
+③ 借用成功记 `pool_borrowed[peer]`，借出记 `pool_credit`，两边都能查（`/api/pool/credit` 带
+`borrowed` / `busy_now`）。
+
+**IPNS = 智能体对外门户**: `GET /api/agents/{id}/portal` 看门户，`POST .../portal/publish` 把名片
+（schema `bolloon.agent.portal/1`）发到 IPFS 并绑到该智能体**自己的** IPNS 密钥
+（`bolloon-agent-<id>`，内容更新名字不变），`GET .../portal/resolve` 由名字解析回最新 CID。
+Kubo 不在时就如实报错（含启动方式），不假装发布成功。
+
 **门禁**: `cargo test -p bolloon-web --lib` **62/62**（含 `room_runtime_and_friend_inbox_gates`）
 **门禁**: `cargo test -p bolloon-llm --lib` **58/58** · `cargo test -p bolloon-agent --lib` **432/432** ·
 `cargo check --workspace --all-targets` 0 错 · `cargo clippy -p bolloon-llm --all-targets` 0 警告。

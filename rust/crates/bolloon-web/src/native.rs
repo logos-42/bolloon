@@ -283,8 +283,11 @@ pub(crate) fn pool_message(
     format!("pool|{from}|{to}|{group}|{agent}|{digest}|{ts_ms}")
 }
 
-/// 每天最多替某个 DID 免费跑几次（超过就如实拒绝，不悄悄扣别人的额度）
+/// 每天最多替某个 DID 免费跑几次（互惠会在这个基础上加额度）
 pub const POOL_DAILY_CALLS: u32 = 30;
+
+/// 本机同时跑的任务超过这个数就当"在峰值"，不再外借算力
+pub const POOL_MAX_CONCURRENT: usize = 2;
 
 /// 一条待投递的好友事件 (`kind`: `request` 请求 / `accept` 同意通知)
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -349,6 +352,9 @@ pub struct NativeState {
     /// 群内 API 共享: group_id → 允许借用的好友节点基址（对方有模型通路时帮本群跑一轮）
     #[serde(default)]
     pub group_pools: std::collections::HashMap<String, Vec<String>>,
+    /// 我向别人借过几次: 对方 DID → 次数（互惠额度的依据）
+    #[serde(default)]
+    pub pool_borrowed: std::collections::HashMap<String, u32>,
     /// 借出算力的**贡献账**: (对方 DID, 群) → 累计次数 (来源可追溯, 不是一句"已共享")
     #[serde(default)]
     pub pool_credit: Vec<PoolCredit>,
@@ -2480,6 +2486,12 @@ impl ChatRuns {
         }
     }
 
+    /// 本机此刻正在跑的轮次（聊天 + 群回合 + 借别人算力的轮次都算）—— 用来判断"峰值"
+    pub fn running_count(&self) -> usize {
+        let m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        m.values().filter(|r| r.running).count()
+    }
+
     pub fn counters(&self, sid: &str, turns: u32, tools: u32) {
         let mut m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(r) = m.get_mut(sid) {
@@ -3139,21 +3151,40 @@ pub async fn pool_infer(
     let Some(agent) = agent else {
         return Json(serde_json::json!({ "ok": false, "error": "本机没有对好友开放的智能体" }));
     };
-    // 当天额度
+    // **峰值判断**: 资源池是"自己峰值用不完的才给别人" —— 本机正忙就先拒绝，别把主线拖慢
+    let busy = st.chat_runs.running_count();
+    if busy >= POOL_MAX_CONCURRENT {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": format!("本机正在跑 {busy} 个任务（达到上限 {POOL_MAX_CONCURRENT}），此刻没有富余算力"),
+            "busy": busy,
+        }));
+    }
+    // 当天额度: base + **互惠加成**（对方借给我的次数越多，我能还他的就越多）
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     {
         let mut fs = st.forge.lock().await;
+        let borrowed = fs.pool_borrowed.get(&from_did).copied().unwrap_or(0);
+        let served = fs
+            .pool_credit
+            .iter()
+            .filter(|c| c.served_to == from_did)
+            .map(|c| c.calls)
+            .sum::<u32>();
+        // 互惠: 我曾向他借过、还没还够的，每次多给 2 次额度（上限 base 的 5 倍）
+        let owed = borrowed.saturating_sub(served);
+        let cap = POOL_DAILY_CALLS + (owed * 2).min(POOL_DAILY_CALLS * 4);
         let e = fs.pool_calls.entry(from_did.clone()).or_insert((today.clone(), 0));
         if e.0 != today {
             *e = (today.clone(), 0);
         }
-        if e.1 >= POOL_DAILY_CALLS {
-            let left = 0;
+        if e.1 >= cap {
             drop(fs);
             return Json(serde_json::json!({
                 "ok": false,
-                "error": format!("今天的借用额度用完了 ({POOL_DAILY_CALLS}/天)"),
-                "daily_left": left,
+                "error": format!("今天的借用额度用完了 ({cap}/天 = 基础 {POOL_DAILY_CALLS} + 互惠 {})", cap - POOL_DAILY_CALLS),
+                "daily_left": 0,
+                "daily_cap": cap,
             }));
         }
         e.1 += 1;
@@ -3255,16 +3286,19 @@ async fn record_pool_credit(
 
 /// GET /api/pool/credit → 本机借出算力的贡献账（谁用过我、多少次、哪个群）
 pub async fn pool_credit_get(State(st): State<AppState>) -> Json<serde_json::Value> {
-    let (rows, econ_on) = {
+    let (rows, borrowed) = {
         let fs = st.forge.lock().await;
-        (fs.pool_credit.clone(), false)
+        (fs.pool_credit.clone(), fs.pool_borrowed.clone())
     };
-    let econ_on = econ_on || st.econ.get().map(|e| e.enabled()).unwrap_or(false);
+    let econ_on = st.econ.get().map(|e| e.enabled()).unwrap_or(false);
     let total: u32 = rows.iter().map(|r| r.calls).sum();
     Json(serde_json::json!({
         "ok": true,
         "total_calls": total,
         "by_peer": rows,
+        "borrowed": borrowed,
+        "busy_now": st.chat_runs.running_count(),
+        "max_concurrent": POOL_MAX_CONCURRENT,
         "econ_enabled": econ_on,
         "note": if econ_on {
             "本地账本 + 经济层 Contribution{LocalInference} 双记"
@@ -3432,6 +3466,12 @@ async fn borrow_from_pool(
             Ok(v) if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) => {
                 let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string();
                 if !text.trim().is_empty() {
+                    // 记下"我借过他的", 下次他找我借时额度更高（互惠）
+                    {
+                        let mut fs = st.forge.lock().await;
+                        *fs.pool_borrowed.entry(peer_did.clone()).or_insert(0) += 1;
+                        fs.save(&data_dir());
+                    }
                     return Ok((text, peer_did));
                 }
                 last = format!("{url} 回了空内容");
@@ -6507,6 +6547,110 @@ pub async fn dream_topic(
 /// 关掉的方式 = 在该智能体目录下放一个 `private.json` 标记 (不猜、不改持久化 schema)。
 fn agent_open_to_friends(id: &str) -> bool {
     !data_dir().join("agents").join(id).join("private.json").exists()
+}
+
+/// 智能体门户文件路径
+fn portal_path(id: &str) -> std::path::PathBuf {
+    data_dir().join("agents").join(id).join("portal.json")
+}
+
+/// GET /api/agents/{id}/portal → 这个智能体对外的 IPNS 门户（名字 + 当前 CID + 文档）
+pub async fn agent_portal(State(st): State<AppState>, AxumPath(id): AxumPath<String>) -> Json<serde_json::Value> {
+    let Some(a) = agent_by_id(&st, Some(&id)).await else {
+        return Json(serde_json::json!({ "ok": false, "error": format!("没有这个智能体: {id}") }));
+    };
+    match std::fs::read_to_string(portal_path(&a.id)) {
+        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(v) => Json(serde_json::json!({ "ok": true, "agent_id": a.id, "portal": v })),
+            Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("门户文件坏了: {e}") })),
+        },
+        Err(_) => Json(serde_json::json!({
+            "ok": true,
+            "agent_id": a.id,
+            "portal": serde_json::Value::Null,
+            "note": "还没发布门户 —— POST /api/agents/{id}/portal/publish 会把它的名片发到 IPFS 并绑一个 IPNS 名",
+        })),
+    }
+}
+
+/// POST /api/agents/{id}/portal/publish → 把智能体名片发到 IPFS，并绑到它自己的 IPNS 名
+///
+/// 为什么每个智能体单独一把 key：IPNS 名字是**这个智能体**的对外门户，
+/// 换内容时名字不变（别人一直用同一个地址找它），所以不能所有智能体共用一个 self key。
+pub async fn agent_portal_publish(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Json<serde_json::Value> {
+    let Some(a) = agent_by_id(&st, Some(&id)).await else {
+        return Json(serde_json::json!({ "ok": false, "error": format!("没有这个智能体: {id}") }));
+    };
+    let now = now_ms();
+    let doc = serde_json::json!({
+        "schema": "bolloon.agent.portal/1",
+        "agent_id": a.id,
+        "did": a.did,
+        "name": a.name,
+        "persona": a.persona,
+        "owner_did": a.owner_did,
+        "node_did": st.identity.did.as_str(),
+        "updated_at_ms": now,
+    });
+    let body = serde_json::to_string_pretty(&doc).unwrap_or_default();
+    let key = format!("bolloon-agent-{}", a.id);
+    let agent_id_for_task = a.id.clone();
+    let res = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let cid = bolloon_agent::ipfs_tools::add_text(&body, &format!("{agent_id_for_task}.json"))?;
+        let key_name = bolloon_agent::ipfs_tools::ensure_key(&key)?;
+        let ipns = bolloon_agent::ipfs_tools::publish_ipns(&cid, &key_name)?;
+        Ok(serde_json::json!({ "cid": cid, "ipns": ipns, "key": key_name }))
+    })
+    .await;
+    match res {
+        Ok(Ok(v)) => {
+            let portal = serde_json::json!({
+                "ipns": v["ipns"], "cid": v["cid"], "key": v["key"],
+                "updated_at_ms": now, "doc": doc,
+            });
+            let path = portal_path(&a.id);
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, serde_json::to_string_pretty(&portal).unwrap_or_default()).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
+            Json(serde_json::json!({ "ok": true, "agent_id": a.id, "portal": portal }))
+        }
+        Ok(Err(e)) => Json(serde_json::json!({ "ok": false, "error": e })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("门户发布线程失败: {e}") })),
+    }
+}
+
+/// GET /api/agents/{id}/portal/resolve → 解析门户当前的 IPNS → CID（证明名字还在、指向最新内容）
+pub async fn agent_portal_resolve(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Json<serde_json::Value> {
+    let Some(a) = agent_by_id(&st, Some(&id)).await else {
+        return Json(serde_json::json!({ "ok": false, "error": format!("没有这个智能体: {id}") }));
+    };
+    let Ok(raw) = std::fs::read_to_string(portal_path(&a.id)) else {
+        return Json(serde_json::json!({ "ok": false, "error": "还没发布门户" }));
+    };
+    let ipns = serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|v| v["ipns"].as_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+    if ipns.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "门户文件里没有 ipns 字段" }));
+    }
+    let name = ipns.clone();
+    let res = tokio::task::spawn_blocking(move || bolloon_agent::ipfs_tools::resolve_ipns(&name)).await;
+    match res {
+        Ok(Ok(path)) => Json(serde_json::json!({ "ok": true, "agent_id": a.id, "ipns": ipns, "path": path })),
+        Ok(Err(e)) => Json(serde_json::json!({ "ok": false, "error": e })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("解析线程失败: {e}") })),
+    }
 }
 
 /// GET/POST /api/agents/{id}/friends-open → 这个智能体是否对好友开放（跨机对话 / 借算力共用这一个开关）

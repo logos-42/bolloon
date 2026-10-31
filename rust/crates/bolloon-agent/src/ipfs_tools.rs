@@ -106,6 +106,98 @@ pub fn ipfs_tool_defs() -> Vec<ToolDef> {
     ]
 }
 
+// ── 可复用原语（web 侧的「智能体对外门户」直接用这些，不再复制 HTTP 细节） ──
+
+/// 上传一段文本，返回 CID
+pub fn add_text(content: &str, name: &str) -> Result<String, String> {
+    let boundary = "----bolloonipfsboundary7MA4YWxkTrZu0gW";
+    let body = format!(
+        "--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{n}\"\r\n\
+         Content-Type: application/octet-stream\r\n\r\n{c}\r\n--{b}--\r\n",
+        b = boundary,
+        n = name,
+        c = content
+    );
+    let url = format!("{}/api/v0/add?pin=true&cid-version=1", api_base());
+    let v: Value = ureq::post(&url)
+        .set(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={boundary}"),
+        )
+        .send_string(&body)
+        .map_err(not_running)?
+        .into_json()
+        .map_err(|e| format!("Kubo 返回不是 JSON: {e}"))?;
+    let cid = v["Hash"].as_str().unwrap_or_default().to_string();
+    if cid.is_empty() {
+        return Err(format!("Kubo 没有返回 CID: {v}"));
+    }
+    Ok(cid)
+}
+
+/// 确保 Kubo 里有一个叫 `name` 的 IPNS 密钥（幂等），返回该密钥名
+pub fn ensure_key(name: &str) -> Result<String, String> {
+    let url = format!(
+        "{}/api/v0/key/gen?arg={}&type=ed25519",
+        api_base(),
+        urlencoding::encode(name)
+    );
+    match ureq::post(&url).call() {
+        Ok(r) => {
+            let _ = r.into_string();
+            Ok(name.to_string())
+        }
+        Err(ureq::Error::Status(_, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            if body.contains("already exists") || body.contains("key with name") {
+                Ok(name.to_string())
+            } else {
+                Err(format!("建 IPNS 密钥失败: {body}"))
+            }
+        }
+        Err(e) => Err(not_running(e)),
+    }
+}
+
+/// 把 CID 发布到某个 IPNS 密钥，返回 IPNS 名字
+pub fn publish_ipns(cid: &str, key: &str) -> Result<String, String> {
+    let url = format!(
+        "{}/api/v0/name/publish?arg={}&key={}&allow-offline=true",
+        api_base(),
+        urlencoding::encode(cid),
+        urlencoding::encode(key)
+    );
+    let v: Value = ureq::post(&url)
+        .call()
+        .map_err(not_running)?
+        .into_json()
+        .map_err(|e| format!("Kubo 返回不是 JSON: {e}"))?;
+    let name = v["Name"].as_str().unwrap_or_default().to_string();
+    if name.is_empty() {
+        return Err(format!("Kubo 没有返回 IPNS 名字: {v}"));
+    }
+    Ok(name)
+}
+
+/// 解析 IPNS 名字 → `/ipfs/<cid>`
+pub fn resolve_ipns(name: &str) -> Result<String, String> {
+    let url = format!(
+        "{}/api/v0/name/resolve?arg={}",
+        api_base(),
+        urlencoding::encode(name.trim_start_matches("/ipns/"))
+    );
+    let v: Value = ureq::post(&url)
+        .call()
+        .map_err(not_running)?
+        .into_json()
+        .map_err(|e| format!("Kubo 返回不是 JSON: {e}"))?;
+    let path = v["Path"].as_str().unwrap_or_default().to_string();
+    if path.is_empty() {
+        return Err(format!("解析不到: {v}"));
+    }
+    Ok(path)
+}
+
 /// IPFS 工具执行器（阻塞 HTTP，由上层放到 blocking 线程里跑）
 pub struct IpfsExecutor;
 

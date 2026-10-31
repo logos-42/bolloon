@@ -540,6 +540,10 @@ pub fn app(state: AppState) -> Router {
         // 智能体级「对好友开放」开关（跨机对话与借算力共用）
         .route("/api/agents/{id}/friends-open", post(crate::native::agent_friends_open))
         .route("/api/agents/{id}/friends-open", get(crate::native::agent_friends_open))
+        // 智能体对外门户: IPFS 名片 + 自己的 IPNS 名（换内容名字不变）
+        .route("/api/agents/{id}/portal", get(crate::native::agent_portal))
+        .route("/api/agents/{id}/portal/publish", post(crate::native::agent_portal_publish))
+        .route("/api/agents/{id}/portal/resolve", get(crate::native::agent_portal_resolve))
         .route("/api/room/runtime", get(crate::native::room_runtime_get))
         .route("/api/room/runtime", post(crate::native::room_runtime_set))
                 .route("/api/econ/probe", get(crate::native::econ_probe))
@@ -3274,6 +3278,11 @@ mod route_tests {
             );
             assert_eq!(borrow["ok"], serde_json::json!(false));
             assert!(borrow["error"].as_str().unwrap_or("").contains("收件人"));
+            // 智能体门户: 没发布时如实说"还没发布", 不是假装有
+            let portal = get_json("/api/agents/no-such-agent/portal");
+            assert_eq!(portal["ok"], serde_json::json!(false), "没有的智能体要如实报错");
+            assert!(portal["error"].as_str().unwrap_or("").contains("没有这个智能体"));
+
             let credit = get_json("/api/pool/credit");
             assert_eq!(credit["ok"], serde_json::json!(true));
             assert_eq!(credit["total_calls"], serde_json::json!(0), "还没借出过就应该是 0");
