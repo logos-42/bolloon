@@ -7099,6 +7099,16 @@ Kubo 不在时就如实报错（含启动方式），不假装发布成功。
 （改为优先用真实监听地址 `BOLLOON_LOCAL_API`），以及 outbox 里 `alt_base` 语义混用
 （我方备用地址 vs 对端备用拨号拆成 `alt_base` / `to_alt`）。
 
+### 2026-10-31 发布 0.7.4（App + npm）
+
+leo 要「0.7.3.1」，但四段式不是合法 semver（npm/cargo 都拒）⇒ 确认后发 **0.7.4**。
+版本声明点一次改齐：`package.json` / `package-lock.json`(两处) / `rust/Cargo.toml`(workspace) /
+`rust/app-tauri/src-tauri/Cargo.toml` / `tauri.conf.json`。
+
+本版包含：群内真执行（harness+kernel loop）+ 警长任务单与 60s 自动派单、好友双向闭环与离线留存、
+门户 portal/2（好友 DID + 经 IPNS 加好友）、资源池峰值富余+互惠记账、IPFS/IPNS 五工具、
+系统提示词注入能力/接口权限，以及开场轮忙时人类发言 5s 补派。
+
 **门禁**: `cargo test -p bolloon-web --lib` **63/63**（含 `room_runtime_and_friend_inbox_gates`、`pool_tests`）
 **门禁**: `cargo test -p bolloon-llm --lib` **58/58** · `cargo test -p bolloon-agent --lib` **432/432** ·
 `cargo check --workspace --all-targets` 0 错 · `cargo clippy -p bolloon-llm --all-targets` 0 警告。

@@ -6291,6 +6291,19 @@ pub async fn flush_friend_outbox(st: &AppState) -> (usize, usize) {
             e.last_error = msg;
         }
     }
+    // 不无限重试: 试了 20 次或放了一周还送不到, 就丢掉并留原因 (别让队列变垃圾场)
+    let now = now_ms();
+    let before = fs.friend_outbox.len();
+    fs.friend_outbox.retain(|e| {
+        let age = now.saturating_sub(e.created_at_ms);
+        !(e.tries >= 20 || age > 7 * 24 * 3_600_000)
+    });
+    if before != fs.friend_outbox.len() {
+        tracing::warn!(
+            dropped = before - fs.friend_outbox.len(),
+            "好友事件过了重试窗口仍未送达, 已丢弃 (原因见各自 last_error)"
+        );
+    }
     fs.save(&data_dir());
     let left = fs.friend_outbox.len();
     (sent.len(), left)
@@ -6740,9 +6753,16 @@ pub async fn portal_follow(
         Ok(Err(e)) => return Json(serde_json::json!({ "ok": false, "error": e })),
         Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("线程失败: {e}") })),
     };
-    let did = doc["did"].as_str().unwrap_or_default().to_string();
+    let agent_did = doc["did"].as_str().unwrap_or_default().to_string();
+    // 好友关系是**节点(人)级**的: 请求要发给 node_did, 不是某个智能体的 DID。
+    // (2026-10-31 实测: 发给智能体 DID 会被对端以"收件人不是本机"拒绝)
+    let did = doc["node_did"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(agent_did.as_str())
+        .to_string();
     if did.is_empty() {
-        return Json(serde_json::json!({ "ok": false, "error": "门户文档里没有 did" }));
+        return Json(serde_json::json!({ "ok": false, "error": "门户文档里没有 node_did / did" }));
     }
     if did == st.identity.did.as_str() {
         return Json(serde_json::json!({ "ok": false, "error": "这是你自己的门户" }));
@@ -6797,7 +6817,7 @@ pub async fn portal_follow(
     let _ = (ts, sig, base, alt);
     let (sent, left) = flush_friend_outbox(&st).await;
     Json(serde_json::json!({
-        "ok": true, "did": did, "name": display, "request_id": rid,
+        "ok": true, "did": did, "agent_did": agent_did, "name": display, "request_id": rid,
         "node_base": node_base, "delivered": sent > 0, "queued": left,
     }))
 }

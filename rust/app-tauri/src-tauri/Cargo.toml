@@ -4,7 +4,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [package]
 name = "bolloon-tauri"
-version = "0.7.1"
+version = "0.7.4"
 edition = "2024"
 rust-version = "1.85"
 description = "Bolloon 桌面外壳 (Tauri) — 托管内嵌服务, 壳不写业务"
