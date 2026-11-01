@@ -4720,15 +4720,18 @@ pub async fn world_inbox_post(
     Json(serde_json::json!({ "card": item }))
 }
 
-/// POST /api/world/fulfill → 意图交付面 (2026-11-01): 分类 → 差距检测 → 交付物卡片
+/// POST /api/world/fulfill → 意图交付面 v2 (2026-11-01): 分类 → 差距 → **升级管线真执行** → 交付物卡片
 ///
 /// 世界模式对用户意图的回应不再是 agent 的聊天文本, 而是**卡片集合 + 澄清问题**:
-/// - 链接卡只装真实命中 (本端点不真跑检索, 检索由 agent 的 web_search/fetch 承担);
-///   没有真实命中就出"补能力说明卡" —— 如实交代缺什么/走哪条路径, **不裸拒不编 URL**
-/// - Social/Work 场景带出对外内容卡 (profile store, 0600); 没有就出草稿卡引导维护
-/// - Vague 意图必附一个澄清问题, 同时把已能交付的先交出去
+/// - **Search 真跑**: 配了 `BOLLOON_WEB_SEARCH_URL` 就真检索, 解析出结构化结果出链接卡;
+///   解不出结构化 (服务返回非 JSON) 就把**原文**装进内容卡 — 只要有真实产出, 不编 URL
+/// - **Delegate 真发**: 差距含委托路径 → 往任务公告板发 `bolloon-task/1` 公告
+///   (budget="0" = 悬赏待议, 意图里没有预算就不编金额)
+/// - **Install 如实记录**: 本仓还没有 skill 安装源登记面, 只记录待办 + 写进 lesson, 不假装修好
+/// - **沉淀飞轮**: 每次升级写一条 memory lesson (agent/CLI 的记忆面同源可查)
+/// - Social/Work 场景带出对外内容卡 (profile store, 0600); Vague 意图必附一个澄清问题
 ///
-/// 诚实边界: 供给清单 (x402 供给登记面) 未接线, 如实为空 — 差距检测不会假装能委托。
+/// 诚实边界: 供给清单 (x402 供给登记面) 未接线, supplies 如实为空 — 差距检测不会假装能买。
 pub async fn world_fulfill(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
@@ -4757,13 +4760,86 @@ pub async fn world_fulfill(
         supplies: vec![],
     };
     let gap = bolloon_agent::gap::detect_gaps(&intent, &inv);
+    // ── 升级管线: 差距 → 具体步骤 → 真执行 ──
+    let plan = bolloon_agent::plan_upgrade(&intent, &gap);
+    let mut links: Vec<bolloon_agent::fulfill::LinkHit> = vec![];
+    let mut search_text: Option<String> = None;
+    let mut search_note = String::new();
+    let mut delegate_task_id: Option<String> = None;
+    let mut install_notes: Vec<String> = vec![];
+    for step in &plan {
+        match step {
+            bolloon_agent::UpgradeStep::Search { query } => {
+                use bolloon_agent::ToolExecutor as _;
+                let r = bolloon_agent::net_tools::NetExecutor
+                    .execute(bolloon_agent::ToolCall {
+                        id: "world-fulfill-search".into(),
+                        name: "web_search".into(),
+                        arguments: serde_json::json!({ "query": query }),
+                    })
+                    .await;
+                if r.ok {
+                    let hits = bolloon_agent::parse_search_hits(&r.output);
+                    if hits.is_empty() {
+                        // 解不出结构化 → 原文进内容卡 (真实产出, 不是编的)
+                        search_text = Some(r.output.clone());
+                        search_note = format!("检索完成, 未识别出结构化链接 (原文已入卡, {} ms)", r.elapsed_ms);
+                    } else {
+                        search_note = format!("检索完成, {} 条命中 ({} ms)", hits.len(), r.elapsed_ms);
+                        links = hits;
+                    }
+                } else {
+                    search_note = format!(
+                        "检索未成功: {}",
+                        r.output.lines().next().unwrap_or("未知原因")
+                    );
+                }
+            }
+            bolloon_agent::UpgradeStep::Delegate { capability, digest, budget } => {
+                let mut board = st.tasks.lock().await;
+                let (id, dup) = board.publish(&st.identity, capability, digest, budget, None, now);
+                let _ = board.save_json(&data_dir().join("task-board.json"));
+                delegate_task_id = Some(if dup {
+                    format!("{id} (同内容公告已存在, 未重复发)")
+                } else {
+                    id
+                });
+            }
+            bolloon_agent::UpgradeStep::Install { note } => {
+                install_notes.push(note.clone());
+            }
+        }
+    }
+    // ── 沉淀飞轮: 升级过程写一条 lesson (与 CLI/agent 记忆面同源) ──
+    let outcome = {
+        let mut parts: Vec<String> = vec![];
+        if !links.is_empty() {
+            parts.push(format!("检索 {} 条命中", links.len()));
+        } else if !search_note.is_empty() {
+            parts.push(search_note.clone());
+        }
+        if let Some(id) = &delegate_task_id {
+            parts.push(format!("公告 {id}"));
+        }
+        if parts.is_empty() {
+            "仅记录, 未执行检索/委托".to_string()
+        } else {
+            parts.join("; ")
+        }
+    };
+    let lesson = bolloon_agent::lesson_content(&intent, &plan, &outcome);
+    {
+        let db = st.memory_db.lock().await;
+        let _ = db.remember("local", "lesson", &lesson, 0.4, now, None);
+    }
     let profile = bolloon_agent::profile::ProfileCardStore::open(data_dir().join("world").join("profile.json"))
         .ok()
         .and_then(|s| s.load().ok().flatten());
     let ctx = bolloon_agent::fulfill::FulfillContext {
         intent_id: intent.id.clone(),
-        links: vec![],
+        links,
         profile,
+        search_text,
     };
     let ful = bolloon_agent::fulfill::fulfill(&intent, &gap, &ctx, st.identity.did.as_str(), now);
     // 交付物进世界流 (真实流入: source=world-fulfill + intent_id 可追溯)
@@ -4779,7 +4855,7 @@ pub async fn world_fulfill(
             "summary": card.summary,
             "card": card_json,
             "source": "world-fulfill",
-            "intent_id": intent.id,
+            "intent_id": intent.id.clone(),
             "ts": now,
         });
         fs.inbox.push(item.clone());
@@ -4802,6 +4878,13 @@ pub async fn world_fulfill(
                 .map(|m| serde_json::json!({ "kind": m.kind, "note": m.note }))
                 .collect::<Vec<_>>(),
             "reason": gap.reason,
+        },
+        "upgrade": {
+            "steps": plan.iter().map(|s| s.kind()).collect::<Vec<_>>(),
+            "search_note": search_note,
+            "delegate_task_id": delegate_task_id,
+            "install_notes": install_notes,
+            "memory_lesson": lesson,
         },
         "question": ful.question,
         "note": ful.note,

@@ -26,6 +26,8 @@ pub struct FulfillContext {
     pub intent_id: String,
     pub links: Vec<LinkHit>,
     pub profile: Option<ProfileCard>,
+    /// 真跑过搜索但解不出结构化结果时的**原文** (装进内容卡, 不编链接; None = 没跑过/失败)
+    pub search_text: Option<String>,
 }
 
 /// 交付物: 卡片集合 + 澄清问题 + 走哪条补能力路径
@@ -88,6 +90,33 @@ pub fn fulfill(
             }],
             reply_to: Some(ctx.intent_id.clone()),
         });
+    }
+
+    // ①b 检索原文卡: 真跑过搜索但解不出结构化结果 → 原文装进内容卡 (不编 URL)
+    if cards.is_empty() {
+        if let Some(text) = &ctx.search_text {
+            let snippet: String = text.chars().take(2000).collect();
+            cards.push(WorldCard {
+                title: format!("检索结果「{}」", intent.text),
+                summary: "搜索服务返回了原文 (未识别出结构化链接), 全文见媒体槽".into(),
+                media: vec![crate::world::CardMedia {
+                    kind: crate::world::CardMediaKind::Text,
+                    url: snippet,
+                    mime: Some("text/plain".into()),
+                    name: Some("search-result.txt".into()),
+                }],
+                cover: None,
+                provider_did: provider_did.into(),
+                provider_name: None,
+                scope: crate::world::CardScope::Private,
+                issued_at_ms: now_ms,
+                verification: crate::world::CardVerification::Verified,
+                category: cat,
+                tags: tags.clone(),
+                actions: vec![],
+                reply_to: Some(ctx.intent_id.clone()),
+            });
+        }
     }
 
     // ② 内容卡: Social/Work 场景带出对外内容卡 (有就用, 没有标草稿让用户维护)
@@ -205,7 +234,21 @@ mod tests {
     }
 
     fn ctx_of(links: Vec<LinkHit>) -> FulfillContext {
-        FulfillContext { intent_id: "intent-1".into(), links, profile: None }
+        FulfillContext { intent_id: "intent-1".into(), links, profile: None, search_text: None }
+    }
+
+    /// 真跑过搜索但解不出结构化链接 → 原文装进内容卡 (不编 URL)
+    #[test]
+    fn raw_search_text_becomes_content_card() {
+        let intent = intent_of("我想吃饭");
+        let gap = detect_gaps(&intent, &CapabilityInventory { has_web_search: true, ..Default::default() });
+        let mut ctx = ctx_of(vec![]);
+        ctx.search_text = Some("[搜索] 我想吃饭\n\n<html>一堆非 JSON 原文…</html>".into());
+        let f = fulfill(&intent, &gap, &ctx, "did:pi:me", 42);
+        let raw = f.cards.iter().find(|c| c.title.contains("检索结果")).expect("应有原文卡");
+        assert_eq!(raw.media.len(), 1);
+        assert!(raw.media[0].url.contains("非 JSON 原文"));
+        assert!(raw.actions.is_empty(), "原文卡不带行动链接 (不编 URL)");
     }
 
     #[test]

@@ -5,7 +5,7 @@
 
 pub mod econ_shadow;
 // 观察者/工具签名用到的 harness 基础类型: 让上层 (web/cli) 不必再直接依赖 harness crate
-pub use bolloon_harness::{GateOutcome, ToolCall};
+pub use bolloon_harness::{GateOutcome, ToolCall, ToolExecutor};
 pub mod bootstrap;
 pub mod builtin_tools;
 pub mod character;
@@ -60,6 +60,7 @@ pub mod task_group;
 pub mod terminal;
 pub mod todo;
 pub mod tool_contract;
+pub mod upgrade;
 pub mod updater;
 pub mod updater_tools;
 pub mod wallet;
@@ -82,4 +83,5 @@ pub use memory::*;
 pub use profile::*;
 pub use session_store::*;
 pub use task_board::*;
+pub use upgrade::*;
 pub use world::*;
