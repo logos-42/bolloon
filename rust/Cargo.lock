@@ -1225,9 +1225,9 @@ dependencies = [
 
 [[package]]
 name = "hindsight-engine"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e8628b8c0505570bc83ff865eaff019fd5d9adfd06385b1c42943b4c6922d55"
+checksum = "be1ee95615f071d6293ba9eb51f4ec6394b5980a58a37017ae07d12ccbfd5bec"
 dependencies = [
  "chrono",
  "futures",
@@ -1243,9 +1243,9 @@ dependencies = [
 
 [[package]]
 name = "hindsight-llm"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6180e254fca0acd77d58715480696170cd76d923617bf6e5a0edf16c2446dd61"
+checksum = "57bba08e6c71def2cb7e0777679abe01e6859bedd523c3dbc9a19f045bfb6961"
 dependencies = [
  "async-trait",
  "hindsight-core",

@@ -2236,12 +2236,24 @@ async fn remember_memory(
         save_memory(&data_dir(), &store);
     }
     match row {
-        Ok(r) => Json(serde_json::json!({
-            "id": format!("mem-{:06}", r.id),
-            "layer": r.layer,
-            "importance": r.importance,
-            "store": "sqlite",
-        })),
+        Ok(r) => {
+            // 外挂镜像 (fire-and-forget): SQLite 已真落盘, hindsight 抽取失败不影响本接口成功
+            let hs = bolloon_agent::memory_hindsight::global();
+            let mirrored = hs.mirror_enabled();
+            if mirrored {
+                let row_clone = r.clone();
+                tokio::spawn(async move {
+                    hs.mirror_remember_async("local", &row_clone, None).await;
+                });
+            }
+            Json(serde_json::json!({
+                "id": format!("mem-{:06}", r.id),
+                "layer": r.layer,
+                "importance": r.importance,
+                "store": "sqlite",
+                "mirrored": mirrored,
+            }))
+        }
         Err(e) => Json(serde_json::json!({ "error": e })),
     }
 }
@@ -2257,6 +2269,8 @@ async fn recall_memory(State(st): State<AppState>, Query(q): Query<RecallQuery>)
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
     match db.recall("local", q.q.as_deref(), q.k.unwrap_or(5), now_ms) {
         Ok(rows) => {
+            // 旧形状 `memories` (sqlite 对象数组) 保持不变 = 向后兼容;
+            // 融合结果 (本地行 + `~` 外挂行) 走新字段 `fused_lines` + 双源标注 `sources`
             let items: Vec<serde_json::Value> = rows
                 .iter()
                 .map(|r| {
@@ -2270,7 +2284,39 @@ async fn recall_memory(State(st): State<AppState>, Query(q): Query<RecallQuery>)
                     })
                 })
                 .collect();
-            Json(serde_json::json!({ "memories": items, "store": "sqlite" }))
+            let local_lines: Vec<String> = rows
+                .iter()
+                .map(|r| format!("[{}] {} {}", r.id, r.layer, r.content))
+                .collect();
+            let mut sources = vec!["sqlite"];
+            let mut degraded: Option<String> = None;
+            let fused = if let Some(query) = q.q.as_deref().filter(|q| !q.trim().is_empty()) {
+                let hs = bolloon_agent::memory_hindsight::global();
+                let (merged, deg) = hs
+                    .recall_merged("local", query, local_lines, q.k.unwrap_or(5), 2_000)
+                    .await;
+                degraded = deg;
+                if hs.enabled() {
+                    if degraded.is_some() {
+                        sources.push("hindsight:degraded");
+                    } else if merged.iter().any(|l| l.starts_with("~ ")) {
+                        sources.push("hindsight");
+                    }
+                }
+                merged
+            } else {
+                local_lines
+            };
+            let mut body = serde_json::json!({
+                "memories": items,
+                "store": "sqlite",
+                "fused_lines": fused,
+                "sources": sources,
+            });
+            if let Some(d) = degraded {
+                body["degraded"] = serde_json::json!(d);
+            }
+            Json(body)
         }
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }

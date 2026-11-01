@@ -224,6 +224,8 @@ enum MemoryAction {
         #[arg(long, default_value_t = 5)]
         top: usize,
     },
+    /// 记忆外挂体检 (本地 SQLite + hindsight 引擎状态, 如实报告)
+    Doctor,
 }
 
 #[derive(Subcommand)]
@@ -289,7 +291,7 @@ async fn main() -> anyhow::Result<()> {
         None => run_web(54188).await, // 无子命令 → 启动 web（对齐 TS: bolloon 默认起本地服务）
         Some(Commands::Web { port }) => run_web(port).await,
         Some(Commands::Status) => run_status(),
-        Some(Commands::Memory { action }) => run_memory(action),
+        Some(Commands::Memory { action }) => run_memory(action).await,
         Some(Commands::Task { action }) => run_task(action),
         Some(Commands::Chat { channel, resume }) => run_chat(&channel, resume.as_deref()).await,
         Some(Commands::Model { provider, usable, filter, model, base_url, api_key_stdin }) => {
@@ -1654,7 +1656,7 @@ async fn send_one(
     let mut convo: Vec<bolloon_llm::ChatMessage> = vec![bolloon_llm::ChatMessage {
         role: "system".into(),
         content: {
-            let base = build_bolloon_system(&sess.channel);
+            let base = build_bolloon_system(&sess.channel, Some(&text)).await;
             let extra = learn.context_block(text, learning::DEFAULT_BUDGET);
             if extra.trim().is_empty() {
                 base
@@ -1928,7 +1930,8 @@ fn flush_logs(chrome: &mut tui::Chrome, full: bool, streaming: bool) {
 }
 
 /// CLI 记忆召回文本 (top-N, 复用 MemoryStore::recall 的 importance×decay 打分; 与 Web 同源 SQLite)
-fn cli_memory_recall_text() -> String {
+/// 配置了 hindsight 外挂时: 本地点在前, 外挂语义命中以 `~` 行补充, 去重后截 900 字预算。
+async fn cli_memory_recall_text(query: Option<&str>) -> String {
     let Ok(db) = memory_db() else { return String::new() };
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
     let Ok(rows) = db.recall("local", None, 500, now_ms) else { return String::new() };
@@ -1953,20 +1956,30 @@ fn cli_memory_recall_text() -> String {
             .collect(),
     );
     let hits = store.recall(None, 6, chrono::Utc::now());
-    if hits.is_empty() {
-        String::new()
-    } else {
-        hits.iter()
-            .map(|e| format!("• {}", e.content))
-            .collect::<Vec<_>>()
-            .join("\n")
+    let mut local_lines: Vec<String> = hits
+        .iter()
+        .map(|e| format!("• {}", e.content))
+        .collect();
+    if local_lines.is_empty() {
+        // 外挂独有命中也值得给 (本地空库时语义外挂是唯一来源)
+        let hs = bolloon_agent::memory_hindsight::global();
+        let (lines, _deg) = hs
+            .recall_merged("local", query.unwrap_or(""), Vec::new(), 6, 900)
+            .await;
+        return lines.join("\n");
     }
+    // 外挂语义补充 (空 query = 只翻本地, 与历史行为一致)
+    let hs = bolloon_agent::memory_hindsight::global();
+    let (lines, _deg) = hs
+        .recall_merged("local", query.unwrap_or(""), local_lines, 6, 900)
+        .await;
+    lines.join("\n")
 }
 
 /// 装配 bolloon 身份 system prompt: 单一真源 = `bolloon_agent::prompt::build_system_prompt`
 /// (与 web/App 完全一致). 按 `channel` 选全局(home)/项目内(project) 身份文件 (soul/agent/persona).
 /// 装配失败降级为最小 bolloon 文本, 绝不因此打断聊天.
-fn build_bolloon_system(channel: &str) -> String {
+async fn build_bolloon_system(channel: &str, query: Option<&str>) -> String {
     let home = bolloon_agent::home::BolloonHome::resolve();
     let project = std::env::current_dir().unwrap_or_default();
     let docs = bolloon_agent::home::AgentDocs::freeze_with(&home, "bolloon", channel, &project)
@@ -1977,7 +1990,7 @@ fn build_bolloon_system(channel: &str) -> String {
         tool: None,
     };
     // 记忆召回 (top-N) 接进 system prompt —— 之前这一项恒为空, 记忆从未进 prompt
-    let memory_text = cli_memory_recall_text();
+    let memory_text = cli_memory_recall_text(query).await;
     bolloon_agent::prompt::build_system_prompt(&docs, None, None, None, 0, "", Some(&memory_text), &ctx).text
 }
 
@@ -2583,7 +2596,7 @@ fn layer_name(layer: &str) -> &'static str {
     }
 }
 
-fn run_memory(action: MemoryAction) -> anyhow::Result<()> {
+async fn run_memory(action: MemoryAction) -> anyhow::Result<()> {
     let db = memory_db()?;
     match action {
         MemoryAction::Remember { content, importance, layer } => {
@@ -2604,6 +2617,58 @@ fn run_memory(action: MemoryAction) -> anyhow::Result<()> {
             for r in items {
                 println!("mem-{:06} [{}] {:.2} — {}", r.id, r.layer, r.importance, r.content);
             }
+            // 外挂语义召回 (有 query 才有意义; 不可用静默回落本地, `~` 行标注来源)
+            if let Some(q) = query.as_deref().filter(|q| !q.trim().is_empty()) {
+                let hs = bolloon_agent::memory_hindsight::global();
+                let local: Vec<String> = Vec::new(); // 本地已打印, 传空 = 只要外挂独有结果
+                let (lines, _deg) = hs.recall_merged("local", q, local, top, 2_000).await;
+                for l in lines.into_iter().filter(|l| l.starts_with("~ ")) {
+                    println!("{l}");
+                }
+            }
+        }
+        MemoryAction::Doctor => run_memory_doctor().await?,
+    }
+    Ok(())
+}
+
+/// 记忆外挂体检: 本地库 + hindsight 配置/连接/bank, 逐项如实报告 (不猜、不装好)
+async fn run_memory_doctor() -> anyhow::Result<()> {
+    println!("== bolloon memory doctor ==");
+    // ① 本地 SQLite (真源, 恒在)
+    let dir = data_dir();
+    match memory_db() {
+        Ok(_) => println!("[本地] SQLite OK — {}", dir.join("memory.db").display()),
+        Err(e) => println!("[本地] SQLite 打开失败: {e}"),
+    }
+    // ② hindsight 外挂
+    let hs = bolloon_agent::memory_hindsight::global();
+    if !hs.enabled() {
+        match hs.config_error().await {
+            Some(e) => {
+                println!("[外挂] hindsight 配置不合法: {e}");
+                println!("       → 修正 `bolloon-config.json` 的 `memory` 段后重试");
+            }
+            None => println!("[外挂] hindsight 未启用 (memory.backend = local, 行为与历史版本一致)"),
+        }
+        return Ok(());
+    }
+    let settings = hs.settings().expect("enabled ⇒ settings 存在");
+    println!("[外挂] hindsight 已配置 — bank_prefix={}, embeddings={}, timeout={}ms",
+        settings.bank_prefix, settings.embeddings_provider, settings.recall_timeout_ms);
+    match hs.handle().await {
+        Some(h) => {
+            println!("[外挂] 引擎连接 OK (pgvector 就绪)");
+            let bank = settings.bank_id("local");
+            match h.stats(&bank).await {
+                Ok(s) => println!("[外挂] bank `{bank}`: {s:?}"),
+                Err(e) => println!("[外挂] bank `{bank}` 统计失败 (首次使用前为空属正常): {e}"),
+            }
+        }
+        None => {
+            let err = hs.last_error().await.unwrap_or_else(|| "未知原因".into());
+            println!("[外挂] 引擎连接失败 (记忆功能照常, 走本地 SQLite): {err}");
+            println!("       → 检查: PG+pgvector 是否在跑 (`{}`)? LLM 端点可达?", settings.database_url);
         }
     }
     Ok(())

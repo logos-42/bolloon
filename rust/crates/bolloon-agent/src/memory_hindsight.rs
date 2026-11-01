@@ -4,9 +4,10 @@
 //! hindsight 只做语义召回 + 事实抽取的**外挂**。它不可用时 = 自动降级回本地,
 //! 永不阻塞主循环、永不把外挂故障冒充成工具失败。
 //!
-//! 引擎硬依赖 (hindsight-rust v0.1.0 如实边界):
+//! 引擎硬依赖 (hindsight-rust 0.1.1 如实边界):
 //!   · PostgreSQL + pgvector (`database_url`, 默认 `postgres://postgres:postgres@localhost:5432/hindsight`)
-//!   · LLM (retain 事实抽取): OpenAI 兼容**必须给 base_url**, 或 Anthropic
+//!   · LLM (仅 retain 抽事实需要, 0.1.1 起懒构造): OpenAI 兼容给 base_url 或 Anthropic;
+//!     recall-only (mirrorWrites=false) 完全不需要 LLM
 //!   · embedding: `hash` (离线确定性, 零 key) 或 OpenAI 兼容 HTTP; `local`/`onnx` 不支持
 //!
 //! 三条硬规则:
@@ -62,13 +63,15 @@ impl HindsightSettings {
             ));
         }
         let llm = cfg.llm.clone().unwrap_or_default();
-        // 引擎在 connect() 时就会构造 chat 模型: OpenAI 兼容协议缺 base_url 直接报错
         let provider = llm.provider.clone().unwrap_or_else(|| "openai".into());
         let is_anthropic = matches!(provider.as_str(), "anthropic" | "claude" | "claude-code");
-        if llm.base_url.is_none() && !is_anthropic {
+        // hindsight-engine 0.1.1 起 chat 是懒构造: recall-only (mirrorWrites=false) 不需要 LLM;
+        // 开镜像写才要求 OpenAI 兼容端点 (retain 抽事实走 LLM, 缺 baseUrl 首次写入时报错)
+        let mirror_writes = cfg.mirror_writes.unwrap_or(true);
+        if mirror_writes && llm.base_url.is_none() && !is_anthropic {
             return Err(
-                "memory.llm.baseUrl 未配置 — hindsight 的 retain 需要一个 OpenAI 兼容端点 \
-                 (如 ollama: http://localhost:11434/v1)"
+                "memory.llm.baseUrl 未配置 — mirrorWrites=true 时 retain 需要一个 OpenAI 兼容端点 \
+                 (如 ollama: http://localhost:11434/v1); 只要召回不写入可设 mirrorWrites=false"
                     .into(),
             );
         }
@@ -96,7 +99,7 @@ impl HindsightSettings {
                 .or(emb.api_key),
             embeddings_base_url: emb.base_url,
             embeddings_dimension: emb.dimension,
-            mirror_writes: cfg.mirror_writes.unwrap_or(true),
+            mirror_writes,
             recall_timeout_ms: cfg.recall_timeout_ms.unwrap_or(3_000),
         })
     }
@@ -399,10 +402,19 @@ mod tests {
     }
 
     #[test]
-    fn hindsight_requires_llm_base_url() {
+    fn hindsight_requires_llm_base_url_only_for_mirror() {
+        // 缺省 mirrorWrites=true ⇒ 需要 baseUrl (retain 走 LLM)
         let m = MemoryBackendSettings { backend: "hindsight".into(), ..Default::default() };
         let err = settings_of(m).unwrap_err();
         assert!(err.contains("baseUrl"), "实际: {err}");
+        // recall-only (mirrorWrites=false): 0.1.1 懒 chat ⇒ 无 LLM 配置也合法
+        let m = MemoryBackendSettings {
+            backend: "hindsight".into(),
+            mirror_writes: Some(false),
+            ..Default::default()
+        };
+        let s = settings_of(m).expect("recall-only 模式应合法");
+        assert!(!s.mirror_writes);
     }
 
     #[test]

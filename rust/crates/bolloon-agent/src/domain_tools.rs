@@ -19,10 +19,14 @@ use bolloon_harness::{EffectKind, ToolCall, ToolDef, ToolExecutor, ToolResult};
 use serde_json::json;
 
 use crate::memory_db::MemoryDb;
+use crate::memory_hindsight;
 use crate::skills_runtime::SkillEvolver;
 use crate::task_board::TaskBoard;
 use crate::todo::{TodoList, TodoStatus};
 use crate::tool_contract::{ErrorCode, error_evidence};
+
+/// 记忆融合召回的总字数预算 (与 `prompt.rs` 的 `dynamic.memory` max_chars 同口径)
+const MEMORY_RECALL_CHAR_BUDGET: usize = 900;
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -214,10 +218,22 @@ async fn do_remember(call: ToolCall) -> ToolResult {
         Err(e) => return fail(ErrorCode::Internal, &format!("memory.db 打开失败: {e}")),
     };
     match db.remember(&agent_id, &layer, &content, 0.5, now_ms(), ttl_ms) {
-        Ok(row) => ok(
-            format!("[已记] 写入 {layer} 记忆 (id={})", row.id),
-            json!({ "id": row.id, "layer": layer }),
-        ),
+        Ok(row) => {
+            // 外挂镜像 (fire-and-forget): SQLite 已真落盘, hindsight 抽取失败不影响本工具成功
+            let hs = memory_hindsight::global();
+            let mirrored = hs.mirror_enabled();
+            if mirrored {
+                let agent = agent_id.clone();
+                let row_clone = row.clone();
+                tokio::spawn(async move {
+                    hs.mirror_remember_async(&agent, &row_clone, None).await;
+                });
+            }
+            ok(
+                format!("[已记] 写入 {layer} 记忆 (id={})", row.id),
+                json!({ "id": row.id, "layer": layer, "mirrored": mirrored }),
+            )
+        }
         Err(e) => fail(ErrorCode::Internal, &format!("remember 失败: {e}")),
     }
 }
@@ -243,15 +259,44 @@ async fn do_recall(call: ToolCall) -> ToolResult {
     };
     match db.recall(&agent_id, query.as_deref(), k, now_ms()) {
         Ok(rows) => {
-            let body = if rows.is_empty() {
+            let mut local_lines: Vec<String> = rows
+                .iter()
+                .map(|r| format!("[{}] {} {}", r.id, r.layer, r.content))
+                .collect();
+            // 外挂语义召回 (融合): 不可用/超时一律静默回落本地点, 外挂行加 `~` 前缀
+            let mut sources = vec!["sqlite"];
+            let mut degraded: Option<String> = None;
+            if let Some(q) = query.as_deref().filter(|q| !q.trim().is_empty()) {
+                let hs = memory_hindsight::global();
+                let (lines, deg) = hs
+                    .recall_merged(
+                        &agent_id,
+                        q,
+                        std::mem::take(&mut local_lines),
+                        k,
+                        MEMORY_RECALL_CHAR_BUDGET,
+                    )
+                    .await;
+                local_lines = lines;
+                degraded = deg;
+                if hs.enabled() {
+                    if degraded.is_some() {
+                        sources.push("hindsight:degraded");
+                    } else if local_lines.iter().any(|l| l.starts_with("~ ")) {
+                        sources.push("hindsight");
+                    }
+                }
+            }
+            let body = if local_lines.is_empty() {
                 "（无命中记忆）".into()
             } else {
-                rows.iter()
-                    .map(|r| format!("[{}] {} {}", r.id, r.layer, r.content))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                local_lines.join("\n")
             };
-            ok(body, json!({ "count": rows.len() }))
+            let mut evidence = json!({ "count": rows.len(), "sources": sources });
+            if let Some(d) = degraded {
+                evidence["degraded"] = json!(d);
+            }
+            ok(body, evidence)
         }
         Err(e) => fail(ErrorCode::Internal, &format!("recall 失败: {e}")),
     }
@@ -346,7 +391,7 @@ pub fn domain_tool_defs() -> Vec<ToolDef> {
             },
             "required": ["content"], "additionalProperties": false
         }), EffectKind::Write),
-        def("recall", "召回记忆 top-k（只读）。", json!({
+        def("recall", "召回记忆 top-k（只读）。本地 SQLite 为主源；配置了 hindsight 外挂时附带语义召回（行首 `~` 标注，来自语义记忆）。**建议传 query**（空 query 只翻本地库）。", json!({
             "type": "object",
             "properties": {
                 "query": { "type": "string", "description": "可选子串过滤" },
