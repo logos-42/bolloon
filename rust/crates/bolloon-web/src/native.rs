@@ -4806,7 +4806,52 @@ pub async fn world_fulfill(
                 });
             }
             bolloon_agent::UpgradeStep::Install { note } => {
-                install_notes.push(note.clone());
+                // 真执行: 登记面找同类别技能 → web_fetch 下载 → sha256 验真 → promote 批准门入库
+                let reg = bolloon_agent::skill_install::SkillSourceRegistry::load(
+                    &data_dir().join("skills").join("registry.json"),
+                );
+                match reg.find_for_category(intent.category) {
+                    None => {
+                        install_notes.push(format!(
+                            "{note}; 登记面无该类别可安装技能, 已记录待办"
+                        ));
+                    }
+                    Some(entry) => {
+                        use bolloon_agent::ToolExecutor as _;
+                        let r = bolloon_agent::net_tools::NetExecutor
+                            .execute(bolloon_agent::ToolCall {
+                                id: "world-fulfill-install".into(),
+                                name: "web_fetch".into(),
+                                arguments: serde_json::json!({ "url": entry.url }),
+                            })
+                            .await;
+                        if !r.ok {
+                            install_notes.push(format!("下载「{}」失败: {}", entry.name, r.output.lines().next().unwrap_or("未知原因")));
+                        } else if let Some(body) =
+                            bolloon_agent::skill_install::parse_fetch_output(&r.output)
+                        {
+                            let mut ev = st.skills.lock().await;
+                            match bolloon_agent::skill_install::apply_install(&mut ev, entry, body, now)
+                            {
+                                Ok(()) => {
+                                    let _ = ev.save_json(&data_dir().join("skills.json"));
+                                    install_notes.push(format!(
+                                        "已安装 skill「{}」(sha256 验真通过, 来源 {})",
+                                        entry.name, entry.url
+                                    ));
+                                }
+                                Err(e) => {
+                                    install_notes.push(format!("拒装「{}」: {e}", entry.name));
+                                }
+                            }
+                        } else {
+                            install_notes.push(format!(
+                                "「{}」下载结果不可用 (被截断或形状不对), 验真必败 — 拒装",
+                                entry.name
+                            ));
+                        }
+                    }
+                }
             }
         }
     }
@@ -4820,6 +4865,9 @@ pub async fn world_fulfill(
         }
         if let Some(id) = &delegate_task_id {
             parts.push(format!("公告 {id}"));
+        }
+        for n in &install_notes {
+            parts.push(n.clone());
         }
         if parts.is_empty() {
             "仅记录, 未执行检索/委托".to_string()
