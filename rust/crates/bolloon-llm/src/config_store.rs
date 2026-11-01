@@ -102,6 +102,56 @@ pub struct CustomProvider {
     pub models: Vec<String>,
 }
 
+/// 记忆外挂配置 (2026-11-01, hindsight-engine crates.io 0.1.0)
+///
+/// **分层**: 本地 SQLite (`memory.db`) 恒为记忆真源; `backend: "hindsight"` 只是把
+/// 语义召回/事实抽取外挂给进程内 hindsight 引擎, 不可用 = 自动降级回本地, 永不阻塞。
+/// api key 不进 JSON — 走 `HINDSIGHT_API_LLM_API_KEY` / `HINDSIGHT_API_EMBEDDINGS_API_KEY`
+/// 环境变量或 `~/.bolloon/.env` (与 LLM provider key 同一纪律)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MemoryBackendSettings {
+    /// `local` (缺省, 行为与历史版本完全一致) | `hindsight`
+    pub backend: String,
+    /// PostgreSQL + pgvector 连接串 (hindsight 引擎的硬依赖)
+    pub database_url: Option<String>,
+    /// PG 内 schema (缺省 hindsight 自身默认)
+    pub database_schema: Option<String>,
+    /// bank_id 前缀, 实际 bank = `{prefix}:{agent_id}` (缺省 "bolloon")
+    pub bank_prefix: Option<String>,
+    pub llm: Option<MemoryLlmSettings>,
+    pub embeddings: Option<MemoryEmbeddingsSettings>,
+    /// 写入是否镜像到 hindsight (缺省 true; 关掉 = 只读外挂)
+    pub mirror_writes: Option<bool>,
+    /// 语义召回超时 (ms, 缺省 3000; 超时 = 只返回本地点)
+    pub recall_timeout_ms: Option<u64>,
+    /// 允许非 loopback 的 PG (缺省 false = 记忆数据不出本机, 显式才放开)
+    pub allow_remote_database: Option<bool>,
+}
+
+/// hindsight 的 LLM (retain 事实抽取用; 必须是 OpenAI 兼容或 Anthropic)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MemoryLlmSettings {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    /// OpenAI 兼容协议**必填** base_url (缺 key 还可走 env; 缺 base_url 引擎无法构造)
+    pub base_url: Option<String>,
+}
+
+/// hindsight 的 embedding (缺省 `hash` = 离线确定性, 零依赖零 key)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MemoryEmbeddingsSettings {
+    /// `hash` (缺省) | `openai` 等 OpenAI 兼容; `local`/`onnx` Rust 版不支持 (会报错)
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    /// 向量维度 (hash 缺省 384)
+    pub dimension: Option<usize>,
+}
+
 /// 整份配置
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,6 +162,9 @@ pub struct LlmConfig {
     pub providers: BTreeMap<String, ProviderSettings>,
     #[serde(default)]
     pub custom_providers: BTreeMap<String, CustomProvider>,
+    /// 记忆外挂 (缺省 None = 纯本地记忆)
+    #[serde(default)]
+    pub memory: Option<MemoryBackendSettings>,
     /// 最后写入时间 (**与 TS 一致: ISO 字符串**; 旧文件里的数字也容忍)
     #[serde(default, deserialize_with = "de_flex_time")]
     pub updated_at: String,

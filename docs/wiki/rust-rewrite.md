@@ -608,3 +608,22 @@ DID 片段可搜 → 手机号形状**真的去做了跨机尝试**(`cross_machi
 **门禁（真跑）**: `cargo build -p bolloon-cli` **0 error** · `cargo build -p bolloon-web`（重嵌新 HTML）**0 error** · `cargo test -p bolloon-web` **32/0**（无回归）· `bolloon group --help` 与 `group create --help` 子命令参数正确 · wiki `wiki_check` / `wiki_lint --strict=v2` OK。
 
 **诚实边界**: ① `app-tauri/ui/index.html` 仍是不被加载的陈旧副本，仅在 `tauri.conf.json` 里做编译期校验，运行时用 External URL 加载内嵌服务 ⇒ 它若被人误改不会生效，反而造成漂移（已在设计页标注）；② 只读快照页复用会话分享那套通用渲染，未为群聊定制；③ 子讨论**读隐私**仍未做（拿到底层 block 复制权限仍可读，同上一轮）；④ CLI 子命令依赖本地节点在跑（`bolloon web`），节点没起时给明确报错而非静默。详见 [group-subtopic-sharing.md](./group-subtopic-sharing.md) 第 6 节「前端接入」。
+
+---
+
+## 2026-11-01 第二十七批 (世界意图交付面: 意图分类 + 能力差距 + 交付物卡片 + profile 卡)
+
+**动机**: leo「世界模式的卡片回复不该是 agent 的聊天, 要根据任务给链接和创造维护的内容」+「能力不足就增加能力, agent 可以升级和寻找信息来满足意图」。
+
+| 模块 | 落地 |
+| --- | --- |
+| `bolloon-agent/world.rs` | `IntentCategory/WantKind/Clarity` + `classify_intent` 词表纯函数 + `WorldCard` 协议扩展 (`category/tags/actions/reply_to`, serde default 缺省跳过 ⇒ canonical 与旧版逐字节一致, 有值进签名载荷防钓鱼) + `Opportunity.intent_id` + `score_with_category` (同类 +0.15 / 异类 -0.10, reason 透明) |
+| `bolloon-agent/gap.rs` (新) | 能力差距检测纯函数: 三路径 **Search → Install → Delegate** 按成本升序; 能力清单如实盘点 (search 只看 `BOLLOON_WEB_SEARCH_URL` 真配了没); 报告永远至少一条路 |
+| `bolloon-agent/fulfill.rs` (新) | 交付物组装器: 链接卡 ≤3 张只装真实命中 / profile 内容卡 (没有出草稿卡) / 补能力说明卡 / Vague 必附澄清问题 / **永不空手** |
+| `bolloon-agent/profile.rs` (新) | 对外内容卡 store: `~/.bolloon/rust/world/profile.json` 0600 + 原子替换 + 损坏如实报错 |
+| `bolloon-agent/prompt.rs` | 新层 `core.capability-gap`: **禁裸拒**, 补能力三路径, 回答三交代 (查到什么带出处/还缺什么/下一步哪条) |
+| `bolloon-web` | `POST /api/world/fulfill` (分类 → 差距 → 交付物卡片入世界流) + `list_opportunities` 透出 `intent_id` |
+
+**门禁（真跑）**: 聚焦 **47/0** · `cargo test --workspace` 全绿 ~1070/0 · 防篡改负例 (改 actions/reply_to 验签必败) · 缺省字段 canonical 兼容 (旧形卡 pack → unpack 照常 verified)。
+
+**诚实边界**: ① fulfill 端点不真跑检索 (链接由 agent 的 web_search/fetch 承担, 本端点不编 URL); ② 供给登记面 (x402) 未接线, 差距检测的 supplies 如实为空; ③ 词表分类是兜底, LLM 增强未接; ④ 委托/安装只到"差距报告+说明卡", task board 发布/装 skill 的真执行未接线; ⑤ 批内顺带修了并行会话 `memory_hindsight.rs` 的 move 顺序编译错 (语义不变), 该记忆外挂及其 config_store 接线一并入库保证构建绿。

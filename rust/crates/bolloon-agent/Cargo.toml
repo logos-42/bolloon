@@ -29,3 +29,5 @@ hmac = "0.12"
 rusqlite = { version = "0.32", features = ["bundled"] }
 urlencoding = "2"
 ureq = { version = "2", features = ["json"] }
+# 记忆外挂 (crates.io 0.1.0, logos-42/hindsight-rust): 进程内 retain/recall/reflect
+hindsight-engine = "0.1"

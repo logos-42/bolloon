@@ -11,6 +11,170 @@ use serde::{Deserialize, Serialize};
 use bolloon_p2p::envelope::{SignedEnvelope, TOPIC_WORLD_CARD};
 use bolloon_p2p::identity::KeyPair;
 
+/// 意图场景类别 (场景泛化的第一层; 由 `classify_intent` 词表分类, 未来可接 LLM 增强)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum IntentCategory {
+    Food,
+    Work,
+    Social,
+    Learn,
+    Trade,
+    Travel,
+    #[default]
+    Other,
+}
+
+impl IntentCategory {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Food => "food",
+            Self::Work => "work",
+            Self::Social => "social",
+            Self::Learn => "learn",
+            Self::Trade => "trade",
+            Self::Travel => "travel",
+            Self::Other => "other",
+        }
+    }
+
+    /// 只认 canonical snake_case (别名归一在 `classify_intent` 里做)
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "food" => Self::Food,
+            "work" => Self::Work,
+            "social" => Self::Social,
+            "learn" => Self::Learn,
+            "trade" => Self::Trade,
+            "travel" => Self::Travel,
+            "other" => Self::Other,
+            _ => return None,
+        })
+    }
+}
+
+/// 用户想要的交付形态 (决定差距检测走哪条补能力路径)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum WantKind {
+    Links,
+    Info,
+    People,
+    Companion,
+    #[default]
+    Service,
+}
+
+/// 意图清晰度 (Vague ⇒ 交付时必须附一个澄清问题, 不许沉默也不许瞎猜)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum Clarity {
+    Clear,
+    #[default]
+    Vague,
+}
+
+/// 场景词表 (中文 + 英文别名; 新场景 = 加词条, 不改主链路)
+const CATEGORY_TABLE: &[(&str, IntentCategory)] = &[
+    ("吃饭", IntentCategory::Food),
+    ("吃", IntentCategory::Food),
+    ("餐", IntentCategory::Food),
+    ("外卖", IntentCategory::Food),
+    ("食堂", IntentCategory::Food),
+    ("饿了", IntentCategory::Food),
+    ("美食", IntentCategory::Food),
+    ("菜", IntentCategory::Food),
+    ("工作", IntentCategory::Work),
+    ("求职", IntentCategory::Work),
+    ("招聘", IntentCategory::Work),
+    ("简历", IntentCategory::Work),
+    ("面试", IntentCategory::Work),
+    ("上班", IntentCategory::Work),
+    ("职位", IntentCategory::Work),
+    ("岗位", IntentCategory::Work),
+    ("兼职", IntentCategory::Work),
+    ("job", IntentCategory::Work),
+    ("hiring", IntentCategory::Work),
+    ("朋友", IntentCategory::Social),
+    ("交友", IntentCategory::Social),
+    ("搭子", IntentCategory::Social),
+    ("社交", IntentCategory::Social),
+    ("认识", IntentCategory::Social),
+    ("俱乐部", IntentCategory::Social),
+    ("friend", IntentCategory::Social),
+    ("学习", IntentCategory::Learn),
+    ("课程", IntentCategory::Learn),
+    ("教程", IntentCategory::Learn),
+    ("考试", IntentCategory::Learn),
+    ("论文", IntentCategory::Learn),
+    ("培训", IntentCategory::Learn),
+    ("learn", IntentCategory::Learn),
+    ("买", IntentCategory::Trade),
+    ("卖", IntentCategory::Trade),
+    ("交易", IntentCategory::Trade),
+    ("二手", IntentCategory::Trade),
+    ("订单", IntentCategory::Trade),
+    ("buy", IntentCategory::Trade),
+    ("旅行", IntentCategory::Travel),
+    ("旅游", IntentCategory::Travel),
+    ("出行", IntentCategory::Travel),
+    ("机票", IntentCategory::Travel),
+    ("酒店", IntentCategory::Travel),
+    ("travel", IntentCategory::Travel),
+];
+
+/// 分类产物 (matched 留给 reason/透明打分)
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassifiedIntent {
+    pub category: IntentCategory,
+    pub want: WantKind,
+    pub clarity: Clarity,
+    pub matched: Vec<&'static str>,
+}
+
+/// 意图分类 (纯函数, 词表兜底; LLM 增强走 bolloon-llm 咽喉由调用方可选叠加)
+///
+/// - category: 场景词表命中 (英文名词做 ASCII 小写匹配); 无命中 = Other
+/// - want: 类别默认交付形态 (Food/Trade/Travel→Links, Work→Links, Learn→Info,
+///   Social→People; Other→Info)
+/// - clarity: Other (不知场景) 或文本 ≤ 8 字 (细节不足) = Vague, 否则 Clear
+pub fn classify_intent(text: &str) -> ClassifiedIntent {
+    let lower = text.to_lowercase();
+    let mut matched: Vec<&'static str> = Vec::new();
+    let mut category = IntentCategory::Other;
+    for (kw, cat) in CATEGORY_TABLE {
+        let hit = if kw.is_ascii() {
+            lower.contains(kw)
+        } else {
+            text.contains(kw)
+        };
+        if hit {
+            if !matched.iter().any(|m| *m == *kw) {
+                matched.push(kw);
+            }
+            if category == IntentCategory::Other {
+                category = *cat;
+            }
+        }
+    }
+    let want = match category {
+        IntentCategory::Social => WantKind::People,
+        IntentCategory::Learn => WantKind::Info,
+        IntentCategory::Other => WantKind::Info,
+        _ => WantKind::Links,
+    };
+    let vague_chars = text.chars().count() <= 8;
+    let clarity = if category == IntentCategory::Other || vague_chars {
+        Clarity::Vague
+    } else {
+        Clarity::Clear
+    };
+    ClassifiedIntent { category, want, clarity, matched }
+}
+
 /// 用户意图 (世界流的筛选器; None = 纯默认流)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Intent {
@@ -21,6 +185,15 @@ pub struct Intent {
     pub tags: Vec<String>,
     pub active: bool,
     pub created_at_ms: u64,
+    /// 场景类别 (serde default: Other — 旧落盘数据照常解)
+    #[serde(default)]
+    pub category: IntentCategory,
+    /// 想要的交付形态 (serde default: Service)
+    #[serde(default)]
+    pub want: WantKind,
+    /// 清晰度 (serde default: Vague)
+    #[serde(default)]
+    pub clarity: Clarity,
 }
 
 /// 卡片媒体类型 (enum 化, 对齐 TS `CardMediaType`)
@@ -76,6 +249,26 @@ pub enum CardVerification {
 }
 
 
+/// 行动类型 (行动链接与 media 的内容 URL 语义不同: media=看, action=做)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum ActionKind {
+    #[default]
+    Link,
+    Join,
+    Contact,
+}
+
+/// 行动链接 (交付物卡片的"下一步"语义: label 展示 / url 跳转 / kind 语义)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CardAction {
+    pub label: String,
+    pub url: String,
+    #[serde(default)]
+    pub kind: ActionKind,
+}
+
 /// 世界卡片 (文本/音频/图片/视频 多媒体)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorldCard {
@@ -97,6 +290,18 @@ pub struct WorldCard {
     /// 验签结论 (收卡时本地写入; 不参与签名)
     #[serde(default)]
     pub verification: CardVerification,
+    /// 场景类别 (参与意图匹配; None = 不声明)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<IntentCategory>,
+    /// 匹配标签 (serde default: 空 — 旧帧照常解; 缺省不进签名载荷, 新旧互通)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// 行动链接 (serde default: 空; 缺省不进签名载荷, 新旧互通)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<CardAction>,
+    /// 回应哪条意图 (intent id; 缺省不进签名载荷, 新旧互通)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +331,9 @@ pub struct Opportunity {
     pub card: Option<WorldCard>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// 回应哪条意图 (交付物/匹配卡有, 默认流没有)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent_id: Option<String>,
 }
 
 /// 校准环: ignore/accept 后同源不再流入
@@ -218,7 +426,32 @@ pub fn score_opportunity(opp_tags: &[String], intent_tags: &[String]) -> (f64, S
     }
 }
 
-/// 世界卡片签名 (防伪: scope / media / cover 全进签名载荷, 改任一验签必败)
+/// 场景打分 (透明): 基础标签分 + 类别一致性加成/减分, 收敛 [0.0, 1.0]
+///
+/// - 意图没分类 (Other) 或无标签 → 纯基础分, 不做类别加减
+/// - 卡片声明了同类 category → +0.15 (reason 加 `+cat`)
+/// - 声明了异类 category → -0.10 (reason 加 `-cat`)
+/// - 卡片未声明 category → 纯基础分
+pub fn score_with_category(
+    opp_tags: &[String],
+    opp_category: Option<IntentCategory>,
+    intent: &Intent,
+) -> (f64, String) {
+    let (base, reason) = score_opportunity(opp_tags, &intent.tags);
+    if intent.category == IntentCategory::Other || intent.tags.is_empty() {
+        return (base, reason);
+    }
+    match opp_category {
+        Some(c) if c == intent.category => {
+            ((base + 0.15).clamp(0.0, 1.0), format!("{reason}+cat:{}", c.as_str()))
+        }
+        Some(c) => ((base - 0.10).clamp(0.0, 1.0), format!("{reason}-cat:{}", c.as_str())),
+        None => (base, reason),
+    }
+}
+
+/// 世界卡片签名 (防伪: scope / media / cover / category / tags / actions / reply_to
+/// 全进签名载荷, 改任一验签必败; 全缺省时序列化形状与旧版逐字节一致 ⇒ 新旧互通)
 #[derive(serde::Serialize)]
 struct CardUnsigned<'a> {
     title: &'a str,
@@ -228,6 +461,14 @@ struct CardUnsigned<'a> {
     provider_did: &'a str,
     scope: CardScope,
     issued_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    category: &'a Option<IntentCategory>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    tags: &'a [String],
+    #[serde(skip_serializing_if = "<[CardAction]>::is_empty")]
+    actions: &'a [CardAction],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_to: &'a Option<String>,
 }
 
 /// 卡片错误
@@ -257,6 +498,10 @@ pub fn card_canonical_bytes(card: &WorldCard) -> String {
         provider_did: &card.provider_did,
         scope: card.scope,
         issued_at_ms: card.issued_at_ms,
+        category: &card.category,
+        tags: &card.tags,
+        actions: &card.actions,
+        reply_to: &card.reply_to,
     };
     bolloon_p2p::envelope::canonical_json(&unsigned)
 }
@@ -401,6 +646,7 @@ mod tests {
             reason: "world".into(),
             card: None,
             url: None,
+            intent_id: None,
         }
     }
 
@@ -474,7 +720,133 @@ mod tests {
             scope: CardScope::Private,
             issued_at_ms: 42,
             verification: CardVerification::Unverified,
+            category: None,
+            tags: vec![],
+            actions: vec![],
+            reply_to: None,
         }
+    }
+
+    fn intent_of(text: &str) -> Intent {
+        let c = classify_intent(text);
+        Intent {
+            id: "intent-1".into(),
+            text: text.into(),
+            tags: vec![text.into()],
+            active: true,
+            created_at_ms: 1,
+            category: c.category,
+            want: c.want,
+            clarity: c.clarity,
+        }
+    }
+
+    #[test]
+    fn classify_food_work_social() {
+        // 吃饭: 场景=food / 想要链接 / 短句=Vague (必须附澄清问题, 不许沉默)
+        let c = classify_intent("我想吃饭");
+        assert_eq!(c.category, IntentCategory::Food);
+        assert_eq!(c.want, WantKind::Links);
+        assert_eq!(c.clarity, Clarity::Vague);
+
+        // 找工作: 场景=work / 细节足=Clear
+        let c2 = classify_intent("我在杭州找后端开发的工作");
+        assert_eq!(c2.category, IntentCategory::Work);
+        assert_eq!(c2.clarity, Clarity::Clear);
+
+        // 找朋友: 场景=social / 想要人
+        let c3 = classify_intent("想认识一些爬山的朋友");
+        assert_eq!(c3.category, IntentCategory::Social);
+        assert_eq!(c3.want, WantKind::People);
+
+        // 不认识的话 → Other + Vague (不瞎猜场景)
+        let c4 = classify_intent("可控核聚变 合作");
+        assert_eq!(c4.category, IntentCategory::Other);
+        assert_eq!(c4.clarity, Clarity::Vague);
+
+        // 英文别名 (ASCII 小写匹配)
+        let c5 = classify_intent("find a job inHangzhou");
+        assert_eq!(c5.category, IntentCategory::Work);
+    }
+
+    #[test]
+    fn card_action_tamper_breaks_signature() {
+        let kp = KeyPair::generate();
+        let mut card = sample_card(&kp);
+        card.category = Some(IntentCategory::Food);
+        card.tags = vec!["食堂".into()];
+        card.actions = vec![CardAction {
+            label: "查看地图".into(),
+            url: "https://maps.example.com/x".into(),
+            kind: ActionKind::Link,
+        }];
+        card.reply_to = Some("intent-1".into());
+        let sig = kp.sign(card_canonical_bytes(&card).as_bytes());
+        assert!(verify_card(&card, &kp.public_bytes(), &sig).is_ok());
+
+        // 篡改行动链接 (钓鱼) → 验签必败
+        let mut forged = card.clone();
+        forged.actions[0].url = "https://evil.example.com".into();
+        assert_eq!(
+            verify_card(&forged, &kp.public_bytes(), &sig).unwrap_err(),
+            CardError::BadSignature
+        );
+
+        // 篡改 reply_to (冒充回应别的意图) → 验签必败
+        let mut forged2 = card.clone();
+        forged2.reply_to = Some("intent-999".into());
+        assert_eq!(
+            verify_card(&forged2, &kp.public_bytes(), &sig).unwrap_err(),
+            CardError::BadSignature
+        );
+    }
+
+    /// 新增字段全缺省时 canonical 形状与旧版一致 (新旧帧互通; 有值才进签名)
+    #[test]
+    fn card_default_fields_keep_canonical_compatible() {
+        let kp = KeyPair::generate();
+        let old_shape = WorldCard {
+            category: None,
+            tags: vec![],
+            actions: vec![],
+            reply_to: None,
+            ..sample_card(&kp)
+        };
+        let sig = kp.sign(card_canonical_bytes(&old_shape).as_bytes());
+        assert!(verify_card(&old_shape, &kp.public_bytes(), &sig).is_ok());
+
+        // 跨机帧往返: 新字段缺省的卡 pack → unpack 照常 verified
+        let env = pack_world_card(&kp, &old_shape, 1000);
+        let got = unpack_world_card(&env).expect("缺省新字段的旧形卡必须照常收");
+        assert!(got.actions.is_empty());
+        assert_eq!(got.verification, CardVerification::Verified);
+    }
+
+    #[test]
+    fn category_scoring_transparent() {
+        // 同类 +0.15, 异类 -0.10, 未声明不动, 未分类意图不动
+        let mut intent = intent_of("我在杭州找后端开发的工作"); // work / Clear
+        intent.tags = vec!["工作".into(), "杭州".into()]; // 2 个标签只中 1 个 → base 0.75 (不被 clamp 吃掉)
+        let tags = vec!["工作".to_string()];
+        let (base, base_r) = score_opportunity(&tags, &intent.tags);
+        assert!((base - 0.75).abs() < 1e-9, "base 应为 0.75, 实际 {base}");
+
+        let (s_same, r_same) = score_with_category(&tags, Some(IntentCategory::Work), &intent);
+        assert!((s_same - 0.90).abs() < 1e-9, "0.75 + 0.15 = 0.90");
+        assert!(r_same.ends_with("+cat:work"));
+
+        let (s_diff, r_diff) = score_with_category(&tags, Some(IntentCategory::Food), &intent);
+        assert!((s_diff - 0.65).abs() < 1e-9, "0.75 - 0.10 = 0.65");
+        assert!(r_diff.ends_with("-cat:food"));
+
+        let (s_none, r_none) = score_with_category(&tags, None, &intent);
+        assert!((s_none - base).abs() < 1e-9);
+        assert_eq!(r_none, base_r);
+
+        // 收敛: 1.0 封顶
+        intent.tags = vec!["工作".into(), "杭州".into(), "后端".into(), "开发".into()];
+        let (s_top, _) = score_with_category(&[], Some(IntentCategory::Work), &intent);
+        assert!(s_top <= 1.0);
     }
 
     #[test]

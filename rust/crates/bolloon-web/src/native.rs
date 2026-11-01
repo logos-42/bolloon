@@ -4270,6 +4270,8 @@ pub async fn list_opportunities(
             "version": version,
             "accepted": fs.accepted.contains(&id),
             "opened": opened,
+            // 回应哪条意图 (world-fulfill 交付卡有; 默认流没有)
+            "intent_id": pick("intent_id"),
             "up": up,
             "down": down,
             "rank": rank,
@@ -4716,6 +4718,95 @@ pub async fn world_inbox_post(
     fs.inbox.push(item.clone());
     fs.save(&data_dir());
     Json(serde_json::json!({ "card": item }))
+}
+
+/// POST /api/world/fulfill → 意图交付面 (2026-11-01): 分类 → 差距检测 → 交付物卡片
+///
+/// 世界模式对用户意图的回应不再是 agent 的聊天文本, 而是**卡片集合 + 澄清问题**:
+/// - 链接卡只装真实命中 (本端点不真跑检索, 检索由 agent 的 web_search/fetch 承担);
+///   没有真实命中就出"补能力说明卡" —— 如实交代缺什么/走哪条路径, **不裸拒不编 URL**
+/// - Social/Work 场景带出对外内容卡 (profile store, 0600); 没有就出草稿卡引导维护
+/// - Vague 意图必附一个澄清问题, 同时把已能交付的先交出去
+///
+/// 诚实边界: 供给清单 (x402 供给登记面) 未接线, 如实为空 — 差距检测不会假装能委托。
+pub async fn world_fulfill(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let text = req["text"].as_str().unwrap_or_default().trim().to_string();
+    if text.is_empty() {
+        return Json(serde_json::json!({ "error": "意图不能为空" }));
+    }
+    let cls = bolloon_agent::world::classify_intent(&text);
+    let now = now_ms();
+    let intent = bolloon_agent::world::Intent {
+        id: format!("intent-{now:013}"),
+        text: text.clone(),
+        tags: tokenize_for_score(&text).into_iter().take(6).collect(),
+        active: true,
+        created_at_ms: now,
+        category: cls.category,
+        want: cls.want,
+        clarity: cls.clarity,
+    };
+    // 能力盘点 (如实: web_fetch 内置; web_search 只在配了 BOLLOON_WEB_SEARCH_URL 才算有)
+    let inv = bolloon_agent::CapabilityInventory {
+        has_web_fetch: true,
+        has_web_search: std::env::var("BOLLOON_WEB_SEARCH_URL").is_ok(),
+        skills: vec![],
+        supplies: vec![],
+    };
+    let gap = bolloon_agent::gap::detect_gaps(&intent, &inv);
+    let profile = bolloon_agent::profile::ProfileCardStore::open(data_dir().join("world").join("profile.json"))
+        .ok()
+        .and_then(|s| s.load().ok().flatten());
+    let ctx = bolloon_agent::fulfill::FulfillContext {
+        intent_id: intent.id.clone(),
+        links: vec![],
+        profile,
+    };
+    let ful = bolloon_agent::fulfill::fulfill(&intent, &gap, &ctx, st.identity.did.as_str(), now);
+    // 交付物进世界流 (真实流入: source=world-fulfill + intent_id 可追溯)
+    let mut fs = st.forge.lock().await;
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    for card in &ful.cards {
+        let card_json = serde_json::to_value(card).unwrap_or(serde_json::Value::Null);
+        let item = serde_json::json!({
+            "id": format!("card-{:04}", fs.inbox.len() + 1),
+            "kind": "card",
+            "score": 1.5,
+            "title": card.title,
+            "summary": card.summary,
+            "card": card_json,
+            "source": "world-fulfill",
+            "intent_id": intent.id,
+            "ts": now,
+        });
+        fs.inbox.push(item.clone());
+        items.push(item);
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({
+        "ok": true,
+        "intent": {
+            "id": intent.id,
+            "text": text,
+            "category": cls.category.as_str(),
+            "want": cls.want,
+            "clarity": cls.clarity,
+            "matched": cls.matched,
+        },
+        "gap": {
+            "paths": gap.paths.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+            "missing": gap.missing.iter()
+                .map(|m| serde_json::json!({ "kind": m.kind, "note": m.note }))
+                .collect::<Vec<_>>(),
+            "reason": gap.reason,
+        },
+        "question": ful.question,
+        "note": ful.note,
+        "cards": items,
+    }))
 }
 
 /// GET /api/world/cards → 世界卡片列表 (对齐 TS `GET /api/world/cards`)

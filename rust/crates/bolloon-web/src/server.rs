@@ -482,6 +482,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/world/profile", get(crate::native::world_profile))
         .route("/api/world/watch", get(crate::native::world_watch))
         .route("/api/world/inbox", get(crate::native::world_inbox).post(crate::native::world_inbox_post))
+        // 意图交付面: 分类 → 差距检测 → 交付物卡片 (回应的是卡片集合, 不是聊天)
+        .route("/api/world/fulfill", post(crate::native::world_fulfill))
         .route("/api/world/stats", get(crate::native::world_stats))
         // 世界卡片跨机投递 (对齐 TS routes-world: cards / push / protocol)
         .route("/api/world/cards", get(crate::native::world_cards))
@@ -3470,6 +3472,10 @@ mod route_tests {
                 scope: bolloon_agent::world::CardScope::Public,
                 issued_at_ms: 1,
                 verification: bolloon_agent::world::CardVerification::Unverified,
+                category: None,
+                tags: vec![],
+                actions: vec![],
+                reply_to: None,
             };
             let env = bolloon_agent::world::pack_world_card(&kp, &card, 1);
             let pushed = post_json("/api/world/cards/push", serde_json::to_value(&env).unwrap());

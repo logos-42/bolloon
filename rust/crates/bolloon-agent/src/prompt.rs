@@ -191,6 +191,19 @@ pub const LAYER_TOOL_USE: &str = r#"# 工具使用与自主循环 (务必遵守)
 - 工具或模型回复超时: 重试一次; 仍不行就把任务拆小再试, 或如实说明卡在哪一步。
 - **绝不要**声称"我是纯文本模型、无法访问你的本地文件"——你本来就拥有这些工具。"#;
 
+/// 能力差距 ≠ 拒绝 (2026-11-01: 意图满足不了时的正确动作是补能力, 不是答"没能力")
+pub const LAYER_CAPABILITY_GAP: &str = r#"# 能力差距 ≠ 拒绝 (务必遵守)
+
+用户的意图你当前满足不了时, **禁止裸拒** — "我做不了 / 没这个能力 / 不知道怎么办"都不算完成。
+正确动作是**补能力**, 按成本升序:
+
+1. **信息获取**: 用 web_search / web_fetch 去查, 把结果整理成带出处的链接交给用户;
+2. **能力安装**: 缺工具或技能, 说清缺什么、装什么 (skill / 工具端口), 安装走验真与门禁;
+3. **能力外购/委托**: 世界里有别人登记的供给, 就委托或按预算购买 (任务公告板 / x402)。
+
+回答里必须交代三件事: 查到了什么 (带出处) / 还缺什么 / 下一步走哪条补能力路径。
+意图模糊时先问**一个**澄清问题, 同时把已经能交付的部分先交出去 — 不许只提问不干活。"#;
+
 /// 群聊友好合作语气 (本批新增: 群聊合作机制支持友好和善)
 pub const LAYER_GROUP_TONE: &str = r#"# 群聊合作语气
 
@@ -277,6 +290,15 @@ pub fn builtin_layers() -> Vec<PromptLayer> {
             applies_to: vec![AppliesTo::All],
             max_chars: 900,
             content: LAYER_TOOL_USE.into(),
+        },
+        // 能力差距层: 紧跟工具层 — 意图满足不了时补能力, 不许裸拒
+        PromptLayer {
+            id: "core.capability-gap".into(),
+            version: "1.0.0".into(),
+            priority: 112,
+            applies_to: vec![AppliesTo::All],
+            max_chars: 700,
+            content: LAYER_CAPABILITY_GAP.into(),
         },
         PromptLayer {
             id: "channel.group-tone".into(),
@@ -755,9 +777,12 @@ mod tests {
             &AssembleContext { channel: "local", role: None, tool: None },
         );
         // 全部层都在
-        for id in ["core.identity", "core.core-traits", "core.refusal", "core.tool-use", "dynamic.snapshot", "dynamic.skills", "dynamic.todo", "dynamic.judgment", "dynamic.history-note"] {
+        for id in ["core.identity", "core.core-traits", "core.refusal", "core.tool-use", "core.capability-gap", "dynamic.snapshot", "dynamic.skills", "dynamic.todo", "dynamic.judgment", "dynamic.history-note"] {
             assert!(p.layer_ids.contains(&id.into()), "缺 {id}: {:?}", p.layer_ids);
         }
+        // 能力差距层进了正文 (禁裸拒 + 补能力三路径)
+        assert!(p.text.contains("禁止裸拒"), "应禁止裸拒");
+        assert!(p.text.contains("补能力"), "应交代补能力路径");
         // 工具使用层进了正文 (直击"不知道自己有工具/纯文本退化")
         assert!(p.text.contains("直接操作本地文件系统"), "工具使用层应声明本地文件能力");
         assert!(p.text.contains("不要声称无法访问用户文件"), "应禁止纯文本退化话术");
