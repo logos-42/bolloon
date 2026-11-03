@@ -887,9 +887,13 @@ fn run_friend(action: FriendAction) -> anyhow::Result<()> {
                 anyhow::bail!("对方：{}", r["error"].as_str().unwrap_or("未开放只读指挥"));
             }
             println!("{}", r["reply"].as_str().unwrap_or(""));
-            if let Some(n) = r["note"].as_str() {
-                println!("\n[{n}]");
-            }
+            println!(
+                "\n[intent {} · 工具 {} 次 · 被拒 {} 次 · {}]",
+                r["intent_id"].as_str().unwrap_or(""),
+                r["tools_used"].as_array().map(|a| a.len()).unwrap_or(0),
+                r["tools_denied"].as_u64().unwrap_or(0),
+                r["note"].as_str().unwrap_or("")
+            );
         }
         FriendAction::Judgments { did, agent, port } => {
             let base = format!("http://127.0.0.1:{port}");

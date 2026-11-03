@@ -420,6 +420,26 @@ pub async fn builtin_harness(
     (h, schemas)
 }
 
+/// 好友只读指挥可用的工具名 (**唯一事实源**; 加任何一项都要先想清楚会不会被拿来写/执行/花钱)
+pub const READONLY_TOOL_NAMES: &[&str] = &[
+    "read_file",
+    "list_directory",
+    "grep_files",
+    "glob_files",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "git_show",
+    "web_fetch",
+    "read_skill",
+    "list_skills",
+    "todo_list",
+    "recall",
+    "task_list",
+    "group_read",
+    "group_members",
+];
+
 /// **只读工具子集** (2026-11-04: 好友"只读指挥"专用)
 ///
 /// 纪律: ① 只把 `EffectKind::Read` 的工具**发给模型**(schema 里根本看不到写/执行类);
@@ -439,9 +459,13 @@ pub async fn readonly_harness(
         crate::scratch::ScriptRunPort::noop(),
     ));
     let h = Arc::new(Harness::new(reg.clone(), exec, budget));
+    // 只读子集 = **显式姓名白名单** (2026-11-04 修正口径)
+    //
+    // 为什么不再"按 effect==Read 一把抓": Read 类里混着 `econ_claim`(能领额度/记账),
+    // 那对好友不是"读"。这里只放行真正的查询工具 + 用户点名的 `web_fetch`。
     let defs: Vec<bolloon_harness::ToolDef> = builtin_tool_defs()
         .into_iter()
-        .filter(|d| d.effect == bolloon_harness::EffectKind::Read)
+        .filter(|d| READONLY_TOOL_NAMES.contains(&d.name.as_str()))
         .collect();
     for d in &defs {
         h.grant(&d.name).await;
@@ -821,5 +845,32 @@ mod tests {
             .execute(c(serde_json::json!({ "path": "/nonexistent/x.txt" })))
             .await;
         assert_eq!(r.evidence.as_ref().unwrap()["error"]["code"], "not_found");
+    }
+
+    /// 只读子集硬门 (2026-11-04): 发给模型的 schema 里**不许**出现写/执行类工具;
+    /// 允许的只有 Read 类 + 显式点名的 web_fetch。
+    #[tokio::test]
+    async fn readonly_harness_exposes_only_read_and_web_fetch() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (_h, schemas) = super::readonly_harness(5, 5_000, cancel).await;
+        let names: Vec<String> = schemas.into_iter().map(|s| s.function.name).collect();
+        for must in ["read_file", "list_directory", "grep_files", "web_fetch"] {
+            assert!(names.iter().any(|n| n == must), "缺 {must}: {names:?}");
+        }
+        for forbidden in [
+            "shell",
+            "execute_command",
+            "write_file",
+            "write_to_file",
+            "replace_in_file",
+            "web_search",
+            "econ_claim", // 能领额度/记账 —— 不是"读"
+            "econ_probe",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "只读子集里混进了 {forbidden}: {names:?}"
+            );
+        }
     }
 }

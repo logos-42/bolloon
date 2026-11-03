@@ -2134,6 +2134,38 @@ pub enum StreamChunk {
 /// `sink` 为 None 时不外发增量（非流式调用）；`cancel` 置位即中止（工具门 + 轮次边界双检）。
 /// 一轮"带工具"的回合参数（私聊用它默认值；群聊用它把现场/步数上限/经济归属传进来）
 #[derive(Debug, Clone)]
+/// 好友只读指挥的**工具级审计观察者** (LoopObserver: 只读事实, 不改执行语义)
+///
+/// 每个工具调用记一行 (turn / tool / ok / denied / elapsed)。落盘由调用方在回合结束后做,
+/// 这样审计不依赖模型"自己汇报", 也不因为回复被截断而丢证据。
+struct FriendAuditObserver {
+    sink: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+}
+
+#[async_trait]
+impl bolloon_agent::kernel_loop::LoopObserver for FriendAuditObserver {
+    async fn on_tool_result(
+        &self,
+        turn: u32,
+        call: &bolloon_agent::ToolCall,
+        outcome: &bolloon_agent::GateOutcome,
+    ) {
+        let mut v = match self.sink.lock() {
+            Ok(v) => v,
+            Err(e) => e.into_inner(),
+        };
+        if v.len() >= 32 {
+            return; // 硬上限: 审计不许被刷爆
+        }
+        v.push(serde_json::json!({
+            "turn": turn,
+            "tool": call.name,
+            "denied": outcome.denied,
+            "elapsed_ms": outcome.elapsed_ms,
+        }));
+    }
+}
+
 pub struct TurnOptions {
     /// 追加在系统提示词后面的现场说明（群聊现场/跨机来访等）
     pub extra_system: String,
@@ -2153,8 +2185,10 @@ pub struct TurnOptions {
     pub econ: Option<EconCtx>,
     /// 计量用的表面名
     pub surface: &'static str,
-    /// 只读工具子集 (好友"只读指挥"用: 只给 Read 类工具, 不给网络/写/执行)
+    /// 只读工具子集 (好友"只读指挥"用: 只给 Read 类工具 + web_fetch, 不给写/执行)
     pub readonly_tools: bool,
+    /// 工具级审计落点 (好友只读指挥时非空; 每个工具调用一行事实, 由调用方落盘)
+    pub audit_sink: Option<Arc<std::sync::Mutex<Vec<serde_json::Value>>>>,
 }
 
 impl Default for TurnOptions {
@@ -2170,6 +2204,7 @@ impl Default for TurnOptions {
             econ: None,
             surface: "web",
             readonly_tools: false,
+            audit_sink: None,
         }
     }
 }
@@ -2332,9 +2367,17 @@ pub async fn reply_with_agent_cfg(
     });
     // 观察者链: 只挂经济计量旁路。界面上的"想法/动作"由模型真实的流式增量给出,
     // 不再从工具回调拼进度文案 (那是把我们的措辞冒充成 AI 的话)。
-    let chain = bolloon_agent::kernel_loop::ObserverChain::new(match econ_obs.as_ref() {
-        Some(e) => vec![e as &dyn bolloon_agent::kernel_loop::LoopObserver],
-        None => vec![],
+    // 2026-11-04: 好友只读指挥额外挂一个**工具级审计**观察者 (与 UI/经济观察者互不干扰)
+    let friend_audit = opts.audit_sink.clone().map(|sink| FriendAuditObserver { sink });
+    let chain = bolloon_agent::kernel_loop::ObserverChain::new({
+        let mut v: Vec<&dyn bolloon_agent::kernel_loop::LoopObserver> = Vec::new();
+        if let Some(e) = econ_obs.as_ref() {
+            v.push(e as &dyn bolloon_agent::kernel_loop::LoopObserver);
+        }
+        if let Some(f) = friend_audit.as_ref() {
+            v.push(f as &dyn bolloon_agent::kernel_loop::LoopObserver);
+        }
+        v
     });
     // 2026-11-04 (bug 7): 这一轮开始就发心跳 (thinking) —— 心跳注册表以前在 web 里从不被调用
     {
@@ -3640,6 +3683,7 @@ pub async fn room_turn_exec(
         tool_budget: rt.tool_budget,
         max_secs: rt.max_secs,
         readonly_tools: false,
+        audit_sink: None,
         econ: Some(EconCtx {
             intent_id: intent_id.to_string(),
             group_id: Some(gid.to_string()),
@@ -7350,11 +7394,17 @@ pub async fn agents_public_command(
     let Some(agent) = agent else {
         return Json(serde_json::json!({ "ok": false, "error": "智能体不存在" }));
     };
-    let sid = format!("friend-cmd-{}", now_ms());
+    // 2026-11-04: 每次跨机指令一个**独立 intent_id** (可与经济计量/审计对账),
+    // 格式含发起方短 DID, 便于事后按人筛。
+    let intent_id = format!("friend-cmd-{}-{}", now_ms(), short_did(&from_did));
+    let sid = intent_id.clone();
     let cancel = st.chat_runs.begin(&sid);
+    let audit_sink: Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
     let opts = TurnOptions {
         session_id: sid.clone(),
         readonly_tools: true,
+        audit_sink: Some(audit_sink.clone()),
         max_turns: 3,
         max_retries: 1,
         tool_budget: 5,
@@ -7372,9 +7422,19 @@ pub async fn agents_public_command(
         Ok(t) => (true, t),
         Err(e) => (false, e),
     };
+    // 工具级审计: 逐条来自 LoopObserver 的真实门控结果 (不是模型自述)
+    let tool_events: Vec<serde_json::Value> = match audit_sink.lock() {
+        Ok(v) => v.clone(),
+        Err(e) => e.into_inner().clone(),
+    };
+    let denied = tool_events
+        .iter()
+        .filter(|e| e["denied"] == serde_json::json!(true))
+        .count();
     append_friend_audit(serde_json::json!({
         "at_ms": now_ms(),
         "kind": "friend_command_readonly",
+        "intent_id": intent_id,
         "from_did": from_did,
         "agent_id": agent_id,
         "instruction": instruction.chars().take(200).collect::<String>(),
@@ -7383,13 +7443,17 @@ pub async fn agents_public_command(
         "reply_head": reply.chars().take(160).collect::<String>(),
         "tool_budget": 5,
         "max_secs": 20,
-        "tools_scope": "read_only",
+        "tools_scope": "read_only+web_fetch",
+        "tools_used": tool_events,
+        "tools_denied": denied,
     }));
     Json(serde_json::json!({
         "ok": ok, "reply": reply,
-        "scope": "read_only", "tool_budget": 5, "max_secs": 20,
+        "intent_id": intent_id,
+        "scope": "read_only+web_fetch", "tool_budget": 5, "max_secs": 20,
+        "tools_used": tool_events, "tools_denied": denied,
         "audited": true,
-        "note": "只读子集: 无写/无执行/无联网; 全程已写 friend-audit.jsonl"
+        "note": "只读子集(Read + web_fetch): 无写/无执行; 每个工具调用已逐条审计"
     }))
 }
 
