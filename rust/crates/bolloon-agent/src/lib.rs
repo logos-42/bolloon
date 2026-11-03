@@ -50,6 +50,7 @@ pub mod runtime;
 pub mod scratch;
 pub mod scratch_tools;
 pub mod search_tools;
+pub mod skill_authoring;
 pub mod skill_install;
 pub mod sql_tools;
 pub mod session_store;

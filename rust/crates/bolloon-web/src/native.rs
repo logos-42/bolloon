@@ -5013,6 +5013,8 @@ pub async fn world_fulfill(
     let mut search_note = String::new();
     let mut delegate_task_id: Option<String> = None;
     let mut install_notes: Vec<String> = vec![];
+    // 2026-11-04: 本轮自动编写/入库的 skills (主动补能力)
+    let mut skills_authored: Vec<String> = vec![];
     for step in &plan {
         match step {
             bolloon_agent::UpgradeStep::Search { query } => {
@@ -5058,9 +5060,19 @@ pub async fn world_fulfill(
                 );
                 match reg.find_for_category(intent.category) {
                     None => {
-                        install_notes.push(format!(
-                            "{note}; 登记面无该类别可安装技能, 已记录待办"
-                        ));
+                        // 没有登记源 ⇒ **自己写一个方法型 skill**（主动补能力），而不是只记待办。
+                        // 走同一份 author_skill_for_intent：promote 批准门 + skills.json 落盘。
+                        match author_skill_for_intent(&st, &intent).await {
+                            Some(name) => {
+                                install_notes.push(format!(
+                                    "{note}; 已自动编写方法型 skill「{name}」并入库"
+                                ));
+                                skills_authored.push(name);
+                            }
+                            None => install_notes.push(format!(
+                                "{note}; 登记面无该类别可安装技能, 已记录待办"
+                            )),
+                        }
                     }
                     Some(entry) => {
                         use bolloon_agent::ToolExecutor as _;
@@ -5178,6 +5190,7 @@ pub async fn world_fulfill(
             "search_note": search_note,
             "delegate_task_id": delegate_task_id,
             "install_notes": install_notes,
+            "skills_authored": skills_authored,
             "memory_lesson": lesson,
         },
         "question": ful.question,
@@ -7195,6 +7208,40 @@ pub async fn agent_grants_revoke(
         .is_some();
     fs.save(&crate::server::data_dir());
     Json(serde_json::json!({ "ok": true, "revoked": removed, "agent_id": id, "did": did }))
+}
+
+/// 差距 → **自动编写并入库一个方法型 skill** (世界交付与 cron 主动巡检共用同一份)
+///
+/// 纪律: 走 `SkillsEvolver::promote` 批准门 (同名/重复/超长都拒), 落盘 `skills.json`,
+/// 正文由 `skill_authoring::draft_skill` 模板生成 (不编 URL/数据)。
+pub async fn author_skill_for_intent(
+    st: &AppState,
+    intent: &bolloon_agent::world::Intent,
+) -> Option<String> {
+    let inv = bolloon_agent::CapabilityInventory {
+        has_web_fetch: true,
+        has_web_search: std::env::var("BOLLOON_WEB_SEARCH_URL").is_ok(),
+        skills: vec![],
+        supplies: vec![],
+    };
+    let gap = bolloon_agent::gap::detect_gaps(intent, &inv);
+    // 只有"缺能力/无法覆盖"的意图才值得写方法; 纯检索类不写 (链接靠搜索, 不是知识)
+    if !gap.paths.contains(&bolloon_agent::GapPath::Install) && !gap.paths.contains(&bolloon_agent::GapPath::Delegate) {
+        return None;
+    }
+    let cand = bolloon_agent::skill_authoring::draft_skill(intent, &gap);
+    let mut ev = st.skills.lock().await;
+    let now = now_ms();
+    match bolloon_agent::skill_authoring::promote_draft(&mut ev, cand, now) {
+        Ok(name) => {
+            let _ = ev.save_json(&data_dir().join("skills.json"));
+            Some(name)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, intent = %intent.id, "自动写 skill 被拒 (策略门)");
+            None
+        }
+    }
 }
 
 /// POST /api/groups/{id}/invite-agent {did, agent_id} → 邀请**好友的智能体**进群 (跨机链路)

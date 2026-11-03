@@ -79,6 +79,8 @@ pub struct CronStats {
     pub swept_last: usize,
     /// 最近一轮"门户主动维护"成功发布的智能体数 (bug 11)
     pub portal_ok_last: usize,
+    /// 最近一轮"世界主动补能力"自动入库的 skills 数
+    pub skills_authored_last: usize,
 }
 
 /// 服务状态（从上层注入）
@@ -750,27 +752,39 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                     enabled: true,
                     dnd_window: None,
                 });
+                // 2026-11-04 (leo): 世界模式的**主动行动** —— 定期扫活跃意图,
+                // 发现能力差距就自动写方法型 skill (不等用户再问一次)
+                c.register(bolloon_kernel::cron::CronTask {
+                    id: "world-proactive".into(),
+                    name: "世界意图主动补能力".into(),
+                    interval_ms: 10 * 60 * 1000,
+                    enabled: true,
+                    dnd_window: None,
+                });
             }
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 let minute = ((now / 60_000) % 1440) as u16;
-                let (due, swept, portal_due) = {
+                let (due, swept, portal_due, world_due) = {
                     let mut c = st.cron.lock().await;
                     let due = c.due_tasks(now, minute);
                     // 任务执行器尚未注册真实任务（任务源=后续接线），此处只走"拿锁→放锁"记账，
                     // 不伪造任何未发生的执行。
                     let mut portal_due = false;
+                    let mut world_due = false;
                     for id in &due {
                         if c.begin(id, now) {
-                            if id == "portal-refresh" {
-                                portal_due = true;
+                            match id.as_str() {
+                                "portal-refresh" => portal_due = true,
+                                "world-proactive" => world_due = true,
+                                _ => {}
                             }
                             c.finish(id);
                         }
                     }
                     let swept = st.heartbeats.lock().await.sweep(now, 90_000);
-                    (due.len(), swept, portal_due)
+                    (due.len(), swept, portal_due, world_due)
                 };
                 let mut portal_ok = 0usize;
                 if portal_due {
@@ -785,6 +799,34 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                         }
                     }
                 }
+                // 世界模式的主动行动: 活跃意图 → 差距 → 自动写 skill (最多 10 条/轮, 免刷屏)
+                let mut skills_authored = 0usize;
+                if world_due {
+                    let texts: Vec<String> = {
+                        let fs = st.forge.lock().await;
+                        fs.intents.iter().rev().take(10).cloned().collect()
+                    };
+                    for text in texts {
+                        if text.trim().is_empty() {
+                            continue;
+                        }
+                        let cls = bolloon_agent::world::classify_intent(&text);
+                        let intent = bolloon_agent::world::Intent {
+                            id: format!("intent-auto-{}-{}", now, short_hash(&text)),
+                            text: text.clone(),
+                            tags: text.split_whitespace().take(6).map(|s| s.to_string()).collect(),
+                            active: true,
+                            created_at_ms: now,
+                            category: cls.category,
+                            want: cls.want,
+                            clarity: cls.clarity,
+                        };
+                        if crate::native::author_skill_for_intent(&st, &intent).await.is_some() {
+                            skills_authored += 1;
+                        }
+                    }
+                    tracing::info!(n = skills_authored, "世界主动补能力: 本轮自动入库 skills");
+                }
                 let mut s = st.cron_stats.lock().await;
                 s.ticks += 1;
                 s.last_tick_ms = now;
@@ -792,6 +834,9 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                 s.swept_last = swept;
                 if portal_due {
                     s.portal_ok_last = portal_ok;
+                }
+                if world_due {
+                    s.skills_authored_last = skills_authored;
                 }
             }
         });
@@ -979,6 +1024,16 @@ async fn sql_query(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value
     }
 }
 
+/// 文本短哈希 (意图 id 用, 只要稳定/可读, 不用于安全)
+fn short_hash(s: &str) -> String {
+    let mut h: u64 = 1469598103934665603;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(1099511628211);
+    }
+    format!("{:06x}", h & 0xffffff)
+}
+
 async fn cron_status(State(st): State<AppState>) -> Json<serde_json::Value> {
     let now = chrono::Utc::now().timestamp_millis() as u64;
     let stats = st.cron_stats.lock().await.clone();
@@ -994,6 +1049,7 @@ async fn cron_status(State(st): State<AppState>) -> Json<serde_json::Value> {
         "due_last": stats.due_last,
         "heartbeats_swept": stats.swept_last,
         "portal_ok_last": stats.portal_ok_last,
+        "skills_authored_last": stats.skills_authored_last,
         "tasks": tasks,
         "alive": alive,
         "thinking": thinking,
@@ -4457,6 +4513,13 @@ mod route_tests {
             assert_eq!(ok_sql["result"]["row_count"], serde_json::json!(1));
             let bad_sql = post_json("/api/sql/query", serde_json::json!({ "sql": "DELETE FROM memories" }));
             assert_eq!(bad_sql["ok"], serde_json::json!(false), "写语句必须拒: {bad_sql}");
+
+            // ⑩ 世界主动补能力: social 意图缺能力 → 自动写方法型 skill 并入库
+            let wf = post_json("/api/world/fulfill", serde_json::json!({ "text": "想认识一些爬山的朋友" }));
+            let authored = wf["upgrade"]["skills_authored"].as_array().cloned().unwrap_or_default();
+            assert!(!authored.is_empty(), "应自动产出 skill: {wf}");
+            let skills = std::fs::read_to_string(home.join("rust").join("skills.json")).unwrap_or_default();
+            assert!(skills.contains("补能力法"), "skill 必须落盘: {skills}");
 
             let cron = get_json("/api/cron");
             assert_eq!(cron["interval_s"], serde_json::json!(30), "cron 间隔: {cron}");
