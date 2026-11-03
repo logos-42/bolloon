@@ -55,9 +55,16 @@ VER_CONF=$(python3 -c "import json;print(json.load(open('$CONF'))['version'])")
 VER_NPM=$(python3 -c "import json;print(json.load(open('$ROOT/package.json'))['version'])")
 VER_RS=$(grep -m1 '^version' "$ROOT/rust/Cargo.toml" | cut -d'"' -f2)
 VER_TAURI=$(grep -m1 '^version' "$SRC/src-tauri/Cargo.toml" | cut -d'"' -f2)
-if [[ "$VER_CONF" != "$VER_NPM" || "$VER_NPM" != "$VER_RS" || "$VER_RS" != "$VER_TAURI" ]]; then
-  die "版本不一致: conf=$VER_CONF npm=$VER_NPM rust=$VER_RS app=$VER_TAURI"
+# App/npm 允许四段版本 (如 0.7.7.1); Cargo 只能三段 ⇒ 校验"前缀一致"即可
+if [[ "$VER_CONF" != "$VER_NPM" ]]; then
+  die "app 版本不一致: conf=$VER_CONF npm=$VER_NPM"
 fi
+for v in "$VER_RS" "$VER_TAURI"; do
+  case "$VER_CONF" in
+    "$v"|"$v".*) ;;
+    *) die "Cargo 版本 $v 与 App 版本 $VER_CONF 对不上" ;;
+  esac
+done
 green "✓ 版本一致：$VER_CONF"
 
 [[ "$CHECK_ONLY" == "1" ]] && { green "自检通过（--check 模式，不构建）"; exit 0; }

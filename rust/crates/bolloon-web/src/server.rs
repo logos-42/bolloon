@@ -614,6 +614,13 @@ pub fn app(state: AppState) -> Router {
         .route("/api/friends/accept", post(crate::native::friend_accept))
         .route("/api/friends/reject", post(crate::native::friend_reject))
         .route("/api/friends", get(crate::native::friend_list))
+        // 好友「⋯」: 昵称/备注 · 删除 · 拉黑(拒绝访问智能体) · 勿扰 · 撤回授权 · 举报
+        .route("/api/friends/update", post(crate::native::friend_update))
+        .route("/api/friends/remove", post(crate::native::friend_remove))
+        .route("/api/friends/block", post(crate::native::friend_block))
+        .route("/api/friends/mute", post(crate::native::friend_mute))
+        .route("/api/friends/revoke-grants", post(crate::native::friend_revoke_grants))
+        .route("/api/friends/report", post(crate::native::friend_report))
         // 2026-10-30 (用户): 点好友 → 看对方开放的智能体 → 跨机聊天
         .route("/api/friends/{did}/agents", get(crate::native::friend_agents))
         .route("/api/friends/{did}/chat", post(crate::native::friend_chat))

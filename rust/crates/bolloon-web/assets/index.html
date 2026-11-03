@@ -96,7 +96,9 @@
   .agent-chip{cursor:pointer;padding:3px 10px;border:1px solid var(--line);border-radius:999px;font-size:11px;opacity:.5;user-select:none;background:var(--btn-bg);color:var(--btn-text)}
   .agent-chip.on{opacity:1;border-color:var(--accent);color:var(--accent);font-weight:600}
   .room-controls button{font-size:11px;padding:5px 8px;border-radius:8px;white-space:nowrap}
-  .room-members{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:3px 0 4px;line-height:1.6;color:var(--muted)}
+  .room-members{display:flex;flex-wrap:wrap;gap:6px;font-size:12px;color:var(--muted);
+    height:112px;overflow-y:auto;align-content:flex-start;scrollbar-width:thin;
+    transition:none}  /* 2026-11-04: 高度固定, 只在内部流动 (成员再多也不撑开面板) */
   .room-members span{display:inline-flex;align-items:center;padding:2px 9px;border-radius:999px;border:1px solid var(--line);background:var(--btn-bg)}
   .room-composer{flex:none;display:flex;gap:6px;padding:8px 12px;border-top:1px solid var(--line);align-items:flex-end}
   .room-composer textarea{flex:1;min-height:44px;max-height:140px;resize:vertical;font-size:12px;line-height:1.5;padding:7px 9px;border-radius:10px;background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn-border)}
@@ -1296,7 +1298,11 @@ function renderRoomMeta(st,members,orbit,channel){
     s.textContent=base;
   }
   const lead=(st&&st.leader_agent_id)||'';
-  if(m)m.innerHTML=(members||[]).map(x=>`<span class="${x.status==='thinking'?'shimmer':''}" title="${escapeHTML(x.stage||'')}"><span class="dot ${x.status||''}"></span>${lead&&lead===(x.agent_id||'')?'🎖️ ':''}${escapeHTML(x.agent_name||x.agent_id||'')}</span>`).join('');
+  if(m){
+    m.innerHTML=(members||[]).map(x=>`<span class="${x.status==='thinking'?'shimmer':''}" title="${escapeHTML(x.stage||'')}"><span class="dot ${x.status||''}"></span>${lead&&lead===(x.agent_id||'')?'🎖️ ':''}${escapeHTML(x.agent_name||x.agent_id||'')}</span>`).join('');
+    // 定高容器内跟随最新状态 (高度不变, 内容在流动)
+    m.scrollTop=m.scrollHeight;
+  }
 }
 function renderRoom(msgs,members){
   const box=$('roomMessages');
@@ -3362,10 +3368,34 @@ function openGroupMenu(e,id){
     <button onclick="toggleGroupPool()">借用好友算力（API 共享）</button>
     <button onclick="publishGroup()">推到世界</button>
     <button onclick="deleteGroup()">删除（本机列表）</button>`;
+  // 2026-11-04 修「群组 ⋯ 点开就关不掉」: 这份菜单是动态创建的, 以前没有任何关闭逻辑。
+  $('groupMenu')?.classList.add('hidden');            // 与群头菜单互斥
   m.classList.remove('hidden');
   const w=190,h=230;
   m.style.left=Math.min(e.clientX,innerWidth-w)+'px';
   m.style.top=Math.min(e.clientY,innerHeight-h)+'px';
+  // 点菜单项 = 执行完就收起
+  m.querySelectorAll('button').forEach(btn=>btn.addEventListener('click',()=>m.classList.add('hidden')));
+  // 全局关闭: 点别处 / Esc / 滚动都收 (只装一次)
+  if(!window.__glmBound){
+    window.__glmBound=true;
+    document.addEventListener('click',(ev)=>{
+      const mm=document.getElementById('groupListMenu');
+      if(!mm||mm.classList.contains('hidden'))return;
+      if(mm.contains(ev.target))return;
+      if(ev.target.closest&&ev.target.closest('.dots'))return; // 点另一个 ⋯ 交给它自己切换
+      mm.classList.add('hidden');
+    });
+    document.addEventListener('keydown',(ev)=>{
+      if(ev.key!=='Escape')return;
+      document.getElementById('groupListMenu')?.classList.add('hidden');
+      document.getElementById('friendAgentMenu')?.classList.add('hidden');
+      $('groupMenu')?.classList.add('hidden');
+    });
+    window.addEventListener('scroll',()=>{
+      document.getElementById('groupListMenu')?.classList.add('hidden');
+    },true);
+  }
 }
 async function patchGroup(body){
   const r=await api('/api/groups/'+encodeURIComponent(menuGroupId)+'/update',{method:'POST',body:JSON.stringify(body)});
@@ -3470,6 +3500,125 @@ async function deleteGroup(){
   }catch(e){toast('删除失败: '+e.message);}
 }
 
+// ── 2026-11-04: 好友「⋯」设置 (改昵称/备注 · 删除 · 查聊天记录 · 黑名单 · 勿扰 · 拒绝访问 · 撤回授权 · 举报) ──
+let friendMenuTarget='';
+function openFriendMenu(e,did){
+  e.stopPropagation();
+  friendMenuTarget=did;
+  let m=document.getElementById('friendMenu');
+  if(!m){m=document.createElement('div');m.id='friendMenu';m.className='menu hidden';document.body.appendChild(m);}
+  const blocked=new Set((contacts&&contacts.blocked)||[]);
+  const muted=(contacts&&contacts.muted)||{};
+  const isBlocked=blocked.has(did);
+  const isMuted=Object.prototype.hasOwnProperty.call(muted,did);
+  m.innerHTML=`
+    <button onclick="fmRename()">改昵称 / 备注</button>
+    <button onclick="fmSearchChat()">查找聊天记录</button>
+    <button onclick="fmMute()">${isMuted?'取消消息勿扰':'消息勿扰'}</button>
+    <button onclick="fmBlock()">${isBlocked?'移出黑名单':'加入黑名单'}</button>
+    <button onclick="fmDenyAgents()">拒绝访问我的智能体</button>
+    <button onclick="fmRevoke()">撤回我的授权</button>
+    <button onclick="fmReport()">举报</button>
+    <button onclick="fmDelete()">删除好友</button>`;
+  m.classList.remove('hidden');
+  m.style.left=Math.min(e.clientX,innerWidth-200)+'px';
+  m.style.top=Math.min(e.clientY,innerHeight-260)+'px';
+  m.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>m.classList.add('hidden')));
+  if(!window.__fmBound){
+    window.__fmBound=true;
+    document.addEventListener('click',(ev)=>{
+      const mm=document.getElementById('friendMenu');
+      if(!mm||mm.classList.contains('hidden'))return;
+      if(mm.contains(ev.target))return;
+      if(ev.target.closest&&ev.target.closest('.dots'))return;
+      mm.classList.add('hidden');
+    });
+    document.addEventListener('keydown',(ev)=>{ if(ev.key==='Escape')document.getElementById('friendMenu')?.classList.add('hidden'); });
+  }
+}
+const fmPost=(path,body)=>api(path,{method:'POST',body:JSON.stringify(body)}).catch(e=>({error:e.message}));
+async function fmRename(){
+  const did=friendMenuTarget; if(!did)return;
+  const nm=contactNameMap()[did]||'';
+  const name=await askText('改昵称（显示名）',nm,'留空则不改；这是你本地显示的名字');
+  if(name===null)return;
+  const note=await askText('备注（给自己看的说明）','','例如：一起爬山的朋友 / 3 月介绍过客户');
+  if(note===null)return;
+  const body={did};
+  if(name.trim())body.name=name.trim();
+  body.note=note;
+  const r=await fmPost('/api/friends/update',body);
+  if(r.error){toast('保存失败: '+r.error);return;}
+  await loadContacts();toast('已保存昵称/备注');
+}
+async function fmSearchChat(){
+  const did=friendMenuTarget; if(!did)return;
+  const kw=await askText('查找聊天记录','','输入关键词（会搜本机会话记录与跨机对话）');
+  if(!kw||!kw.trim())return;
+  const q=kw.trim().toLowerCase();
+  const hits=[];
+  for(const s of (state.sessions||[])){
+    for(const m of (s.messages||[])){
+      const t=String(m.text||'');
+      if(t.toLowerCase().includes(q))hits.push({where:'会话『'+(s.title||s.id)+'』',role:m.role,text:t.slice(0,80)});
+      if(hits.length>=10)break;
+    }
+    if(hits.length>=10)break;
+  }
+  for(const m of (relayState.log||[])){
+    const t=String(m.text||'');
+    if(t.toLowerCase().includes(q))hits.push({where:'与 '+shortDid(did)+' 的跨机对话',role:m.role==='me'?'我':'对方',text:t.slice(0,80)});
+    if(hits.length>=10)break;
+  }
+  if(!hits.length){toast('没有找到「'+kw.trim()+'」');return;}
+  alert(hits.map(h=>`[${h.where}] ${h.role}: ${h.text}`).join('\n'));
+}
+async function fmMute(){
+  const did=friendMenuTarget; if(!did)return;
+  const muted=(contacts&&contacts.muted)||{};
+  const on=!Object.prototype.hasOwnProperty.call(muted,did);
+  const r=await fmPost('/api/friends/mute',{did,on});
+  if(r.error){toast('操作失败: '+r.error);return;}
+  await loadContacts();toast(on?'已开启消息勿扰':'已关闭消息勿扰');
+}
+async function fmBlock(){
+  const did=friendMenuTarget; if(!did)return;
+  const blocked=new Set((contacts&&contacts.blocked)||[]);
+  const on=!blocked.has(did);
+  const r=await fmPost('/api/friends/block',{did,on});
+  if(r.error){toast('操作失败: '+r.error);return;}
+  await loadContacts();toast(on?'已加入黑名单（对方将无法访问你的智能体）':'已移出黑名单');
+}
+async function fmDenyAgents(){
+  const did=friendMenuTarget; if(!did)return;
+  const r1=await fmPost('/api/friends/block',{did,on:true});
+  const r2=await fmPost('/api/friends/revoke-grants',{did});
+  if(r1.error||r2.error){toast('操作失败: '+(r1.error||r2.error));return;}
+  await loadContacts();
+  toast('已拒绝其访问（拉黑 + 收回 '+(r2.grants_revoked||0)+' 项授权）');
+}
+async function fmRevoke(){
+  const did=friendMenuTarget; if(!did)return;
+  const r=await fmPost('/api/friends/revoke-grants',{did});
+  if(r.error){toast('操作失败: '+r.error);return;}
+  toast('已撤回 '+(r.grants_revoked||0)+' 项对该好友的智能体授权');
+}
+async function fmReport(){
+  const did=friendMenuTarget; if(!did)return;
+  const reason=await askText('举报原因','','例如：骚扰 / 冒充 / 诈骗 / 发送违法内容');
+  if(!reason||!reason.trim())return;
+  const r=await fmPost('/api/friends/report',{did,reason:reason.trim()});
+  toast(r.error?('举报失败: '+r.error):(r.note||'已提交举报'));
+}
+async function fmDelete(){
+  const did=friendMenuTarget; if(!did)return;
+  const ok=await askText('删除好友','','输入 yes 确认：删除关系并收回所有授权（备注保留，重加不用重填）');
+  if(ok!=='yes')return;
+  const r=await fmPost('/api/friends/remove',{did});
+  if(r.error){toast('删除失败: '+r.error);return;}
+  await loadContacts();toast('已删除好友，收回 '+(r.grants_revoked||0)+' 项授权');
+}
+
 function contactNameMap(){
   const m={};((contacts&&contacts.items)||[]).forEach(c=>{if(c&&c.did&&c.name)m[c.did]=String(c.name);});
   return m;
@@ -3479,12 +3628,16 @@ function renderContacts(){
   if(!fl)return;
   const names=contactNameMap();
   const friends=(contacts&&contacts.friends)||[];
+  const blocked=new Set((contacts&&contacts.blocked)||[]);
+  const muted=(contacts&&contacts.muted)||{};
   fl.innerHTML=friends.length?friends.map(did=>{
     const nm=names[did]||'';
+    const marks=(blocked.has(did)?' ⛔':'')+(Object.prototype.hasOwnProperty.call(muted,did)?' 🔕':'');
     return `
     <div class="item${did===activeFriendDid?' active':''}" onclick="openFriend('${did}')">
       <div class="ava">👤</div>
-      <div class="txt"><b>${escapeHTML(nm||shortDid(did))}</b><small>${escapeHTML(nm?'好友 · 点开看对方智能体':'好友 · 点开看对方智能体')}</small></div>
+      <div class="txt"><b>${escapeHTML(nm||shortDid(did))}${marks}</b><small>${escapeHTML(nm?'好友 · 点开看对方智能体':'好友 · 点开看对方智能体')}</small></div>
+      <button class="dots" title="好友设置" onclick="event.stopPropagation();openFriendMenu(event,'${did}')">⋯</button>
     </div>`;}).join(''):'<div class="hint">(还没有好友 — 点「＋ 加好友」搜索手机号 / DID / 邮箱)</div>';
   const pend=(arr)=>((arr)||[]).filter(r=>String(r.status).toLowerCase()==='pending');
   const reqIn=pend(contacts&&contacts.requests_in);
@@ -3720,6 +3873,7 @@ if($('joinGroupBtn'))$('joinGroupBtn').onclick=()=>joinGroupByLink();
 function toggleGroupMenu(){
   const m=$('groupMenu'), b=$('groupDots');
   if(!m||!b)return;
+  document.getElementById('groupListMenu')?.classList.add('hidden'); // 互斥
   if(!m.classList.contains('hidden')){ m.classList.add('hidden'); b.classList.remove('on'); return; }
   const r=b.getBoundingClientRect();
   m.classList.remove('hidden'); b.classList.add('on');

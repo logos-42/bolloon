@@ -30,6 +30,9 @@ use crate::server::AppState;
 /// 也避免「点完开聊」后立刻无限刷屏: 必须有这么一段沉默才续轮。
 pub const SUPERVISOR_IDLE_MS: u64 = 15_000;
 
+/// 同时在跑的群回合上限 (2026-11-04 leo: 并发上限 20)
+pub const MAX_CONCURRENT_TURNS: usize = 20;
+
 /// 群内"谁正在想"的运行时状态 (内存态, 不落盘: 重启后本来就没了)
 #[derive(Default)]
 pub struct RoomBus {
@@ -342,12 +345,19 @@ pub fn spawn_reports(
             spawn_reports(st_r, gid_r, trigger_r, still, intent);
         });
     }
+    // 并发上限: 同一群最多 20 个回合同时在跑 (超出的排队, 不是拒绝)
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_TURNS));
     for agent in targets {
         let st = st.clone();
         let gid = gid.clone();
         let trigger = trigger.clone();
         let intent_id = intent_id.clone();
+        let gate = gate.clone();
         tokio::spawn(async move {
+            let _permit = match gate.acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => return,
+            };
             if !st.room_bus.begin(&gid, &agent.id) {
                 return;
             }

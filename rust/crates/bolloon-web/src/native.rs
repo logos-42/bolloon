@@ -417,6 +417,12 @@ pub struct NativeState {
     /// 置顶的智能体 (顺序排最前; 与"固定 ping"是同一件事: 置顶并立刻 ping 一次)
     #[serde(default)]
     pub agent_pin: Vec<String>,
+    /// 好友黑名单 (2026-11-04): 拉黑后对方**连不上**我的智能体 (is_local_friend 直接 false)
+    #[serde(default)]
+    pub friends_blocked: Vec<String>,
+    /// 好友消息勿扰 (DID → 免打扰截止 ms; 0 = 一直免打扰) —— 只影响提醒, 不影响收消息
+    #[serde(default)]
+    pub friends_muted: std::collections::HashMap<String, u64>,
     /// 智能体 → 好友 DID → 授权能力 (2026-11-04: 好友可见/可交流的最小授权面;
     /// **永远不含本地完全权限** —— 白名单在 `GRANT_CAPS` 里, 写入侧也会拒未知能力)
     #[serde(default)]
@@ -2978,6 +2984,10 @@ pub async fn chat_stream(
             )
             .await;
         }
+        // 私聊收尾同样沉淀 (skills/意图/判断力/记忆) — 只在成功轮
+        if ok {
+            settle_turn(&st2, "chat", &text, &reply, agent.as_ref().map(|a| a.id.as_str())).await;
+        }
         st2.chat_runs.finish(&sid2, &stop, &reply);
         // 正文已经**真流式**吐过了 (模型每吐一段就推一段), 这里只做收尾:
         // `done` 带最终全文, 前端以它为准 (重试/补齐时不会重复也不残缺)。
@@ -3712,7 +3722,11 @@ pub async fn room_turn_exec(
         Err(e) => Err(e),
     };
     match &out {
-        Ok(t) => st.chat_runs.finish(&sid, "Finished", t),
+        Ok(t) => {
+            st.chat_runs.finish(&sid, "Finished", t);
+            // 群/商议回合收尾: 沉淀 skills / 意图 / 判断力 / 记忆
+            settle_turn(st, "group", trigger, t, Some(agent.id.as_str())).await;
+        }
         Err(e) => st.chat_runs.finish(&sid, "Failed", e),
     }
     out
@@ -4058,8 +4072,25 @@ pub async fn room_guide(
         Ok(entry) => {
             // 同一条消息也驱动后台汇报: 群聊/商议共用**同一个选举入口**
             // (以前这里 elect 全量+无限额, group_say 走组织名单+限额 ⇒ 选中/议程两套逻辑)
-            let targets =
+            let mut targets =
                 elect_group_targets(&st, &gid, &text, decision.speaker_id.as_deref()).await;
+            // 2026-11-04 (leo): **群的第一条消息发给所有智能体** (并发、不分次序),
+            // 上限取 MAX_CONCURRENT_TURNS(20)。之后仍按组织名单/限额轮转, 避免刷屏。
+            let first_turn = st
+                .groups
+                .history(&gid, 0)
+                .map(|h| h.len() <= 1)
+                .unwrap_or(false);
+            if first_turn {
+                let all = {
+                    let fs = st.forge.lock().await;
+                    room_candidate_agents(&fs, &gid)
+                };
+                targets = all
+                    .into_iter()
+                    .take(crate::room_bus::MAX_CONCURRENT_TURNS)
+                    .collect();
+            }
             let queued: Vec<String> = targets.iter().map(|a| a.name.clone()).collect();
             if let Some(first) = queued.first() {
                 let mut fs = st.forge.lock().await;
@@ -6820,6 +6851,13 @@ pub async fn friend_list(State(st): State<AppState>) -> Json<serde_json::Value> 
         "items": bolloon_agent::contacts::merge_directory_view(&fs.contacts, fs.friends.friends()),
         // 待投递的好友事件 (对方离线时留在这里, 后台每 20s 重试)
         "outbox": fs.friend_outbox,
+        // 好友设置状态 (2026-11-04): 拉黑 / 勿扰 —— 界面据此显示标记
+        "blocked": fs.friends_blocked,
+        "muted": fs.friends_muted,
+        "notes": fs.contacts.all().iter()
+            .filter(|c| !c.note.is_empty())
+            .map(|c| serde_json::json!({ "did": c.did, "note": c.note }))
+            .collect::<Vec<_>>(),
     }))
 }
 
@@ -7132,6 +7170,140 @@ pub fn caps_in(fs: &NativeState, agent_id: &str, did: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// POST /api/friends/update {did, name?, note?} → 改昵称/备注
+pub async fn friend_update(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or_default().trim().to_string();
+    if did.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 did" }));
+    }
+    let mut fs = st.forge.lock().await;
+    if !fs.friends.friends().iter().any(|d| d == &did) {
+        return Json(serde_json::json!({ "ok": false, "error": "不是本机好友" }));
+    }
+    if let Some(name) = req["name"].as_str() {
+        let name = name.trim();
+        if !name.is_empty() {
+            if let Err(e) = fs.contacts.upsert(&did, name, "user", now_ms()) {
+                return Json(serde_json::json!({ "ok": false, "error": format!("改名失败: {e}") }));
+            }
+        }
+    }
+    if let Some(note) = req["note"].as_str() {
+        let _ = fs.contacts.set_note(&did, note);
+    }
+    let card = fs.contacts.name_of(&did).map(|s| s.to_string());
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true, "did": did, "name": card }))
+}
+
+/// POST /api/friends/remove {did} → 删除好友 (关系删掉; 名片备注保留, 免得重加要重填)
+pub async fn friend_remove(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or_default().trim().to_string();
+    let mut fs = st.forge.lock().await;
+    let removed = fs.friends.remove(&did);
+    // 顺手收回所有智能体对他的授权 (删好友 = 不再有访问权)
+    let mut revoked = 0usize;
+    for (_aid, m) in fs.agent_grants.iter_mut() {
+        if m.remove(&did).is_some() {
+            revoked += 1;
+        }
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true, "removed": removed, "grants_revoked": revoked }))
+}
+
+/// POST /api/friends/block {did, on} → 拉黑 / 解除 (拉黑 = 拒绝其访问我的智能体)
+pub async fn friend_block(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or_default().trim().to_string();
+    let on = req["on"].as_bool().unwrap_or(true);
+    if did.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 did" }));
+    }
+    let mut fs = st.forge.lock().await;
+    fs.friends_blocked.retain(|d| d != &did);
+    if on {
+        fs.friends_blocked.push(did.clone());
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true, "did": did, "blocked": on }))
+}
+
+/// POST /api/friends/mute {did, on, until_ms?} → 消息勿扰
+pub async fn friend_mute(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or_default().trim().to_string();
+    let on = req["on"].as_bool().unwrap_or(true);
+    let until = req["until_ms"].as_u64().unwrap_or(0);
+    let mut fs = st.forge.lock().await;
+    if on {
+        fs.friends_muted.insert(did.clone(), until);
+    } else {
+        fs.friends_muted.remove(&did);
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true, "did": did, "muted": on, "until_ms": until }))
+}
+
+/// POST /api/friends/revoke-grants {did} → 收回**所有**智能体对这位好友的授权
+pub async fn friend_revoke_grants(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or_default().trim().to_string();
+    let mut fs = st.forge.lock().await;
+    let mut revoked = 0usize;
+    for (_aid, m) in fs.agent_grants.iter_mut() {
+        if m.remove(&did).is_some() {
+            revoked += 1;
+        }
+    }
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true, "did": did, "grants_revoked": revoked }))
+}
+
+/// POST /api/friends/report {did, reason, note?} → 举报 (本地留证, 可追溯)
+pub async fn friend_report(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    use std::io::Write;
+    let did = req["did"].as_str().unwrap_or_default().trim().to_string();
+    let reason = req["reason"].as_str().unwrap_or_default().trim().to_string();
+    let note = req["note"].as_str().unwrap_or_default().trim().to_string();
+    if did.is_empty() || reason.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 did 或 reason" }));
+    }
+    let path = data_dir().join("reports.jsonl");
+    if let Some(d) = path.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let rec = serde_json::json!({
+        "at_ms": now_ms(), "reporter": st.identity.did.as_str(),
+        "did": did, "reason": reason, "note": note.chars().take(500).collect::<String>(),
+    });
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| writeln!(f, "{}", serde_json::to_string(&rec).unwrap_or_default()))
+        .is_ok();
+    Json(serde_json::json!({
+        "ok": written, "did": did, "reason": reason,
+        "note": "已记录本地举报（可追溯；跨机处置不在本机能力内）"
+    }))
+}
+
 /// GET /api/agents/{id}/grants → 这个智能体授权了哪些好友、各自什么能力
 pub async fn agent_grants_get(
     State(st): State<AppState>,
@@ -7208,6 +7380,82 @@ pub async fn agent_grants_revoke(
         .is_some();
     fs.save(&crate::server::data_dir());
     Json(serde_json::json!({ "ok": true, "revoked": removed, "agent_id": id, "did": did }))
+}
+
+/// 回合收尾沉淀 (2026-11-04 leo: 「根据和不同好友/群组的交流更新 skills 和意图和信念和判断力」)
+///
+/// 一次交流后做四件事, 全部**有界且可回查**:
+/// - memory: 写一条 lesson (importance 0.4, 与 CLI 同源库)
+/// - intent: 该轮用户话入库 (去重, 上限 200 条), 供世界主动巡检复用
+/// - judgment: 回复够长才演化一条判断力 (短句不污染)
+/// - skill: 回复里出现"缺能力/要装/没工具"迹象时, 才触发自动写方法型 skill
+pub async fn settle_turn(
+    st: &AppState,
+    surface: &str,
+    text: &str,
+    reply: &str,
+    agent_id: Option<&str>,
+) {
+    let now = now_ms();
+    let text = text.trim();
+    let reply = reply.trim();
+    if text.is_empty() || reply.is_empty() {
+        return;
+    }
+
+    // ① memory lesson
+    {
+        let db = st.memory_db.lock().await;
+        let content = format!(
+            "[{surface}] 用户: {} → 回复要点: {}",
+            text.chars().take(80).collect::<String>(),
+            reply.chars().take(120).collect::<String>()
+        );
+        let _ = db.remember("local", "lesson", &content, 0.4, now, None);
+    }
+
+    // ② 意图入库 (世界主动巡检会用)
+    {
+        let mut fs = st.forge.lock().await;
+        if !fs.intents.iter().any(|x| x == text) {
+            fs.intents.push(text.to_string());
+            if fs.intents.len() > 200 {
+                let cut = fs.intents.len() - 200;
+                fs.intents.drain(0..cut);
+            }
+            fs.save(&data_dir());
+        }
+    }
+
+    // ③ 判断力演化 (只在回复够长时; 短句不入库, 防止污染)
+    if reply.chars().count() >= 40 {
+        let domain = if surface.starts_with("group") { "group" } else { "web" };
+        let statement = format!(
+            "{}：{}",
+            agent_id.unwrap_or("agent"),
+            reply.chars().take(60).collect::<String>()
+        );
+        let mut store = st.judgments.lock().await;
+        let _ = store.evolve(&statement, domain, 0.55, now);
+        let _ = store.save_json(&data_dir().join("judgments.json"));
+    }
+
+    // ④ 能力缺口迹象 → 自动写方法型 skill
+    let gap_hints = ["没有这个能力", "缺", "无法", "需要安装", "没有工具", "can't", "cannot"];
+    if gap_hints.iter().any(|h| reply.contains(h)) {
+        let cls = bolloon_agent::world::classify_intent(text);
+        let intent = bolloon_agent::world::Intent {
+            id: format!("intent-settle-{now}"),
+            text: text.to_string(),
+            tags: text.split_whitespace().take(6).map(|s| s.to_string()).collect(),
+            active: true,
+            created_at_ms: now,
+            category: cls.category,
+            want: cls.want,
+            clarity: cls.clarity,
+        };
+        let _ = author_skill_for_intent(st, &intent).await;
+    }
 }
 
 /// 差距 → **自动编写并入库一个方法型 skill** (世界交付与 cron 主动巡检共用同一份)
@@ -7888,6 +8136,10 @@ pub async fn agent_friends_open(
 /// 本机是否把 `did` 当好友 (跨机对话的唯一门禁依据)
 async fn is_local_friend(st: &AppState, did: &str) -> bool {
     let fs = st.forge.lock().await;
+    // 2026-11-04: 黑名单优先 —— 拉黑即"拒绝其访问我的智能体"
+    if fs.friends_blocked.iter().any(|d| d == did) {
+        return false;
+    }
     fs.friends.friends().iter().any(|d| d == did)
 }
 

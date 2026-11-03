@@ -296,6 +296,13 @@ impl FriendBook {
         Ok(())
     }
 
+    /// 删除好友 (只删好友关系; 名片与历史消息保留由调用方决定)
+    pub fn remove(&mut self, did: &str) -> bool {
+        let before = self.friends.len();
+        self.friends.retain(|d| d != did);
+        before != self.friends.len()
+    }
+
     pub fn is_friend(&self, did: &str) -> bool {
         self.friends.iter().any(|f| f == did)
     }
@@ -336,6 +343,9 @@ pub struct ContactCard {
     pub source: String,
     #[serde(default)]
     pub added_at_ms: u64,
+    /// 备注 (2026-11-04: 与昵称分开 —— 昵称=显示名 name, 备注=给自己看的说明)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
 
 fn default_card_source() -> String {
@@ -411,9 +421,17 @@ impl ContactBook {
             name: name.to_string(),
             source: source.to_string(),
             added_at_ms: now_ms,
+            note: String::new(),
         };
         self.entries.push(card.clone());
         Ok(card)
+    }
+
+    /// 只写备注 (不改昵称)
+    pub fn set_note(&mut self, did: &str, note: &str) -> Option<ContactCard> {
+        let c = self.entries.iter_mut().find(|c| c.did == did)?;
+        c.note = note.trim().to_string();
+        Some(c.clone())
     }
 
     pub fn remove(&mut self, did: &str) -> bool {
@@ -446,6 +464,7 @@ pub fn merge_directory_view(book: &ContactBook, friends: &[String]) -> Vec<Conta
         out.push(ContactCard {
             did: did.clone(),
             name: known.unwrap_or("").to_string(),
+            note: String::new(),
             source: if known.is_some() {
                 "friend".into()
             } else {
@@ -596,7 +615,8 @@ mod tests {
                 did: "d".into(),
                 name: "n".into(),
                 source: "u".into(),
-                added_at_ms: 0
+                added_at_ms: 0,
+                note: String::new(),
             },
             ""
         ));
