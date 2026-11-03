@@ -614,6 +614,18 @@ pub fn app(state: AppState) -> Router {
         // 对端接收面 (只对已加好友的 did 开放; 由上面的代理面在对方机器上调)
         .route("/api/agents/public", get(crate::native::agents_public))
         .route("/api/agents/public/chat", post(crate::native::agents_public_chat))
+        // 好友 × 智能体 授权面 (2026-11-04): 按好友授予 chat / payment_info / share_judgment;
+        // 白名单之外(含"本地完全权限")写入即丢 —— 好友永远拿不到全权
+        .route(
+            "/api/agents/{id}/grants",
+            get(crate::native::agent_grants_get).post(crate::native::agent_grants_set),
+        )
+        .route("/api/agents/{id}/grants/revoke", post(crate::native::agent_grants_revoke))
+        .route("/api/agents/public/wallet", get(crate::native::agents_public_wallet))
+        .route("/api/agents/public/judgments", get(crate::native::agents_public_judgments))
+        // 好友侧代理 (需对端授权; 没授权就如实把对端的拒绝原样带回)
+        .route("/api/friends/{did}/wallet", get(crate::native::friend_wallet))
+        .route("/api/friends/{did}/judgments", get(crate::native::friend_judgments))
         // 通讯录 (2026-10-28): 网页端/APP 端统一的联系人搜索面 — 手机号走跨机目录, 名称走本机名片本
         .route("/api/contacts", get(crate::native::contact_list))
         .route("/api/contacts/set", post(crate::native::contact_set))
@@ -4383,6 +4395,16 @@ mod route_tests {
             assert!(tops.to_string().contains("先做最小版本再扩展"), "演化后的判断必须可见: {tops}");
 
             // ⑤ cron/心跳: tick 循环在 serve_on 里真起; 这里验可观测面形状
+            // ⑥ 好友×智能体授权面: 非好友一律拒 (白名单外能力也写不进去)
+            let g = post_json(
+                &format!("/api/agents/{aid}/grants"),
+                serde_json::json!({ "did": "did:pi:ghost", "caps": ["chat", "full_local"] }),
+            );
+            assert!(
+                g["error"].as_str().unwrap_or("").contains("好友"),
+                "非好友不许授权: {g}"
+            );
+
             let cron = get_json("/api/cron");
             assert_eq!(cron["interval_s"], serde_json::json!(30), "cron 间隔: {cron}");
             assert!(cron["ticks"].as_u64().is_some());

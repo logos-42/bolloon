@@ -417,6 +417,10 @@ pub struct NativeState {
     /// 置顶的智能体 (顺序排最前; 与"固定 ping"是同一件事: 置顶并立刻 ping 一次)
     #[serde(default)]
     pub agent_pin: Vec<String>,
+    /// 智能体 → 好友 DID → 授权能力 (2026-11-04: 好友可见/可交流的最小授权面;
+    /// **永远不含本地完全权限** —— 白名单在 `GRANT_CAPS` 里, 写入侧也会拒未知能力)
+    #[serde(default)]
+    pub agent_grants: std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>,
     /// 群组设置覆盖: 改名 / 置顶 / 简介 (本节点视图; OrbitDB 内容本身不可改)
     #[serde(default)]
     pub group_overrides: std::collections::HashMap<String, GroupOverride>,
@@ -7037,6 +7041,233 @@ pub async fn dream_topic(
 
 /// 智能体是否对好友开放。缺省开放 (好友关系是双方明确同意过的),
 /// 关掉的方式 = 在该智能体目录下放一个 `private.json` 标记 (不猜、不改持久化 schema)。
+/// 允许授予好友的能力 (白名单; **本地完全权限/任意执行永不在名单里**)
+pub const GRANT_CAPS: &[&str] = &["chat", "payment_info", "share_judgment"];
+
+/// 归一化能力列表 (未知/高危一律丢弃, 不静默放行)
+pub fn normalize_caps(caps: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for c in caps {
+        let c = c.trim().to_lowercase();
+        if GRANT_CAPS.contains(&c.as_str()) && !out.contains(&c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// 某智能体对某好友的授权能力 (读 fs)
+pub fn caps_in(fs: &NativeState, agent_id: &str, did: &str) -> Vec<String> {
+    fs.agent_grants
+        .get(agent_id)
+        .and_then(|m| m.get(did))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// GET /api/agents/{id}/grants → 这个智能体授权了哪些好友、各自什么能力
+pub async fn agent_grants_get(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Json<serde_json::Value> {
+    let fs = st.forge.lock().await;
+    if !fs.agents.iter().any(|a| a.id == id) {
+        return Json(serde_json::json!({ "ok": false, "error": format!("没有这个智能体: {id}") }));
+    }
+    let grants = fs
+        .agent_grants
+        .get(&id)
+        .map(|m| {
+            m.iter()
+                .map(|(did, caps)| serde_json::json!({ "did": did, "caps": caps }))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Json(serde_json::json!({
+        "ok": true, "agent_id": id, "grants": grants,
+        "allowed_caps": GRANT_CAPS,
+        "note": "本地完全权限不对好友开放（白名单之外的能力写入会被丢弃）"
+    }))
+}
+
+/// POST /api/agents/{id}/grants {did, caps:[...]} → 授权/更新 (必须是本机好友)
+pub async fn agent_grants_set(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or_default().trim().to_string();
+    if did.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 did" }));
+    }
+    let raw: Vec<String> = req["caps"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    let caps = normalize_caps(&raw);
+    if caps.is_empty() {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": format!("没有可授予的能力（白名单: {}）", GRANT_CAPS.join("/"))
+        }));
+    }
+    let mut fs = st.forge.lock().await;
+    if !fs.agents.iter().any(|a| a.id == id) {
+        return Json(serde_json::json!({ "ok": false, "error": format!("没有这个智能体: {id}") }));
+    }
+    if !fs.friends.friends().iter().any(|f| f == &did) {
+        return Json(serde_json::json!({ "ok": false, "error": "只能授权给已加的好友（先去通讯录加好友）" }));
+    }
+    fs.agent_grants
+        .entry(id.clone())
+        .or_default()
+        .insert(did.clone(), caps.clone());
+    fs.save(&crate::server::data_dir());
+    Json(serde_json::json!({ "ok": true, "agent_id": id, "did": did, "caps": caps }))
+}
+
+/// POST /api/agents/{id}/grants/revoke {did} → 收回授权
+pub async fn agent_grants_revoke(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or_default().trim().to_string();
+    let mut fs = st.forge.lock().await;
+    let removed = fs
+        .agent_grants
+        .get_mut(&id)
+        .and_then(|m| m.remove(&did))
+        .is_some();
+    fs.save(&crate::server::data_dir());
+    Json(serde_json::json!({ "ok": true, "revoked": removed, "agent_id": id, "did": did }))
+}
+
+/// GET /api/agents/public/wallet?did=&agent_id= → 对方给我看的**收款账号/钱包**
+/// 只有授权了 `payment_info` 才返回; 没有就如实拒 (不猜、不露别的智能体的地址)
+pub async fn agents_public_wallet(
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let caller = q.get("did").cloned().unwrap_or_default().trim().to_string();
+    let agent_id = q.get("agent_id").cloned().unwrap_or_default().trim().to_string();
+    if caller.is_empty() || agent_id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 did / agent_id" }));
+    }
+    if !is_local_friend(&st, &caller).await {
+        return Json(serde_json::json!({ "ok": false, "error": "对方不是本机好友" }));
+    }
+    let caps = {
+        let fs = st.forge.lock().await;
+        if !fs.agents.iter().any(|a| a.id == agent_id) {
+            return Json(serde_json::json!({ "ok": false, "error": "没有这个智能体" }));
+        }
+        caps_in(&fs, &agent_id, &caller)
+    };
+    if !caps.iter().any(|c| c == "payment_info") {
+        return Json(serde_json::json!({ "ok": false, "error": "该智能体未对这位好友开放支付信息" }));
+    }
+    let w = crate::agent_wallet::public_view(&agent_id);
+    Json(serde_json::json!({ "ok": true, "agent_id": agent_id, "wallet": w }))
+}
+
+/// GET /api/agents/public/judgments?did=&agent_id= → 对这位好友**分享本地判断力** (top-N 陈述)
+/// 只有授权 `share_judgment` 才返回; 没授权如实拒。
+pub async fn agents_public_judgments(
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let caller = q.get("did").cloned().unwrap_or_default().trim().to_string();
+    let agent_id = q.get("agent_id").cloned().unwrap_or_default().trim().to_string();
+    if caller.is_empty() || agent_id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 did / agent_id" }));
+    }
+    if !is_local_friend(&st, &caller).await {
+        return Json(serde_json::json!({ "ok": false, "error": "对方不是本机好友" }));
+    }
+    let caps = {
+        let fs = st.forge.lock().await;
+        if !fs.agents.iter().any(|a| a.id == agent_id) {
+            return Json(serde_json::json!({ "ok": false, "error": "没有这个智能体" }));
+        }
+        caps_in(&fs, &agent_id, &caller)
+    };
+    if !caps.iter().any(|c| c == "share_judgment") {
+        return Json(serde_json::json!({ "ok": false, "error": "该智能体未对这位好友分享判断力" }));
+    }
+    let store = st.judgments.lock().await;
+    let picks = store.top_for_domain("web", 8);
+    let items: Vec<serde_json::Value> = picks
+        .iter()
+        .map(|j| serde_json::json!({ "id": j.id, "statement": j.statement, "confidence": j.confidence }))
+        .collect();
+    Json(serde_json::json!({ "ok": true, "agent_id": agent_id, "judgments": items }))
+}
+
+/// GET /api/friends/{did}/wallet?agent_id= → 代理读对端"对我开放"的钱包 (需对端授权 payment_info)
+pub async fn friend_wallet(
+    axum::extract::Path(did): axum::extract::Path<String>,
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let did = did.trim().to_string();
+    if !is_local_friend(&st, &did).await {
+        return Json(serde_json::json!({ "ok": false, "error": "不是本机好友" }));
+    }
+    let agent_id = q.get("agent_id").cloned().unwrap_or_default();
+    if agent_id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 agent_id" }));
+    }
+    let url = match peer_url_for_did(&st, &did).await {
+        Ok(u) => u,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
+    };
+    let our = st.identity.did.as_str().to_string();
+    let aid = agent_id.clone();
+    match peer_json(
+        "GET",
+        format!("{url}/api/agents/public/wallet?did={our}&agent_id={aid}"),
+        None,
+    )
+    .await
+    {
+        Ok(v) => Json(v),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
+/// GET /api/friends/{did}/judgments?agent_id= → 代理读对端分享的判断力 (需 share_judgment)
+pub async fn friend_judgments(
+    axum::extract::Path(did): axum::extract::Path<String>,
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let did = did.trim().to_string();
+    if !is_local_friend(&st, &did).await {
+        return Json(serde_json::json!({ "ok": false, "error": "不是本机好友" }));
+    }
+    let agent_id = q.get("agent_id").cloned().unwrap_or_default();
+    if agent_id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 agent_id" }));
+    }
+    let url = match peer_url_for_did(&st, &did).await {
+        Ok(u) => u,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
+    };
+    let our = st.identity.did.as_str().to_string();
+    let aid = agent_id.clone();
+    match peer_json(
+        "GET",
+        format!("{url}/api/agents/public/judgments?did={our}&agent_id={aid}"),
+        None,
+    )
+    .await
+    {
+        Ok(v) => Json(v),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
 fn agent_open_to_friends(id: &str) -> bool {
     !data_dir().join("agents").join(id).join("private.json").exists()
 }
@@ -7311,20 +7542,39 @@ pub async fn agents_public(
     if !is_local_friend(&st, caller.trim()).await {
         return Json(serde_json::json!({ "ok": false, "error": "对方不是本机好友, 不列智能体" }));
     }
-    let (owner_did, agents) = {
+    let (owner_did, agents, grants) = {
         let fs = st.forge.lock().await;
-        (st.identity.did.as_str().to_string(), fs.agents.clone())
+        (
+            st.identity.did.as_str().to_string(),
+            fs.agents.clone(),
+            fs.agent_grants.clone(),
+        )
     };
+    // 2026-11-04: **按好友粒度**过滤 —— 只列"对这位好友授权过"的智能体,
+    // 没授权的一律不显示 (以前只看全局 private.json 开关, 一开就是所有好友都能看)。
+    let caller_key = caller.trim().to_string();
     let list: Vec<serde_json::Value> = agents
         .iter()
-        .filter(|a| agent_open_to_friends(&a.id))
+        .filter(|a| {
+            agent_open_to_friends(&a.id)
+                && grants
+                    .get(&a.id)
+                    .map(|m| m.get(&caller_key).map(|c| !c.is_empty()).unwrap_or(false))
+                    .unwrap_or(false)
+        })
         .map(|a| {
             let soul = std::fs::read_to_string(data_dir().join("agents").join(&a.id).join("soul.md"))
+                .unwrap_or_default();
+            let caps = grants
+                .get(&a.id)
+                .and_then(|m| m.get(&caller_key))
+                .cloned()
                 .unwrap_or_default();
             serde_json::json!({
                 "id": a.id,
                 "name": a.name,
                 "did": a.did,
+                "caps": caps,
                 "soul": soul.chars().take(280).collect::<String>(),
             })
         })
@@ -7383,6 +7633,17 @@ pub async fn agents_public_chat(
     };
     if !agent_open_to_friends(&agent.id) {
         return Json(serde_json::json!({ "ok": false, "error": "该智能体没有对好友开放" }));
+    }
+    // 按好友粒度的能力门 (2026-11-04): 没授 chat 就不让说话; 命令/支付等能力不在这条路径上。
+    {
+        let fs = st.forge.lock().await;
+        let caps = caps_in(&fs, &agent.id, &from_did);
+        if !caps.iter().any(|c| c == "chat") {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": "该智能体未对这位好友开放对话权限（授权在对方的「智能体 ⋯ → 开放给好友」里）"
+            }));
+        }
     }
     let extra = format!(
         "\n\n## 跨机来访\n对方是你主人已加的好友 ({})，从另一台机器发来消息。直接回答对方的这句话，不要声称自己在本地或问对方是谁。",

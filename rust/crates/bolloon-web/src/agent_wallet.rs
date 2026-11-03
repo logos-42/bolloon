@@ -51,6 +51,22 @@ fn store_path(agent_id: &str) -> PathBuf {
         .join("wallets.json")
 }
 
+/// 对好友公开的钱包视图 (**只有地址/标签/链, 永不含 secret_hex**)
+pub fn public_view(agent_id: &str) -> Vec<serde_json::Value> {
+    load(agent_id)
+        .into_iter()
+        .map(|w| {
+            serde_json::json!({
+                "address": w.address,
+                "label": w.label,
+                "source": w.source,
+                "chain": w.chain,
+                "created_at_ms": w.created_at_ms,
+            })
+        })
+        .collect()
+}
+
 fn load(agent_id: &str) -> Vec<WalletRec> {
     let p = store_path(agent_id);
     std::fs::read_to_string(p)

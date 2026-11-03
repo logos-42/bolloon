@@ -2070,14 +2070,35 @@ function openAgentMenu(e,id){
     <button onclick="openWallet(menuAgentId)">钱包（创建 / 绑定）</button>
     <button onclick="pinAgent()">${(state.agent_pin||[]).includes(id)?'取消置顶':'固定（置顶 + ping 一次）'}</button>
     <button onclick="shareAgentDid(menuAgentId)">分享 DID</button>
+    <button onclick="openGrantsDialog(menuAgentId)">开放给好友（权限）</button>
+    <button onclick="revokeGrantsDialog(menuAgentId)">收回好友授权</button>
     <button onclick="deleteAgent(menuAgentId)">删除</button>`;
   m.classList.remove('hidden');
-  const w=180,h=190;
+  const w=180,h=250;
   m.style.left=Math.min(e.clientX,innerWidth-w)+'px';
   m.style.top=Math.min(e.clientY,innerHeight-h)+'px';
   void a;
 }
 document.addEventListener('click',()=>$('agentMenu').classList.add('hidden'));
+
+// ── 2026-11-04: 开放给好友 (按好友粒度授权; 本地完全权限永不开放) ──
+async function openGrantsDialog(id){
+  const cur=await api('/api/agents/'+encodeURIComponent(id)+'/grants').catch(()=>({grants:[]}));
+  const lines=(cur.grants||[]).map(g=>'· '+shortDid(g.did)+' → '+g.caps.join('/')).join('\n')||'(还没授权任何人)';
+  const did=await askText('开放给好友：输入好友 DID','','可授权: chat(对话) / payment_info(看钱包) / share_judgment(读判断力)\n本地完全权限不对好友开放\n当前授权:\n'+lines);
+  if(!did||!did.trim())return;
+  const capsRaw=await askText('授予哪些能力（逗号分隔）','chat','chat=可对话; payment_info=可看收款钱包; share_judgment=可读本地判断力');
+  if(capsRaw==null)return;
+  const caps=String(capsRaw).split(/[,，\s]+/).filter(Boolean);
+  const r=await api('/api/agents/'+encodeURIComponent(id)+'/grants',{method:'POST',body:JSON.stringify({did:did.trim(),caps})}).catch(e=>({error:e.message}));
+  toast(r.error?('授权失败: '+r.error):('已授权 '+((r.caps||[]).join('/')||'-')+' 给 '+shortDid(did.trim())));
+}
+async function revokeGrantsDialog(id){
+  const did=await askText('收回授权：输入好友 DID','','收回后对方立刻看不到/连不上这个智能体');
+  if(!did||!did.trim())return;
+  const r=await api('/api/agents/'+encodeURIComponent(id)+'/grants/revoke',{method:'POST',body:JSON.stringify({did:did.trim()})}).catch(e=>({error:e.message}));
+  toast(r.error?('收回失败: '+r.error):(r.revoked?'已收回':'这位好友本来就没有授权'));
+}
 
 async function renameAgentGlobal(){
   const a=state.agents.find(x=>x.id===menuAgentId); if(!a)return;
@@ -3441,12 +3462,51 @@ async function loadFriendAgents(did){
       <div class="item relay-pick" data-agent="${escapeHTML(a.id||'')}" data-name="${escapeHTML(a.name||a.id||'')}">
         <div class="ava">🤖</div>
         <div class="txt"><b>${escapeHTML(a.name||a.id||'智能体')}</b><small>${escapeHTML(String(a.soul||a.intro||'对好友开放').replace(/\s+/g,' ').slice(0,42))}</small></div>
+        <button class="dots" title="好友智能体设置" onclick="event.stopPropagation();openFriendAgentMenu(event,'${escapeHTML(a.id||'')}','${escapeHTML(a.name||a.id||'')}')">⋯</button>
       </div>`).join('');
     if(r&&r.peer)box.insertAdjacentHTML('beforeend','<div class="hint">来自 '+escapeHTML(r.peer)+'</div>');
   }catch(e){
     box.innerHTML='<div class="hint">拿不到对方智能体: '+escapeHTML(String((e&&e.message)||e))+'</div>';
   }
 }
+// ── 2026-11-04: 好友智能体 ⋯ (标签与自有智能体对齐: 对话 / 支付 / 判断力 / 邀请) ──
+let friendAgentCtx=null;
+function openFriendAgentMenu(e,agentId,agentName){
+  e.stopPropagation();
+  friendAgentCtx={did:activeFriendDid,agentId,agentName};
+  let m=document.getElementById('friendAgentMenu');
+  if(!m){m=document.createElement('div');m.id='friendAgentMenu';m.className='menu hidden';document.body.appendChild(m);}
+  m.innerHTML=`
+    <button onclick="faChat()">对话（点对点发消息）</button>
+    <button onclick="faWallet()">支付账号 / 钱包（需对方授权）</button>
+    <button onclick="faJudgments()">读取判断力（需对方授权）</button>
+    <button onclick="faInvite()">邀请进群（需对方授权）</button>`;
+  m.classList.remove('hidden');
+  m.style.left=Math.min(e.clientX,innerWidth-210)+'px';
+  m.style.top=Math.min(e.clientY,innerHeight-180)+'px';
+}
+document.addEventListener('click',()=>{const m=document.getElementById('friendAgentMenu');if(m)m.classList.add('hidden');});
+function faChat(){const c=friendAgentCtx;if(!c)return;openRelay(c.did,c.agentId,c.agentName);}
+async function faWallet(){
+  const c=friendAgentCtx;if(!c)return;
+  const r=await api('/api/friends/'+encodeURIComponent(c.did)+'/wallet?agent_id='+encodeURIComponent(c.agentId)).catch(e=>({error:e.message}));
+  if(r.ok===false||r.error){toast('对方：'+escapeHTML(String(r.error||'未开放')));return;}
+  const ws=r.wallet||[];
+  toast(ws.length?('钱包: '+ws.map(w=>(w.address||'').slice(0,10)+'…('+(w.chain||'')+')').join(' / ')):'对方这个智能体还没有钱包');
+}
+async function faJudgments(){
+  const c=friendAgentCtx;if(!c)return;
+  const r=await api('/api/friends/'+encodeURIComponent(c.did)+'/judgments?agent_id='+encodeURIComponent(c.agentId)).catch(e=>({error:e.message}));
+  if(r.ok===false||r.error){toast('对方：'+escapeHTML(String(r.error||'未分享')));return;}
+  const js=r.judgments||[];
+  toast(js.length?('判断力 '+js.length+' 条: '+js.map(j=>j.statement).join(' / ').slice(0,120)):'对方暂无判断力可分享');
+}
+async function faInvite(){
+  const c=friendAgentCtx;if(!c)return;
+  // 邀请外部智能体进群: 入口在这里, 真正加入要对方节点配合 (需对方授权 invite_group)
+  toast('邀请需要对方把 invite_group 授权给这位好友；本机入口已就绪，跨机加入链路待对方节点配合');
+}
+
 function hideRelay(){
   relayState={did:'',agentId:'',agentName:'',log:[]};
   ['relayHead','relayLog','relayComposer'].forEach(id=>{const el=$(id);if(el)el.style.display='none';});
