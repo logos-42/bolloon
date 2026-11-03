@@ -629,6 +629,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/agents/public/judgments", get(crate::native::agents_public_judgments))
         // 邀请好友的智能体进群 (跨机): 本机签发链接 → 对端验好友+invite_group 授权 → 导入并登记
         .route("/api/agents/public/join-group", post(crate::native::agents_public_join_group))
+        // 好友只读指挥 (command_readonly 授权; 只读工具子集 + 5 次/20s 死预算 + 审计)
+        .route("/api/agents/public/command", post(crate::native::agents_public_command))
+        .route("/api/friends/{did}/command", post(crate::native::friend_command))
         .route("/api/groups/{id}/invite-agent", post(crate::native::group_invite_agent))
         // 好友侧代理 (需对端授权; 没授权就如实把对端的拒绝原样带回)
         .route("/api/friends/{did}/wallet", get(crate::native::friend_wallet))
@@ -4420,6 +4423,16 @@ mod route_tests {
             assert!(
                 jg["error"].as_str().unwrap_or("").contains("好友"),
                 "非好友不许代邀请: {jg}"
+            );
+
+            // ⑧ 好友只读指挥: 无 command_readonly 授权一律拒 (永不开放本地完全权限)
+            let cmd = post_json(
+                "/api/agents/public/command",
+                serde_json::json!({ "from_did": "did:pi:ghost", "agent_id": aid, "instruction": "看看 /tmp" }),
+            );
+            assert!(
+                cmd["error"].as_str().unwrap_or("").contains("好友"),
+                "非好友不许指挥: {cmd}"
             );
 
             let cron = get_json("/api/cron");

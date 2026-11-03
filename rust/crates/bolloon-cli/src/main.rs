@@ -113,6 +113,11 @@ enum Commands {
         #[command(subcommand)]
         action: GrantsAction,
     },
+    /// 好友的智能体: 读对方**授权给我**的钱包 / 判断力 (只读)
+    Friend {
+        #[command(subcommand)]
+        action: FriendAction,
+    },
     /// 定时任务与心跳运行状态 (tick 数 / 到期 / 门户维护 / 活跃数)
     Cron {
         #[arg(long, default_value_t = 54188)]
@@ -314,6 +319,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Dream { topic, domain }) => run_dream(topic, &domain),
         Some(Commands::Group { action }) => run_group(action),
         Some(Commands::Grants { action }) => run_grants(action),
+        Some(Commands::Friend { action }) => run_friend(action),
         Some(Commands::Cron { port }) => run_cron(port),
         Some(Commands::SelfInfo { json, agent }) => run_self(json, &agent),
         Some(Commands::Pay { action }) => run_pay(action),
@@ -347,6 +353,40 @@ enum GrantsAction {
         agent: String,
         #[arg(long)]
         did: String,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
+}
+
+#[derive(Subcommand)]
+enum FriendAction {
+    /// 看对方这个智能体对我开放的钱包/收款账号 (需对方授权 payment_info)
+    Wallet {
+        #[arg(long)]
+        did: String,
+        #[arg(long)]
+        agent: String,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
+    /// 只读指挥对方智能体 (需对方授权 command_readonly; 只读工具子集, 有审计)
+    Command {
+        #[arg(long)]
+        did: String,
+        #[arg(long)]
+        agent: String,
+        /// 指令 (例如 "看看 /tmp 下有哪些文件")
+        #[arg(long)]
+        text: String,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
+    /// 读对方分享给我的判断力 (需对方授权 share_judgment)
+    Judgments {
+        #[arg(long)]
+        did: String,
+        #[arg(long)]
+        agent: String,
         #[arg(long, default_value_t = 54188)]
         port: u16,
     },
@@ -804,6 +844,75 @@ fn run_grants(action: GrantsAction) -> anyhow::Result<()> {
                 anyhow::bail!("收回失败: {err}");
             }
             println!("{}", if r["revoked"].as_bool().unwrap_or(false) { "已收回" } else { "这位好友本来就没有授权" });
+        }
+    }
+    Ok(())
+}
+
+fn run_friend(action: FriendAction) -> anyhow::Result<()> {
+    match action {
+        FriendAction::Wallet { did, agent, port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let url = format!("{base}/api/friends/{did}/wallet?agent_id={agent}");
+            let r: serde_json::Value = ureq::get(&url)
+                .call()
+                .map_err(|e| anyhow::anyhow!("节点没在跑（{base}）：先 `bolloon web`。\n{e}"))?
+                .into_json()?;
+            if r["ok"] == serde_json::json!(false) || r["error"].is_string() {
+                anyhow::bail!("对方：{}", r["error"].as_str().unwrap_or("未开放"));
+            }
+            let ws = r["wallet"].as_array().cloned().unwrap_or_default();
+            if ws.is_empty() {
+                println!("（对方这个智能体还没有钱包）");
+            } else {
+                for w in ws {
+                    println!(
+                        "{}  {}  chain={}  source={}",
+                        w["address"].as_str().unwrap_or(""),
+                        w["label"].as_str().unwrap_or(""),
+                        w["chain"].as_str().unwrap_or(""),
+                        w["source"].as_str().unwrap_or("")
+                    );
+                }
+            }
+        }
+        FriendAction::Command { did, agent, text, port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let url = format!("{base}/api/friends/{did}/command");
+            let r: serde_json::Value = ureq::post(&url)
+                .send_json(serde_json::json!({ "agent_id": agent, "instruction": text }))
+                .map_err(|e| anyhow::anyhow!("节点没在跑（{base}）：先 `bolloon web`。\n{e}"))?
+                .into_json()?;
+            if r["ok"] == serde_json::json!(false) || r["error"].is_string() {
+                anyhow::bail!("对方：{}", r["error"].as_str().unwrap_or("未开放只读指挥"));
+            }
+            println!("{}", r["reply"].as_str().unwrap_or(""));
+            if let Some(n) = r["note"].as_str() {
+                println!("\n[{n}]");
+            }
+        }
+        FriendAction::Judgments { did, agent, port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let url = format!("{base}/api/friends/{did}/judgments?agent_id={agent}");
+            let r: serde_json::Value = ureq::get(&url)
+                .call()
+                .map_err(|e| anyhow::anyhow!("节点没在跑（{base}）：先 `bolloon web`。\n{e}"))?
+                .into_json()?;
+            if r["ok"] == serde_json::json!(false) || r["error"].is_string() {
+                anyhow::bail!("对方：{}", r["error"].as_str().unwrap_or("未分享"));
+            }
+            let js = r["judgments"].as_array().cloned().unwrap_or_default();
+            if js.is_empty() {
+                println!("（对方没有可分享的判断力）");
+            } else {
+                for j in js {
+                    println!(
+                        "- {}  (置信 {})",
+                        j["statement"].as_str().unwrap_or(""),
+                        j["confidence"].as_f64().unwrap_or(0.0)
+                    );
+                }
+            }
         }
     }
     Ok(())

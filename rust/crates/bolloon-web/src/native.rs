@@ -2153,6 +2153,8 @@ pub struct TurnOptions {
     pub econ: Option<EconCtx>,
     /// 计量用的表面名
     pub surface: &'static str,
+    /// 只读工具子集 (好友"只读指挥"用: 只给 Read 类工具, 不给网络/写/执行)
+    pub readonly_tools: bool,
 }
 
 impl Default for TurnOptions {
@@ -2167,6 +2169,7 @@ impl Default for TurnOptions {
             max_secs: 900,
             econ: None,
             surface: "web",
+            readonly_tools: false,
         }
     }
 }
@@ -2272,13 +2275,18 @@ pub async fn reply_with_agent_cfg(
     //   permission 门看到的是「零授予」, shell/write_file/edit_file 一律被拒。
     //   现在按**当前**开关值传入, 每次请求重建 harness ⇒ 开关即时生效。
     let full_access = st.full_access.load(Ordering::SeqCst);
-    let (mut harness, schemas) = bolloon_agent::builtin_tools::builtin_harness(
-        opts.tool_budget,
-        opts.max_secs.saturating_mul(1000),
-        cancel.clone(),
-        full_access,
-    )
-    .await;
+    let (mut harness, schemas) = if opts.readonly_tools {
+        // 好友只读指挥: 工具子集 + 死预算 (5 次 / 20s), 与本地完全访问开关无关
+        bolloon_agent::builtin_tools::readonly_harness(5, 20_000, cancel.clone()).await
+    } else {
+        bolloon_agent::builtin_tools::builtin_harness(
+            opts.tool_budget,
+            opts.max_secs.saturating_mul(1000),
+            cancel.clone(),
+            full_access,
+        )
+        .await
+    };
     // 受治理配置: 安全紧急控制 + 超时覆盖 (harness)
     let harness = {
         let h = std::sync::Arc::get_mut(&mut harness).expect("harness Arc 应唯一");
@@ -3631,6 +3639,7 @@ pub async fn room_turn_exec(
         max_retries: rt.max_retries,
         tool_budget: rt.tool_budget,
         max_secs: rt.max_secs,
+        readonly_tools: false,
         econ: Some(EconCtx {
             intent_id: intent_id.to_string(),
             group_id: Some(gid.to_string()),
@@ -7042,7 +7051,8 @@ pub async fn dream_topic(
 /// 智能体是否对好友开放。缺省开放 (好友关系是双方明确同意过的),
 /// 关掉的方式 = 在该智能体目录下放一个 `private.json` 标记 (不猜、不改持久化 schema)。
 /// 允许授予好友的能力 (白名单; **本地完全权限/任意执行永不在名单里**)
-pub const GRANT_CAPS: &[&str] = &["chat", "payment_info", "share_judgment", "invite_group"];
+pub const GRANT_CAPS: &[&str] =
+    &["chat", "payment_info", "share_judgment", "invite_group", "command_readonly"];
 
 /// 归一化能力列表 (未知/高危一律丢弃, 不静默放行)
 pub fn normalize_caps(caps: &[String]) -> Vec<String> {
@@ -7292,6 +7302,123 @@ pub async fn agents_public_wallet(
     }
     let w = crate::agent_wallet::public_view(&agent_id);
     Json(serde_json::json!({ "ok": true, "agent_id": agent_id, "wallet": w }))
+}
+
+/// 好友"只读指挥"的审计落盘 (一行一条: 谁/哪个智能体/指令/步数/用了哪些工具/结果摘要)
+fn append_friend_audit(rec: serde_json::Value) {
+    use std::io::Write;
+    let p = crate::server::data_dir().join("friend-audit.jsonl");
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{}", serde_json::to_string(&rec).unwrap_or_default());
+    }
+}
+
+/// POST /api/agents/public/command {from_did, agent_id, instruction}
+///
+/// 好友**只读指挥**: 朋友门 + `command_readonly` 授权门 → 只读工具子集跑一轮
+/// (5 次调用 / 20s 死预算, 无网络/无写/无执行) → 全程写 `friend-audit.jsonl`。
+pub async fn agents_public_command(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let from_did = req["from_did"].as_str().unwrap_or_default().trim().to_string();
+    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
+    let instruction = req["instruction"].as_str().unwrap_or_default().trim().to_string();
+    if from_did.is_empty() || agent_id.is_empty() || instruction.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 from_did / agent_id / instruction" }));
+    }
+    if !is_local_friend(&st, &from_did).await {
+        return Json(serde_json::json!({ "ok": false, "error": "对方不是本机好友" }));
+    }
+    let agent = {
+        let fs = st.forge.lock().await;
+        if !fs.agents.iter().any(|a| a.id == agent_id) {
+            return Json(serde_json::json!({ "ok": false, "error": format!("本机没有这个智能体: {agent_id}") }));
+        }
+        let caps = caps_in(&fs, &agent_id, &from_did);
+        if !caps.iter().any(|c| c == "command_readonly") {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": "该智能体未对这位好友开放「只读指挥」权限（永远不会开放本地完全权限）"
+            }));
+        }
+        fs.agents.iter().find(|a| a.id == agent_id).cloned()
+    };
+    let Some(agent) = agent else {
+        return Json(serde_json::json!({ "ok": false, "error": "智能体不存在" }));
+    };
+    let sid = format!("friend-cmd-{}", now_ms());
+    let cancel = st.chat_runs.begin(&sid);
+    let opts = TurnOptions {
+        session_id: sid.clone(),
+        readonly_tools: true,
+        max_turns: 3,
+        max_retries: 1,
+        tool_budget: 5,
+        max_secs: 20,
+        surface: "friend-command",
+        extra_system: format!(
+            "\n\n## 好友只读指令\n对方是本机主人已加的好友 ({})。你**只能读** (列目录/读文件/搜索), \
+不能修改任何文件、不能执行命令、不能联网。做不到就如实说缺哪项权限。",
+            short_did(&from_did)
+        ),
+        ..Default::default()
+    };
+    let out = reply_with_agent_cfg(&st, &instruction, Some(&agent), opts, None, cancel).await;
+    let (ok, reply) = match out {
+        Ok(t) => (true, t),
+        Err(e) => (false, e),
+    };
+    append_friend_audit(serde_json::json!({
+        "at_ms": now_ms(),
+        "kind": "friend_command_readonly",
+        "from_did": from_did,
+        "agent_id": agent_id,
+        "instruction": instruction.chars().take(200).collect::<String>(),
+        "ok": ok,
+        "reply_chars": reply.chars().count(),
+        "reply_head": reply.chars().take(160).collect::<String>(),
+        "tool_budget": 5,
+        "max_secs": 20,
+        "tools_scope": "read_only",
+    }));
+    Json(serde_json::json!({
+        "ok": ok, "reply": reply,
+        "scope": "read_only", "tool_budget": 5, "max_secs": 20,
+        "audited": true,
+        "note": "只读子集: 无写/无执行/无联网; 全程已写 friend-audit.jsonl"
+    }))
+}
+
+/// POST /api/friends/{did}/command {agent_id, instruction} → 本机代理到对端只读指挥
+pub async fn friend_command(
+    axum::extract::Path(did): axum::extract::Path<String>,
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = did.trim().to_string();
+    if !is_local_friend(&st, &did).await {
+        return Json(serde_json::json!({ "ok": false, "error": "不是本机好友" }));
+    }
+    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
+    let instruction = req["instruction"].as_str().unwrap_or_default().trim().to_string();
+    if agent_id.is_empty() || instruction.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 agent_id / instruction" }));
+    }
+    let url = match peer_url_for_did(&st, &did).await {
+        Ok(u) => u,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
+    };
+    let body = serde_json::json!({
+        "from_did": st.identity.did.as_str(), "agent_id": agent_id, "instruction": instruction,
+    });
+    match peer_json("POST", format!("{url}/api/agents/public/command"), Some(body)).await {
+        Ok(v) => Json(v),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
 }
 
 /// GET /api/agents/public/judgments?did=&agent_id= → 对这位好友**分享本地判断力** (top-N 陈述)

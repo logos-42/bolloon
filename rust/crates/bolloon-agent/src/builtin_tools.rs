@@ -420,6 +420,36 @@ pub async fn builtin_harness(
     (h, schemas)
 }
 
+/// **只读工具子集** (2026-11-04: 好友"只读指挥"专用)
+///
+/// 纪律: ① 只把 `EffectKind::Read` 的工具**发给模型**(schema 里根本看不到写/执行类);
+/// ② 只授予同样这批 (permission 门对其它一律 DENIED); ③ 预算与超时由调用方给死,
+/// ④ 网络类(web_fetch)也**不**给 —— 防被当成数据外带通道。
+pub async fn readonly_harness(
+    calls: u32,
+    budget_ms: u64,
+    cancel: Arc<AtomicBool>,
+) -> (Arc<Harness>, Vec<ToolSchema>) {
+    let budget = Budget::new(calls, budget_ms);
+    let reg = Arc::new(ToolRegistry::new());
+    register_builtin_tools(&reg).await;
+    let exec = Arc::new(BuiltinExecutor::new(
+        cancel,
+        false, // 只读子集永不 bypass
+        crate::scratch::ScriptRunPort::noop(),
+    ));
+    let h = Arc::new(Harness::new(reg.clone(), exec, budget));
+    let defs: Vec<bolloon_harness::ToolDef> = builtin_tool_defs()
+        .into_iter()
+        .filter(|d| d.effect == bolloon_harness::EffectKind::Read)
+        .collect();
+    for d in &defs {
+        h.grant(&d.name).await;
+    }
+    let schemas = tool_defs_to_schemas(&defs);
+    (h, schemas)
+}
+
 /// 同 `builtin_harness`，但把经济层工具接上（principal 决定算谁的额度）。
 pub async fn builtin_harness_with_econ(
     calls: u32,

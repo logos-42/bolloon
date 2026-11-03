@@ -3501,6 +3501,7 @@ function openFriendAgentMenu(e,agentId,agentName){
     <button onclick="faChat()">对话（点对点发消息）</button>
     <button onclick="faWallet()">支付账号 / 钱包（需对方授权）</button>
     <button onclick="faJudgments()">读取判断力（需对方授权）</button>
+    <button onclick="faCommand()">只读指挥（需对方授权 command_readonly）</button>
     <button onclick="faInvite()">邀请进群（需对方授权）</button>`;
   m.classList.remove('hidden');
   m.style.left=Math.min(e.clientX,innerWidth-210)+'px';
@@ -3521,6 +3522,15 @@ async function faJudgments(){
   if(r.ok===false||r.error){toast('对方：'+escapeHTML(String(r.error||'未分享')));return;}
   const js=r.judgments||[];
   toast(js.length?('判断力 '+js.length+' 条: '+js.map(j=>j.statement).join(' / ').slice(0,120)):'对方暂无判断力可分享');
+}
+async function faCommand(){
+  const c=friendAgentCtx;if(!c)return;
+  const ins=await askText('只读指令','','对方只给读: 列目录/读文件/搜索; 不能改文件、不能执行命令、不能联网');
+  if(!ins||!ins.trim())return;
+  toast('对方在执行（只读子集, 有预算与审计）…');
+  const r=await api('/api/friends/'+encodeURIComponent(c.did)+'/command',{method:'POST',body:JSON.stringify({agent_id:c.agentId,instruction:ins.trim()})}).catch(e=>({error:e.message}));
+  if(r.ok===false||r.error){toast('对方：'+String(r.error||'未开放只读指挥'));return;}
+  alert(String(r.reply||'').slice(0,2000)+'\n\n['+(r.note||'')+']');
 }
 async function faInvite(){
   const c=friendAgentCtx;if(!c)return;
