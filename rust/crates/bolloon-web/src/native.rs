@@ -1453,13 +1453,27 @@ pub async fn build_web_system(
 
     let self_hint = "\n## 自查\n你的 DID、persona、memory、workspace、钱包文件位置**不**常驻在这里；\n需要时跑 `bolloon self --json`（与 GET /api/agents/<你的id>/paths 同源）。\n";
 
-    // 记忆召回 (top-N, 不是全量): 复用 MemoryStore::recall 的 importance×decay 打分
+    // 记忆召回 (top-N, 不是全量): 2026-11-04 (bug 8/10) 先读**SQL 记忆库** (与 CLI 同源,
+    // 包含 hindsight 外挂合并进来的行), 库里没有才退回内存 MemoryStore。
+    // 以前只读 st.memory —— 那是本进程刚写的几条, 用户"最新记忆组件"里的东西一句也进不来。
     let memory_text = {
-        let store = st.memory.lock().await;
-        let hits = store.recall(Some(query), 6, chrono::Utc::now());
-        if hits.is_empty() {
-            String::new()
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let from_db = {
+            let db = st.memory_db.lock().await;
+            match db.recall(&agent_key, Some(query), 6, now_ms) {
+                Ok(rows) => rows
+                    .iter()
+                    .map(|r| format!("• {}", r.content))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                Err(_) => String::new(),
+            }
+        };
+        if !from_db.is_empty() {
+            from_db
         } else {
+            let store = st.memory.lock().await;
+            let hits = store.recall(Some(query), 6, chrono::Utc::now());
             hits.iter()
                 .map(|e| format!("• {}", e.content))
                 .collect::<Vec<_>>()
@@ -1467,10 +1481,16 @@ pub async fn build_web_system(
         }
     };
 
+    // 判断力唤起 (bug 10: 注入门以前**零调用点**): 每轮现算 top-N 经验, 有才注入, 无命中不硬造。
+    let judgment = {
+        let store = st.judgments.lock().await;
+        bolloon_agent::prompt::inject_judgment_gate(query, &store, "web", &[])
+    };
+
     let base = match docs {
         Ok(docs) => {
             let ctx = bolloon_agent::prompt::AssembleContext { channel: "web", role: None, tool: None };
-            bolloon_agent::prompt::build_system_prompt(&docs, None, None, None, 0, "", Some(&memory_text), &ctx).text
+            bolloon_agent::prompt::build_system_prompt(&docs, None, None, Some(&judgment), 0, "", Some(&memory_text), &ctx).text
         }
         Err(_) => WEB_SYSTEM_PROMPT.to_string(),
     };
@@ -2304,6 +2324,16 @@ pub async fn reply_with_agent_cfg(
         Some(e) => vec![e as &dyn bolloon_agent::kernel_loop::LoopObserver],
         None => vec![],
     });
+    // 2026-11-04 (bug 7): 这一轮开始就发心跳 (thinking) —— 心跳注册表以前在 web 里从不被调用
+    {
+        let peer = agent.map(|a| a.id.clone()).unwrap_or_else(|| "local".to_string());
+        st.heartbeats.lock().await.beat(bolloon_agent::heartbeat::Heartbeat {
+            peer_id: peer,
+            ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+            pid: std::process::id(),
+            state: bolloon_agent::heartbeat::HeartbeatState::Thinking,
+        });
+    }
     // 2026-11-04: 阶段真的写进 ChatRuns (以前 `stage()` 全仓零调用 ⇒ 界面/刷新看到的 stages 永远是空)
     st.chat_runs.stage(session_id, "调用模型（工具循环）");
     // 取消: 前端「停止」置位 ⇒ 工具门立刻拒 + 策略在轮次边界不再发起调用。
@@ -2333,6 +2363,16 @@ pub async fn reply_with_agent_cfg(
         }
     };
     st.chat_runs.stage(session_id, &format!("完成 {} 步", run.steps.len()));
+    // 回合收尾: 心跳回到 idle (仍算"活着", 只是不在思考) —— 群聊 thinking 点会随之熄灭
+    {
+        let peer = agent.map(|a| a.id.clone()).unwrap_or_else(|| "local".to_string());
+        st.heartbeats.lock().await.beat(bolloon_agent::heartbeat::Heartbeat {
+            peer_id: peer,
+            ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+            pid: std::process::id(),
+            state: bolloon_agent::heartbeat::HeartbeatState::Idle,
+        });
+    }
     {
         let tools_used: u32 = run.steps.iter().map(|s| s.tool_calls.len() as u32).sum();
         st.config

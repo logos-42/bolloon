@@ -70,6 +70,15 @@ fn save_full_access(on: bool) {
     }
 }
 
+/// cron/心跳运行统计 (看得见"在跳"：tick 数、到期数、剔除数)
+#[derive(Debug, Default, Clone)]
+pub struct CronStats {
+    pub ticks: u64,
+    pub last_tick_ms: u64,
+    pub due_last: usize,
+    pub swept_last: usize,
+}
+
 /// 服务状态（从上层注入）
 #[derive(Clone)]
 pub struct AppState {
@@ -95,6 +104,12 @@ pub struct AppState {
     pub full_access: Arc<std::sync::atomic::AtomicBool>,
     /// 群聊/商议的"谁正在想"运行时 (内存态; 见 room_bus)
     pub room_bus: Arc<crate::room_bus::RoomBus>,
+    /// 定时任务调度 (2026-11-04 bug 7: 以前 web 进程里 0 实例化、0 tick, 能力等于不存在)
+    pub cron: Arc<Mutex<bolloon_kernel::cron::CronScheduler>>,
+    /// 心跳注册表 (谁活着 / 谁正在想; 过期剔除)
+    pub heartbeats: Arc<Mutex<bolloon_agent::heartbeat::HeartbeatRegistry>>,
+    /// cron 运行统计 (tick 数 / 到期数 / 剔除数) — 「心跳有没有在跳」要看得见
+    pub cron_stats: Arc<Mutex<CronStats>>,
     /// 每会话一轮对话的运行态 (流光阶段 / 停止 / 刷新续看; 见 native::ChatRuns)
     pub chat_runs: Arc<crate::native::ChatRuns>,
     /// 更新安装互斥 (两个请求同时替换同一二进制会把自己装残)
@@ -153,7 +168,9 @@ impl AppState {
             groups: Arc::new(GroupOrbitHub::new(dir.join("orbitdb"))),
             tasks,
             memory,
-            judgments: Arc::new(Mutex::new(JudgmentStore::new())),
+            // 2026-11-04 (bug 10): 判断力以前每次都从空库开始 (new() + 不落盘) ⇒ 注入门永远是空。
+            // 现在启动即从盘上装载, 演化后落盘 ⇒ "过去的经验"真的会被下一轮读到。
+            judgments: Arc::new(Mutex::new(JudgmentStore::load_json(&dir.join("judgments.json")))),
             world: Arc::new(Mutex::new(OpportunityStream::new())),
             paid_info: Arc::new(Mutex::new(std::collections::HashMap::new())),
             x402_used_txs: Arc::new(Mutex::new(std::collections::HashSet::new())),
@@ -166,6 +183,9 @@ impl AppState {
                 load_full_access(),
             )),
             room_bus: Arc::new(crate::room_bus::RoomBus::default()),
+            cron: Arc::new(Mutex::new(bolloon_kernel::cron::CronScheduler::new())),
+            heartbeats: Arc::new(Mutex::new(bolloon_agent::heartbeat::HeartbeatRegistry::new())),
+            cron_stats: Arc::new(Mutex::new(CronStats::default())),
             chat_runs: Arc::new(crate::native::ChatRuns::default()),
             updating: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             forge: Arc::new(Mutex::new(crate::native::NativeState::load(&dir))),
@@ -602,6 +622,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/dream/topic", post(crate::native::dream_topic))
         .route("/api/send", post(send))
         .route("/api/health", get(health))
+        // cron/心跳 运行状态 (2026-11-04 bug 7: 让"在跳"可观测, 而不是只有纯函数)
+        .route("/api/cron", get(cron_status))
         // 群聊
         .route("/api/groups", get(list_groups).post(create_group))
         .route("/api/groups/{id}/messages", get(group_messages))
@@ -683,6 +705,39 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
 
     // 启动即按本机配置装好模型通路 (200+ provider 里能解析的那些)
     state.reload_llm().await;
+
+    // 2026-11-04 (bug 7): cron + 心跳 的 tick 循环**真跑起来**（每 30s）。
+    // 以前这两个能力在 web 进程里 0 实例化、0 tick ⇒ 用户看到的就是"不支持"。
+    // 纯函数判定留在 kernel（due_tasks / sweep），这里只负责"按时问一次、拿锁、放锁、记账"。
+    {
+        let st = state.clone();
+        tokio::spawn(async move {
+            st.cron.lock().await.recover_stale_locks(); // 崩溃恢复: 清上次残留的运行锁
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                let now = chrono::Utc::now().timestamp_millis() as u64;
+                let minute = ((now / 60_000) % 1440) as u16;
+                let (due, swept) = {
+                    let mut c = st.cron.lock().await;
+                    let due = c.due_tasks(now, minute);
+                    // 任务执行器尚未注册真实任务（任务源=后续接线），此处只走"拿锁→放锁"记账，
+                    // 不伪造任何未发生的执行。
+                    for id in &due {
+                        if c.begin(id, now) {
+                            c.finish(id);
+                        }
+                    }
+                    let swept = st.heartbeats.lock().await.sweep(now, 90_000);
+                    (due.len(), swept)
+                };
+                let mut s = st.cron_stats.lock().await;
+                s.ticks += 1;
+                s.last_tick_ms = now;
+                s.due_last = due;
+                s.swept_last = swept;
+            }
+        });
+    }
 
     // QUIC 端对端直连传输: 起一个端点, 并起接收循环把直连收到的信封接到世界卡片跨机投递路径。
     // 失败仅降级为"仅 HTTP 跨机", 不拖垮 web 服务。
@@ -849,6 +904,29 @@ async fn avatar_svg(Path(seed): Path<String>, Query(q): Query<AvatarQuery>) -> a
 /// `/api/avatars`: 家族目录 (前端"换头像家族"的按钮来源)
 async fn avatar_families() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "families": crate::avatar::families() }))
+}
+
+/// GET /api/cron → cron/心跳运行状态 (tick 数/到期/剔除/任务数/活跃数)
+async fn cron_status(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let now = chrono::Utc::now().timestamp_millis() as u64;
+    let stats = st.cron_stats.lock().await.clone();
+    let tasks = st.cron.lock().await.len();
+    let (alive, thinking) = {
+        let hb = st.heartbeats.lock().await;
+        (hb.alive(now, 90_000).len(), hb.thinking(now, 90_000).len())
+    };
+    Json(serde_json::json!({
+        "interval_s": 30,
+        "ticks": stats.ticks,
+        "last_tick_ms": stats.last_tick_ms,
+        "due_last": stats.due_last,
+        "heartbeats_swept": stats.swept_last,
+        "tasks": tasks,
+        "alive": alive,
+        "thinking": thinking,
+        // 如实: tick 循环是真的, 但"到期任务执行器"还没有注册真实任务 (tasks=0 不是假装)
+        "note": "tick 循环真跑；到期任务执行器尚未注册真实任务（tasks=0 如实）"
+    }))
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -2494,6 +2572,8 @@ async fn evolve_judgment(
         bolloon_agent::judgment::EvolveAction::Superseded { old } => ("superseded", format!("顶掉 {old}")),
         bolloon_agent::judgment::EvolveAction::Created { id } => ("created", format!("新增 {id}")),
     };
+    // 演进即落盘 (以前只在内存里 ⇒ 重启清零, 注入门永远读不到"过去的经验")
+    let _ = store.save_json(&data_dir().join("judgments.json"));
     Json(serde_json::json!({ "action": kind, "detail": detail }))
 }
 
@@ -4258,6 +4338,20 @@ mod route_tests {
                     && m["text"].as_str().unwrap_or("").contains("这句必须留下来")),
                 "用户消息必须落盘: {msgs:?}"
             );
+
+            // ④ 判断力: 演化一次 → 读面立刻可见 (以前空库 + 不落盘, 重启就清零)
+            let _ = post_json(
+                "/api/judgment",
+                serde_json::json!({ "statement": "先做最小版本再扩展", "domain": "web", "confidence": 0.8 }),
+            );
+            let tops = get_json("/api/judgment?q=web");
+            assert!(tops.to_string().contains("先做最小版本再扩展"), "演化后的判断必须可见: {tops}");
+
+            // ⑤ cron/心跳: tick 循环在 serve_on 里真起; 这里验可观测面形状
+            let cron = get_json("/api/cron");
+            assert_eq!(cron["interval_s"], serde_json::json!(30), "cron 间隔: {cron}");
+            assert!(cron["ticks"].as_u64().is_some());
+            assert!(cron["note"].as_str().unwrap_or("").contains("tick"));
 
             let _ = std::fs::remove_dir_all(&home);
         })

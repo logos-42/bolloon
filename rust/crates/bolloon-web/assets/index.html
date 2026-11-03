@@ -3222,6 +3222,17 @@ async function sendWorldSay(){
     if(!who.length)toast(r.note||'没有能接话的智能体');
     else toast('已发出 · '+who.join('、')+' 正在回应');
     await loadWorldThread();
+    // 2026-11-04 (bug 12): 让"主动发问"真的有消费方 —— 交付面算出的澄清问题当场问出来,
+    // 同时把输入框提示换成这个问题 (以前 question 只是响应字段, 前端 0 引用)
+    try{
+      const f=await api('/api/world/fulfill',{method:'POST',body:JSON.stringify({text})});
+      if(f&&f.question){
+        if(pend){pend.style.display='';pend.innerHTML='<b>需要你补一句</b>：'+escapeHTML(f.question);}
+        if(inp)inp.placeholder=f.question;
+        toast('智能体想问：'+f.question);
+        loadWorld();
+      }
+    }catch(_){/* 交付面失败不影响世界消息 */}
   }catch(e){toast('发送失败: '+e.message);if(pend)pend.style.display='none';}
 }
 
