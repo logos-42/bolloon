@@ -7678,7 +7678,7 @@ pub async fn agents_public_chat(
 }
 
 /// 按 did 找到对端节点基址 (遍历已登记对端, 用它的 /api/quic/addr 认领 did)
-async fn peer_url_for_did(st: &AppState, did: &str) -> Result<String, String> {
+pub(crate) async fn peer_url_for_did(st: &AppState, did: &str) -> Result<String, String> {
     let peers = {
         let fs = st.forge.lock().await;
         fs.directory_peers.clone()
@@ -7701,7 +7701,7 @@ async fn peer_url_for_did(st: &AppState, did: &str) -> Result<String, String> {
 }
 
 /// 阻塞调用对端 JSON 端点 (与目录查询同款 6s 超时, 失败如实带原因)
-async fn peer_json(
+pub(crate) async fn peer_json(
     method: &'static str,
     url: String,
     body: Option<serde_json::Value>,

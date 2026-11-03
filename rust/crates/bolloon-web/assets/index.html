@@ -2071,6 +2071,7 @@ function openAgentMenu(e,id){
     <button onclick="pinAgent()">${(state.agent_pin||[]).includes(id)?'取消置顶':'固定（置顶 + ping 一次）'}</button>
     <button onclick="shareAgentDid(menuAgentId)">分享 DID</button>
     <button onclick="openGrantsDialog(menuAgentId)">开放给好友（权限）</button>
+    <button onclick="x402Buy()">买入别人上架的信息（x402）</button>
     <button onclick="revokeGrantsDialog(menuAgentId)">收回好友授权</button>
     <button onclick="deleteAgent(menuAgentId)">删除</button>`;
   m.classList.remove('hidden');
@@ -2092,6 +2093,26 @@ async function openGrantsDialog(id){
   const caps=String(capsRaw).split(/[,，\s]+/).filter(Boolean);
   const r=await api('/api/agents/'+encodeURIComponent(id)+'/grants',{method:'POST',body:JSON.stringify({did:did.trim(),caps})}).catch(e=>({error:e.message}));
   toast(r.error?('授权失败: '+r.error):('已授权 '+((r.caps||[]).join('/')||'-')+' 给 '+shortDid(did.trim())));
+}
+// ── 2026-11-04: 应用内 x402 买入 (客户端只给 txHash; 金额/收款地址以卖方报价为准) ──
+async function x402Buy(){
+  const peer=await askText('对端节点地址','','例如 http://127.0.0.1:54188（或填对方 DID 由本机按登记基址解析）');
+  if(!peer||!peer.trim())return;
+  const isDid=/^did:/.test(peer.trim());
+  const item=await askText('要买哪一件（item id）','','对端 /api/x402/info/<id> 上架的那件');
+  if(!item||!item.trim())return;
+  try{
+    const q=await api('/api/x402/buy/quote',{method:'POST',body:JSON.stringify(isDid?{peer_did:peer.trim(),item_id:item.trim()}:{peer_url:peer.trim(),item_id:item.trim()})});
+    if(q.error)throw new Error(q.error);
+    const acc=((q.quote&&q.quote.accepts)||[])[0]||{};
+    const tx=await askText('付款交易哈希','','请用你的钱包转 '+((acc.maxAmountRequired)||'?')+' (原子单位) 到 '+(acc.payTo||'?')+'\n转完把 txHash 填这里（本机读链核验后由卖方交付）');
+    if(!tx||!tx.trim())return;
+    toast('正在读链核验…');
+    const r=await api('/api/x402/buy/pay',{method:'POST',body:JSON.stringify(isDid?{peer_did:peer.trim(),item_id:item.trim(),tx_hash:tx.trim()}:{peer_url:peer.trim(),item_id:item.trim(),tx_hash:tx.trim()})}).catch(e=>({error:e.message}));
+    if(r.error||r.ok===false){toast('未交付: '+(r.error||(r.failed||[]).join('; ')||r.verdict||'未知'));return;}
+    toast('已交付 · '+r.verdict+'（'+r.observations+' 条 RPC 一致）');
+    alert('内容:\n\n'+String(r.content||'').slice(0,2000));
+  }catch(e){toast('买入失败: '+e.message);}
 }
 async function revokeGrantsDialog(id){
   const did=await askText('收回授权：输入好友 DID','','收回后对方立刻看不到/连不上这个智能体');

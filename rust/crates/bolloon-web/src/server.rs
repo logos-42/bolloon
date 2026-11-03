@@ -508,6 +508,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/world/inbox", get(crate::native::world_inbox).post(crate::native::world_inbox_post))
         // 意图交付面: 分类 → 差距检测 → 交付物卡片 (回应的是卡片集合, 不是聊天)
         .route("/api/world/fulfill", post(crate::native::world_fulfill))
+        // x402 买方 (应用内付款): 报价 → 多 RPC 读链 → 卖方验链交付 → 订单落盘
+        .route("/api/x402/buy/quote", post(crate::x402_buy::buy_quote))
+        .route("/api/x402/buy/pay", post(crate::x402_buy::buy_pay))
+        .route("/api/x402/orders", get(crate::x402_buy::buy_orders))
         .route("/api/world/stats", get(crate::native::world_stats))
         // 世界卡片跨机投递 (对齐 TS routes-world: cards / push / protocol)
         .route("/api/world/cards", get(crate::native::world_cards))

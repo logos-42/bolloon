@@ -17,6 +17,7 @@ pub mod qr_login;
 pub mod reco;
 pub mod room_bus;
 pub mod server;
+pub mod x402_buy;
 pub mod updater;
 pub mod vision;
 pub mod wallet;

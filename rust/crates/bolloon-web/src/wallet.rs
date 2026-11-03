@@ -44,7 +44,7 @@ fn hex_to_f64(hex: &str, decimals: u32) -> Option<f64> {
     Some(v as f64 / 10f64.powi(decimals as i32))
 }
 
-fn rpc_call(url: &str, method: &str, params: serde_json::Value) -> Result<String, String> {
+pub(crate) fn rpc_call(url: &str, method: &str, params: serde_json::Value) -> Result<String, String> {
     let body = serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": method, "params": params
     })
