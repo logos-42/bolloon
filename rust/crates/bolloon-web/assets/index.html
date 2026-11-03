@@ -3003,8 +3003,11 @@ function setDesktopModule(mod) {
   document.body.classList.remove('dmod-chat', 'dmod-world', 'dmod-contacts');
   document.body.classList.add('dmod-' + mod);
   // 2026-11-04: group-mode 是"只进不出"的 CSS 类 —— 切到别的模块必须复位,
-  // 否则点了群组页之后主区永远是群聊, 看起来"退不出去"
-  if (mod !== 'contacts' && (activeGroupId || document.querySelector('main').classList.contains('group-mode'))) {
+  // 否则点了群组页之后主区永远是群聊, 看起来"退不出去"。
+  // 注意: 这里**不能**引用 `activeGroupId` —— 它是脚本后段才 `let` 声明的,
+  // 而 setDesktopModule 在启动 (initDesktopThreeCol) 就会执行 ⇒ TDZ 抛错会中断整个 boot,
+  // 表现就是"智能体页面全空、历史记录都不见了"(2026-11-04 实测事故)。
+  if (mod !== 'contacts' && document.querySelector('main')?.classList.contains('group-mode')) {
     closeGroup();
   }
   document.querySelectorAll('#primaryRail .rail-btn[data-module]').forEach(b => {
