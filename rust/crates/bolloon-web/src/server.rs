@@ -648,6 +648,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/health", get(health))
         // cron/心跳 运行状态 (2026-11-04 bug 7: 让"在跳"可观测, 而不是只有纯函数)
         .route("/api/cron", get(cron_status))
+        // SQL 工具类 (只读; 与 agent 工具同一实现)
+        .route("/api/sql/query", post(sql_query))
         // 群聊
         .route("/api/groups", get(list_groups).post(create_group))
         .route("/api/groups/{id}/messages", get(group_messages))
@@ -963,6 +965,20 @@ async fn avatar_families() -> Json<serde_json::Value> {
 }
 
 /// GET /api/cron → cron/心跳运行状态 (tick 数/到期/剔除/任务数/活跃数)
+/// POST /api/sql/query {sql, db?, limit?} → 只读 SQL (与 agent 的 sql_query 工具**同一份实现**)
+async fn sql_query(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let sql = req["sql"].as_str().unwrap_or("");
+    let db = req["db"].as_str().unwrap_or("memory");
+    let limit = req["limit"].as_u64().map(|v| v as usize);
+    match bolloon_agent::sql_tools::run_query(db, sql, limit) {
+        Ok(rep) => {
+            let text = bolloon_agent::sql_tools::render(&rep);
+            Json(serde_json::json!({ "ok": true, "result": rep, "text": text }))
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
 async fn cron_status(State(st): State<AppState>) -> Json<serde_json::Value> {
     let now = chrono::Utc::now().timestamp_millis() as u64;
     let stats = st.cron_stats.lock().await.clone();
@@ -4434,6 +4450,13 @@ mod route_tests {
                 cmd["error"].as_str().unwrap_or("").contains("好友"),
                 "非好友不许指挥: {cmd}"
             );
+
+            // ⑨ SQL 工具类: 只读查询可用, 写语句必须被拒 (与 agent sql_query 同一实现)
+            let ok_sql = post_json("/api/sql/query", serde_json::json!({ "sql": "SELECT 1 AS one" }));
+            assert_eq!(ok_sql["ok"], serde_json::json!(true), "{ok_sql}");
+            assert_eq!(ok_sql["result"]["row_count"], serde_json::json!(1));
+            let bad_sql = post_json("/api/sql/query", serde_json::json!({ "sql": "DELETE FROM memories" }));
+            assert_eq!(bad_sql["ok"], serde_json::json!(false), "写语句必须拒: {bad_sql}");
 
             let cron = get_json("/api/cron");
             assert_eq!(cron["interval_s"], serde_json::json!(30), "cron 间隔: {cron}");

@@ -51,6 +51,7 @@ pub mod scratch;
 pub mod scratch_tools;
 pub mod search_tools;
 pub mod skill_install;
+pub mod sql_tools;
 pub mod session_store;
 pub mod setup;
 pub mod shell_tool;

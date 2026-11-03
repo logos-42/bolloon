@@ -118,6 +118,18 @@ enum Commands {
         #[command(subcommand)]
         action: FriendAction,
     },
+    /// 只读 SQL 查询本地库 (SELECT/WITH/EXPLAIN; 默认 memory.db)
+    Sql {
+        /// SQL 语句 (只读)
+        query: String,
+        /// `memory`(默认) 或 ~/.bolloon / 当前目录内的绝对路径
+        #[arg(long, default_value = "memory")]
+        db: String,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
     /// 定时任务与心跳运行状态 (tick 数 / 到期 / 门户维护 / 活跃数)
     Cron {
         #[arg(long, default_value_t = 54188)]
@@ -321,6 +333,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Grants { action }) => run_grants(action),
         Some(Commands::Friend { action }) => run_friend(action),
         Some(Commands::Cron { port }) => run_cron(port),
+        Some(Commands::Sql { query, db, limit, port }) => run_sql(&query, &db, limit, port),
         Some(Commands::SelfInfo { json, agent }) => run_self(json, &agent),
         Some(Commands::Pay { action }) => run_pay(action),
     }
@@ -919,6 +932,19 @@ fn run_friend(action: FriendAction) -> anyhow::Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn run_sql(query: &str, db: &str, limit: usize, port: u16) -> anyhow::Result<()> {
+    let base = format!("http://127.0.0.1:{port}");
+    let r: serde_json::Value = ureq::post(&format!("{base}/api/sql/query"))
+        .send_json(serde_json::json!({ "sql": query, "db": db, "limit": limit }))
+        .map_err(|e| anyhow::anyhow!("节点没在跑（{base}）：先 `bolloon web`。\n{e}"))?
+        .into_json()?;
+    if r["ok"] == serde_json::json!(false) {
+        anyhow::bail!("查询被拒: {}", r["error"].as_str().unwrap_or("未知原因"));
+    }
+    print!("{}", r["text"].as_str().unwrap_or(""));
     Ok(())
 }
 

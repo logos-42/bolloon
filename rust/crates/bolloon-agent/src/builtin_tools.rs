@@ -188,6 +188,8 @@ pub fn builtin_tool_defs() -> Vec<ToolDef> {
     defs.extend(crate::search_tools::search_tool_defs());
     defs.extend(crate::git_tools::git_tool_defs());
     defs.extend(crate::net_tools::net_tool_defs());
+    // SQL 工具类 (2026-11-04): 只读查询本地库; 与 web_fetch 同级注册, 三端共用同一份
+    defs.extend(crate::sql_tools::sql_tool_defs());
     defs.extend(crate::domain_tools::domain_tool_defs());
     defs.extend(crate::updater_tools::updater_tool_defs());
     defs.extend(crate::scratch_tools::scratch_tool_defs());
@@ -259,6 +261,7 @@ impl ToolExecutor for BuiltinExecutor {
             "git_status" | "git_diff" | "git_log" | "git_show" | "git_branch" | "git_add"
             | "git_commit" | "git_push" => self.git.execute(call).await,
             "web_fetch" | "web_search" => self.net.execute(call).await,
+            "sql_query" => crate::sql_tools::SqlExecutor.execute(call).await,
             "read_skill" | "list_skills" | "todo_add" | "todo_list" | "todo_done" | "remember"
             | "recall" | "task_list" => self.domain.execute(call).await,
             "check_update" => self.updater.execute(call).await,
