@@ -627,6 +627,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/agents/{id}/grants/revoke", post(crate::native::agent_grants_revoke))
         .route("/api/agents/public/wallet", get(crate::native::agents_public_wallet))
         .route("/api/agents/public/judgments", get(crate::native::agents_public_judgments))
+        // 邀请好友的智能体进群 (跨机): 本机签发链接 → 对端验好友+invite_group 授权 → 导入并登记
+        .route("/api/agents/public/join-group", post(crate::native::agents_public_join_group))
+        .route("/api/groups/{id}/invite-agent", post(crate::native::group_invite_agent))
         // 好友侧代理 (需对端授权; 没授权就如实把对端的拒绝原样带回)
         .route("/api/friends/{did}/wallet", get(crate::native::friend_wallet))
         .route("/api/friends/{did}/judgments", get(crate::native::friend_judgments))
@@ -1435,7 +1438,7 @@ struct CreateTopicRequest {
 }
 
 #[derive(Deserialize)]
-struct ShareGroupRequest {
+pub(crate) struct ShareGroupRequest {
     /// `join` = 签发邀请链接 (对方可按 ACL 写入); `read` = 只读快照页 (不加入也能看)
     #[serde(default = "default_share_mode")]
     mode: String,
@@ -1445,7 +1448,7 @@ struct ShareGroupRequest {
 }
 
 #[derive(Deserialize)]
-struct JoinGroupRequest {
+pub(crate) struct JoinGroupRequest {
     /// 群主签发的 `bolloon://join/...` 邀请链接
     link: String,
     /// 子讨论邀请可携带父群 id, 以便挂到正确的父下
@@ -1552,7 +1555,7 @@ async fn group_topics(State(st): State<AppState>, Path(id): Path<String>) -> Jso
 /// - `mode=join`: 群主签**邀请链接** (`bolloon://join/…`, 带 manifest) ⇒ 对方开出的是**同一个** store
 ///   (内容寻址, 而不是另建一个长得一样的群)
 /// - `mode=read`: **只读快照**页 (`/share/<token>`), 不加入也能看; token 由身份签名派生 ⇒ 不可猜
-async fn group_share(
+pub(crate) async fn group_share(
     State(st): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<ShareGroupRequest>,
@@ -1620,7 +1623,7 @@ async fn group_share(
 ///
 /// 把此前**从未接线的**签名邀请机能在运行时闭环。验签用邀请者公钥, **从链接里的 `by=<did>` 反解**
 /// (`did:pi:` / `did:key:z` 都支持) ⇒ 不需要额外人工交换公钥。
-async fn group_join(
+pub(crate) async fn group_join(
     State(st): State<AppState>,
     Json(req): Json<JoinGroupRequest>,
 ) -> Json<serde_json::Value> {
@@ -4407,6 +4410,16 @@ mod route_tests {
             assert!(
                 g["error"].as_str().unwrap_or("").contains("好友"),
                 "非好友不许授权: {g}"
+            );
+
+            // ⑦ 邀请进群跨机链路: 非好友/无授权一律拒 (对端 fail-closed)
+            let jg = post_json(
+                "/api/agents/public/join-group",
+                serde_json::json!({ "from_did": "did:pi:ghost", "agent_id": aid, "link": "bolloon://join/x" }),
+            );
+            assert!(
+                jg["error"].as_str().unwrap_or("").contains("好友"),
+                "非好友不许代邀请: {jg}"
             );
 
             let cron = get_json("/api/cron");

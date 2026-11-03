@@ -7042,7 +7042,7 @@ pub async fn dream_topic(
 /// 智能体是否对好友开放。缺省开放 (好友关系是双方明确同意过的),
 /// 关掉的方式 = 在该智能体目录下放一个 `private.json` 标记 (不猜、不改持久化 schema)。
 /// 允许授予好友的能力 (白名单; **本地完全权限/任意执行永不在名单里**)
-pub const GRANT_CAPS: &[&str] = &["chat", "payment_info", "share_judgment"];
+pub const GRANT_CAPS: &[&str] = &["chat", "payment_info", "share_judgment", "invite_group"];
 
 /// 归一化能力列表 (未知/高危一律丢弃, 不静默放行)
 pub fn normalize_caps(caps: &[String]) -> Vec<String> {
@@ -7141,6 +7141,129 @@ pub async fn agent_grants_revoke(
         .is_some();
     fs.save(&crate::server::data_dir());
     Json(serde_json::json!({ "ok": true, "revoked": removed, "agent_id": id, "did": did }))
+}
+
+/// POST /api/groups/{id}/invite-agent {did, agent_id} → 邀请**好友的智能体**进群 (跨机链路)
+///
+/// 本机签一张 join 邀请链接(复用 group_share 同一份实现), 发到对端
+/// `/api/agents/public/join-group`; 对端必须: 是好友 + 该智能体被授予 `invite_group`。
+/// 成功后在**本机议程**里登记这个外部智能体 id, 前端就会带 🌐 显示并可被 @。
+pub async fn group_invite_agent(
+    State(st): State<AppState>,
+    AxumPath(gid): AxumPath<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or_default().trim().to_string();
+    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
+    if did.is_empty() || agent_id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 did 或 agent_id" }));
+    }
+    if !is_local_friend(&st, &did).await {
+        return Json(serde_json::json!({ "ok": false, "error": "只能邀请已加好友的智能体" }));
+    }
+    // 1) 本机签发 join 链接
+    let share = crate::server::group_share(
+        State(st.clone()),
+        AxumPath(gid.clone()),
+        Json(serde_json::from_value::<crate::server::ShareGroupRequest>(
+            serde_json::json!({ "mode": "join" }),
+        ).expect("默认 mode=join")),
+    )
+    .await
+    .0;
+    let link = share["invite"].as_str().unwrap_or("").to_string();
+    if link.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "签发邀请链接失败", "detail": share }));
+    }
+    // 2) 发给对端 (对端校验好友 + invite_group 授权)
+    let peer = match peer_url_for_did(&st, &did).await {
+        Ok(u) => u,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
+    };
+    let body = serde_json::json!({
+        "from_did": st.identity.did.as_str(), "agent_id": agent_id,
+        "group_id": gid, "group_name": share["group_id"], "link": link,
+    });
+    let resp = match peer_json("POST", format!("{peer}/api/agents/public/join-group"), Some(body)).await {
+        Ok(v) => v,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("对端不可达: {e}") })),
+    };
+    if resp["ok"] != serde_json::json!(true) {
+        return Json(serde_json::json!({ "ok": false, "error": resp["error"].clone(), "peer": resp }));
+    }
+    // 3) 本机议程登记这个外部智能体 (显示/被 @ 都靠它)
+    {
+        let mut fs = st.forge.lock().await;
+        let list = fs.room_participants.entry(gid.clone()).or_default();
+        if !list.iter().any(|x| x == &agent_id) {
+            list.push(agent_id.clone());
+        }
+        fs.save(&crate::server::data_dir());
+    }
+    Json(serde_json::json!({
+        "ok": true, "group_id": gid, "agent_id": agent_id, "did": did,
+        "note": "已登记进本群议程; 对方节点已按邀请链接导入同一个 store"
+    }))
+}
+
+/// POST /api/agents/public/join-group {from_did, agent_id, group_id, link}
+///
+/// 对端(收邀请方): 朋友门 → 该智能体的 `invite_group` 授权门 → 按邀请链接导入群
+/// → 把这个智能体登记进本机该群议程(它代表本节点在该群里接话)。
+pub async fn agents_public_join_group(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let from_did = req["from_did"].as_str().unwrap_or_default().trim().to_string();
+    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
+    let gid = req["group_id"].as_str().unwrap_or_default().trim().to_string();
+    let link = req["link"].as_str().unwrap_or_default().trim().to_string();
+    if from_did.is_empty() || agent_id.is_empty() || link.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 from_did / agent_id / link" }));
+    }
+    if !is_local_friend(&st, &from_did).await {
+        return Json(serde_json::json!({ "ok": false, "error": "邀请方不是本机好友" }));
+    }
+    {
+        let fs = st.forge.lock().await;
+        if !fs.agents.iter().any(|a| a.id == agent_id) {
+            return Json(serde_json::json!({ "ok": false, "error": format!("本机没有这个智能体: {agent_id}") }));
+        }
+        let caps = caps_in(&fs, &agent_id, &from_did);
+        if !caps.iter().any(|c| c == "invite_group") {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": "该智能体未对这位好友开放「邀请进群」权限"
+            }));
+        }
+    }
+    // 按邀请链接导入 (与手动 /api/groups/join 同一份实现)
+    let joined = crate::server::group_join(
+        State(st.clone()),
+        Json(serde_json::from_value::<crate::server::JoinGroupRequest>(
+            serde_json::json!({ "link": link }),
+        )
+        .map_err(|e| e.to_string())
+        .unwrap_or_else(|_| unreachable!("JoinGroupRequest 只需 link")),
+    ))
+    .await
+    .0;
+    if joined["error"].is_string() {
+        return Json(serde_json::json!({ "ok": false, "error": joined["error"].clone() }));
+    }
+    let joined_id = joined["id"].as_str().unwrap_or(&gid).to_string();
+    {
+        let mut fs = st.forge.lock().await;
+        let list = fs.room_participants.entry(joined_id.clone()).or_default();
+        if !list.iter().any(|x| x == &agent_id) {
+            list.push(agent_id.clone());
+        }
+        fs.save(&crate::server::data_dir());
+    }
+    Json(serde_json::json!({
+        "ok": true, "group_id": joined_id, "agent_id": agent_id,
+        "note": "已加入群并按参与者登记(此后群内接话走本节点)"
+    }))
 }
 
 /// GET /api/agents/public/wallet?did=&agent_id= → 对方给我看的**收款账号/钱包**

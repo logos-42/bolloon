@@ -3524,8 +3524,14 @@ async function faJudgments(){
 }
 async function faInvite(){
   const c=friendAgentCtx;if(!c)return;
-  // 邀请外部智能体进群: 入口在这里, 真正加入要对方节点配合 (需对方授权 invite_group)
-  toast('邀请需要对方把 invite_group 授权给这位好友；本机入口已就绪，跨机加入链路待对方节点配合');
+  // 2026-11-04: 跨机链路已通 —— 本机签 join 链接, 对端验「好友 + invite_group 授权」后导入并登记
+  const groups=((contactGroups&&contactGroups.groups)||[]).map(g=>g.id).slice(0,6);
+  const gid=await askText('邀请这个外部智能体进哪个群（群 id）',groups[0]||'','本机现有群: '+(groups.join(' / ')||'(还没有群)'));
+  if(!gid||!gid.trim())return;
+  const r=await api('/api/groups/'+encodeURIComponent(gid.trim())+'/invite-agent',{method:'POST',body:JSON.stringify({did:c.did,agent_id:c.agentId})}).catch(e=>({error:e.message}));
+  if(r.error||r.ok===false){toast('邀请失败: '+String(r.error||'对方未授权 invite_group'));return;}
+  toast('已邀请进群 · 对方节点已导入同一个 store');
+  loadGroupMessages&&loadGroupMessages();
 }
 
 function hideRelay(){
