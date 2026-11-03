@@ -662,6 +662,18 @@
   <div class="row"><button id="askCancel">取消</button><button class="primary" id="askOk">确定</button></div>
 </dialog>
 
+<!-- 2026-11-04: 选择式弹窗 —— 好友/群组从**已加载数据**里勾选, 不要手输 DID 或链接 -->
+<dialog id="pickDlg" style="width:min(480px,94vw)">
+  <h3 id="pickTitle" style="margin:0 0 4px">选择</h3>
+  <div class="hint" id="pickHint" style="color:var(--muted);font-size:12px;margin:0 0 10px"></div>
+  <div id="pickList" style="max-height:44vh;overflow:auto;display:flex;flex-direction:column;gap:6px"></div>
+  <div id="pickCaps" style="display:none;margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+    <div class="hint" style="color:var(--muted);font-size:12px;margin-bottom:6px">授予哪些能力（本地完全权限永不对好友开放）</div>
+    <div id="pickCapBox" style="display:flex;flex-wrap:wrap;gap:10px;font-size:12px"></div>
+  </div>
+  <div class="row" style="margin-top:12px"><button id="pickCancel">取消</button><button class="primary" id="pickOk">确定</button></div>
+</dialog>
+
 <!-- 2026-10-30 (用户): 智能体钱包 —— 在这里创建本地钱包 / 绑定已有地址; 只收地址, 不收私钥 -->
 <dialog id="walletDlg" style="width:min(520px,94vw)">
   <div class="pay-head">
@@ -2044,6 +2056,36 @@ function toast(msg){
 }
 // 桌面壳 (Tauri/WKWebView) 里 window.prompt/confirm 是被禁用的 (返回 null),
 // 用它们做的菜单项等于点了没反应 —— 统一走页内 askText()。
+const CAP_LABEL={chat:'对话',payment_info:'看钱包',share_judgment:'读判断力',invite_group:'邀请进群',command_readonly:'只读指挥'};
+/**
+ * 选择式弹窗: 只从**已加载**的好友/群组里勾选, 不要求手输。
+ * @returns {Promise<null|{selected:string[],caps:string[]}>}
+ */
+function pickDialog({title,hint,items,caps=false,preselect=[]}){
+  return new Promise(resolve=>{
+    const d=$('pickDlg');
+    $('pickTitle').textContent=title||'选择';
+    $('pickHint').textContent=hint||'';
+    const box=$('pickList');
+    box.innerHTML=(items&&items.length)?items.map((it,i)=>`
+      <label style="display:flex;gap:8px;align-items:flex-start;padding:7px 9px;border:1px solid var(--line);border-radius:8px;cursor:pointer">
+        <input type="checkbox" data-i="${i}" ${(preselect||[]).includes(it.value)?'checked':''}>
+        <span><b>${escapeHTML(it.label||it.value)}</b>${it.sub?`<small style="display:block;color:var(--muted);font-size:11px">${escapeHTML(it.sub)}</small>`:''}</span>
+      </label>`).join(''):'<div class="hint" style="color:var(--muted)">没有可选项 — 先去通讯录加好友 / 建群</div>';
+    const capBox=$('pickCapBox');
+    $('pickCaps').style.display=caps?'':'none';
+    capBox.innerHTML=caps?Object.keys(CAP_LABEL).map(k=>`<label style="display:flex;gap:4px;align-items:center"><input type="checkbox" data-cap="${k}" ${k==='chat'?'checked':''}>${CAP_LABEL[k]}</label>`).join(''):'';
+    const done=v=>{d.close();$('pickOk').onclick=null;$('pickCancel').onclick=null;resolve(v);};
+    $('pickOk').onclick=()=>{
+      const sel=[...box.querySelectorAll('input[data-i]:checked')].map(x=>(items||[])[+x.dataset.i].value);
+      const cs=caps?[...capBox.querySelectorAll('input[data-cap]:checked')].map(x=>x.dataset.cap):[];
+      done({selected:sel,caps:cs});
+    };
+    $('pickCancel').onclick=()=>done(null);
+    if(!d.open)d.showModal();
+  });
+}
+
 function askText(title,value,hint){
   return new Promise(resolve=>{
     const d=$('askDlg');
@@ -2084,41 +2126,55 @@ document.addEventListener('click',()=>$('agentMenu').classList.add('hidden'));
 
 // ── 2026-11-04: 开放给好友 (按好友粒度授权; 本地完全权限永不开放) ──
 async function openGrantsDialog(id){
+  // 2026-11-04 (leo): 授权是**选择**不是输入 —— 直接列已加载的好友 + 能力勾选
+  if(!contacts)await loadContacts();
   const cur=await api('/api/agents/'+encodeURIComponent(id)+'/grants').catch(()=>({grants:[]}));
-  const lines=(cur.grants||[]).map(g=>'· '+shortDid(g.did)+' → '+g.caps.join('/')).join('\n')||'(还没授权任何人)';
-  const did=await askText('开放给好友：输入好友 DID','','可授权: chat(对话) / payment_info(看钱包) / share_judgment(读判断力)\n本地完全权限不对好友开放\n当前授权:\n'+lines);
-  if(!did||!did.trim())return;
-  const capsRaw=await askText('授予哪些能力（逗号分隔）','chat','chat=可对话; payment_info=可看收款钱包; share_judgment=可读本地判断力');
-  if(capsRaw==null)return;
-  const caps=String(capsRaw).split(/[,，\s]+/).filter(Boolean);
-  const r=await api('/api/agents/'+encodeURIComponent(id)+'/grants',{method:'POST',body:JSON.stringify({did:did.trim(),caps})}).catch(e=>({error:e.message}));
-  toast(r.error?('授权失败: '+r.error):('已授权 '+((r.caps||[]).join('/')||'-')+' 给 '+shortDid(did.trim())));
+  const granted={};(cur.grants||[]).forEach(g=>{granted[g.did]=(g.caps||[]).map(c=>CAP_LABEL[c]||c).join('/');});
+  const names=contactNameMap();
+  const friends=(contacts&&contacts.friends)||[];
+  if(!friends.length){toast('还没有好友 — 先去「通讯录」加好友');return;}
+  const items=friends.map(d=>({
+    value:d,
+    label:names[d]||shortDid(d),
+    // 名字为空时 label 已经是短 DID, 别再重复一遍
+    sub:granted[d]?('已授权：'+granted[d]):(names[d]?shortDid(d):''),
+  }));
+  const r=await pickDialog({
+    title:'开放给好友',
+    hint:'勾选好友 + 勾选能力（已授权的好友默认勾上，可改）',
+    items,caps:true,preselect:Object.keys(granted),
+  });
+  if(!r)return;
+  if(!r.selected.length){toast('没有选好友');return;}
+  if(!r.caps.length){toast('至少勾一个能力');return;}
+  let ok=0;const fail=[];
+  for(const d of r.selected){
+    const x=await api('/api/agents/'+encodeURIComponent(id)+'/grants',{method:'POST',body:JSON.stringify({did:d,caps:r.caps})}).catch(e=>({error:e.message}));
+    if(x.error)fail.push((names[d]||shortDid(d))+': '+x.error);else ok++;
+  }
+  toast(fail.length?`已授权 ${ok} 位；失败 ${fail[0]}`:`已授权 ${ok} 位好友（${r.caps.map(c=>CAP_LABEL[c]||c).join('/')}）`);
 }
-// ── 2026-11-04: 应用内 x402 买入 (客户端只给 txHash; 金额/收款地址以卖方报价为准) ──
-async function x402Buy(){
-  const peer=await askText('对端节点地址','','例如 http://127.0.0.1:54188（或填对方 DID 由本机按登记基址解析）');
-  if(!peer||!peer.trim())return;
-  const isDid=/^did:/.test(peer.trim());
-  const item=await askText('要买哪一件（item id）','','对端 /api/x402/info/<id> 上架的那件');
-  if(!item||!item.trim())return;
-  try{
-    const q=await api('/api/x402/buy/quote',{method:'POST',body:JSON.stringify(isDid?{peer_did:peer.trim(),item_id:item.trim()}:{peer_url:peer.trim(),item_id:item.trim()})});
-    if(q.error)throw new Error(q.error);
-    const acc=((q.quote&&q.quote.accepts)||[])[0]||{};
-    const tx=await askText('付款交易哈希','','请用你的钱包转 '+((acc.maxAmountRequired)||'?')+' (原子单位) 到 '+(acc.payTo||'?')+'\n转完把 txHash 填这里（本机读链核验后由卖方交付）');
-    if(!tx||!tx.trim())return;
-    toast('正在读链核验…');
-    const r=await api('/api/x402/buy/pay',{method:'POST',body:JSON.stringify(isDid?{peer_did:peer.trim(),item_id:item.trim(),tx_hash:tx.trim()}:{peer_url:peer.trim(),item_id:item.trim(),tx_hash:tx.trim()})}).catch(e=>({error:e.message}));
-    if(r.error||r.ok===false){toast('未交付: '+(r.error||(r.failed||[]).join('; ')||r.verdict||'未知'));return;}
-    toast('已交付 · '+r.verdict+'（'+r.observations+' 条 RPC 一致）');
-    alert('内容:\n\n'+String(r.content||'').slice(0,2000));
-  }catch(e){toast('买入失败: '+e.message);}
-}
+
 async function revokeGrantsDialog(id){
-  const did=await askText('收回授权：输入好友 DID','','收回后对方立刻看不到/连不上这个智能体');
-  if(!did||!did.trim())return;
-  const r=await api('/api/agents/'+encodeURIComponent(id)+'/grants/revoke',{method:'POST',body:JSON.stringify({did:did.trim()})}).catch(e=>({error:e.message}));
-  toast(r.error?('收回失败: '+r.error):(r.revoked?'已收回':'这位好友本来就没有授权'));
+  // 收回也是选择: 只列**当前已授权**的好友
+  if(!contacts)await loadContacts();
+  const cur=await api('/api/agents/'+encodeURIComponent(id)+'/grants').catch(()=>({grants:[]}));
+  const grants=(cur.grants||[]);
+  if(!grants.length){toast('这个智能体还没授权任何好友');return;}
+  const names=contactNameMap();
+  const items=grants.map(g=>({
+    value:g.did,
+    label:names[g.did]||shortDid(g.did),
+    sub:'当前能力：'+((g.caps||[]).map(c=>CAP_LABEL[c]||c).join('/')||'-'),
+  }));
+  const r=await pickDialog({title:'收回好友授权',hint:'勾选要收回的好友（立即生效）',items});
+  if(!r||!r.selected.length)return;
+  let ok=0;
+  for(const d of r.selected){
+    const x=await api('/api/agents/'+encodeURIComponent(id)+'/grants/revoke',{method:'POST',body:JSON.stringify({did:d})}).catch(()=>({}));
+    if(x&&x.revoked)ok++;
+  }
+  toast(`已收回 ${ok} 位好友的授权`);
 }
 
 async function renameAgentGlobal(){
@@ -3537,14 +3593,22 @@ async function faCommand(){
 }
 async function faInvite(){
   const c=friendAgentCtx;if(!c)return;
-  // 2026-11-04: 跨机链路已通 —— 本机签 join 链接, 对端验「好友 + invite_group 授权」后导入并登记
-  const groups=((contactGroups&&contactGroups.groups)||[]).map(g=>g.id).slice(0,6);
-  const gid=await askText('邀请这个外部智能体进哪个群（群 id）',groups[0]||'','本机现有群: '+(groups.join(' / ')||'(还没有群)'));
-  if(!gid||!gid.trim())return;
-  const r=await api('/api/groups/'+encodeURIComponent(gid.trim())+'/invite-agent',{method:'POST',body:JSON.stringify({did:c.did,agent_id:c.agentId})}).catch(e=>({error:e.message}));
-  if(r.error||r.ok===false){toast('邀请失败: '+String(r.error||'对方未授权 invite_group'));return;}
-  toast('已邀请进群 · 对方节点已导入同一个 store');
-  loadGroupMessages&&loadGroupMessages();
+  // 选择式: 从**已加入的群**里挑, 不要求手输群 id
+  if(!contactGroups)await loadContacts();
+  const groups=(contactGroups&&contactGroups.groups)||[];
+  if(!groups.length){toast('还没有群 — 先在「群组」里建一个');return;}
+  const r=await pickDialog({
+    title:'邀请「'+c.agentName+'」进群',
+    hint:'对端需要已把 invite_group 授权给这位好友',
+    items:groups.map(g=>({value:g.id,label:groupLabel(g),sub:g.acl?('权限 '+g.acl):''})),
+  });
+  if(!r||!r.selected.length)return;
+  const gid=r.selected[0];
+  const g=groups.find(x=>x.id===gid)||{};
+  const out=await api('/api/groups/'+encodeURIComponent(gid)+'/invite-agent',{method:'POST',body:JSON.stringify({did:c.did,agent_id:c.agentId})}).catch(e=>({error:e.message}));
+  if(out.error||out.ok===false){toast('邀请失败: '+String(out.error||'对方未授权 invite_group'));return;}
+  toast('已邀请进「'+groupLabel(g)+'」· 对方节点已导入同一个 store');
+  if(activeGroupId===gid)loadGroupMessages&&loadGroupMessages();
 }
 
 function hideRelay(){
