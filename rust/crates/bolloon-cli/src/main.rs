@@ -108,6 +108,16 @@ enum Commands {
         #[command(subcommand)]
         action: GroupAction,
     },
+    /// 好友 × 智能体授权 (按好友粒度: chat / payment_info / share_judgment; 本地完全权限永不外放)
+    Grants {
+        #[command(subcommand)]
+        action: GrantsAction,
+    },
+    /// 定时任务与心跳运行状态 (tick 数 / 到期 / 门户维护 / 活跃数)
+    Cron {
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
     /// 自查: 我的 DID / persona / memory / workspace / 钱包文件在哪 (不常驻 prompt)
     #[command(name = "self", alias = "self-info")]
     SelfInfo {
@@ -303,9 +313,43 @@ async fn main() -> anyhow::Result<()> {
         },
         Some(Commands::Dream { topic, domain }) => run_dream(topic, &domain),
         Some(Commands::Group { action }) => run_group(action),
+        Some(Commands::Grants { action }) => run_grants(action),
+        Some(Commands::Cron { port }) => run_cron(port),
         Some(Commands::SelfInfo { json, agent }) => run_self(json, &agent),
         Some(Commands::Pay { action }) => run_pay(action),
     }
+}
+
+#[derive(Subcommand)]
+enum GrantsAction {
+    /// 列出某个智能体授权了哪些好友、各自什么能力
+    List {
+        #[arg(long)]
+        agent: String,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
+    /// 授权/更新 (必须是已加好友; 白名单外能力会被丢弃)
+    Set {
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        did: String,
+        /// 逗号分隔: chat,payment_info,share_judgment
+        #[arg(long)]
+        caps: String,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
+    /// 收回授权
+    Revoke {
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        did: String,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
 }
 
 #[derive(Subcommand)]
@@ -703,6 +747,89 @@ fn percent(s: &str) -> String {
             c => c.to_string(),
         })
         .collect()
+}
+
+fn run_grants(action: GrantsAction) -> anyhow::Result<()> {
+    match action {
+        GrantsAction::List { agent, port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let r: serde_json::Value = ureq::get(&format!("{base}/api/agents/{agent}/grants"))
+                .call()
+                .map_err(|e| anyhow::anyhow!("节点没在跑（{base}）：先 `bolloon web`。\n{e}"))?
+                .into_json()?;
+            if let Some(err) = r["error"].as_str() {
+                anyhow::bail!("读授权失败: {err}");
+            }
+            let grants = r["grants"].as_array().cloned().unwrap_or_default();
+            if grants.is_empty() {
+                println!("（这个智能体还没授权任何好友）");
+            } else {
+                for g in grants {
+                    let caps = g["caps"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("/"))
+                        .unwrap_or_default();
+                    println!("{}  →  {}", g["did"].as_str().unwrap_or(""), caps);
+                }
+            }
+            if let Some(allowed) = r["allowed_caps"].as_array() {
+                let list: Vec<&str> = allowed.iter().filter_map(|v| v.as_str()).collect();
+                println!("可授权能力: {}", list.join(" / "));
+            }
+        }
+        GrantsAction::Set { agent, did, caps, port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let caps: Vec<String> = caps
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let r: serde_json::Value = ureq::post(&format!("{base}/api/agents/{agent}/grants"))
+                .send_json(serde_json::json!({ "did": did, "caps": caps }))
+                .map_err(|e| anyhow::anyhow!("节点没在跑（{base}）：先 `bolloon web`。\n{e}"))?
+                .into_json()?;
+            if let Some(err) = r["error"].as_str() {
+                anyhow::bail!("授权失败: {err}");
+            }
+            let got: Vec<&str> = r["caps"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect()).unwrap_or_default();
+            println!("已授权 {} → {}", did, got.join("/"));
+        }
+        GrantsAction::Revoke { agent, did, port } => {
+            let base = format!("http://127.0.0.1:{port}");
+            let r: serde_json::Value = ureq::post(&format!("{base}/api/agents/{agent}/grants/revoke"))
+                .send_json(serde_json::json!({ "did": did }))
+                .map_err(|e| anyhow::anyhow!("节点没在跑（{base}）：先 `bolloon web`。\n{e}"))?
+                .into_json()?;
+            if let Some(err) = r["error"].as_str() {
+                anyhow::bail!("收回失败: {err}");
+            }
+            println!("{}", if r["revoked"].as_bool().unwrap_or(false) { "已收回" } else { "这位好友本来就没有授权" });
+        }
+    }
+    Ok(())
+}
+
+fn run_cron(port: u16) -> anyhow::Result<()> {
+    let base = format!("http://127.0.0.1:{port}");
+    let r: serde_json::Value = ureq::get(&format!("{base}/api/cron"))
+        .call()
+        .map_err(|e| anyhow::anyhow!("节点没在跑（{base}）：先 `bolloon web`。\n{e}"))?
+        .into_json()?;
+    println!(
+        "cron: interval={}s ticks={} 任务={} 到期={} 心跳剔除={} 门户维护成功={} 活跃={} 思考中={}",
+        r["interval_s"].as_u64().unwrap_or(0),
+        r["ticks"].as_u64().unwrap_or(0),
+        r["tasks"].as_u64().unwrap_or(0),
+        r["due_last"].as_u64().unwrap_or(0),
+        r["heartbeats_swept"].as_u64().unwrap_or(0),
+        r["portal_ok_last"].as_u64().unwrap_or(0),
+        r["alive"].as_u64().unwrap_or(0),
+        r["thinking"].as_u64().unwrap_or(0),
+    );
+    if let Some(note) = r["note"].as_str() {
+        println!("说明: {note}");
+    }
+    Ok(())
 }
 
 fn run_group(action: GroupAction) -> anyhow::Result<()> {
