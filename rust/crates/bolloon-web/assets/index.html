@@ -3085,14 +3085,19 @@ function renderGroupChips(){
   if(!box)return;
   const agents=(state&&state.agents)||[];
   const alive=new Set(agents.map(a=>a.id));
-  for(const id of [...groupParticipants])if(!alive.has(id))groupParticipants.delete(id);
-  if(!agents.length){box.innerHTML='<span class="hint" style="padding:0">还没有智能体</span>';return;}
+  // 2026-11-04 (bug 9): 以前把"不在本机名单里"的参与者直接删掉 ⇒ 邀请进来的**好友智能体**
+  // 永远不显示, 看起来"没有区别/像没进来"。现在保留并标成 🌐 外部智能体。
+  const external=[...groupParticipants].filter(id=>!alive.has(id));
+  if(!agents.length&&!external.length){box.innerHTML='<span class="hint" style="padding:0">还没有智能体</span>';return;}
   box.innerHTML=agents.map(a=>{
     const on=groupParticipants.has(a.id);
     const lead=(a.id===groupSheriffId)?' lead':'';
     const badge=(a.id===groupSheriffId)?'<small>🎖️</small>':'';
     const tip=(on?'在群里接话 — 点一下移出':'点一下加入本群议程')+(a.id===groupSheriffId?'（本群警长）':'');
     return '<button class="gchip'+(on?' on':'')+lead+'" onclick="toggleGroupChip(\''+a.id+'\')" title="'+tip+'">'+escapeHTML(a.name)+badge+'</button>';
+  }).join('') + external.map(id=>{
+    const on=groupParticipants.has(id);
+    return '<button class="gchip ext'+(on?' on':'')+'" title="外部智能体（来自其他节点，本机不能替它改设置）">🌐 '+escapeHTML(shortDid(id))+'</button>';
   }).join('');
 }
 async function toggleGroupChip(id){

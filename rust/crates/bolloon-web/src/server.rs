@@ -77,6 +77,8 @@ pub struct CronStats {
     pub last_tick_ms: u64,
     pub due_last: usize,
     pub swept_last: usize,
+    /// 最近一轮"门户主动维护"成功发布的智能体数 (bug 11)
+    pub portal_ok_last: usize,
 }
 
 /// 服务状态（从上层注入）
@@ -712,29 +714,61 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
     {
         let st = state.clone();
         tokio::spawn(async move {
-            st.cron.lock().await.recover_stale_locks(); // 崩溃恢复: 清上次残留的运行锁
+            {
+                let mut c = st.cron.lock().await;
+                c.recover_stale_locks(); // 崩溃恢复: 清上次残留的运行锁
+                // bug 11: 智能体对外门户的**主动维护** —— 6 小时一轮, 由 cron 驱动,
+                // 不再依赖"有人点一下 POST /portal/publish"或 agent 自己记得 curl。
+                c.register(bolloon_kernel::cron::CronTask {
+                    id: "portal-refresh".into(),
+                    name: "智能体门户主动维护".into(),
+                    interval_ms: 6 * 3600 * 1000,
+                    enabled: true,
+                    dnd_window: None,
+                });
+            }
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 let minute = ((now / 60_000) % 1440) as u16;
-                let (due, swept) = {
+                let (due, swept, portal_due) = {
                     let mut c = st.cron.lock().await;
                     let due = c.due_tasks(now, minute);
                     // 任务执行器尚未注册真实任务（任务源=后续接线），此处只走"拿锁→放锁"记账，
                     // 不伪造任何未发生的执行。
+                    let mut portal_due = false;
                     for id in &due {
                         if c.begin(id, now) {
+                            if id == "portal-refresh" {
+                                portal_due = true;
+                            }
                             c.finish(id);
                         }
                     }
                     let swept = st.heartbeats.lock().await.sweep(now, 90_000);
-                    (due.len(), swept)
+                    (due.len(), swept, portal_due)
                 };
+                let mut portal_ok = 0usize;
+                if portal_due {
+                    let ids: Vec<String> = {
+                        let fs = st.forge.lock().await;
+                        fs.agents.iter().map(|a| a.id.clone()).collect()
+                    };
+                    for id in ids {
+                        let r = crate::native::portal_publish_for(&st, &id).await;
+                        if r["ok"] == serde_json::json!(true) {
+                            portal_ok += 1;
+                        }
+                    }
+                }
                 let mut s = st.cron_stats.lock().await;
                 s.ticks += 1;
                 s.last_tick_ms = now;
                 s.due_last = due;
                 s.swept_last = swept;
+                if portal_due {
+                    s.portal_ok_last = portal_ok;
+                }
             }
         });
     }
@@ -921,6 +955,7 @@ async fn cron_status(State(st): State<AppState>) -> Json<serde_json::Value> {
         "last_tick_ms": stats.last_tick_ms,
         "due_last": stats.due_last,
         "heartbeats_swept": stats.swept_last,
+        "portal_ok_last": stats.portal_ok_last,
         "tasks": tasks,
         "alive": alive,
         "thinking": thinking,

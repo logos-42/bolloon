@@ -7073,8 +7073,14 @@ pub async fn agent_portal_publish(
     State(st): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Json<serde_json::Value> {
-    let Some(a) = agent_by_id(&st, Some(&id)).await else {
-        return Json(serde_json::json!({ "ok": false, "error": format!("没有这个智能体: {id}") }));
+    Json(portal_publish_for(&st, &id).await)
+}
+
+/// 门户发布本体 (2026-11-04 bug 11): cron 主动维护与 HTTP 入口走**同一份实现**, 不写第二套。
+/// 以前只有手动 POST + 提示词让 agent 自己 curl ⇒ 没人点就永远不更新。
+pub async fn portal_publish_for(st: &AppState, id: &str) -> serde_json::Value {
+    let Some(a) = agent_by_id(st, Some(id)).await else {
+        return serde_json::json!({ "ok": false, "error": format!("没有这个智能体: {id}") });
     };
     let now = now_ms();
     // 门户里放**好友 DID**（以及本节点基址）：这样别的智能体解析门户后，
@@ -7127,10 +7133,10 @@ pub async fn agent_portal_publish(
             if std::fs::write(&tmp, serde_json::to_string_pretty(&portal).unwrap_or_default()).is_ok() {
                 let _ = std::fs::rename(&tmp, &path);
             }
-            Json(serde_json::json!({ "ok": true, "agent_id": a.id, "portal": portal }))
+            serde_json::json!({ "ok": true, "agent_id": a.id, "portal": portal })
         }
-        Ok(Err(e)) => Json(serde_json::json!({ "ok": false, "error": e })),
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("门户发布线程失败: {e}") })),
+        Ok(Err(e)) => serde_json::json!({ "ok": false, "error": e }),
+        Err(e) => serde_json::json!({ "ok": false, "error": format!("门户发布线程失败: {e}") }),
     }
 }
 
