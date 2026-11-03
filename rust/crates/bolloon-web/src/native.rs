@@ -2304,6 +2304,8 @@ pub async fn reply_with_agent_cfg(
         Some(e) => vec![e as &dyn bolloon_agent::kernel_loop::LoopObserver],
         None => vec![],
     });
+    // 2026-11-04: 阶段真的写进 ChatRuns (以前 `stage()` 全仓零调用 ⇒ 界面/刷新看到的 stages 永远是空)
+    st.chat_runs.stage(session_id, "调用模型（工具循环）");
     // 取消: 前端「停止」置位 ⇒ 工具门立刻拒 + 策略在轮次边界不再发起调用。
     // **不 select-drop**: 丢掉正在进行的 generate future 会漏掉并发闸槽位 (整个进程后来句句卡死)。
     let run = match loop_
@@ -2330,6 +2332,7 @@ pub async fn reply_with_agent_cfg(
             return Err(format!("agent 循环失败: {e}"));
         }
     };
+    st.chat_runs.stage(session_id, &format!("完成 {} 步", run.steps.len()));
     {
         let tools_used: u32 = run.steps.iter().map(|s| s.tool_calls.len() as u32).sum();
         st.config
@@ -3011,12 +3014,24 @@ pub async fn room(
     let thinking_detail = st.room_bus.thinking_detail(&active);
     let thinking: Vec<String> = thinking_detail.iter().map(|(id, _)| id.clone()).collect();
     let stage_of: HashMap<String, String> = thinking_detail.into_iter().collect();
+    // 2026-11-04 (bug 5): members 只列**本群参与者** — 以前把全部智能体都列出来,
+    // 于是"没进群的人"也带状态/警徽, 看起来像推举错了人。
+    let member_ids: Vec<String> = {
+        let fs = st.forge.lock().await;
+        let chosen = fs.room_participants.get(&active).cloned().unwrap_or_default();
+        if chosen.is_empty() {
+            fs.agents.iter().map(|a| a.id.clone()).collect()
+        } else {
+            chosen
+        }
+    };
     let members: Vec<serde_json::Value> = st
         .forge
         .lock()
         .await
         .agents
         .iter()
+        .filter(|a| member_ids.iter().any(|p| p == &a.id))
         .map(|a| {
             serde_json::json!({
                 "agent_id": a.id, "agent_name": a.name,
@@ -3093,6 +3108,11 @@ pub async fn room(
         "state": {
             "running": running || !thinking.is_empty(),
             "turn": 0, "max_turns": 0, "topic": "",
+            // 2026-11-04 (bug 5): 右栏读的是 state.sheriff_name / state.sheriff,
+            // 以前只放在顶层 ⇒ 面板永远显示不出警长、警徽落到别人头上。两处同源同一份。
+            "sheriff": sheriff_id,
+            "sheriff_name": sheriff_name,
+            "leader_agent_id": sheriff_id,
             // 底部芯片读 participants (选中的成员); thinking 才是"此刻在跑的人"
             "participants": participants,
             "thinking": thinking.clone(),
@@ -3576,7 +3596,11 @@ pub async fn room_turn_exec(
         }),
         surface: "web-room",
     };
+    // 2026-11-04 (bug 5): 群内阶段以前只有写死的"想一想", 工具轮/收尾从不更新 ⇒ 右栏看起来"没反应"。
+    // 现在按真实进程推进 (结束由 RoomBus::end 自动清掉)。
+    st.room_bus.set_stage(gid, &agent.id, "读群聊上下文");
     let out = reply_with_agent_cfg(st, trigger, Some(agent), opts, None, cancel).await;
+    st.room_bus.set_stage(gid, &agent.id, "整理汇报");
     // **群内 API 共享**: 本机没有可用模型通路时, 借本群配置的好友节点跑一轮
     // (密钥不出对方机器; 对方也可按天限额拒绝)
     let out = match out {

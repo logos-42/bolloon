@@ -275,6 +275,14 @@
   .msg-think{white-space:pre-wrap;word-break:break-word;font-size:12.5px;line-height:1.55;color:var(--muted,#8a8a8a);border-left:2px solid rgba(142,197,255,.28);padding:1px 0 1px 9px;margin:0 0 8px;max-height:240px;overflow:auto;scrollbar-width:thin}
   .msg.bot.streaming .msg-think{border-left-color:var(--accent,#c4d640)}
   .msg.bot:not(.streaming) .msg-think{opacity:.6}
+  /* 2026-11-04: 流光/阶段可折叠 (点标题折起), 跑完自动清掉 */
+  .msg-think.folded{display:none}
+  .msg-stages{margin:0 0 8px;font-size:11.5px;color:var(--muted,#8a8a8a);border-left:2px solid rgba(142,197,255,.28);padding-left:9px}
+  .msg-stages .ms-hd{cursor:pointer;user-select:none;opacity:.85}
+  .msg-stages .ms-hd:hover{opacity:1}
+  .msg-stages.folded ol{display:none}
+  .msg-stages ol{margin:4px 0 0;padding-left:16px}
+  .msg-stages li{padding:1px 0}
   .msg.bot.streaming::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:linear-gradient(110deg,transparent 30%,rgba(255,255,255,.12) 50%,transparent 70%);background-size:220% 100%;animation:shimmer 1.35s linear infinite}
   @media (prefers-color-scheme:light){.msg.bot.streaming::after{background:linear-gradient(110deg,transparent 30%,rgba(37,99,235,.12) 50%,transparent 70%)}}
   @keyframes shimmer{0%{background-position:180% 0}100%{background-position:-80% 0}}
@@ -898,8 +906,9 @@
         <b id="groupName">群组</b>
         <span id="groupMeta" style="color:var(--muted);font-size:11px"></span>
         <span class="grow"></span>
-        <button class="mini" id="groupMenuBtn" title="群组设置">⋯</button>
-        <span class="grow"></span>
+        <!-- 2026-11-04: 群头只留**一个**「⋯」(groupDots → 静态菜单 #groupMenu)。
+             以前这里还有 groupMenuBtn, 两个按钮共用一个菜单, 且列表菜单会 innerHTML 覆盖掉
+             带 groupClose 的静态菜单 ⇒ 「关闭群组」绑定被毁, 看起来"群组页面退不出"。 -->
         <button id="groupInvite" class="mini" title="邀请成员（复制邀请链接）">邀请</button>
         <button id="groupDots" class="group-dots" title="群组设置" aria-label="群组设置" aria-haspopup="menu">⋯</button>
       </div>
@@ -1616,10 +1625,13 @@ function renderChat(){
     const retry=m.role==='assistant'?`<button title="重试" aria-label="重试" onclick="retryMessage(${i})">${iconRetry}</button>`:'';
     const edit=m.role==='user'?`<button title="编辑" aria-label="编辑" onclick="editMessage(${i})">${iconPencil}</button>`:'';
     const streaming=m.streaming?' streaming':'';
-    // 真实想法 (模型 reasonig 流) — 不是我们编的进度文案
-    const thinkBox=(m.role!=='user'&&m.think)?`<div class="msg-think">${escapeHTML(m.think)}</div>`:'';
+    // 真实想法 (模型 reasonig 流) — 不是我们编的进度文案; 点一下可折叠
+    const thinkBox=(m.role!=='user'&&m.think)?`<div class="msg-think" onclick="this.classList.toggle('folded')" title="点击折叠/展开">${escapeHTML(m.think)}</div>`:'';
+    // 阶段列表 (2026-11-04): 后端 ChatRuns.stage 真的写了; 只在运行中显示, 点标题折叠
+    const stages=(m.role!=='user'&&Array.isArray(m.stages)&&m.stages.length)
+      ?`<div class="msg-stages"><span class="ms-hd" onclick="this.parentNode.classList.toggle('folded')">阶段 ${m.stages.length} · 点击折叠/展开</span><ol>${m.stages.map(s=>`<li>${escapeHTML(String(s))}</li>`).join('')}</ol></div>`:'';
     return `<div class="msg-row ${role}" data-index="${i}">
-      <div class="msg ${role}${streaming}">${thinkBox}${body}
+      <div class="msg ${role}${streaming}">${thinkBox}${stages}${body}
         ${(m.images||[]).map(im=>`<img src="${im}" alt="">`).join('')}
       </div>
       <div class="msg-actions">
@@ -2543,7 +2555,7 @@ async function runUpdateFlow(){
   setTimeout(()=>renderUpdate(),2500); // 回到"有更新才显形"
 }
 $('updateBtn').onclick=runUpdateFlow;
-$('groupMenuBtn').onclick=(e)=>openGroupMenu(e,activeGroupId);
+// 群头「⋯」改用 groupDots → toggleGroupMenu (静态菜单, groupClose 绑定不被覆盖)。旧 groupMenuBtn 已删。
 $('worldAtBtn').onclick=(e)=>{e.stopPropagation();renderWorldAt();$('worldAtPanel').classList.toggle('hidden');};
 $('worldSideToggle').onclick=(e)=>{e.stopPropagation();
   const m=document.querySelector('main');m.classList.toggle('side-fold');
@@ -2668,6 +2680,9 @@ async function submitMessage(text,images){
     }
   }finally{
     aborts.delete(s.id);assistant.streaming=false;setBusy(s.id,false);
+    // 2026-11-04: 收尾必须清场 (想法/阶段是"过程", 不看就留在气泡里会越来越脏, 刷新还会被当本轮)
+    assistant.think='';
+    assistant.stages=[];
     renderSidebar();renderChat();
   }
 }
@@ -2945,6 +2960,11 @@ function setDesktopModule(mod) {
   desktopModule = mod;
   document.body.classList.remove('dmod-chat', 'dmod-world', 'dmod-contacts');
   document.body.classList.add('dmod-' + mod);
+  // 2026-11-04: group-mode 是"只进不出"的 CSS 类 —— 切到别的模块必须复位,
+  // 否则点了群组页之后主区永远是群聊, 看起来"退不出去"
+  if (mod !== 'contacts' && (activeGroupId || document.querySelector('main').classList.contains('group-mode'))) {
+    closeGroup();
+  }
   document.querySelectorAll('#primaryRail .rail-btn[data-module]').forEach(b => {
     b.classList.toggle('on', b.dataset.module === mod);
   });
@@ -3211,8 +3231,10 @@ function openGroupMenu(e,id){
   if(e&&e.stopPropagation)e.stopPropagation();
   menuGroupId=id;
   const g=((contactGroups&&contactGroups.groups)||[]).find(x=>x.id===id)||{};
-  const m=$('groupMenu');
-  if(!m)return;
+  // 2026-11-04: 列表菜单用**独立容器** (以前复用 #groupMenu 并 innerHTML 覆盖 ⇒
+  // 把群头静态菜单里的「关闭群组」等绑定整个抹掉, 群组页就退不出了)
+  let m=document.getElementById('groupListMenu');
+  if(!m){m=document.createElement('div');m.id='groupListMenu';m.className='menu hidden';document.body.appendChild(m);}
   m.innerHTML=`
     <button onclick="renameGroup()">改名</button>
     <button onclick="pinGroup(${g.pinned?'false':'true'})">${g.pinned?'取消置顶':'置顶'}</button>
