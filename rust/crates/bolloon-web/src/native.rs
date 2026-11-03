@@ -350,6 +350,12 @@ pub struct NativeState {
     pub profile: UserProfile,
     pub settings: UiSettings,
     pub auth: Vec<AuthRequest>,
+    /// 用户最近选中的智能体 / 会话 (2026-11-04: 修「切智能体跳回第一个」——
+    /// 以前 bootstrap 恒返 agents.first()/sessions.first(), 用户的选择从不落盘)
+    #[serde(default)]
+    pub active_agent_id: String,
+    #[serde(default)]
+    pub active_session_id: String,
     /// room 运行态 (group_id → running)
     pub room_running: std::collections::HashMap<String, bool>,
     /// 已关闭的群组 (从商议面板移除; OrbitDB 数据保留, 可重新加入)
@@ -584,6 +590,25 @@ pub async fn bootstrap_native(State(st): State<AppState>) -> Json<serde_json::Va
             created_at_ms: now_ms(),
         });
     }
+    // 回显用户最近的选择 (不存在/已删除 ⇒ 才退回第一个 — 以前无条件 first, 每次 focus 都跳回)
+    let active_agent = if fs.agents.iter().any(|a| a.id == fs.active_agent_id) {
+        fs.active_agent_id.clone()
+    } else {
+        fs.agents.first().map(|a| a.id.clone()).unwrap_or_default()
+    };
+    let active_session = if fs.sessions.iter().any(|s| s.id == fs.active_session_id) {
+        fs.active_session_id.clone()
+    } else {
+        // 会话优先落在当前智能体名下, 找不到才全局第一个
+        fs.sessions
+            .iter()
+            .find(|s| s.agent_id == active_agent)
+            .or_else(|| fs.sessions.first())
+            .map(|s| s.id.clone())
+            .unwrap_or_default()
+    };
+    fs.active_agent_id = active_agent.clone();
+    fs.active_session_id = active_session.clone();
     let update = native_update_info(&st);
     let payload = serde_json::json!({
         "state": {
@@ -593,8 +618,8 @@ pub async fn bootstrap_native(State(st): State<AppState>) -> Json<serde_json::Va
             "sessions": fs.sessions,
             "profile": fs.profile,
             "settings": fs.settings,
-            "active_agent_id": fs.agents.first().map(|a| a.id.clone()).unwrap_or_default(),
-            "active_session_id": fs.sessions.first().map(|s| s.id.clone()).unwrap_or_default(),
+            "active_agent_id": active_agent,
+            "active_session_id": active_session,
             "did": st.identity.did.as_str(),
             "edge": false,
             "messages": messages,
@@ -983,6 +1008,34 @@ pub async fn update_agent(
 
 // ────────────────────────── sessions ──────────────────────────
 
+/// POST /api/active (2026-11-04) → 持久化"用户当前选中哪个智能体/会话"
+///
+/// 前端每次切智能体/开会话都调它。**不存在就拒** (不静默改成第一个) —— 静默兜底正是串台的根。
+pub async fn set_active(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    if let Some(a) = req["agent_id"].as_str().filter(|s| !s.is_empty()) {
+        if !fs.agents.iter().any(|x| x.id == a) {
+            return Json(serde_json::json!({ "error": "智能体不存在" }));
+        }
+        fs.active_agent_id = a.to_string();
+    }
+    if let Some(s) = req["session_id"].as_str().filter(|s| !s.is_empty()) {
+        if !fs.sessions.iter().any(|x| x.id == s) {
+            return Json(serde_json::json!({ "error": "会话不存在" }));
+        }
+        fs.active_session_id = s.to_string();
+    }
+    let out = serde_json::json!({
+        "active_agent_id": fs.active_agent_id,
+        "active_session_id": fs.active_session_id,
+    });
+    fs.save(&data_dir());
+    Json(out)
+}
+
 /// POST /api/sessions (新会话)
 pub async fn create_session(
     State(st): State<AppState>,
@@ -993,13 +1046,18 @@ pub async fn create_session(
     fs.next_session += 1;
     let s = UiSession {
         id: format!("sess-{:04}", fs.next_session),
-        agent_id,
+        agent_id: agent_id.clone(),
         title: "新对话".into(),
         messages: vec![],
         pinned: false,
         created_at_ms: now_ms(),
     };
     fs.sessions.push(s.clone());
+    // 新建的会话就是当前会话 (否则下一次 bootstrap 又回到老会话)
+    fs.active_session_id = s.id.clone();
+    if !agent_id.is_empty() {
+        fs.active_agent_id = agent_id;
+    }
     fs.save(&data_dir());
     Json(serde_json::to_value(s).unwrap())
 }
@@ -1054,8 +1112,21 @@ pub async fn delete_session(
 ) -> Json<serde_json::Value> {
     let mut fs = st.forge.lock().await;
     let id = req["id"].as_str().unwrap_or_default().to_string();
+    let agent_of_deleted = fs.sessions.iter().find(|s| s.id == id).map(|s| s.agent_id.clone());
     fs.sessions.retain(|s| s.id != id);
-    let active = fs.sessions.first().map(|s| s.id.clone()).unwrap_or_default();
+    // 删的是当前会话 ⇒ 优先落在"同一智能体的最近会话", 找不到才全局第一个 (不跨智能体乱跳)
+    let active = if fs.active_session_id == id {
+        fs.sessions
+            .iter()
+            .filter(|s| Some(&s.agent_id) == agent_of_deleted.as_ref())
+            .max_by_key(|s| s.created_at_ms)
+            .or_else(|| fs.sessions.first())
+            .map(|s| s.id.clone())
+            .unwrap_or_default()
+    } else {
+        fs.active_session_id.clone()
+    };
+    fs.active_session_id = active.clone();
     fs.save(&data_dir());
     Json(serde_json::json!({ "active_session_id": active }))
 }
@@ -2381,15 +2452,57 @@ impl LoopStrategy for WebStrategy {
 }
 
 /// 记一轮对话（历史要能被下一轮读到）
+/// 用户消息**立刻**落盘 (2026-11-04: 修「切 session 回来用户气泡消失」)
+///
+/// 以前用户消息只是前端内存里的乐观气泡, 服务端要等整轮成功才 `remember_turn`;
+/// 期间任何一次 syncState 整包替换 state 就把它抹成"服务端还没有这条",
+/// 中止/报错则永远不补。现在: 请求一进来先写用户这条 (与 assistant 分开写)。
+async fn remember_user(st: &AppState, text: &str, session_id: Option<&str>) {
+    if text.trim().is_empty() {
+        return;
+    }
+    {
+        let mut msgs = st.messages.lock().await;
+        msgs.push(ChatMessageView { role: "user".into(), content: text.to_string(), name: None });
+    }
+    let _ = st
+        .session_store
+        .append(&bolloon_agent::SessionEvent::User { text: text.to_string() });
+    let mut fs = st.forge.lock().await;
+    let sid = match session_id {
+        Some(s) => Some(s.to_string()),
+        None => fs.sessions.first().map(|s| s.id.clone()),
+    };
+    if let Some(sid) = sid {
+        if let Some(sess) = fs.sessions.iter_mut().find(|s| s.id == sid) {
+            sess.messages.push(UiMessage {
+                role: "user".into(),
+                text: text.to_string(),
+                images: vec![],
+                time: chrono::Local::now().format("%H:%M").to_string(),
+                streaming: false,
+            });
+            if sess.title == "新对话" && !text.trim().is_empty() {
+                sess.title = text.trim().chars().take(18).collect();
+            }
+        }
+        fs.save(&data_dir());
+    }
+}
+
+/// 收尾写回 (assistant 侧; `user_saved=true` 表示用户那条已由 `remember_user` 写过)
 async fn remember_turn(
     st: &AppState,
     text: &str,
     reply: &str,
     who: Option<&str>,
     session_id: Option<&str>,
+    user_saved: bool,
 ) {
     let mut msgs = st.messages.lock().await;
-    msgs.push(ChatMessageView { role: "user".into(), content: text.to_string(), name: None });
+    if !user_saved {
+        msgs.push(ChatMessageView { role: "user".into(), content: text.to_string(), name: None });
+    }
     // 名字必须是真的那个智能体（小黑/小宝…），不能用 "AI" 占位 ——
     // 眼镜面板靠它区分"谁回的"，占位符会让三条回复看起来是同一个人
     msgs.push(ChatMessageView {
@@ -2397,9 +2510,11 @@ async fn remember_turn(
         content: reply.to_string(),
         name: who.map(|w| w.to_string()),
     });
-    let _ = st
-        .session_store
-        .append(&bolloon_agent::SessionEvent::User { text: text.to_string() });
+    if !user_saved {
+        let _ = st
+            .session_store
+            .append(&bolloon_agent::SessionEvent::User { text: text.to_string() });
+    }
     let _ = st
         .session_store
         .append(&bolloon_agent::SessionEvent::Assistant { text: reply.to_string() });
@@ -2415,13 +2530,15 @@ async fn remember_turn(
         if let Some(sid) = sid {
             if let Some(sess) = fs.sessions.iter_mut().find(|s| s.id == sid) {
                 let now = chrono::Local::now().format("%H:%M").to_string();
-                sess.messages.push(UiMessage {
-                    role: "user".into(),
-                    text: text.to_string(),
-                    images: vec![],
-                    time: now.clone(),
-                    streaming: false,
-                });
+                if !user_saved {
+                    sess.messages.push(UiMessage {
+                        role: "user".into(),
+                        text: text.to_string(),
+                        images: vec![],
+                        time: now.clone(),
+                        streaming: false,
+                    });
+                }
                 let _ = who; // 名字由前端按 agent_id 取, 会话条目里不重复存
                 sess.messages.push(UiMessage {
                     role: "assistant".into(),
@@ -2568,6 +2685,8 @@ impl ChatRuns {
         if let Some(r) = m.get_mut(sid) {
             r.running = false;
             r.stop = stop.to_string();
+            // 2026-11-04: 阶段清空 —— 以前保留上一轮的 stages, 刷新/续看时把旧阶段当本轮显示
+            r.stages.clear();
             if !text.is_empty() {
                 r.text = text.to_string();
             }
@@ -2687,6 +2806,8 @@ pub async fn chat(
     let text = req["message"].as_str().unwrap_or_default().to_string();
     let sid = req["session_id"].as_str().unwrap_or_default().to_string();
     let agent = agent_by_id(&st, req["agent_id"].as_str()).await;
+    // 用户这条立刻落盘 (切会话/刷新不再丢气泡), 回答收尾时只补 assistant
+    remember_user(&st, &text, req["session_id"].as_str()).await;
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reply = match reply_with_agent_stages(&st, &text, agent.as_ref(), &sid, None, cancel).await {
         Ok(r) => r,
@@ -2699,6 +2820,7 @@ pub async fn chat(
             &reply,
             agent.as_ref().map(|a| a.name.as_str()),
             req["session_id"].as_str(),
+            true,
         )
         .await;
     }
@@ -2719,6 +2841,8 @@ pub async fn chat_stream(
     let sid = req["session_id"].as_str().unwrap_or_default().to_string();
     let agent = agent_by_id(&st, req["agent_id"].as_str()).await;
 
+    // 用户这条**在开始跑之前**就落盘: 中途中止/刷新/切会话, 气泡都还在 (修「切回来用户消息消失」)
+    remember_user(&st, &text, Some(&sid)).await;
     let (tx, rx) = tokio::sync::mpsc::channel::<StreamChunk>(128);
     let cancel = st.chat_runs.begin(&sid);
     // 第一个字节仍然立刻走 (前端靠它把气泡点亮), 但内容是**模型随后吐的思维链/正文**,
@@ -2752,6 +2876,7 @@ pub async fn chat_stream(
                 &reply,
                 agent.as_ref().map(|a| a.name.as_str()),
                 Some(&sid2),
+                true, // 用户那条已由 remember_user 写过
             )
             .await;
         }

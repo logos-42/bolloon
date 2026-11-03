@@ -370,6 +370,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/models/select", post(crate::native::models_select))
         .route("/api/models/test", post(crate::native::models_test))
         .route("/api/sessions", get(sessions).post(crate::native::create_session))
+        // 用户当前选中哪个智能体/会话 (持久化; 修「切智能体跳回第一个」)
+        .route("/api/active", post(crate::native::set_active))
         .route("/api/sessions/branch", post(crate::native::branch_session))
         .route("/api/sessions/update", post(crate::native::update_session))
         // 图标: 以前**没有任何 /icons 路由** ⇒ `<img src="/icons/icon.png">` 一律 404,
@@ -4192,5 +4194,74 @@ mod route_tests {
         }
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 2026-11-04: 修「切智能体跳回第一个 / 切会话用户气泡消失」的回归门
+    #[tokio::test]
+    async fn active_selection_and_user_message_persist_e2e() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-web-active-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+
+        let state = AppState::new(offline_llm());
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = serve_on(state, listener).await;
+        });
+        let base = format!("http://{addr}");
+
+        tokio::task::spawn_blocking(move || {
+            let get_json = |path: &str| -> serde_json::Value {
+                ureq::get(&format!("{base}{path}")).call().unwrap().into_json().unwrap()
+            };
+            let post_json = |path: &str, body: serde_json::Value| -> serde_json::Value {
+                ureq::post(&format!("{base}{path}"))
+                    .send_json(body)
+                    .unwrap()
+                    .into_json()
+                    .unwrap()
+            };
+            let boot = get_json("/api/bootstrap");
+            let aid = boot["state"]["agents"][0]["id"].as_str().unwrap().to_string();
+
+            // ① 新会话 + 把选择落盘 → bootstrap 必须回显它 (以前恒回 first)
+            let s = post_json("/api/sessions", serde_json::json!({ "agent_id": aid }));
+            let sid = s["id"].as_str().unwrap().to_string();
+            let act = post_json("/api/active", serde_json::json!({ "agent_id": aid, "session_id": sid }));
+            assert_eq!(act["active_session_id"], serde_json::json!(sid));
+            let boot2 = get_json("/api/bootstrap");
+            assert_eq!(boot2["state"]["active_session_id"], serde_json::json!(sid), "选择必须被持久化回显");
+            assert_eq!(boot2["state"]["active_agent_id"], serde_json::json!(aid));
+
+            // ② 不存在的智能体 → 明确拒, 不静默改成第一个
+            let bad = post_json("/api/active", serde_json::json!({ "agent_id": "agent-ghost" }));
+            assert!(bad["error"].is_string(), "幽灵 agent 必须拒: {bad}");
+
+            // ③ 用户消息**在回答之前**就落盘 (模型是 offline 的, 照样不能丢问句)
+            let _ = post_json(
+                "/api/chat",
+                serde_json::json!({ "session_id": sid, "agent_id": aid, "message": "这句必须留下来" }),
+            );
+            let boot3 = get_json("/api/bootstrap");
+            let sess = boot3["state"]["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|x| x["id"] == serde_json::json!(sid))
+                .expect("会话还在");
+            let msgs = sess["messages"].as_array().unwrap();
+            assert!(
+                msgs.iter().any(|m| m["role"] == serde_json::json!("user")
+                    && m["text"].as_str().unwrap_or("").contains("这句必须留下来")),
+                "用户消息必须落盘: {msgs:?}"
+            );
+
+            let _ = std::fs::remove_dir_all(&home);
+        })
+        .await
+        .unwrap();
     }
 }

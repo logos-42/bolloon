@@ -1750,11 +1750,17 @@ async function pickAgent(id){
   let s=state.sessions.filter(x=>x.agent_id===id)
     .sort((a,b)=>(b.created_at_ms||0)-(a.created_at_ms||0))[0];
   if(!s){s=await api('/api/sessions',{method:'POST',body:JSON.stringify({agent_id:id})});state.sessions.push(s);}
-  state.active_session_id=s.id;renderSidebar();renderHeader();renderChat();flushQueue();renderSendState();resumeRunning();
+  state.active_session_id=s.id;
+  // 把"用户选中谁"落盘 (不 await: 失败也不挡本地切换)
+  api('/api/active',{method:'POST',body:JSON.stringify({agent_id:id,session_id:s.id})}).catch(()=>{});
+  renderSidebar();renderHeader();renderChat();flushQueue();renderSendState();resumeRunning();
 }
 function pickSession(id){
   cancelEdit();
-  state.active_session_id=id;renderSidebar();renderChat();flushQueue();renderSendState();resumeRunning();
+  state.active_session_id=id;
+  const sess=state.sessions.find(x=>x.id===id);
+  api('/api/active',{method:'POST',body:JSON.stringify({session_id:id,...(sess?{agent_id:sess.agent_id}:{})})}).catch(()=>{});
+  renderSidebar();renderChat();flushQueue();renderSendState();resumeRunning();
 }
 
 async function copyText(text){
@@ -1849,9 +1855,12 @@ async function resumeRunning(){
         clearInterval(timer);resumeTimers.delete(s.id);
         a.streaming=false;setBusy(s.id,false);
         const active=state&&state.active_session_id;
+        const activeAgent=state&&state.active_agent_id;
         const j=await api('/api/bootstrap');
         state=j.state;update=j.update;
         if(active)state.active_session_id=active;
+        // 同 syncState: 回答结束也要保住当前智能体, 否则一轮之后就"换人"
+        if(activeAgent&&state.agents&&state.agents.some(x=>x.id===activeAgent))state.active_agent_id=activeAgent;
         renderAll();
       }
     }catch(_){}
@@ -3103,9 +3112,14 @@ async function syncState(force){
   lastSyncAt=now;
   try{
     const j=await api('/api/bootstrap');
+    // 2026-11-04 (串台根因): 整包替换 state 时 **agent 与 session 都要保住**,
+    // 以前只保 session ⇒ bootstrap 的 first() 把 active_agent_id 换回第一个智能体,
+    // 之后就是「A 的会话 + 第一个智能体回答」= 记录串台。
+    const keepAgent=state&&state.active_agent_id;
     const keepFocus=state&&state.active_session_id;
     if(j&&j.state)state=j.state;          // 拿不到就保持原值, 绝不清空
     if(j&&j.update)update=j.update;
+    if(keepAgent&&state.agents&&state.agents.some(x=>x.id===keepAgent))state.active_agent_id=keepAgent;
     if(keepFocus&&state.sessions&&state.sessions.some(x=>x.id===keepFocus))state.active_session_id=keepFocus;
     renderSidebar();renderUpdate();
     if(!isBusy())renderChat();           // 正在生成时别抢气泡
