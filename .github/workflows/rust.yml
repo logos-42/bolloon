@@ -1,0 +1,57 @@
+name: Rust
+
+# 只覆盖 Rust workspace 的编译与单测。
+# 发布链路（npm / electron / iOS / dmg）见 release.yml 与 gh-release.yml，本文件不碰它们。
+on:
+  push:
+    paths:
+      - 'rust/**'
+      - '.github/workflows/rust.yml'
+  pull_request:
+    paths:
+      - 'rust/**'
+      - '.github/workflows/rust.yml'
+  workflow_dispatch:
+
+# 同一分支连续 push 时取消上一轮，省钱也省等待。
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-and-test:
+    name: cargo check + test (workspace)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-version = 1.85, edition 2024。用 stable 保证能吃到新补丁，
+      # 下限由 workspace 的 rust-version 声明约束。
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Show toolchain
+        run: rustc -vV && cargo -V
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      # all-targets 把 test/bench/example 也编译进去，避免只有 --lib 能过。
+      - name: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets
+
+      # 单测：只跑 lib 目标，不跑集成测试（部分集成测试依赖本机 ~/.bolloon 状态）。
+      - name: cargo test --workspace --lib
+        run: cargo test --workspace --lib

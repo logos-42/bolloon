@@ -196,6 +196,8 @@ pub fn builtin_tool_defs() -> Vec<ToolDef> {
     // 经济层工具：只有注入了 econ 上下文才真正可用（否则执行时如实说未启用）
     defs.extend(crate::econ_tools::econ_tool_defs());
     defs.extend(crate::invite_tools::invite_tool_defs());
+    // 信念层 (2026-11-04): agent 自己写信念与长短期目标的入口 + 按信念挑下一步
+    defs.extend(crate::belief_tools::belief_tool_defs());
     // IPFS 原语 (2026-10-31): TS 侧早有, Rust 版智能体一直没有 ⇒ 现在补上并默认授予
     defs.extend(crate::ipfs_tools::ipfs_tool_defs());
     defs
@@ -264,6 +266,11 @@ impl ToolExecutor for BuiltinExecutor {
             "sql_query" => crate::sql_tools::SqlExecutor.execute(call).await,
             "read_skill" | "list_skills" | "todo_add" | "todo_list" | "todo_done" | "remember"
             | "recall" | "task_list" => self.domain.execute(call).await,
+            // 信念层: agent 自己的信念/长短期目标 (写的是它自己的判断, 不是用户文件)
+            "belief_set" | "belief_list" | "belief_retire" | "goal_set" | "goal_list"
+            | "goal_update" | "goal_pick" => {
+                crate::belief_tools::BeliefExecutor.execute(call).await
+            }
             "check_update" => self.updater.execute(call).await,
             "shell" => self.shell.execute(call).await,
             "run_scratch_script" => self.scratch.execute(call).await,

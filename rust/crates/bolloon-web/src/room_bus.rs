@@ -7,9 +7,15 @@
 //!
 //! 本批新增（警长 / 持续交流 / 任务）:
 //! - **只汇报不跑进程**: 智能体后台跑任务, 群里只落结论 (`report`)。
-//! - **持续交流 + 终止**: 监督器在「群运行态 + 距人类发言已沉默」时自驱下一轮; 任何智能体在汇报里写
-//!   `[[terminate]]` 即宣布散会 (群回到待命)。无限次推进, 由终止信号收尾。
-//! - **警长派任务**: 汇报里写 `[[task:<智能体id或名字>:<描述>]]` 即把任务分给该成员后台执行。
+//! - **持续交流 + 终止**: 监督器在「群运行态 + 距人类发言已沉默」时自驱下一轮; 但**只有警长和小组长**
+//!   写 `[[terminate]]` 才真的散会 (群回到待命), 其余成员写它只作为「散会提议」落群、不生效。
+//!   无限次推进, 由有资格的人收尾。
+//! - **消息历史共享 + 压缩**: 群内每个智能体读的是同一份群历史; 超出窗口的旧消息折成一行早期摘要
+//!   (确定性摘要, 零模型成本), 不把窗口外的上下文直接丢掉。
+//! - **派任务**: 汇报里写 `[[task:<智能体id或名字>:<描述>]]` 即把任务分给该成员后台执行。
+//!   2026-11-04 (leo: 跑着会很慢): **正在跑的成员也能直接派**，不再只等警长 —— 每回合直派上限
+//!   `AGENT_DIRECT_DISPATCH_PER_TURN` 个，超出的仍转成待派提案（警长可否决，60s 无人处理自动派），
+//!   这样"快"和"可回收"两头都在。
 //!
 //! 纪律:
 //! - **不阻塞**: 调用方只等 `spawn_reports` 返回 (毫秒级), 模型调用在 tokio 任务里跑
@@ -32,6 +38,21 @@ pub const SUPERVISOR_IDLE_MS: u64 = 15_000;
 
 /// 同时在跑的群回合上限 (2026-11-04 leo: 并发上限 20)
 pub const MAX_CONCURRENT_TURNS: usize = 20;
+
+/// 非警长成员**一个回合里能直接派**的任务数上限 (2026-11-04 leo: 运行中的智能体也要能派活,
+/// 否则一场沟通全堵在一个人身上, 跑起来很慢)。
+///
+/// 超出的不丢: 顺延成"待派提案", 警长可否决, 60s 无人处理自动派下去。
+/// 有上限才有闸 —— 否则一个回合写 50 条 `[[task:]]` 就等于一条消息扇出 50 次模型调用。
+pub const AGENT_DIRECT_DISPATCH_PER_TURN: usize = 3;
+
+/// 派单闸（纯函数, 便于测）: 这条 `[[task:…]]` 是**直接派下去**还是**转提案**。
+///
+/// - 警长 / 本轮是人类下的命令 ⇒ 全部直接派（人类的命令不许等）
+/// - 其余成员（这一棒正在跑的智能体）⇒ 直接派，每回合最多 `cap` 个
+pub fn may_dispatch_directly(is_sheriff: bool, human_origin: bool, idx: usize, cap: usize) -> bool {
+    is_sheriff || human_origin || idx < cap
+}
 
 /// 群内"谁正在想"的运行时状态 (内存态, 不落盘: 重启后本来就没了)
 #[derive(Default)]
@@ -211,6 +232,22 @@ pub fn roster_from_ranked(ranked: &[String]) -> Roster {
     Roster { sheriff, leads, foremen }
 }
 
+/// 谁有权结束本场交流：**只有警长和小组长**（`Roster::leads`），领班与普通成员不行。
+///
+/// - `roster == None` 或名单还没切出来（没选出班子）⇒ 退回旧行为（谁都能散会），
+///   否则单机 / 小群 / 选举失败时会出现「谁都不能结束」的死锁。
+/// - 名单存在时一律收紧：其他人写 `[[terminate]]` 只落一条「散会提议」。
+pub fn may_terminate(roster: Option<&Roster>, agent_id: &str) -> bool {
+    let Some(r) = roster else { return true };
+    if r.sheriff.is_none() && r.leads.is_empty() {
+        return true;
+    }
+    if r.sheriff.as_deref() == Some(agent_id) {
+        return true;
+    }
+    r.leads.iter().any(|l| l == agent_id)
+}
+
 /// 从组织名单里选出这一轮真正接话的人：@ 命中优先，其余按轮转补齐，且**只在名单内**。
 ///
 /// 名单外的人不会因为被 @ 就直接刷群 —— 他们只能接任务（由领班派活）。
@@ -307,6 +344,64 @@ pub fn elect_limited(
 }
 
 /// 起后台任务: 每个目标智能体各跑一轮, 结束后把汇报写回群里。
+/// 群聊上下文：最近这么多条**原样**带上，更早的压成一行早期摘要（历史共享 + compress）。
+pub const HISTORY_WINDOW: usize = 16;
+/// 压进摘要的旧消息每条保留多少字符
+pub const HISTORY_OLD_CHARS: usize = 40;
+
+/// 把群历史压成一段 transcript（纯函数，零模型成本）。
+///
+/// 为什么不是"只取最近 16 条"：那条路会把更早的共识整段丢掉，长群越聊越失忆。
+/// 这里保留最近 `window` 条原文，更早的每条压成一行短摘要并标注「已压缩」——
+/// 上下文有损但**不静默丢**，模型能看见"早前聊过什么"。
+pub fn compress_transcript(pairs: &[(String, String)], window: usize, keep_chars: usize) -> String {
+    let window = window.max(1);
+    if pairs.len() <= window {
+        return pairs.iter().map(|(w, t)| format!("[{w}] {t}\n")).collect();
+    }
+    let cut = pairs.len() - window;
+    let mut out = String::new();
+    out.push_str(&format!("[早期摘要·{cut} 条已压缩]\n"));
+    for (w, t) in &pairs[..cut] {
+        let one = t.split_whitespace().collect::<Vec<_>>().join(" ");
+        let n = one.chars().count();
+        let snippet: String = one.chars().take(keep_chars).collect();
+        out.push_str(&format!(
+            "[{w}] {snippet}{}\n",
+            if n > keep_chars { "…" } else { "" }
+        ));
+    }
+    out.push_str(&format!("[最近 {window} 条原文]\n"));
+    for (w, t) in &pairs[cut..] {
+        out.push_str(&format!("[{w}] {t}\n"));
+    }
+    out
+}
+
+/// 必选接力：一棒做完必须交给下一位成员继续，最多连这么多棒（防无限自激）。
+pub const RELAY_MAX: usize = 3;
+/// 每一棒最多交给几位成员（并行接力）
+pub const RELAY_FANOUT: usize = 2;
+
+/// 从触发文案里读接力深度（`（任务分配·接力2）…` ⇒ 2）；不是接力触发 ⇒ 0。
+pub fn relay_depth(trigger: &str) -> usize {
+    if let Some(i) = trigger.find("接力") {
+        let digits: String = trigger[i + "接力".len()..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if let Ok(n) = digits.parse::<usize>() {
+            return n;
+        }
+    }
+    0
+}
+
+/// 下一棒的触发文案：带上「谁做完的 + 上一棒结论」, 接手的人不用翻整段群历史。
+pub fn relay_trigger(from_name: &str, depth: usize, tail: &str) -> String {
+    format!("（任务分配·接力{depth}）{from_name} 已经把上一棒做完，接着往下做：{tail}")
+}
+
 /// 群内一轮的**根意图 id**：一条人类消息（或一次自驱）触发的所有 agent 调用共用它。
 /// 这样"一条群消息总共花了多少、哪几个 agent 各花了多少"能从账本按 intent 直接查出来。
 pub fn group_intent(gid: &str, ts_ms: u64) -> String {
@@ -373,21 +468,39 @@ pub fn spawn_reports(
             let (clean, terminate, tasks, vetoes) = parse_control(&text);
             let now = chrono::Utc::now().timestamp_millis() as u64;
 
-            // 终止: 群回到待命 + 落一条系统消息
+            // 终止: 群回到待命 + 落一条系统消息。
+            // 2026-11-04: 收紧成**只有警长和小组长**能结束循环（之前任何成员写都散会）。
+            // 其余成员写 `[[terminate]]` 只落一条散会提议，群继续运行 —— 提议可见，但不由它收尾。
             if terminate {
-                {
-                    let mut fs = st.forge.lock().await;
-                    fs.room_running.insert(gid.clone(), false);
+                let roster = crate::native::roster_of(&st, &gid).await;
+                if may_terminate(Some(&roster.roster), &agent.id) {
+                    {
+                        let mut fs = st.forge.lock().await;
+                        fs.room_running.insert(gid.clone(), false);
+                    }
+                    let _ = st.groups.append(
+                        &gid,
+                        &st.identity,
+                        "system",
+                        &agent.id,
+                        &format!("{} 宣布散会，本场交流结束。", agent.name),
+                        None,
+                        now,
+                    );
+                } else {
+                    let _ = st.groups.append(
+                        &gid,
+                        &st.identity,
+                        "system",
+                        &agent.id,
+                        &format!(
+                            "（散会提议）{} 认为本场可以收尾了，但终止权在警长和小组长 —— 未生效。",
+                            agent.name
+                        ),
+                        None,
+                        now,
+                    );
                 }
-                let _ = st.groups.append(
-                    &gid,
-                    &st.identity,
-                    "system",
-                    &agent.id,
-                    &format!("{} 宣布散会，本场交流结束。", agent.name),
-                    None,
-                    now,
-                );
             }
 
             // 汇报正文（去掉标记 + 工具调用噪声后）落群：
@@ -407,10 +520,12 @@ pub fn spawn_reports(
                 }
             }
 
-            // ── 群内任务：**只有警长派单才执行** ──
-            // 2026-10-31 (leo: 跑任务时警长的作用没出现): 以前谁写 [[task:…]] 都直接派下去。
-            // 现在非警长的任务只进"待派"队列并在群里留提案，警长下一轮会在自己的上下文里
-            // 看到这些提案，用 [[task:…]] 正式派单 (或明确否掉)。
+            // ── 群内任务：谁在跑谁就能派 ──
+            // 2026-10-31 (leo: 跑任务时警长的作用没出现): 以前谁写 [[task:…]] 都直接派下去，
+            // 于是收紧成"只有警长派单才执行"。
+            // 2026-11-04 (leo: 跑着会很慢): 收得太紧了 —— 一场沟通全堵在警长一个人身上。
+            // 现在**正在跑的成员也直接派**（每回合上限 AGENT_DIRECT_DISPATCH_PER_TURN 个），
+            // 超出的顺延成待派提案：警长可否掉，60s 无人处理自动派下去。快与可回收两头都留着。
             if !tasks.is_empty() {
                 let sheriff = crate::native::elect_group_sheriff(&st, &gid).await;
                 let is_sheriff = sheriff.as_deref() == Some(agent.id.as_str());
@@ -418,14 +533,19 @@ pub fn spawn_reports(
                 let human_origin = !trigger.starts_with("（系统）")
                     && !trigger.starts_with("（任务分配")
                     && !trigger.starts_with("（任务分配·");
-                let immediate = is_sheriff || human_origin;
                 let now_t = chrono::Utc::now().timestamp_millis() as u64;
-                for (tid, desc) in tasks {
+                for (idx, (tid, desc)) in tasks.iter().enumerate() {
+                    let immediate = may_dispatch_directly(
+                        is_sheriff,
+                        human_origin,
+                        idx,
+                        AGENT_DIRECT_DISPATCH_PER_TURN,
+                    );
                     let target = {
                         let fs = st.forge.lock().await;
                         fs.agents
                             .iter()
-                            .find(|a| a.id == tid || a.name == tid)
+                            .find(|a| a.id == tid.as_str() || a.name == tid.as_str())
                             .cloned()
                     };
                     let Some(t) = target else { continue };
@@ -449,15 +569,23 @@ pub fn spawn_reports(
                         fs.save(&crate::server::data_dir());
                     }
                     if immediate {
+                        // 派单来源写清楚：警长 / 人类命令 / 成员自派 —— 后面看日志能分辨谁在扇出
+                        let label = if is_sheriff {
+                            "警长派单"
+                        } else if human_origin {
+                            "人类下令"
+                        } else {
+                            "成员派单"
+                        };
                         spawn_reports(
                             st.clone(),
                             gid.clone(),
-                            format!("（任务分配·警长派单）{} 交给你：{}", agent.name, desc),
+                            format!("（任务分配·{label}）{} 交给你：{}", agent.name, desc),
                             vec![t],
                             group_intent(&gid, chrono::Utc::now().timestamp_millis() as u64),
                         );
                     } else {
-                        // 留提案: 警长下一轮会看到 (见 agent_turn 里的待派队列)
+                        // 超出本回合直派上限 ⇒ 留提案: 警长下一轮会看到 (见 agent_turn 里的待派队列)
                         let sh_name = sheriff.clone().unwrap_or_default();
                         let _ = st.groups.append(
                             &gid,
@@ -465,15 +593,63 @@ pub fn spawn_reports(
                             "system",
                             &agent.id,
                             &format!(
-                                "（提案）{} 建议把「{}」交给 {} —— 警长 {} 可否掉；{}s 内没人处理就自动执行",
+                                "（提案）{} 建议把「{}」交给 {} —— 本回合直派已满 {} 个；警长 {} 可否掉，{}s 内没人处理就自动执行",
                                 agent.name,
                                 desc,
                                 t.name,
+                                AGENT_DIRECT_DISPATCH_PER_TURN,
                                 if sh_name.is_empty() { "（未选出）" } else { sh_name.as_str() },
                                 crate::native::ROOM_TASK_AUTO_DISPATCH_MS / 1000
                             ),
                             None,
                             now_t,
+                        );
+                    }
+                }
+            }
+
+            // 必选接力（2026-11-04）：任务分配触发的这一棒做完，**必须**把它交给下一位成员继续 ——
+            // 不靠模型自己想起来写 [[task:]]。已散会 / 自己已派单 / 到上限就不重复接力。
+            if !terminate && tasks.is_empty() && trigger.starts_with("（任务分配") {
+                let depth = relay_depth(&trigger);
+                if depth < RELAY_MAX {
+                    let peers: Vec<AgentView> = {
+                        let fs = st.forge.lock().await;
+                        crate::native::room_candidate_agents(&fs, &gid)
+                    }
+                    .into_iter()
+                    .filter(|a| a.id != agent.id)
+                    .take(RELAY_FANOUT)
+                    .collect();
+                    if !peers.is_empty() {
+                        let tail: String = clean.chars().take(200).collect();
+                        let trig = relay_trigger(&agent.name, depth + 1, &tail);
+                        let names_next = peers
+                            .iter()
+                            .map(|p| p.name.clone())
+                            .collect::<Vec<_>>()
+                            .join("、");
+                        let _ = st.groups.append(
+                            &gid,
+                            &st.identity,
+                            "system",
+                            &agent.id,
+                            &format!(
+                                "（接力 {}/{}）{} 这一棒做完，交给 {} 接着做。",
+                                depth + 1,
+                                RELAY_MAX,
+                                agent.name,
+                                names_next
+                            ),
+                            None,
+                            now,
+                        );
+                        spawn_reports(
+                            st.clone(),
+                            gid.clone(),
+                            trig,
+                            peers,
+                            group_intent(&gid, chrono::Utc::now().timestamp_millis() as u64),
                         );
                     }
                 }
@@ -610,7 +786,9 @@ async fn agent_turn(
     trigger: &str,
     intent_id: &str,
 ) -> Result<String, String> {
-    let hist = st.groups.history(gid, 16).unwrap_or_default();
+    // 群历史共享：取一段窗口而不是只取最近 16 条 —— 超出窗口的旧消息交给
+    // `compress_transcript` 压成早期摘要，长群不会越聊越失忆。
+    let hist = st.groups.history(gid, 200).unwrap_or_default();
     let group_name = st
         .groups
         .list_groups()
@@ -622,11 +800,14 @@ async fn agent_turn(
         let fs = st.forge.lock().await;
         fs.agents.iter().map(|a| (a.id.clone(), a.name.clone())).collect()
     };
-    let mut transcript = String::new();
-    for m in &hist {
-        let who = names.get(&m.from).cloned().unwrap_or_else(|| short(&m.from));
-        transcript.push_str(&format!("[{}] {}\n", who, m.text));
-    }
+    let pairs: Vec<(String, String)> = hist
+        .iter()
+        .map(|m| {
+            let who = names.get(&m.from).cloned().unwrap_or_else(|| short(&m.from));
+            (who, m.text.clone())
+        })
+        .collect();
+    let transcript = compress_transcript(&pairs, HISTORY_WINDOW, HISTORY_OLD_CHARS);
     let extra = format!(
         "\n\n# 群聊现场\n你在群「{group_name}」里，正在以群成员身份接话。\n\
          最近的消息：\n{transcript}\n\
@@ -635,8 +816,9 @@ async fn agent_turn(
          - 不要复述思考过程、不要输出工具调用或 JSON（不要写 <tool_call>/<tool_use>/函数调用块）\n\
          - 不要自称助手；用你自己的名字说话\n\
          - 没把握就直说不确定，不编造\n\
-         - 若你认为本场已无共识空间，可在结尾写上 [[terminate]] 宣布散会\n\
-         - 警长可在结尾写上 [[task:智能体id或名字:任务描述]] 把任务分配给某位成员后台执行"
+         - 若你认为本场已无共识空间：**只有警长和小组长**写 [[terminate]] 才真的散会，其他人写它只算散会提议\n\
+         - 你要把活交给别人就写 [[task:智能体id或名字:任务描述]]：**任何在跑的成员都能直接派**\
+         （每回合最多 3 个，超出的转待派提案，警长可 [[veto:目标]] 否掉）；别等警长，也别什么都自己扛"
     );
     // 警长能看到"待派"提案: 这样"别人提、警长批"才真的闭环
     let (extra, proposals) = {
@@ -820,6 +1002,85 @@ fn short(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 终止权：只有警长和小组长能结束循环，领班 / 普通成员只能提议。
+    #[test]
+    fn only_sheriff_and_leads_may_terminate() {
+        let ranked: Vec<String> = (0..40).map(|i| format!("a{i}")).collect();
+        let r = roster_from_ranked(&ranked);
+        assert!(may_terminate(Some(&r), "a0"), "警长可以散会");
+        assert!(may_terminate(Some(&r), "a1"), "小组长可以散会");
+        assert!(may_terminate(Some(&r), "a5"), "最后一个小组长也可以");
+        assert!(!may_terminate(Some(&r), "a6"), "领班不行");
+        assert!(!may_terminate(Some(&r), "a39"), "普通成员不行");
+        assert!(may_terminate(None, "a39"), "没有名单时退回旧行为, 不死锁");
+        assert!(
+            may_terminate(Some(&Roster::default()), "a39"),
+            "名单还没切出来时同理"
+        );
+    }
+
+    /// 派单闸：警长和人类命令全放行；普通成员每回合直派有上限，超出的转提案（不丢）。
+    #[test]
+    fn any_running_agent_may_dispatch_but_capped() {
+        let cap = AGENT_DIRECT_DISPATCH_PER_TURN;
+        assert!(cap > 0);
+        // 警长 / 人类命令：有多少派多少
+        for idx in [0usize, 1, 5, 50] {
+            assert!(may_dispatch_directly(true, false, idx, cap), "警长第 {idx} 个要直派");
+            assert!(may_dispatch_directly(false, true, idx, cap), "人类命令第 {idx} 个要直派");
+        }
+        // 普通成员：前 cap 个直派，之后转提案
+        for idx in 0..cap {
+            assert!(may_dispatch_directly(false, false, idx, cap), "成员第 {idx} 个应直派");
+        }
+        assert!(!may_dispatch_directly(false, false, cap, cap), "超出上限应转提案");
+        assert!(!may_dispatch_directly(false, false, cap + 7, cap));
+    }
+
+    /// 必选接力：深度解析 + 下一棒文案带上下文，且到上限就停（防无限自激）。
+    #[test]
+    fn relay_depth_and_cap() {
+        assert_eq!(relay_depth("（任务分配·警长派单）小宝 交给你：跑测试"), 0);
+        assert_eq!(relay_depth("（任务分配·接力1）小宝 已经把上一棒做完"), 1);
+        assert_eq!(relay_depth("（任务分配·接力3）…"), 3);
+        assert_eq!(relay_depth("随便一句人类发言"), 0);
+        // 1..=3 还能接, 到 RELAY_MAX 停止
+        assert!(relay_depth("（任务分配·接力1）") < RELAY_MAX);
+        assert!(relay_depth("（任务分配·接力3）") >= RELAY_MAX);
+
+        let t = relay_trigger("小宝", 2, "结论：编译通过");
+        assert!(t.starts_with("（任务分配·接力2）"));
+        assert!(t.contains("小宝"));
+        assert!(t.contains("编译通过"), "接力必须带上上一棒结论: {t}");
+        assert!(t.starts_with("（任务分配"), "接力触发要被 human_origin 判定排除");
+    }
+
+    /// 群历史压缩：窗口内原文保留，窗口外压成摘要但不静默丢。
+    #[test]
+    fn transcript_compresses_old_messages_but_keeps_recent() {
+        let pairs: Vec<(String, String)> = (0..30)
+            .map(|i| {
+                (
+                    "小宝".to_string(),
+                    format!("第{i}条正文{}", "x".repeat(80)),
+                )
+            })
+            .collect();
+        let out = compress_transcript(&pairs, HISTORY_WINDOW, HISTORY_OLD_CHARS);
+        assert!(out.contains("早期摘要·14 条已压缩"), "14 条被压: {out}");
+        assert!(out.contains("最近 16 条原文"), "最近窗口要标明");
+        assert!(out.contains("第29条"), "最近一条必须原文在");
+        assert!(out.contains("第0条"), "最早那条也要留痕(压缩后)");
+        // 旧消息不许整段塞进上下文 —— 只对**被压缩的那一段**成立；
+        // 最近 16 条是原文（按设计就是全文），所以只在摘要段里查。
+        let head = out.split("[最近 ").next().unwrap_or("");
+        assert!(!head.contains(&"x".repeat(HISTORY_OLD_CHARS + 1)), "旧消息不许整段塞进上下文: {head}");
+        // 条数不超窗口 ⇒ 一条都不压
+        let small = compress_transcript(&pairs[..3], HISTORY_WINDOW, HISTORY_OLD_CHARS);
+        assert!(!small.contains("已压缩"));
+        assert!(small.contains("第2条"));
+    }
 
     /// 主动性: 提案到期自动派单; 已派发/被否决的不重复派
     #[test]

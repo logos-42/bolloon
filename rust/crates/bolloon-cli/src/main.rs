@@ -968,6 +968,30 @@ fn run_cron(port: u16) -> anyhow::Result<()> {
     if let Some(note) = r["note"].as_str() {
         println!("说明: {note}");
     }
+    // 信念与自我设计 (2026-11-04): 主动性有没有"内容", 命令行一眼可查
+    let beliefs = &r["beliefs"];
+    println!(
+        "信念: 活着 {} 条 · 活着目标 {} 个",
+        beliefs["live"].as_u64().map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
+        beliefs["active_goals"].as_u64().map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
+    );
+    let goal = r["initiative_goal_last"].as_str().unwrap_or("");
+    println!(
+        "按信念挑的下一步: {}",
+        if goal.is_empty() { "（还没有：没有活着目标，或这轮没出手）" } else { goal }
+    );
+    let refl = &r["reflection"];
+    let last_ms = refl["last_ms"].as_u64().unwrap_or(0);
+    if last_ms == 0 {
+        println!("自我设计: 还没做过");
+    } else {
+        println!(
+            "自我设计: 上次 {} · 结果 {} · 错误 {}",
+            last_ms,
+            r["initiative_reflection_last"].as_str().unwrap_or("（无变化）"),
+            refl["last_error"].as_str().unwrap_or("无"),
+        );
+    }
     Ok(())
 }
 
@@ -2257,7 +2281,25 @@ async fn build_bolloon_system(channel: &str, query: Option<&str>) -> String {
     };
     // 记忆召回 (top-N) 接进 system prompt —— 之前这一项恒为空, 记忆从未进 prompt
     let memory_text = cli_memory_recall_text(query).await;
-    bolloon_agent::prompt::build_system_prompt(&docs, None, None, None, 0, "", Some(&memory_text), &ctx).text
+    // 计划进度 + 自己的信念/目标: 与 web 同一份落盘 (todo.json / beliefs.json), 同一套排序
+    let todo_progress = bolloon_agent::belief_tools::todo_progress_text();
+    let mut text = bolloon_agent::prompt::build_system_prompt(
+        &docs,
+        None,
+        todo_progress.as_deref(),
+        None,
+        0,
+        "",
+        Some(&memory_text),
+        &ctx,
+    )
+    .text;
+    let commitments = bolloon_agent::belief_tools::load_store().render(1200);
+    if !commitments.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(&commitments);
+    }
+    text
 }
 
 /// 组装启动 Dashboard 的数据快照 (全部从运行时读, 不硬编码示例)

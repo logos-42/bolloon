@@ -3057,7 +3057,21 @@ async fn chat_history(st: &AppState, session_id: &str, text: &str) -> Vec<ChatMe
             .unwrap_or_default()
     };
     if !from_session.is_empty() {
-        let start = from_session.len().saturating_sub(12);
+        // 2026-11-04 (leo: 「回到旧会话说话，上下文没加载，反复重读白烧 token」):
+        // 以前只取**最后 12 条**且没有字符预算 —— 长会话回来时等于失忆, 智能体于是把同样的
+        // 文件/群/命令重新探索一遍。现在: 窗口 40 条 + ~3 万字符预算(从最旧开始裁),
+        // 既带上足够上下文, 又不会把 prompt 撑爆。
+        const WINDOW: usize = 40;
+        const BUDGET_CHARS: usize = 30_000;
+        let mut start = from_session.len().saturating_sub(WINDOW);
+        let mut used = 0usize;
+        for m in from_session.iter().skip(start) {
+            used += m.text.chars().count();
+        }
+        while start + 1 < from_session.len() && used > BUDGET_CHARS {
+            used -= from_session[start].text.chars().count();
+            start += 1;
+        }
         let last = from_session.len().saturating_sub(1);
         for (i, m) in from_session[start..].iter().enumerate() {
             let idx = start + i;

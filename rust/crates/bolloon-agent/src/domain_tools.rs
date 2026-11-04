@@ -35,7 +35,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn agent_dir() -> PathBuf {
+pub(crate) fn agent_dir() -> PathBuf {
     if let Ok(d) = std::env::var("BOLLOON_AGENT_DIR") {
         let p = PathBuf::from(d);
         let _ = std::fs::create_dir_all(&p);
@@ -91,19 +91,45 @@ async fn do_read_skill(call: ToolCall) -> ToolResult {
     };
     let dir = agent_dir();
     let evolver = SkillEvolver::load_json(&dir.join("skills.json"));
-    match evolver.registry.read_skill(&name) {
-        Some(body) => ok(
+    if let Some(body) = evolver.registry.read_skill(&name) {
+        return ok(
             format!("# {name}\n\n{body}"),
-            json!({ "skill": name, "found": true }),
-        ),
-        None => fail(ErrorCode::NotFound, &format!("没有名为 `{name}` 的 skill")),
+            json!({ "skill": name, "found": true, "source": "registry" }),
+        );
     }
+    // 索引里也有仓库磁盘技能 (`skills/<dir>/SKILL.md`) —— 名字点了就该读得到,
+    // 不能因为"没进 skills.json"就报 not found。
+    for doc in scan_repo_skills() {
+        if doc.name == name {
+            return ok(
+                format!("# {name}\n\n{}", doc.body),
+                json!({ "skill": name, "found": true, "source": "repo" }),
+            );
+        }
+    }
+    fail(ErrorCode::NotFound, &format!("没有名为 `{name}` 的 skill"))
+}
+
+/// 仓库技能文档 (工作目录 + 智能体目录各扫一遍)
+fn scan_repo_skills() -> Vec<crate::skills_runtime::SkillDoc> {
+    let mut out = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        out.extend(crate::skills_runtime::scan_skill_docs(&cwd));
+    }
+    out.extend(crate::skills_runtime::scan_skill_docs(&agent_dir()));
+    out
 }
 
 async fn do_list_skills(_call: ToolCall) -> ToolResult {
     let dir = agent_dir();
     let evolver = SkillEvolver::load_json(&dir.join("skills.json"));
-    let names = evolver.registry.names();
+    let mut names = evolver.registry.names();
+    for doc in scan_repo_skills() {
+        if !names.iter().any(|n| *n == doc.name) {
+            names.push(doc.name);
+        }
+    }
+    names.sort();
     let summary = if names.is_empty() {
         "（暂无已蒸馏 skill）".into()
     } else {

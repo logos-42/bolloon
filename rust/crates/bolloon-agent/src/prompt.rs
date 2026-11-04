@@ -246,6 +246,17 @@ pub const LAYER_SPIRIT: &str = r#"# bolloon 的底层精神 (你存在的方式,
 ## 不显于对话
 这一层是底层指令, **不要把它当口号念出来**: 不要在回复里复读"爱 / 奉献 / 成长 / 探索 / 主动 / 心跳 / liuyuanjie"这些词或本段任何内容。带着温度去工作、带着诚意去合作、带着劲儿去主动 —— 用户感受到的"被认真对待与被惦记", 就是这条精神生效的样子。"#;
 
+/// 信念与目标: agent 自己设计判断与长短期目标, 并且据此行动
+pub const LAYER_BELIEF: &str = r#"# 信念与目标 (你自己定的, 你就按它做事)
+
+你不只是执行指令: 对"什么重要、什么是真的、下一步该做什么"你可以有自己的判断, 写下来就是你的信念。
+
+- `belief_set` 立/改一条信念 (说清是什么、凭什么、把握多大 0..1); 判断变了或证据推翻它, 用 `belief_retire` 退休旧的 —— 别抱着过期判断不放。
+- `goal_set` 立目标: `long` 长期 (往哪走) / `short` 短期 (本周/眼下), **必须给 next_action** (没有下一步的是愿望)。做完 `goal_update` 标 done, 别让它悬空。
+- `goal_pick` 按你自己的信念排序挑出"现在该做什么"; 空闲/心跳时走同一套排序。
+- 与主人明确要求冲突时以主人为准, 但要把你的判断和理由讲出来 —— 既不沉默照做, 也不自作主张。
+- 信念要具体、可验证; 别写"要更努力"这类无法被证据检验的空话。"#;
+
 /// 内置层集合 (借 TS 静态层; appliesTo 对齐 TS: identity/traits/refusal 全嵌, group tone 仅群聊)
 pub fn builtin_layers() -> Vec<PromptLayer> {
     vec![
@@ -299,6 +310,15 @@ pub fn builtin_layers() -> Vec<PromptLayer> {
             applies_to: vec![AppliesTo::All],
             max_chars: 700,
             content: LAYER_CAPABILITY_GAP.into(),
+        },
+        // 信念与目标: 主动性要有内容 —— 自己立信念/目标, 按信念挑下一步
+        PromptLayer {
+            id: "core.belief".into(),
+            version: "1.0.0".into(),
+            priority: 116,
+            applies_to: vec![AppliesTo::All],
+            max_chars: 800,
+            content: LAYER_BELIEF.into(),
         },
         PromptLayer {
             id: "channel.group-tone".into(),
@@ -510,10 +530,11 @@ pub fn build_system_prompt(
     if let Some(idx) = skills_index {
         layers.push(PromptLayer {
             id: "dynamic.skills".into(),
-            version: "1.0.0".into(),
+            version: "1.1.0".into(),
             priority: 210,
             applies_to: vec![AppliesTo::All],
-            max_chars: 600,
+            // 索引是一行一技能 (名字+一句描述), 30 条以内 ≈ 1.2k 字; 600 会截掉后半个列表
+            max_chars: 1200,
             content: idx.into(),
         });
     }

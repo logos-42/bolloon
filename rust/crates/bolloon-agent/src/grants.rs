@@ -54,8 +54,12 @@ pub fn grants_path() -> PathBuf {
 impl GrantStore {
     /// 读盘。文件不存在 ⇒ 空库；解析失败 ⇒ 空库 + 告警（绝不冒充"有授权"）
     pub fn load() -> Self {
-        let p = grants_path();
-        let Ok(raw) = std::fs::read_to_string(&p) else {
+        Self::load_from(&grants_path())
+    }
+
+    /// 指定路径读（单测用；生产走 `load()`）—— 不改进程级 env，避免并行测试互相踩
+    pub fn load_from(p: &std::path::Path) -> Self {
+        let Ok(raw) = std::fs::read_to_string(p) else {
             return Self::default();
         };
         match serde_json::from_str::<Self>(&raw) {
@@ -69,7 +73,11 @@ impl GrantStore {
 
     /// 原子写（tmp + rename；0600 —— 里面有本机路径，不该被别人读）
     pub fn save(&self) -> std::io::Result<()> {
-        let p = grants_path();
+        self.save_to(&grants_path())
+    }
+
+    /// 指定路径写（单测用）
+    pub fn save_to(&self, p: &std::path::Path) -> std::io::Result<()> {
         if let Some(dir) = p.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -211,50 +219,37 @@ pub fn reload() -> GrantStore {
 mod tests {
     use super::*;
 
-    fn with_tmp_home<T>(f: impl FnOnce() -> T) -> T {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "bolloon-grants-{}-{}",
+    /// 测试用的临时库路径（**不改进程级 env** —— 并行测试会互相踩）
+    fn tmp_file(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "bolloon-grants-{}-{}-{}.json",
             std::process::id(),
+            tag,
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let old = std::env::var("BOLLOON_HOME").ok();
-        // 测试里改进程级 env（edition 2024 要求 unsafe；外层有锁，单线程跑）
-        unsafe { std::env::set_var("BOLLOON_HOME", &dir) };
-        let out = f();
-        unsafe {
-            match old {
-                Some(v) => std::env::set_var("BOLLOON_HOME", v),
-                None => std::env::remove_var("BOLLOON_HOME"),
-            }
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-        out
+        ))
     }
 
     #[test]
     fn grant_and_revoke_roundtrip_persists() {
-        with_tmp_home(|| {
-            let mut g = GrantStore::default();
-            g.grant("tools", "shell").unwrap();
-            g.grant("bins", "python3").unwrap();
-            g.grant("commands", "git push *").unwrap();
-            g.grant("paths", "/tmp/workspace/").unwrap();
-            assert!(g.save().is_ok());
+        let p = tmp_file("rt");
+        let mut g = GrantStore::default();
+        g.grant("tools", "shell").unwrap();
+        g.grant("bins", "python3").unwrap();
+        g.grant("commands", "git push *").unwrap();
+        g.grant("paths", "/tmp/workspace/").unwrap();
+        g.save_to(&p).expect("落盘");
 
-            let back = GrantStore::load();
-            assert!(back.has_tool("shell"));
-            assert!(back.allows_bin("python3"));
-            assert!(back.allows_command("git push origin main"), "前缀通配必须命中");
-            assert!(!back.allows_command("git pushy"), "前缀不能误伤");
-            assert!(back.allows_path("/tmp/workspace/sub/dir"));
-            assert!(!back.allows_path("/tmp/workspace2"), "目录前缀不能跨名字命中");
+        let back = GrantStore::load_from(&p);
+        assert!(back.has_tool("shell"));
+        assert!(back.allows_bin("python3"));
+        assert!(back.allows_command("git push origin main"), "前缀通配必须命中");
+        assert!(!back.allows_command("git pushy"), "前缀不能误伤");
+        assert!(back.allows_path("/tmp/workspace/sub/dir"));
+        assert!(!back.allows_path("/tmp/workspace2"), "目录前缀不能跨名字命中");
 
-            assert!(g.revoke("bins", "python3").unwrap());
-            assert!(!g.allows_bin("python3"));
-        });
+        assert!(g.revoke("bins", "python3").unwrap());
+        assert!(!g.allows_bin("python3"));
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]
@@ -271,5 +266,14 @@ mod tests {
         g.grant("paths", "C:\\Users\\leo\\proj").unwrap();
         assert!(g.allows_path("C:/Users/leo/proj/src"));
         assert!(!g.allows_path("C:/Users/leo/proj2"));
+    }
+
+    #[test]
+    fn corrupt_file_reads_as_empty_not_panic() {
+        let p = tmp_file("corrupt");
+        std::fs::write(&p, "{not json").unwrap();
+        let g = GrantStore::load_from(&p);
+        assert!(g.is_empty(), "损坏的库按空库处理，绝不等于\"全部已授权\"");
+        let _ = std::fs::remove_file(&p);
     }
 }

@@ -227,6 +227,157 @@ fn content_hash(s: &str) -> String {
     hex::encode(d)
 }
 
+// ─────────────────── 仓库技能文档 (`skills/<name>/SKILL.md`) ───────────────────
+//
+// 以前仓库里的 SKILL.md 只是**文档**: Rust 侧没人解析 frontmatter, 模型手里有
+// `read_skill` 工具却不知道有哪些技能 —— system prompt 的 skills 索引恒为空。
+// 这一节把磁盘上的技能文档变成**可注入的索引 + 可读的正文**, 与运行时注册表
+// (`data_dir/skills.json`) 合并成一棵索引: 重名以运行时注册表为准。
+
+/// 一份来自磁盘的技能文档
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillDoc {
+    pub name: String,
+    pub description: String,
+    pub body: String,
+}
+
+/// 极简 YAML frontmatter 解析 (只取 `key: value`, 不引第三方 yaml)
+///
+/// 返回 (键值表, 去掉 frontmatter 后的正文)。没有合法 frontmatter ⇒ 空表 + 全文。
+fn parse_frontmatter(raw: &str) -> (BTreeMap<String, String>, String) {
+    let mut it = raw.lines();
+    if it.next().map(str::trim) != Some("---") {
+        return (BTreeMap::new(), raw.to_string());
+    }
+    let mut kv = BTreeMap::new();
+    let mut consumed = 1usize;
+    let mut closed = false;
+    for line in raw.lines().skip(1) {
+        consumed += 1;
+        let t = line.trim();
+        if t == "---" {
+            closed = true;
+            break;
+        }
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = t.split_once(':') {
+            let v = v.trim().trim_matches('"').trim_matches('\'').trim().to_string();
+            kv.insert(k.trim().to_lowercase(), v);
+        }
+    }
+    if !closed {
+        return (BTreeMap::new(), raw.to_string());
+    }
+    let body = raw.lines().skip(consumed).collect::<Vec<_>>().join("\n");
+    (kv, body)
+}
+
+/// 从一个 SKILL.md 读出一条技能文档 (名字缺省用目录名)
+pub fn doc_from_file(path: &std::path::Path, fallback_name: &str) -> Option<SkillDoc> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let (fm, body) = parse_frontmatter(&raw);
+    let name = fm
+        .get("name")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| fallback_name.trim().to_string());
+    if name.is_empty() {
+        return None;
+    }
+    let description = fm
+        .get("description")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            body.lines()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| l.trim().trim_start_matches('#').trim().to_string())
+        })
+        .unwrap_or_default();
+    Some(SkillDoc { name, description, body })
+}
+
+/// 扫描仓库技能目录: `skills/<dir>/SKILL.md` 与 `skills/*.md`, 名字升序
+pub fn scan_skill_docs(root: &std::path::Path) -> Vec<SkillDoc> {
+    let dir = root.join("skills");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .map(|p| if p.is_dir() { p.join("SKILL.md") } else { p })
+        // 目录形态 (`skills/<dir>/SKILL.md`) 与扁平形态 (`skills/*.md`) 都收 ——
+        // 以前只收 SKILL.md, 文档承诺的 `skills/*.md` 静默扫不到。
+        .filter(|p| {
+            let skill_md = p.file_name().map(|n| n == "SKILL.md").unwrap_or(false);
+            let flat_md = p.extension().map(|e| e.eq_ignore_ascii_case("md")).unwrap_or(false);
+            (skill_md || flat_md) && p.is_file()
+        })
+        .collect();
+    files.sort();
+    let mut out: Vec<SkillDoc> = Vec::new();
+    for f in files {
+        // 名字缺省: 目录形态取目录名, 扁平形态取文件名(去 .md) —— 否则会退化成一个 "skills"
+        let fallback = if f.file_name().map(|n| n == "SKILL.md").unwrap_or(false) {
+            f.parent().and_then(|p| p.file_name())
+        } else {
+            f.file_stem()
+        }
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+        if let Some(doc) = doc_from_file(&f, &fallback) {
+            if !out.iter().any(|d| d.name == doc.name) {
+                out.push(doc);
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// 索引渲染: 一条一行 `- name: description` (描述截 60 字防腐烂)
+pub fn render_index(entries: &[(String, String)], limit: usize) -> String {
+    let mut out = String::from("【可用技能】(read_skill 按需加载全文)\n");
+    for (name, desc) in entries.iter().take(limit) {
+        out.push_str(&format!(
+            "- {}: {}\n",
+            name,
+            desc.chars().take(60).collect::<String>()
+        ));
+    }
+    out
+}
+
+/// **合并索引**: 运行时注册表 (`skills.json`, 做梦/提炼来的) + 仓库 SKILL.md
+///
+/// 空 ⇒ None (不注入空标题, 不占上下文)。重名以注册表为准。
+pub fn prompt_index(
+    evolver: &SkillEvolver,
+    repo_root: &std::path::Path,
+    limit: usize,
+) -> Option<String> {
+    let mut entries: Vec<(String, String)> = evolver
+        .registry
+        .skills
+        .values()
+        .map(|s| (s.name.clone(), s.description.clone()))
+        .collect();
+    for doc in scan_skill_docs(repo_root) {
+        if !entries.iter().any(|(n, _)| *n == doc.name) {
+            entries.push((doc.name, doc.description));
+        }
+    }
+    if entries.is_empty() {
+        return None;
+    }
+    entries.truncate(limit);
+    Some(render_index(&entries, limit))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +491,84 @@ mod tests {
         let mut e2 = SkillEvolver::new();
         e2.promote(&c, 1).unwrap();
         assert_eq!(e2.registry.len(), 1);
+    }
+
+    fn tmp_root(tag: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "bolloon-skills-{tag}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(p.join("skills")).unwrap();
+        p
+    }
+
+    #[test]
+    fn frontmatter_parsed_name_desc_and_body() {
+        let (fm, body) = parse_frontmatter("---\nname: review\ndescription: \"收尾核对\"\n---\n正文\n");
+        assert_eq!(fm.get("name").map(String::as_str), Some("review"));
+        assert_eq!(fm.get("description").map(String::as_str), Some("收尾核对"));
+        assert_eq!(body.trim(), "正文");
+        // 没有 frontmatter ⇒ 全文当正文, 不误判
+        let (fm2, body2) = parse_frontmatter("# 直接正文\n内容");
+        assert!(fm2.is_empty());
+        assert!(body2.contains("直接正文"));
+    }
+
+    #[test]
+    fn scan_docs_reads_repo_skills_and_falls_back_to_dir_name() {
+        let root = tmp_root("scan");
+        let d1 = root.join("skills").join("写周报");
+        std::fs::create_dir_all(&d1).unwrap();
+        std::fs::write(d1.join("SKILL.md"), "---\ndescription: 周五汇总\ntriggers: [周报]\n---\n步骤一").unwrap();
+        let d2 = root.join("skills").join("compress");
+        std::fs::create_dir_all(&d2).unwrap();
+        std::fs::write(d2.join("SKILL.md"), "# 压缩历史").unwrap();
+        let docs = scan_skill_docs(&root);
+        assert_eq!(docs.len(), 2);
+        let compress = docs.iter().find(|d| d.name == "compress").unwrap();
+        assert_eq!(compress.description, "压缩历史", "无 description 时取首行");
+        let weekly = docs.iter().find(|d| d.name == "写周报").unwrap();
+        assert_eq!(weekly.description, "周五汇总");
+        assert!(weekly.body.contains("步骤一"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scan_docs_accepts_flat_md_files() {
+        // 扁平形态 `skills/*.md`: 以前被 filter 掉 (只认 SKILL.md), 静默扫不到
+        let root = tmp_root("flat");
+        std::fs::write(
+            root.join("skills").join("quick.md"),
+            "---\ndescription: 扁平技能\n---\n正文",
+        )
+        .unwrap();
+        let docs = scan_skill_docs(&root);
+        assert_eq!(docs.len(), 1, "扁平 .md 也要被扫到");
+        assert_eq!(docs[0].name, "quick", "名字取文件名(去 .md), 不是目录名");
+        assert_eq!(docs[0].description, "扁平技能");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prompt_index_merges_registry_and_docs() {
+        let root = tmp_root("merge");
+        let d = root.join("skills").join("review");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("SKILL.md"), "---\nname: review\ndescription: 磁盘版\n---\nx").unwrap();
+        let d2 = root.join("skills").join("只读盘点");
+        std::fs::create_dir_all(&d2).unwrap();
+        std::fs::write(d2.join("SKILL.md"), "---\ndescription: 盘点本机\n---\ny").unwrap();
+        let mut e = SkillEvolver::new();
+        e.registry.register("review", "运行时版", "b", 1).unwrap();
+        let idx = prompt_index(&e, &root, 40).unwrap();
+        assert!(idx.contains("- review: 运行时版"), "重名以运行时注册表为准");
+        assert!(!idx.contains("磁盘版"));
+        assert!(idx.contains("只读盘点"), "磁盘技能也进索引");
+        // 空: 没有注册表也没有磁盘文档 ⇒ None (不注入空标题)
+        let empty_root = tmp_root("empty");
+        assert!(prompt_index(&SkillEvolver::new(), &empty_root, 40).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&empty_root);
     }
 }

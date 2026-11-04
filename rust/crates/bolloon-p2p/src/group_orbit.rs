@@ -632,6 +632,39 @@ impl GroupOrbitHub {
         v
     }
 
+    /// 从本节点移除一个群 (**真删**, 不再只是一条列表黑名单)
+    ///
+    /// 两级:
+    /// - `purge_blocks = false` ⇒ 只摘索引 (store/manifest/blocks 留在磁盘, 凭邀请链接还能加回来)
+    /// - `purge_blocks = true`  ⇒ 连带删 `root/<address>` 整目录 (本机彻底没有这条数据)
+    ///
+    /// 诚实边界: 删的是**本节点的副本**。别的节点/别的设备上的副本删不掉 ——
+    /// 去中心化存储里"让别人也删"本来就不存在, 这里只保证本机不留脏数据。
+    ///
+    /// 返回 `true` = 索引里原本有它 (摘掉了); `false` = 本来就没有。
+    pub fn remove_group(&self, group_id: &str, purge_blocks: bool) -> bool {
+        let meta = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(meta) = inner.metas.remove(group_id) else {
+                return false;
+            };
+            // 先摘 store 再从索引落盘: 顺序反了会出现"索引没了但 store 还开着"的中间态
+            inner.stores.remove(group_id);
+            self.save_index(&inner);
+            meta
+        };
+        if purge_blocks {
+            let dir = crate::orbit_store::store_dir_of(&self.root, &meta.address);
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => {}
+                // 目录不在 = 目标状态已达成, 不算失败
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => tracing::warn!("删群 {} 的 store 目录失败: {e}", meta.id),
+            }
+        }
+        true
+    }
+
     /// 群元信息
     pub fn meta(&self, group_id: &str) -> Option<GroupMeta> {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -830,6 +863,34 @@ mod tests {
         assert_eq!(hub2.list_groups().len(), 1);
         assert_eq!(hub2.history("g1", 0).unwrap().len(), 1);
         assert_eq!(hub2.address_of("g1").unwrap(), meta.address);
+    }
+
+    #[test]
+    fn remove_group_purges_index_and_blocks_only_when_asked() {
+        let root = tmp_root("remove");
+        let owner = kp(1);
+        let hub = GroupOrbitHub::new(&root);
+        hub.create_group("g1", "要删的群", owner.did.as_str(), GroupAcl::Open, 1000);
+        hub.say("g1", &owner, "x", "hi", 1100).unwrap();
+        let addr = hub.address_of("g1").unwrap();
+
+        // 软删 (只摘索引): 群从列表消失, 磁盘不动
+        assert!(hub.remove_group("g1", false));
+        assert!(hub.list_groups().is_empty());
+        assert!(hub.meta("g1").is_none());
+        assert!(root.join(&addr).exists(), "软删不该动 store 目录");
+
+        // 重开 hub ⇒ 索引里真的没有它 (不是只在内存里藏一条)
+        let hub2 = GroupOrbitHub::new(&root);
+        assert!(hub2.list_groups().is_empty(), "软删的群重开后也不该回来");
+
+        // 硬删: store 目录 (manifest/blocks/heads) 一并清掉
+        hub.create_group("g2", "再删一个", owner.did.as_str(), GroupAcl::Open, 2000);
+        let addr2 = hub.address_of("g2").unwrap();
+        assert!(hub.remove_group("g2", true));
+        assert!(!root.join(&addr2).exists(), "硬删要连 blocks/manifest/heads 一起没");
+        // 不存在的群再删 = false, 不 panic
+        assert!(!hub.remove_group("nope", true));
     }
 
     #[test]

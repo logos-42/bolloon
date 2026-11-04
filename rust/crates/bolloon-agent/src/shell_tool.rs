@@ -96,6 +96,7 @@ pub fn denied_path(text: &str) -> Option<String> {
 }
 
 /// 预检拒绝（供审计区分是哪道门拒的）
+#[derive(Debug)]
 pub struct PrecheckDeny {
     /// denylist | bin_not_allowed | path_denied
     pub kind: &'static str,
@@ -140,19 +141,14 @@ pub fn precheck_with_grants(
         });
     }
     if let Some(p) = denied_path(cmd) {
-        // 路径级一次性授权: 受保护路径被明确允许过才放行（凭据路径仍由执行器侧硬拒）
-        let allowed_path = cmd
-            .split_whitespace()
-            .filter(|t| t.starts_with('/') || t.starts_with('~') || t.contains('/'))
-            .any(|t| grants.allows_path(t.trim_matches(|c| c == '"' || c == '\'')));
-        if !allowed_path {
-            return Err(PrecheckDeny {
-                kind: "path_denied",
-                msg: format!(
-                    "shell 拒绝执行: 命令涉及受保护路径 `{p}`（默认/授权模式不拦截；完全访问下放行）"
-                ),
-            });
-        }
+        // 说明: `DENY_PATHS` 是**凭据/系统文件**的硬边界，一次性授权**不打开**它
+        //（`grants.paths` 只作用于文件工具的目录范围，不作用于这里）。
+        return Err(PrecheckDeny {
+            kind: "path_denied",
+            msg: format!(
+                "shell 拒绝执行: 命令涉及受保护路径 `{p}`（凭据/系统文件是硬边界，授权也不能打开）"
+            ),
+        });
     }
     Ok(())
 }
@@ -662,6 +658,32 @@ mod tests {
         assert_eq!(redact_cmd("echo sk-abc123"), "[已脱敏: 命令含凭据模式]");
         assert_eq!(redact_cmd("cat ~/.ssh/x"), "cat ~/.ssh/x");
         assert_eq!(redact_cmd("echo hello"), "echo hello");
+    }
+
+    /// 一次性授权（2026-11-04 leo: 工具/命令/文件/目录允许一次就永久记住，三平台一致）
+    #[test]
+    fn once_granted_bin_and_path_pass_but_denylist_never() {
+        use crate::grants::GrantStore;
+        let mut g = GrantStore::default();
+        assert_eq!(
+            precheck_with_grants("python3 -c 'x'", false, &g).unwrap_err().kind,
+            "bin_not_allowed"
+        );
+        g.grant("bins", "python3").unwrap();
+        assert!(precheck_with_grants("python3 -c 'x'", false, &g).is_ok(), "允许过的 bin 放行");
+
+        // 凭据/系统路径是硬边界: 即使 grant 了目录也不打开（denylist 或 path_denied 都算拒）
+        g.grant("paths", "/etc").unwrap();
+        let hard = precheck_with_grants("cat /etc/passwd", false, &g);
+        assert!(hard.is_err(), "凭据路径不能被一次性授权打开: {hard:?}");
+
+        g.grant("bins", "shutdown").unwrap();
+        g.grant("commands", "shutdown *").unwrap();
+        assert_eq!(
+            precheck_with_grants("shutdown now", false, &g).unwrap_err().kind,
+            "denylist",
+            "denylist 必须仍然拒 —— 一次性授权不能把硬边界打开"
+        );
     }
 
     /// **完全访问 (bypass)**: 三道权限门全跳过（纯函数验证，绝不真跑破坏性命令）
