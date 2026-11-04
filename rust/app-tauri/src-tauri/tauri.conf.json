@@ -42,7 +42,8 @@
     ],
     "createUpdaterArtifacts": true,
     "macOS": {
-      "signingIdentity": "Bolloon Local Code Signing"
+      "signingIdentity": "Bolloon Local Code Signing",
+      "hardenedRuntime": false
     }
   }
 }
