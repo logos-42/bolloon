@@ -19,12 +19,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIR="$ROOT/rust/app-tauri/src-tauri/.tauri/codesign"
+IDENTITY_NAME="${BOLLOON_CODESIGN_IDENTITY:-Bolloon Local Code Signing}"
+# 默认身份用 .tauri/codesign/；换名时各自一个子目录（免得复用到旧证书文件）
+if [[ "$IDENTITY_NAME" == "Bolloon Local Code Signing" ]]; then
+  DIR="$ROOT/rust/app-tauri/src-tauri/.tauri/codesign"
+else
+  SLUG="$(printf '%s' "$IDENTITY_NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-')"
+  DIR="$ROOT/rust/app-tauri/src-tauri/.tauri/codesign/$SLUG"
+fi
 KEY="$DIR/local.key"
 CRT="$DIR/local.crt"
 P12="$DIR/local.p12"
 PASSFILE="$DIR/local.password"
-IDENTITY_NAME="Bolloon Local Code Signing"
 
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }

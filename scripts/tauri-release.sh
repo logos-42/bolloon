@@ -32,8 +32,11 @@ echo "== 1/5 发布前自检 =="
 
 # ⓪ macOS 代码签名身份 (2026-11-04: 没有它构建会直接失败, 而且 TCC 记不住任何授权)
 if [[ "$(uname -s)" == "Darwin" ]]; then
+  # 缺身份就**自动建**(2026-11-04 leo: 别的电脑也会遇到, 要提前解决) —— build.rs 也会做同一件事,
+  # 这里再兜一次, 保证发布机上一定有稳定身份 (ad-hoc 签名会让 TCC 每次重建都重问权限)
   security find-identity -v -p codesigning 2>/dev/null | grep -qF "Bolloon Local Code Signing" \
-    || die "缺本地代码签名身份: 先跑 bash scripts/macos-codesign-local.sh identity"
+    || bash "$ROOT/scripts/macos-codesign-local.sh" identity \
+    || die "缺本地代码签名身份且自动创建失败: bash scripts/macos-codesign-local.sh identity 看原因"
   green "✓ 代码签名身份就绪 (Bolloon Local Code Signing)"
 fi
 
