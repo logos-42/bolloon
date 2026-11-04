@@ -83,6 +83,10 @@ pub struct CronStats {
     pub skills_authored_last: usize,
     /// 最近一轮"世界卡片持续更新"刷新的卡片数
     pub world_watch_last: usize,
+    /// 最近一轮"空闲主动性"的判定结果 (act / user_active / too_soon)
+    pub idle_verdict_last: String,
+    /// 最近一轮空闲主动性自动入库的 skills 数
+    pub initiative_skills_last: usize,
 }
 
 /// 服务状态（从上层注入）
@@ -127,6 +131,10 @@ pub struct AppState {
         Arc<Mutex<std::collections::HashMap<String, Arc<bolloon_agent::deliberation::DeliberationHub>>>>,
     /// 项目 skills 注册表 (经验提炼后升级到这里; 做梦机制用)
     pub skills: Arc<Mutex<bolloon_agent::skills_runtime::SkillEvolver>>,
+    /// 用户最近一次说话的时刻 (Unix ms; 0 = 还没有记录) —— 主动性空闲判定
+    pub last_user_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// 最近一次**主动出手**的时刻 (Unix ms; 0 = 还没出手过) —— 防刷屏的最小间隔
+    pub last_initiative_ms: Arc<std::sync::atomic::AtomicU64>,
     pub session_store: Arc<bolloon_agent::SessionStore>,
     pub version: &'static str,
     /// QUIC 端对端直连传输 (feature 门控; 默认启用): 好友对话的直连底座, 不经 HTTP 中继
@@ -196,7 +204,18 @@ impl AppState {
             updating: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             forge: Arc::new(Mutex::new(crate::native::NativeState::load(&dir))),
             deliberation: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            skills: Arc::new(Mutex::new(bolloon_agent::skills_runtime::SkillEvolver::new())),
+            skills: Arc::new(Mutex::new(
+                // 启动就载入磁盘注册表: 以前 new() 起空表, 重启后做梦/提炼来的技能全丢,
+                // 索引也跟着空 —— "学过的技能下次还能用"必须跨进程。
+                bolloon_agent::skills_runtime::SkillEvolver::load_json(&dir.join("skills.json")),
+            )),
+            // 启动时刻 ≠ 0: `initiative::decide` 把 0 当"没记录过用户活动 ⇒ 不动",
+            // 初值给 0 会让空闲主动性在进程启动后**永远**不触发 (功能等于死)。
+            // 按启动时刻起算: 静默满 idle_after_ms 才出手, 无人值守场景才真的跑得起来。
+            last_user_ms: Arc::new(std::sync::atomic::AtomicU64::new(
+                chrono::Utc::now().timestamp_millis().max(0) as u64,
+            )),
+            last_initiative_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             session_store,
             version: "0.6.10",
             #[cfg(feature = "quic-transport")]
@@ -515,6 +534,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/world/inbox", get(crate::native::world_inbox).post(crate::native::world_inbox_post))
         // 意图交付面: 分类 → 差距检测 → 交付物卡片 (回应的是卡片集合, 不是聊天)
         .route("/api/world/fulfill", post(crate::native::world_fulfill))
+        // 付费卡片: 智能体发布 (x402) + 报价 + 确认
+        .route("/api/agents/{id}/cards/paid", post(crate::native::agent_card_paid))
+        .route("/api/world/pay", post(crate::native::world_pay_quote))
+        .route("/api/world/pay/confirm", post(crate::native::world_pay_confirm))
         // x402 买方 (应用内付款): 报价 → 多 RPC 读链 → 卖方验链交付 → 订单落盘
         .route("/api/x402/buy/quote", post(crate::x402_buy::buy_quote))
         .route("/api/x402/buy/pay", post(crate::x402_buy::buy_pay))
@@ -780,32 +803,44 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                     enabled: true,
                     dnd_window: None,
                 });
+                // 2026-11-05: 精神层承诺的「空闲时主动做事」的**执行链**。
+                // 判定是纯函数 (bolloon_agent::initiative::decide), 这里只负责按时问一次;
+                // 5 分钟一轮 = 判定粒度, 真正的节流在 IdleWindow (10 分钟没人说话 + 30 分钟不重复)。
+                c.register(bolloon_kernel::cron::CronTask {
+                    id: "idle-initiative".into(),
+                    name: "空闲主动性 (用户不在时往前推)".into(),
+                    interval_ms: 5 * 60 * 1000,
+                    enabled: true,
+                    dnd_window: None,
+                });
             }
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 let minute = ((now / 60_000) % 1440) as u16;
-                let (due, swept, portal_due, world_due, world_watch_due) = {
+                let (due, swept, portal_due, world_due, world_watch_due, idle_due) = {
                     let mut c = st.cron.lock().await;
                     let due = c.due_tasks(now, minute);
-                    // 任务执行器尚未注册真实任务（任务源=后续接线），此处只走"拿锁→放锁"记账，
+                    // 这里只走"拿锁→放锁"记账, 真正执行在锁外 (见下面的各 due 分支),
                     // 不伪造任何未发生的执行。
                     let mut portal_due = false;
                     let mut world_due = false;
                     let mut world_watch_due = false;
+                    let mut idle_due = false;
                     for id in &due {
                         if c.begin(id, now) {
                             match id.as_str() {
                                 "portal-refresh" => portal_due = true,
                                 "world-proactive" => world_due = true,
                                 "world-watch" => world_watch_due = true,
+                                "idle-initiative" => idle_due = true,
                                 _ => {}
                             }
                             c.finish(id);
                         }
                     }
                     let swept = st.heartbeats.lock().await.sweep(now, 90_000);
-                    (due.len(), swept, portal_due, world_due, world_watch_due)
+                    (due.len(), swept, portal_due, world_due, world_watch_due, idle_due)
                 };
                 let mut portal_ok = 0usize;
                 if portal_due {
@@ -879,30 +914,33 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                 // 世界模式的主动行动: 活跃意图 → 差距 → 自动写 skill (最多 10 条/轮, 免刷屏)
                 let mut skills_authored = 0usize;
                 if world_due {
-                    let texts: Vec<String> = {
-                        let fs = st.forge.lock().await;
-                        fs.intents.iter().rev().take(10).cloned().collect()
-                    };
-                    for text in texts {
-                        if text.trim().is_empty() {
-                            continue;
-                        }
-                        let cls = bolloon_agent::world::classify_intent(&text);
-                        let intent = bolloon_agent::world::Intent {
-                            id: format!("intent-auto-{}-{}", now, short_hash(&text)),
-                            text: text.clone(),
-                            tags: text.split_whitespace().take(6).map(|s| s.to_string()).collect(),
-                            active: true,
-                            created_at_ms: now,
-                            category: cls.category,
-                            want: cls.want,
-                            clarity: cls.clarity,
-                        };
-                        if crate::native::author_skill_for_intent(&st, &intent).await.is_some() {
-                            skills_authored += 1;
-                        }
-                    }
+                    skills_authored = author_skills_from_intents(&st, now, 10).await;
                     tracing::info!(n = skills_authored, "世界主动补能力: 本轮自动入库 skills");
+                }
+                // 空闲主动性 (精神层承诺的"用户不在也往前推"): 判定是纯函数
+                // (bolloon_agent::initiative::decide), 这里只负责"到点问一次、该动就复用
+                // world-proactive 那条补能力路径" —— 判定与执行分开, 才好测、好解释。
+                let mut idle_verdict = String::new();
+                let mut initiative_skills = 0usize;
+                if idle_due {
+                    const ORD: std::sync::atomic::Ordering = std::sync::atomic::Ordering::Relaxed;
+                    let window = bolloon_agent::initiative::IdleWindow::default();
+                    let verdict = bolloon_agent::initiative::decide(
+                        now,
+                        st.last_user_ms.load(ORD),
+                        st.last_initiative_ms.load(ORD),
+                        window,
+                    );
+                    idle_verdict = verdict.as_str().to_string();
+                    if verdict == bolloon_agent::initiative::Verdict::Act {
+                        // **先**记时间戳再干活: 万一补能力中途失败, 也不在同一窗口里反复重试刷屏
+                        st.last_initiative_ms.store(now, ORD);
+                        initiative_skills = author_skills_from_intents(&st, now, 5).await;
+                        tracing::info!(
+                            n = initiative_skills,
+                            "空闲主动性: 用户已离开, 本轮自动补能力"
+                        );
+                    }
                 }
                 let mut s = st.cron_stats.lock().await;
                 s.ticks += 1;
@@ -917,6 +955,10 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                 }
                 if world_watch_due {
                     s.world_watch_last = watch_updated;
+                }
+                if !idle_verdict.is_empty() {
+                    s.idle_verdict_last = idle_verdict;
+                    s.initiative_skills_last = initiative_skills;
                 }
             }
         });
@@ -1104,6 +1146,38 @@ async fn sql_query(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value
     }
 }
 
+/// 世界意图 → 差距 → 自动写 skill (单轮上限 `cap`)
+///
+/// `world-proactive` (10 分钟一轮, cap=10) 与 `idle-initiative` (5 分钟一轮, cap=5)
+/// **共用这一条路径**: 主动性的"做什么"只有一份实现, 两处只在"何时/多少"上不同。
+async fn author_skills_from_intents(st: &AppState, now: u64, cap: usize) -> usize {
+    let texts: Vec<String> = {
+        let fs = st.forge.lock().await;
+        fs.intents.iter().rev().take(cap).cloned().collect()
+    };
+    let mut n = 0usize;
+    for text in texts {
+        if text.trim().is_empty() {
+            continue;
+        }
+        let cls = bolloon_agent::world::classify_intent(&text);
+        let intent = bolloon_agent::world::Intent {
+            id: format!("intent-auto-{}-{}", now, short_hash(&text)),
+            text: text.clone(),
+            tags: text.split_whitespace().take(6).map(|s| s.to_string()).collect(),
+            active: true,
+            created_at_ms: now,
+            category: cls.category,
+            want: cls.want,
+            clarity: cls.clarity,
+        };
+        if crate::native::author_skill_for_intent(st, &intent).await.is_some() {
+            n += 1;
+        }
+    }
+    n
+}
+
 /// 文本短哈希 (意图 id 用, 只要稳定/可读, 不用于安全)
 fn short_hash(s: &str) -> String {
     let mut h: u64 = 1469598103934665603;
@@ -1122,6 +1196,13 @@ async fn cron_status(State(st): State<AppState>) -> Json<serde_json::Value> {
         let hb = st.heartbeats.lock().await;
         (hb.alive(now, 90_000).len(), hb.thinking(now, 90_000).len())
     };
+    // 空闲主动性: 现算一次"此刻该不该动" (与 tick 里同一判定函数), 外加最近一轮的落账。
+    // 只读时间戳, 不改状态 —— 查询接口不该让主动性提前或延后。
+    const ORD: std::sync::atomic::Ordering = std::sync::atomic::Ordering::Relaxed;
+    let window = bolloon_agent::initiative::IdleWindow::default();
+    let last_user_ms = st.last_user_ms.load(ORD);
+    let last_initiative_ms = st.last_initiative_ms.load(ORD);
+    let idle_now = bolloon_agent::initiative::decide(now, last_user_ms, last_initiative_ms, window);
     Json(serde_json::json!({
         "interval_s": 30,
         "ticks": stats.ticks,
@@ -1131,11 +1212,21 @@ async fn cron_status(State(st): State<AppState>) -> Json<serde_json::Value> {
         "portal_ok_last": stats.portal_ok_last,
         "skills_authored_last": stats.skills_authored_last,
         "world_watch_last": stats.world_watch_last,
+        // 空闲主动性: idle_verdict = 此刻的判定, idle_verdict_last = 最近一轮 tick 的判定
+        "idle_verdict": idle_now.as_str(),
+        "idle_verdict_last": stats.idle_verdict_last,
+        "initiative_skills_last": stats.initiative_skills_last,
+        "idle_window": {
+            "idle_after_ms": window.idle_after_ms,
+            "min_gap_ms": window.min_gap_ms,
+        },
+        "last_user_ms": last_user_ms,
+        "last_initiative_ms": last_initiative_ms,
         "tasks": tasks,
         "alive": alive,
         "thinking": thinking,
-        // 如实: tick 循环是真的, 但"到期任务执行器"还没有注册真实任务 (tasks=0 不是假装)
-        "note": "tick 循环真跑；到期任务执行器尚未注册真实任务（tasks=0 如实）"
+        // 如实: 已注册并执行的是 portal-refresh / world-watch / world-proactive / idle-initiative
+        "note": "tick 循环真跑；已注册任务 portal-refresh/world-watch/world-proactive/idle-initiative"
     }))
 }
 
@@ -1365,11 +1456,19 @@ async fn update_group(
     Json(serde_json::json!({ "ok": true, "group_id": id, "group": out }))
 }
 
-/// POST /api/groups/{id}/delete
+/// POST /api/groups/{id}/delete[?hard=1]
 ///
-/// 只从**本节点**列表移除 (`room_closed`), store 与已落块的消息都不删 ——
-/// 去中心化存储里"删掉别人的副本"本来就不存在, 假装删掉才是骗人。
-async fn delete_group(State(st): State<AppState>, Path(id): Path<String>) -> Json<serde_json::Value> {
+/// 默认**只从本节点列表移除** (`room_closed`) —— 去中心化存储里"删掉别人的副本"不存在。
+/// `?hard=1` ⇒ 额外做本机真删: 摘 idx (`groups.json`) + 删 `root/<address>` 目录
+/// (manifest/blocks/heads 一起), 本机不留任何残留。别人的副本仍不受影响, 这叫本分。
+async fn delete_group(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let hard = matches!(q.get("hard").map(|s| s.as_str()), Some("1") | Some("true"));
+    // 先动 store (不持 forge 锁): 顺序 = 先删数据再写名单, 失败也不会出现"名单说删了但数据还在"的假象
+    let purged = hard && st.groups.remove_group(&id, true);
     let mut fs = st.forge.lock().await;
     if !fs.room_closed.iter().any(|c| c == &id) {
         fs.room_closed.push(id.clone());
@@ -1379,8 +1478,28 @@ async fn delete_group(State(st): State<AppState>, Path(id): Path<String>) -> Jso
     fs.rosters.remove(&id);
     fs.sheriff_by_group.remove(&id);
     fs.room_participants.remove(&id);
+    if hard && purged {
+        // 数据已真删, 名单那条反而会挡住同名重建 ⇒ 摘掉
+        fs.room_closed.retain(|c| c != &id);
+    }
     fs.save(&data_dir());
-    Json(serde_json::json!({ "ok": true, "group_id": id, "scope": "本节点列表" }))
+    Json(serde_json::json!({
+        "ok": true,
+        "group_id": id,
+        "hard": hard,
+        "purged": purged,
+        "scope": if hard { "本节点数据" } else { "本节点列表" },
+    }))
+}
+
+/// 本节点是否已把这个群删掉（`room_closed`）。
+///
+/// 口径：删掉的群对**所有群接口**都等于不存在 —— 只有 delete/close（再删一次）与
+/// join（重新加入时会把 id 从名单里摘掉）例外。
+/// 以前只有列表做了这层过滤，群消息 / 成员 / 邀请 / 发言照样能读能发 ——
+/// 于是"删了还在"是真实体感（智能体一读就是全量历史），不只是错觉。
+async fn group_closed(st: &AppState, id: &str) -> bool {
+    st.forge.lock().await.room_closed.iter().any(|c| c == id)
 }
 
 #[derive(Deserialize)]
@@ -1396,6 +1515,18 @@ async fn group_messages(
     Path(id): Path<String>,
     Query(q): Query<GroupQuery>,
 ) -> Json<serde_json::Value> {
+    // 已删的群 = 不存在：不然智能体/网页照样能读全历史，"删了还在"就是这么来的
+    if group_closed(&st, &id).await {
+        return Json(serde_json::json!({
+            "group_id": id,
+            "deleted": true,
+            "messages": [],
+            "thinking": [],
+            "participants": [],
+            "trust_visible": q.role.as_deref() == Some("agent"),
+            "error": "这个群已从本节点删除；要恢复请用邀请链接重新加入",
+        }));
+    }
     let limit = q.limit.unwrap_or(200) as usize;
     // after = offset (从全量历史按位置截断), limit = 取最近 N 条
     let mut msgs = st.groups.history(&id, 0).unwrap_or_default();
@@ -1695,6 +1826,12 @@ async fn group_create_topic(
 
 /// GET /api/groups/{id}/topics — 列出某个群的子讨论
 async fn group_topics(State(st): State<AppState>, Path(id): Path<String>) -> Json<serde_json::Value> {
+    if group_closed(&st, &id).await {
+        return Json(serde_json::json!({
+            "deleted": true, "group_id": id, "topics": [],
+            "error": "这个群已从本节点删除",
+        }));
+    }
     let topics: Vec<serde_json::Value> = st
         .groups
         .topics(&id)
@@ -2238,6 +2375,13 @@ async fn group_invite(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Json<serde_json::Value> {
+    if group_closed(&st, &id).await {
+        return Json(serde_json::json!({
+            "ok": false,
+            "deleted": true,
+            "error": "这个群已从本节点删除，不再生成邀请链接；要恢复请重新加入该群",
+        }));
+    }
     let now = chrono::Utc::now().timestamp_millis() as u64;
     let Some(manifest) = st.groups.manifest_of(&id) else {
         return Json(serde_json::json!({ "ok": false, "error": "取不到该群 manifest (store 未打开)" }));
@@ -2274,6 +2418,15 @@ async fn group_members_api(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Json<serde_json::Value> {
+    if group_closed(&st, &id).await {
+        return Json(serde_json::json!({
+            "ok": false,
+            "deleted": true,
+            "group_id": id,
+            "members": [],
+            "error": "这个群已从本节点删除（看不到成员/分工）",
+        }));
+    }
     let agents = {
         let fs = st.forge.lock().await;
         crate::native::room_candidate_agents(&fs, &id)
@@ -2355,6 +2508,14 @@ async fn group_say(
     Path(id): Path<String>,
     Json(req): Json<GroupSayRequest>,
 ) -> Json<serde_json::Value> {
+    if group_closed(&st, &id).await {
+        return Json(serde_json::json!({
+            "ok": false,
+            "deleted": true,
+            "group_id": id,
+            "error": "这个群已从本节点删除，不能往里发言；要恢复请用邀请链接重新加入",
+        }));
+    }
     let kp = &st.identity;
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
     // 商议决策：推选谁回应 + 控麦 + 并发去重（落块前先决策，便于运行时接线真正驱动多 agent 讨论）。
@@ -4181,6 +4342,74 @@ mod route_tests {
                     .into_json()
                     .unwrap();
             assert_eq!(agent["trust_visible"], serde_json::json!(true), "{agent}");
+        })
+        .await
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 删掉的群对**所有群接口**都等于不存在 —— 以前只有列表过滤, 群消息/成员/邀请/发言照样通,
+    /// 于是"删了还在"是真实体感。同时钉住"软删可回": 用删除前取的邀请链接重新加入, 群会回来。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deleted_group_is_gone_from_every_api_but_rejoinable() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-delgate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("rust")).unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+
+        let state = AppState::new(offline_llm());
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = serve_on(state, listener).await;
+        });
+        let base = format!("http://{addr}");
+        tokio::task::spawn_blocking(move || {
+            let get = |p: &str| -> serde_json::Value {
+                ureq::get(&format!("{base}{p}")).call().unwrap().into_json().unwrap()
+            };
+            let post = |p: &str, body: serde_json::Value| -> serde_json::Value {
+                ureq::post(&format!("{base}{p}")).send_json(body).unwrap().into_json().unwrap()
+            };
+
+            let grp = post("/api/groups", serde_json::json!({ "name": "删了就该没了" }));
+            let gid = grp["id"].as_str().unwrap().to_string();
+            post(&format!("/api/groups/{gid}/say"), serde_json::json!({ "text": "删前留一句" }));
+            // 删除前先拿邀请链接: 这个链接就是"软删可回"的凭据
+            let link = get(&format!("/api/groups/{gid}/invite"))["link"]
+                .as_str()
+                .unwrap()
+                .to_string();
+
+            // 软删 (不加 hard)
+            let del = post(&format!("/api/groups/{gid}/delete"), serde_json::json!({}));
+            assert_eq!(del["hard"], serde_json::json!(false), "{del}");
+
+            // ① 列表里没有
+            let list = get("/api/groups");
+            assert!(
+                list["groups"].as_array().unwrap().iter().all(|g| g["id"] != serde_json::json!(gid)),
+                "删掉的群还���列表里: {list}"
+            );
+            // ② 消息读不到 (智能体视角也一样)
+            let msgs = get(&format!("/api/groups/{gid}/messages?role=agent"));
+            assert_eq!(msgs["deleted"], serde_json::json!(true), "{msgs}");
+            assert!(msgs["messages"].as_array().unwrap().is_empty(), "删了还能读到历史: {msgs}");
+            // ③ 成员看不到
+            assert_eq!(get(&format!("/api/groups/{gid}/members"))["deleted"], serde_json::json!(true));
+            // ④ 不能往里说话
+            let said = post(&format!("/api/groups/{gid}/say"), serde_json::json!({ "text": "还想发" }));
+            assert_eq!(said["ok"], serde_json::json!(false), "{said}");
+            // ⑤ 不再签发邀请
+            assert_eq!(get(&format!("/api/groups/{gid}/invite"))["ok"], serde_json::json!(false));
+
+            // ⑥ 凭删除前那条邀请链接重新加入 ⇒ 群回来 (软删不是焚尸)
+            let rejoin = post("/api/groups/join", serde_json::json!({ "link": link }));
+            assert!(rejoin.get("error").is_none(), "重新加入失败: {rejoin}");
+            let msgs2 = get(&format!("/api/groups/{gid}/messages?role=agent"));
+            assert_ne!(msgs2["deleted"], serde_json::json!(true), "重加回来了就该能读: {msgs2}");
+            assert_eq!(msgs2["messages"].as_array().unwrap().len(), 1);
         })
         .await
         .unwrap();

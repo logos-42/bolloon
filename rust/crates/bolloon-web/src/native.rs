@@ -117,6 +117,9 @@ pub struct AuthRequest {
 
 pub const WRITE_TOOLS: &[&str] = &["shell", "python.run", "mem", "tasks"];
 
+/// 技能索引注入条数上限 (一条一行, 防上下文腐烂)
+pub const SKILLS_INDEX_LIMIT: usize = 30;
+
 fn sensitive_path(path: &str) -> bool {
     let p = path.to_lowercase();
     p.starts_with("/etc")
@@ -1497,12 +1500,35 @@ pub async fn build_web_system(
         bolloon_agent::prompt::inject_judgment_gate(query, &store, "web", &[])
     };
 
+    // 技能索引 (bug 12: web 侧 `index_for_prompt` **零调用点** ⇒ 模型手里有 read_skill
+    // 工具却不知道有哪些技能)。合并两处: 运行时注册表 (做梦/提炼来的, data_dir/skills.json)
+    // + 仓库磁盘技能 (`skills/<dir>/SKILL.md`)。空 ⇒ None, 不注入空标题。
+    let skills_index = {
+        let ev = st.skills.lock().await;
+        bolloon_agent::skills_runtime::prompt_index(&ev, &project_root, SKILLS_INDEX_LIMIT)
+    };
+
     let base = match docs {
         Ok(docs) => {
             let ctx = bolloon_agent::prompt::AssembleContext { channel: "web", role: None, tool: None };
-            bolloon_agent::prompt::build_system_prompt(&docs, None, None, Some(&judgment), 0, "", Some(&memory_text), &ctx).text
+            bolloon_agent::prompt::build_system_prompt(
+                &docs,
+                skills_index.as_deref(),
+                None,
+                Some(&judgment),
+                0,
+                "",
+                Some(&memory_text),
+                &ctx,
+            )
+            .text
         }
-        Err(_) => WEB_SYSTEM_PROMPT.to_string(),
+        // AgentDocs 拿不到时不能把技能索引一起丢掉: 索引是独立算出来的,
+        // 降级到内置 prompt 也照样注入 (否则模型又"有工具但不知道有哪些技能")。
+        Err(_) => match &skills_index {
+            Some(idx) => format!("{WEB_SYSTEM_PROMPT}\n{idx}"),
+            None => WEB_SYSTEM_PROMPT.to_string(),
+        },
     };
     format!(
         "{}{}{}{}{}{}{}{}{}",
@@ -1548,6 +1574,7 @@ fn capability_block(st: &AppState, agent: Option<&AgentView>) -> String {
     format!(
         "\n## 能力与接口权限（本机已授予，直接用，不用先问能不能）\n\
          - 文件/命令：`read_file` `write_file` `edit_file` `mkdir` `move_file` `shell` `git_add` `git_commit` `run_scratch_script`\n\
+         - 付费卡片 (x402)：`POST /api/agents/<aid>/cards/paid`(参数 title/summary/content/price_atomic) — 用你钱包本里的地址收款，生成带支付按钮的卡片入世界流；买家付款验链通过才交付内容\n\
          - 需要显式授权才给：`delete_file`（不可逆）、`git_push`（对外）\n\
          - IPFS/IPNS：`ipfs_add`（内容→CID）、`ipfs_cat`（CID→内容）、`ipfs_ls`、`ipns_publish`、`ipns_resolve`\n\
          - 本机接口（HTTP，可直接 curl）：`GET /api/agents/{aid}/portal`、`POST /api/agents/{aid}/portal/publish`、\
@@ -1555,9 +1582,9 @@ fn capability_block(st: &AppState, agent: Option<&AgentView>) -> String {
          {portal_line}\
          ## 群内协作规则（在群里说话时按这个来）\n\
          - 人类这一轮的命令**立即执行**（可跑命令、可读文件），不用等警长；说了要跑就真的跑，不许只描述计划\n\
-         - 你要把活交给别人：写 `[[task:智能体id:任务描述]]`；警长会先派（也可 `[[veto:目标]]` 否掉），\
-         60s 没人处理就自动派下去——所以别等，能自己做的自己做\n\
-         - 收尾用 `[[terminate]]` 宣布散会\n\
+         - 你要把活交给别人：写 `[[task:智能体id:任务描述]]`，**正在跑的成员可以直接派**\
+         (每回合最多 3 个, 超出的转提案, 警长可 `[[veto:目标]]` 否掉) —— 别等警长, 能自己做的自己做\n\
+         - 收尾：只有警长和小组长写 `[[terminate]]` 才算散会，其他人写它只当散会提议\n\
          ## 资源池（借/还都记账）\n\
          - 你可以借好友节点的模型通路（对方智能体对好友开放才行）：`POST /api/groups/{{群}}/pool` 配置后自动回退借用\n\
          - 借出会被记成贡献（`Contribution{{LocalInference}}`），本机在峰值时（同时在跑的任务多）会如实拒绝\n\
@@ -2571,6 +2598,9 @@ async fn remember_user(st: &AppState, text: &str, session_id: Option<&str>) {
     if text.trim().is_empty() {
         return;
     }
+    // 主动性空闲时钟: 用户每说一句就归零 (主动性不许在用户在场时打扰)
+    st.last_user_ms
+        .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
     {
         let mut msgs = st.messages.lock().await;
         msgs.push(ChatMessageView { role: "user".into(), content: text.to_string(), name: None });
@@ -3903,7 +3933,10 @@ pub async fn room_stop(
     Json(serde_json::json!({ "ok": true, "stopped_turn": stopped }))
 }
 
-/// POST /api/room/close
+/// POST /api/room/close {group_id, hard?}
+///
+/// 默认 = 关掉面板 (只加进 `room_closed`, 数据留着, 凭邀请还能回来)。
+/// `hard: true` ⇒ 顺带本机真删 (索引 + store 目录), 和 `groups/{id}/delete?hard=1` 同一口径。
 pub async fn room_close(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
@@ -3912,11 +3945,17 @@ pub async fn room_close(
     if gid.is_empty() {
         return Json(serde_json::json!({ "error": "缺少 group_id" }));
     }
+    let hard = req["hard"].as_bool().unwrap_or(false)
+        || matches!(req["hard"].as_str(), Some("1") | Some("true"));
+    // 先删数据 (不持 forge 锁), 再改名单: 反了会出现"名单说删了、数据还在"的假清理
+    let purged = hard && st.groups.remove_group(&gid, true);
     let closed: Vec<String> = {
         let mut fs = st.forge.lock().await;
         fs.room_running.remove(&gid);
         fs.room_participants.remove(&gid);
-        if !fs.room_closed.contains(&gid) {
+        if hard && purged {
+            fs.room_closed.retain(|x| x != &gid);
+        } else if !fs.room_closed.contains(&gid) {
             fs.room_closed.push(gid.clone());
         }
         fs.active_group = String::new();
@@ -4504,6 +4543,254 @@ pub async fn watch_opportunity(
     let on = req["on"].as_bool().unwrap_or(true);
     let ok = set_inbox_flag(&st, &id, "watch", on).await;
     Json(serde_json::json!({ "ok": ok, "id": id, "watch": on }))
+}
+
+/// POST /api/agents/{id}/cards/paid {title, summary, content, price_atomic, price_display?, wallet_address?, tags?}
+///
+/// 智能体**自己发布付费卡片** (2026-11-04 leo: 付费卡片也是智能体可以设置并分享的):
+/// x402 登记面建 item (pay_to = 智能体自己的钱包地址) + 生成带支付按钮的世界卡片
+/// (action url = `x402:item/<id>`, 不动协议枚举, 旧节点兼容) + 入世界流。
+pub async fn agent_card_paid(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let Some(agent) = agent_by_id(&st, Some(&id)).await else {
+        return Json(serde_json::json!({ "ok": false, "error": format!("没有这个智能体: {id}") }));
+    };
+    let title = req["title"].as_str().unwrap_or_default().trim().to_string();
+    let summary = req["summary"].as_str().unwrap_or_default().trim().to_string();
+    let content = req["content"].as_str().unwrap_or_default().trim().to_string();
+    let price_atomic = req["price_atomic"].as_u64().unwrap_or(0);
+    if title.is_empty() || content.is_empty() || price_atomic == 0 {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 title / content / price_atomic(原子单位, >0)" }));
+    }
+    // 收款地址: 显式给的必须是**本智能体钱包本**里的地址 (防挂别人的收款码); 不给就用第一个钱包
+    let wallets = crate::agent_wallet::public_view(&id);
+    let pay_to = match req["wallet_address"].as_str().map(|s| s.trim().to_lowercase()) {
+        Some(w) if !w.is_empty() => {
+            if !wallets.iter().any(|x| x["address"].as_str() == Some(w.as_str())) {
+                return Json(serde_json::json!({ "ok": false, "error": "wallet_address 不在该智能体钱包本里 (防挂他人收款地址)" }));
+            }
+            w
+        }
+        _ => match wallets.iter().find_map(|x| x["address"].as_str().map(|s| s.to_string())) {
+            Some(w) => w,
+            None => return Json(serde_json::json!({ "ok": false, "error": "该智能体还没有钱包 — 先在「智能体钱包」里创建" })),
+        },
+    };
+    let now = now_ms();
+    let item_id = format!("x402-{}-{}", short_did(agent.did.as_str()), now);
+    let price_display = req["price_display"].as_str().map(|s| s.to_string())
+        .unwrap_or_else(|| format!("{} micro-USDC", price_atomic));
+    let item = bolloon_x402::paid_info::PaidInfoItem {
+        protocol: bolloon_x402::paid_info::INFO_PROTOCOL.into(),
+        id: item_id.clone(),
+        title: title.clone(),
+        category: bolloon_x402::paid_info::InfoCategory::Other,
+        description: Some(summary.clone()),
+        price: bolloon_x402::paid_info::InfoPrice {
+            amount: (price_atomic as f64 / 1_000_000.0).to_string(),
+            amount_atomic: price_atomic,
+            currency: "USDC".into(),
+            network: "base".into(),
+            pay_to: pay_to.clone(),
+        },
+        provider_did: agent.did.as_str().to_string(),
+        content_hash: bolloon_x402::paid_info::compute_content_hash(&content),
+        issued_at_ms: now,
+    };
+    st.paid_info.lock().await.insert(item_id.clone(), (item, content));
+    let tags: Vec<String> = req["tags"].as_array().map(|a| {
+        a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+    }).unwrap_or_default();
+    let card = bolloon_agent::world::WorldCard {
+        title: format!("{title} · {price_display}"),
+        summary,
+        media: vec![],
+        cover: None,
+        provider_did: agent.did.as_str().into(),
+        provider_name: Some(agent.name.clone()),
+        scope: bolloon_agent::world::CardScope::Private,
+        issued_at_ms: now,
+        verification: bolloon_agent::world::CardVerification::Verified,
+        category: None,
+        tags,
+        actions: vec![bolloon_agent::world::CardAction {
+            label: format!("支付 {price_display} (x402)"),
+            url: format!("x402:item/{item_id}"),
+            kind: bolloon_agent::world::ActionKind::Link,
+        }],
+        reply_to: None,
+    };
+    let card_json = serde_json::to_value(&card).unwrap_or(serde_json::Value::Null);
+    let mut fs = st.forge.lock().await;
+    let oid = format!("card-{:04}", fs.inbox.len() + 1);
+    let inbox_item = serde_json::json!({
+        "id": oid, "kind": "card", "score": 1.5,
+        "title": card.title, "summary": card.summary,
+        "card": card_json, "source": "agent-paid-card",
+        "by": agent.did.as_str(), "ts": now,
+    });
+    fs.inbox.push(inbox_item);
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "ok": true, "id": oid, "item_id": item_id, "pay_to": pay_to,
+        "note": "已入世界流; 用「分享给好友」投递, 对方卡片上会带支付按钮" }))
+}
+
+/// 卡片 → (item_id, 收款方 did, 是否本机卡)
+async fn resolve_pay_target(st: &AppState, card_id: &str) -> Result<(String, String, bool), String> {
+    let fs = st.forge.lock().await;
+    let item = fs.inbox.iter()
+        .find(|it| it["id"].as_str() == Some(card_id))
+        .ok_or_else(|| "世界流里没有这张卡".to_string())?;
+    let card = item.get("card").cloned().unwrap_or(serde_json::Value::Null);
+    let item_id = card["actions"].as_array()
+        .and_then(|a| a.iter().filter_map(|x| x["url"].as_str())
+            .find_map(|u| u.strip_prefix("x402:item/").map(|s| s.to_string())))
+        .or_else(|| item["actions"].as_array().and_then(|a| a.iter().filter_map(|x| x["url"].as_str())
+            .find_map(|u| u.strip_prefix("x402:item/").map(|s| s.to_string()))))
+        .ok_or_else(|| "这张卡不是付费卡片 (没有 x402 支付动作)".to_string())?;
+    let by = item["by"].as_str().or_else(|| card["provider_did"].as_str())
+        .unwrap_or_default().to_string();
+    // 本机卡判定: by 是节点身份**或本机任一智能体 DID** 都算
+    // (以前只比节点身份, 自己智能体发的付费卡被当成好友卡去查不存在的对端)
+    let is_self = by == st.identity.did.as_str()
+        || fs.agents.iter().any(|a| a.did.as_str() == by);
+    Ok((item_id, by.clone(), is_self))
+}
+
+/// POST /api/world/pay {card_id} → x402 报价 (本机卡走本地登记面; 好友卡代理到对端)
+pub async fn world_pay_quote(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let card_id = req["card_id"].as_str().unwrap_or_default().trim().to_string();
+    let (item_id, by, is_self) = match resolve_pay_target(&st, &card_id).await {
+        Ok(v) => v,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
+    };
+    if is_self {
+        let store = st.paid_info.lock().await;
+        let Some((item, _)) = store.get(&item_id) else {
+            return Json(serde_json::json!({ "ok": false, "error": "x402 登记面没有这个 item" }));
+        };
+        return Json(serde_json::json!({
+            "ok": true, "item_id": item_id, "by": by, "peer": "self",
+            "pay_to": item.price.pay_to, "amount_atomic": item.price.amount_atomic.to_string(),
+            "currency": item.price.currency, "network": item.price.network,
+            "note": "本机自己发布的付费卡 (向自己钱包支付仅作验证用途)"
+        }));
+    }
+    let url = match peer_url_for_did(&st, &by).await {
+        Ok(u) => u,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("找不到对方节点地址: {e}") })),
+    };
+    match peer_json("GET", format!("{url}/api/x402/info/{item_id}"), None).await {
+        Ok(q) => {
+            let acc = q["accepts"].as_array().and_then(|a| a.first()).cloned().unwrap_or(serde_json::Value::Null);
+            Json(serde_json::json!({
+                "ok": true, "item_id": item_id, "by": by,
+                "pay_to": acc["payTo"], "amount_atomic": acc["maxAmountRequired"],
+                "currency": "USDC", "network": "base",
+            }))
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("报价失败: {e}") })),
+    }
+}
+
+/// POST /api/world/pay/confirm {card_id, tx_hash, payer?} → 付款确认 (多 RPC 观测 → 验链 → 交付)
+pub async fn world_pay_confirm(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let card_id = req["card_id"].as_str().unwrap_or_default().trim().to_string();
+    let tx_hash = req["tx_hash"].as_str().unwrap_or_default().trim().to_string();
+    let payer = req["payer"].as_str().map(|s| s.to_lowercase());
+    if card_id.is_empty() || tx_hash.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 card_id / tx_hash" }));
+    }
+    if !tx_hash.starts_with("0x") || tx_hash.len() != 66 {
+        return Json(serde_json::json!({ "ok": false, "error": "tx_hash 形状不对 (0x + 64 hex)" }));
+    }
+    let (item_id, by, is_self) = match resolve_pay_target(&st, &card_id).await {
+        Ok(v) => v,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
+    };
+    let (pay_to, amount): (String, u128) = if is_self {
+        let store = st.paid_info.lock().await;
+        let Some((item, _)) = store.get(&item_id) else {
+            return Json(serde_json::json!({ "ok": false, "error": "x402 登记面没有这个 item" }));
+        };
+        (item.price.pay_to.clone(), item.price.amount_atomic as u128)
+    } else {
+        let url = match peer_url_for_did(&st, &by).await {
+            Ok(u) => u,
+            Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("找不到对方节点地址: {e}") })),
+        };
+        let q = match peer_json("GET", format!("{url}/api/x402/info/{item_id}"), None).await {
+            Ok(q) => q,
+            Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("报价失败: {e}") })),
+        };
+        let acc = q["accepts"].as_array().and_then(|a| a.first()).cloned().unwrap_or(serde_json::Value::Null);
+        let pt = acc["payTo"].as_str().unwrap_or_default().to_lowercase();
+        let am = acc["maxAmountRequired"].as_str().and_then(|s| s.parse::<u128>().ok())
+            .or_else(|| acc["maxAmountRequired"].as_u64().map(|v| v as u128))
+            .unwrap_or(0);
+        (pt, am)
+    };
+    if pay_to.is_empty() || amount == 0 {
+        return Json(serde_json::json!({ "ok": false, "error": "报价缺 payTo/金额" }));
+    }
+    let observations = match tokio::task::spawn_blocking({
+        let tx = tx_hash.clone();
+        move || crate::x402_buy::observe(&tx)
+    }).await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => return Json(serde_json::json!({ "ok": false, "error": e })),
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("读链线程失败: {e}") })),
+    };
+    let claim = bolloon_x402::direct_payment::PaymentClaim {
+        tx_hash: tx_hash.clone(),
+        pay_to: pay_to.clone(),
+        item_id: item_id.clone(),
+        expected_amount_atomic: amount,
+        payer: payer.clone(),
+        order_seq: 0,
+    };
+    if is_self {
+        let used = st.x402_used_txs.lock().await.clone();
+        let cfg = bolloon_x402::direct_payment::DirectPaymentConfig::default();
+        let report = bolloon_x402::direct_payment::verify_direct_payment(&cfg, &claim, &observations, &used);
+        match report.verdict {
+            bolloon_x402::PaymentVerdict::Verified | bolloon_x402::PaymentVerdict::SelfAttested => {
+                st.x402_used_txs.lock().await.insert(tx_hash.clone());
+                let content = st.paid_info.lock().await.get(&item_id).map(|(_, c)| c.clone()).unwrap_or_default();
+                Json(serde_json::json!({ "ok": true, "verdict": report.verdict, "content": content,
+                    "observations": observations.len(), "note": "验链通过, 内容已交付" }))
+            }
+            other => Json(serde_json::json!({ "ok": false, "verdict": other,
+                "failed": report.failed, "observations": observations.len() })),
+        }
+    } else {
+        let url = match peer_url_for_did(&st, &by).await {
+            Ok(u) => u,
+            Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("找不到对方节点地址: {e}") })),
+        };
+        let body = serde_json::json!({ "claim": claim, "observations": observations });
+        match peer_json("POST", format!("{url}/api/x402/info/{item_id}/payment"), Some(body)).await {
+            Ok(v) => {
+                if v["status"] == serde_json::json!("delivered") {
+                    Json(serde_json::json!({ "ok": true, "verdict": v["verdict"], "content": v["content"],
+                        "observations": observations.len(), "note": "对方节点验链通过, 内容已交付" }))
+                } else {
+                    Json(serde_json::json!({ "ok": false, "verdict": v["verdict"], "failed": v["failed"],
+                        "observations": observations.len() }))
+                }
+            }
+            Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("交付失败: {e}") })),
+        }
+    }
 }
 
 pub async fn list_opportunities(

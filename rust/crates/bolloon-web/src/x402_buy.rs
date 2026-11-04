@@ -101,7 +101,7 @@ fn observe_one(rpc: &str, tx_hash: &str) -> Result<RpcObservation, String> {
 }
 
 /// 多 RPC 观测 (至少两个; 一个失败不影响另一个, 全失败如实报)
-fn observe(tx_hash: &str) -> Result<Vec<RpcObservation>, String> {
+pub(crate) fn observe(tx_hash: &str) -> Result<Vec<RpcObservation>, String> {
     let mut obs: Vec<RpcObservation> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
     for url in rpc_urls() {
