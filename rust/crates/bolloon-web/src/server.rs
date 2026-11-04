@@ -221,7 +221,17 @@ impl AppState {
             )),
             last_initiative_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             session_store,
-            version: "0.6.10",
+            // 2026-11-04: 以前写死 "0.6.10" ⇒ App 0.7.9 上界面还显示 0.6.10。
+            // 现在: App 壳启动时用 BOLLOON_APP_VERSION 注入自己的版本 (0.7.9),
+            //       裸 web/CLI 退回 crate 版本 (workspace = npm 版本, 当前 0.7.6)。
+            // 字段是 &'static str ⇒ 启动时一次性 leak（进程生命周期内只此一处，安全）。
+            version: Box::leak(
+                std::env::var("BOLLOON_APP_VERSION")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+                    .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+                    .into_boxed_str(),
+            ),
             #[cfg(feature = "quic-transport")]
             quic: None,
             script_run: bolloon_agent::scratch::ScriptRunPort::noop(),

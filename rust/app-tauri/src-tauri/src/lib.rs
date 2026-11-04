@@ -33,6 +33,10 @@ impl Drop for UpdatingGuard {
 ///         必须与 axum 同源, 所以不能用 frontendDist 直接当界面)。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 2026-11-04: 把 App 自己的版本 (0.7.9) 交给内嵌服务 —— 否则 /api/version 显示的是
+    // 硬编码的旧版本, 界面上「当前版本」永远对不上安装包。
+    // edition 2024 里 set_var 是 unsafe（单线程启动早期设置，安全）
+    unsafe { std::env::set_var("BOLLOON_APP_VERSION", env!("CARGO_PKG_VERSION")) };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
