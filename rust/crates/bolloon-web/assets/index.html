@@ -96,6 +96,11 @@
   .agent-chip{cursor:pointer;padding:3px 10px;border:1px solid var(--line);border-radius:999px;font-size:11px;opacity:.5;user-select:none;background:var(--btn-bg);color:var(--btn-text)}
   .agent-chip.on{opacity:1;border-color:var(--accent);color:var(--accent);font-weight:600}
   .room-controls button{font-size:11px;padding:5px 8px;border-radius:8px;white-space:nowrap}
+  /* 2026-11-04: 智能体/会话/群组 三个列表都可折叠 (点标题) */
+  .sec[data-fold]{cursor:pointer;user-select:none}
+  .sec[data-fold]::after{content:' ▾';opacity:.55}
+  .sec[data-fold].folded::after{content:' ▸';opacity:.55}
+  .sec[data-fold].folded + div{display:none!important}
   .room-members{display:flex;flex-wrap:wrap;gap:6px;font-size:12px;color:var(--muted);
     height:112px;overflow-y:auto;align-content:flex-start;scrollbar-width:thin;
     transition:none}  /* 2026-11-04: 高度固定, 只在内部流动 (成员再多也不撑开面板) */
@@ -775,9 +780,9 @@
     </div>
     <div class="side-scroll">
       <!-- 2026-10-26: 桌面三栏第二栏 — 按第一栏模块显隐 (chat=智能体/会话, world=意图面板) -->
-      <div class="sec" id="secAgents">智能体</div>
+      <div class="sec" id="secAgents" data-fold="agents">智能体</div>
       <div id="agents"></div>
-      <div class="sec" id="secSessions">会话</div>
+      <div class="sec" id="secSessions" data-fold="sessions">会话</div>
       <div id="sessions"></div>
       <div id="worldSideSlot">
         <div class="sec contacts-sec-head">世界卡片<span class="sec-acts"><span id="worldSideNote" style="font-size:10.5px;color:var(--muted)"></span></span></div>
@@ -795,7 +800,7 @@
             <div id="friendRequests"></div>
           </div>
           <div id="sideGroups">
-            <div class="sec contacts-sec-head">群组<span class="sec-acts"><button class="mini" id="joinGroupBtn" title="用邀请链接加入群组">加群</button><button class="mini" id="newGroupBtn" title="创建群组">＋ 创建</button></span></div>
+            <div class="sec contacts-sec-head" data-fold="groups">群组<span class="sec-acts"><button class="mini" id="joinGroupBtn" title="用邀请链接加入群组">加群</button><button class="mini" id="newGroupBtn" title="创建群组">＋ 创建</button></span></div>
             <div id="groupList"></div>
           </div>
         </div>
@@ -1259,7 +1264,7 @@ async function boot(){
   try{renderAll();}catch(e){console.warn('补齐渲染:',e);}
 }
 
-function renderAll(){ renderUpdate(); renderSidebar(); renderHeader(); renderChat(); renderModel(); renderRoomControls(); }
+function renderAll(){ renderUpdate(); renderSidebar(); renderHeader(); renderChat(); renderModel(); renderRoomControls(); try{bindFolds();}catch(_){/* 折叠绑定失败不影响主渲染 */} }
 
 let roomTimer=null;
 let roomPicked=new Set(), roomPickedDirty=false, roomPickedFor=''; // 芯片栏选中；dirty=用户手动改过，切换群组时以群组 participants 为准
@@ -1576,12 +1581,16 @@ const iconShare=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 const iconPencil=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`;
 const iconRetry=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>`;
 
+// 2026-11-04 (leo): 智能体列表 = 置顶优先, 组内按"最近有动静"倒序;
+// 会话列表 = 置顶优先, 组内按创建时间倒序。
+const lastTsOfAgent=(id)=>Math.max(0,...(state.sessions||[]).filter(s=>s.agent_id===id).map(s=>s.created_at_ms||0));
 function renderSidebar(){
   const pinnedIds=state.agent_pin||[];
   const agentsSorted=state.agents.slice().sort((a,b)=>{
     const pa=pinnedIds.indexOf(a.id), pb=pinnedIds.indexOf(b.id);
-    const wa=pa<0?1e9:pa, wb=pb<0?1e9:pb;
-    return wa-wb;
+    const wa=pa<0?Number.MAX_SAFE_INTEGER:pa, wb=pb<0?Number.MAX_SAFE_INTEGER:pb;
+    if(wa!==wb)return wa-wb;                       // 置顶在前 (按置顶顺序)
+    return lastTsOfAgent(b.id)-lastTsOfAgent(a.id); // 组内: 最新的往前顶
   });
   $('agents').innerHTML=agentsSorted.map(a=>`
     <div class="item ${a.id===state.active_agent_id?'active':''}" onclick="pickAgent('${a.id}')">
@@ -1590,7 +1599,11 @@ function renderSidebar(){
       <button class="dots" title="智能体设置" onclick="openAgentMenu(event,'${a.id}')">⋯</button>
     </div>`).join('');
   const sess=state.sessions.filter(s=>s.agent_id===state.active_agent_id)
-    .slice().sort((a,b)=>(b.pinned?1:0)-(a.pinned?1:0));
+    .slice().sort((a,b)=>{
+      const pin=(b.pinned?1:0)-(a.pinned?1:0);
+      if(pin)return pin;                            // 置顶优先
+      return (b.created_at_ms||0)-(a.created_at_ms||0); // 组内最新在前
+    });
   $('sessions').innerHTML=sess.map(s=>`
     <div class="item ${s.id===state.active_session_id?'active':''}" onclick="pickSession('${s.id}')">
       <div class="ava">${iconChat()}</div>
@@ -1601,6 +1614,28 @@ function renderSidebar(){
   $('accountDid').textContent=state.profile.did;
   $('accountAva').innerHTML=avaHTML(state.profile.avatar,state.profile.did||'me');
   if(state.phone&&state.phone.bound){$('accountDid').textContent=state.phone.phone+' · did:…'+String(state.profile.did).slice(-8);}
+}
+
+// 折叠状态 (智能体/会话/群组) —— 点标题切换, 记在本机
+function applyFolds(){
+  document.querySelectorAll('.sec[data-fold]').forEach(el=>{
+    const k='bolloon.fold.'+el.dataset.fold;
+    el.classList.toggle('folded',localStorage.getItem(k)==='1');
+  });
+}
+function bindFolds(){
+  document.querySelectorAll('.sec[data-fold]').forEach(el=>{
+    if(el.dataset.foldBound)return;
+    el.dataset.foldBound='1';
+    el.addEventListener('click',(ev)=>{
+      // 标题右侧的小按钮(加群/创建)不触发折叠
+      if(ev.target&&ev.target.closest&&ev.target.closest('button'))return;
+      const k='bolloon.fold.'+el.dataset.fold;
+      localStorage.setItem(k,localStorage.getItem(k)==='1'?'0':'1');
+      applyFolds();
+    });
+  });
+  applyFolds();
 }
 
 function renderHeader(){
@@ -2067,7 +2102,20 @@ const CAP_LABEL={chat:'对话',payment_info:'看钱包',share_judgment:'读判�
  * 选择式弹窗: 只从**已加载**的好友/群组里勾选, 不要求手输。
  * @returns {Promise<null|{selected:string[],caps:string[]}>}
  */
-function pickDialog({title,hint,items,caps=false,preselect=[]}){
+// 2026-11-04 (leo 分级授权): 普通 / 信任 / 极度信任 —— 三档按钮, 普通档下面再细选 5 项
+const GRANT_BASE=['chat','payment_info','share_judgment','invite_group','command_readonly'];
+const GRANT_LEVELS=[
+  {key:'normal', label:'普通', desc:'对话 · 看钱包 · 读判断力 · 邀请进群 · 只读指挥', caps:GRANT_BASE},
+  {key:'trust',  label:'信任', desc:'普通全部 + 可写文件（不含 shell，不能删除文件）', caps:[...GRANT_BASE,'trust_write']},
+  {key:'root',   label:'极度信任', desc:'信任全部 + 开放 shell（对方智能体可在本机执行命令，全程审计）', caps:[...GRANT_BASE,'trust_write','trust_shell'], danger:true},
+];
+function grantLevelOf(caps){
+  const c=new Set(caps||[]);
+  if(c.has('trust_shell'))return 'root';
+  if(c.has('trust_write'))return 'trust';
+  return 'normal';
+}
+function pickDialog({title,hint,items,caps=false,preselect=[],level='normal'}){
   return new Promise(resolve=>{
     const d=$('pickDlg');
     $('pickTitle').textContent=title||'选择';
@@ -2080,12 +2128,38 @@ function pickDialog({title,hint,items,caps=false,preselect=[]}){
       </label>`).join(''):'<div class="hint" style="color:var(--muted)">没有可选项 — 先去通讯录加好友 / 建群</div>';
     const capBox=$('pickCapBox');
     $('pickCaps').style.display=caps?'':'none';
-    capBox.innerHTML=caps?Object.keys(CAP_LABEL).map(k=>`<label style="display:flex;gap:4px;align-items:center"><input type="checkbox" data-cap="${k}" ${k==='chat'?'checked':''}>${CAP_LABEL[k]}</label>`).join(''):'';
+    if(caps){
+      capBox.innerHTML=GRANT_LEVELS.map(L=>`
+        <label style="display:flex;gap:7px;align-items:flex-start;padding:7px 9px;border:1px solid ${L.danger?'#b4472f':'var(--line)'};border-radius:8px;cursor:pointer;${L.danger?'background:rgba(180,71,47,.08)':''}">
+          <input type="radio" name="grantLevel" data-level="${L.key}" ${level===L.key?'checked':''}>
+          <span><b${L.danger?' style="color:#e06a4f"':''}>${L.label}</b>
+            <small style="display:block;color:var(--muted);font-size:11px">${L.desc}</small></span>
+        </label>`).join('') + `
+        <div id="grantFine" style="display:${level==='normal'?'block':'none'};margin-top:6px">
+          <div style="color:var(--muted);font-size:11px;margin:2px 0 4px">普通档可细选：</div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px">${GRANT_BASE.map(k=>`<label style="display:flex;gap:4px;align-items:center"><input type="checkbox" data-cap="${k}" checked>${CAP_LABEL[k]}</label>`).join('')}</div>
+        </div>`;
+      capBox.querySelectorAll('input[data-level]').forEach(r=>r.addEventListener('change',()=>{
+        const fine=document.getElementById('grantFine');
+        if(fine)fine.style.display=(r.value==='normal')?'block':'none';
+      }));
+    } else {
+      capBox.innerHTML='';
+    }
     const done=v=>{d.close();$('pickOk').onclick=null;$('pickCancel').onclick=null;resolve(v);};
     $('pickOk').onclick=()=>{
       const sel=[...box.querySelectorAll('input[data-i]:checked')].map(x=>(items||[])[+x.dataset.i].value);
-      const cs=caps?[...capBox.querySelectorAll('input[data-cap]:checked')].map(x=>x.dataset.cap):[];
-      done({selected:sel,caps:cs});
+      let cs=[],lv='normal';
+      if(caps){
+        const picked=capBox.querySelector('input[data-level]:checked');
+        // radio 没设 value 属性 ⇒ .value 恒为 "on"; 档位在 data-level 上
+        lv=picked?(picked.dataset.level||'normal'):'normal';
+        const L=GRANT_LEVELS.find(x=>x.key===lv)||GRANT_LEVELS[0];
+        cs=lv==='normal'
+          ? [...capBox.querySelectorAll('input[data-cap]:checked')].map(x=>x.dataset.cap)
+          : [...L.caps];
+      }
+      done({selected:sel,caps:cs,level:lv});
     };
     $('pickCancel').onclick=()=>done(null);
     if(!d.open)d.showModal();
@@ -2135,7 +2209,8 @@ async function openGrantsDialog(id){
   // 2026-11-04 (leo): 授权是**选择**不是输入 —— 直接列已加载的好友 + 能力勾选
   if(!contacts)await loadContacts();
   const cur=await api('/api/agents/'+encodeURIComponent(id)+'/grants').catch(()=>({grants:[]}));
-  const granted={};(cur.grants||[]).forEach(g=>{granted[g.did]=(g.caps||[]).map(c=>CAP_LABEL[c]||c).join('/');});
+  const lvName=k=>(GRANT_LEVELS.find(x=>x.key===k)||{}).label||k;
+  const granted={};(cur.grants||[]).forEach(g=>{granted[g.did]=grantLevelOf(g.caps);});
   const names=contactNameMap();
   const friends=(contacts&&contacts.friends)||[];
   if(!friends.length){toast('还没有好友 — 先去「通讯录」加好友');return;}
@@ -2143,12 +2218,13 @@ async function openGrantsDialog(id){
     value:d,
     label:names[d]||shortDid(d),
     // 名字为空时 label 已经是短 DID, 别再重复一遍
-    sub:granted[d]?('已授权：'+granted[d]):(names[d]?shortDid(d):''),
+    sub:granted[d]?('已授权：'+lvName(granted[d])):(names[d]?shortDid(d):''),
   }));
+  const firstLevel=Object.values(granted)[0]||'normal';
   const r=await pickDialog({
     title:'开放给好友',
-    hint:'勾选好友 + 勾选能力（已授权的好友默认勾上，可改）',
-    items,caps:true,preselect:Object.keys(granted),
+    hint:'选好友 + 选一档权限（同一档会覆盖选中好友原有设置）',
+    items,caps:true,preselect:Object.keys(granted),level:firstLevel,
   });
   if(!r)return;
   if(!r.selected.length){toast('没有选好友');return;}
@@ -2158,7 +2234,7 @@ async function openGrantsDialog(id){
     const x=await api('/api/agents/'+encodeURIComponent(id)+'/grants',{method:'POST',body:JSON.stringify({did:d,caps:r.caps})}).catch(e=>({error:e.message}));
     if(x.error)fail.push((names[d]||shortDid(d))+': '+x.error);else ok++;
   }
-  toast(fail.length?`已授权 ${ok} 位；失败 ${fail[0]}`:`已授权 ${ok} 位好友（${r.caps.map(c=>CAP_LABEL[c]||c).join('/')}）`);
+  toast(fail.length?`已授权 ${ok} 位；失败 ${fail[0]}`:`已授权 ${ok} 位好友（${lvName(r.level)}档）`);
 }
 
 async function revokeGrantsDialog(id){

@@ -2191,8 +2191,8 @@ pub struct TurnOptions {
     pub econ: Option<EconCtx>,
     /// 计量用的表面名
     pub surface: &'static str,
-    /// 只读工具子集 (好友"只读指挥"用: 只给 Read 类工具 + web_fetch, 不给写/执行)
-    pub readonly_tools: bool,
+    /// 好友指挥的工具面分级 (None = 本机自己用, 走常规 harness)
+    pub tool_scope: Option<bolloon_agent::builtin_tools::ToolScope>,
     /// 工具级审计落点 (好友只读指挥时非空; 每个工具调用一行事实, 由调用方落盘)
     pub audit_sink: Option<Arc<std::sync::Mutex<Vec<serde_json::Value>>>>,
 }
@@ -2209,7 +2209,7 @@ impl Default for TurnOptions {
             max_secs: 900,
             econ: None,
             surface: "web",
-            readonly_tools: false,
+            tool_scope: None,
             audit_sink: None,
         }
     }
@@ -2316,9 +2316,15 @@ pub async fn reply_with_agent_cfg(
     //   permission 门看到的是「零授予」, shell/write_file/edit_file 一律被拒。
     //   现在按**当前**开关值传入, 每次请求重建 harness ⇒ 开关即时生效。
     let full_access = st.full_access.load(Ordering::SeqCst);
-    let (mut harness, schemas) = if opts.readonly_tools {
-        // 好友只读指挥: 工具子集 + 死预算 (5 次 / 20s), 与本地完全访问开关无关
-        bolloon_agent::builtin_tools::readonly_harness(5, 20_000, cancel.clone()).await
+    let (mut harness, schemas) = if let Some(scope) = opts.tool_scope {
+        // 好友指挥: 按授权级别给工具面 (read_only / read_write / root), 死预算, 与本地完全访问开关无关
+        bolloon_agent::builtin_tools::harness_for_scope(
+            scope,
+            opts.tool_budget,
+            opts.max_secs.saturating_mul(1000),
+            cancel.clone(),
+        )
+        .await
     } else {
         bolloon_agent::builtin_tools::builtin_harness(
             opts.tool_budget,
@@ -3692,7 +3698,7 @@ pub async fn room_turn_exec(
         max_retries: rt.max_retries,
         tool_budget: rt.tool_budget,
         max_secs: rt.max_secs,
-        readonly_tools: false,
+        tool_scope: None,
         audit_sink: None,
         econ: Some(EconCtx {
             intent_id: intent_id.to_string(),
@@ -7145,9 +7151,21 @@ pub async fn dream_topic(
 
 /// 智能体是否对好友开放。缺省开放 (好友关系是双方明确同意过的),
 /// 关掉的方式 = 在该智能体目录下放一个 `private.json` 标记 (不猜、不改持久化 schema)。
-/// 允许授予好友的能力 (白名单; **本地完全权限/任意执行永不在名单里**)
-pub const GRANT_CAPS: &[&str] =
-    &["chat", "payment_info", "share_judgment", "invite_group", "command_readonly"];
+/// 允许授予好友的能力 (白名单)
+///
+/// 2026-11-04 (leo 分级): 普通 = chat/payment_info/share_judgment/invite_group/command_readonly;
+/// **信任** 追加 `trust_write` (可写文件, **无 shell**, 无 delete_file);
+/// **极度信任** 再追加 `trust_shell` (开放 shell —— 等于把本机命令执行交给对方智能体;
+/// 审计/预算/取消照旧, 但风险由授权人承担)。
+pub const GRANT_CAPS: &[&str] = &[
+    "chat",
+    "payment_info",
+    "share_judgment",
+    "invite_group",
+    "command_readonly",
+    "trust_write",
+    "trust_shell",
+];
 
 /// 归一化能力列表 (未知/高危一律丢弃, 不静默放行)
 pub fn normalize_caps(caps: &[String]) -> Vec<String> {
@@ -7678,16 +7696,51 @@ pub async fn agents_public_command(
             return Json(serde_json::json!({ "ok": false, "error": format!("本机没有这个智能体: {agent_id}") }));
         }
         let caps = caps_in(&fs, &agent_id, &from_did);
-        if !caps.iter().any(|c| c == "command_readonly") {
+        // 三档: 极度信任(含 shell) > 信任(可写无 shell) > 普通(只读)
+        let allowed = caps.iter().any(|c| {
+            matches!(c.as_str(), "command_readonly" | "trust_write" | "trust_shell")
+        });
+        if !allowed {
             return Json(serde_json::json!({
                 "ok": false,
-                "error": "该智能体未对这位好友开放「只读指挥」权限（永远不会开放本地完全权限）"
+                "error": "该智能体未对这位好友开放「指挥」权限（普通档需 command_readonly）"
             }));
         }
         fs.agents.iter().find(|a| a.id == agent_id).cloned()
     };
     let Some(agent) = agent else {
         return Json(serde_json::json!({ "ok": false, "error": "智能体不存在" }));
+    };
+    // 授权能力快照 (决定工具面/预算/提示词语气)
+    let caps = {
+        let fs = st.forge.lock().await;
+        caps_in(&fs, &agent_id, &from_did)
+    };
+    let has_shell = caps.iter().any(|c| c == "trust_shell");
+    let has_write = has_shell || caps.iter().any(|c| c == "trust_write");
+    let scope = if has_shell {
+        bolloon_agent::builtin_tools::ToolScope::Root
+    } else if has_write {
+        bolloon_agent::builtin_tools::ToolScope::ReadWrite
+    } else {
+        bolloon_agent::builtin_tools::ToolScope::ReadOnly
+    };
+    // 预算按档递增 (死预算, 由本机定, 对方改不了)
+    let (tool_budget, max_secs, max_turns) = match scope {
+        bolloon_agent::builtin_tools::ToolScope::ReadOnly => (5u32, 20u64, 3u32),
+        bolloon_agent::builtin_tools::ToolScope::ReadWrite => (10, 40, 4),
+        bolloon_agent::builtin_tools::ToolScope::Root => (20, 60, 6),
+    };
+    let scope_note = match scope {
+        bolloon_agent::builtin_tools::ToolScope::ReadOnly => {
+            "你**只能读** (列目录/读文件/搜索/抓网页), 不能改文件、不能执行命令。做不到就如实说缺哪项权限。"
+        }
+        bolloon_agent::builtin_tools::ToolScope::ReadWrite => {
+            "你可以读、也可以**写文件** (新建/编辑/移动/建目录), 但**不能执行命令**, 也不能删文件。破坏性操作要克制, 每次改动都要说清改了哪个文件。"
+        }
+        bolloon_agent::builtin_tools::ToolScope::Root => {
+            "你有**全部工具** (含 shell 执行)。所有调用都在对方机器的审计里留痕并受预算限制。危险命令先说明再执行, 删除/覆盖前必须确认路径。"
+        }
     };
     // 2026-11-04: 每次跨机指令一个**独立 intent_id** (可与经济计量/审计对账),
     // 格式含发起方短 DID, 便于事后按人筛。
@@ -7698,17 +7751,18 @@ pub async fn agents_public_command(
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let opts = TurnOptions {
         session_id: sid.clone(),
-        readonly_tools: true,
+        tool_scope: Some(scope),
         audit_sink: Some(audit_sink.clone()),
-        max_turns: 3,
+        max_turns,
         max_retries: 1,
-        tool_budget: 5,
-        max_secs: 20,
+        tool_budget,
+        max_secs,
         surface: "friend-command",
         extra_system: format!(
-            "\n\n## 好友只读指令\n对方是本机主人已加的好友 ({})。你**只能读** (列目录/读文件/搜索), \
-不能修改任何文件、不能执行命令、不能联网。做不到就如实说缺哪项权限。",
-            short_did(&from_did)
+            "\n\n## 好友指令（授权级别: {}）\n对方是本机主人已加的好友 ({})。{}",
+            scope.as_str(),
+            short_did(&from_did),
+            scope_note
         ),
         ..Default::default()
     };
@@ -7728,7 +7782,8 @@ pub async fn agents_public_command(
         .count();
     append_friend_audit(serde_json::json!({
         "at_ms": now_ms(),
-        "kind": "friend_command_readonly",
+        "kind": "friend_command",
+        "level": scope.as_str(),
         "intent_id": intent_id,
         "from_did": from_did,
         "agent_id": agent_id,
@@ -7736,19 +7791,19 @@ pub async fn agents_public_command(
         "ok": ok,
         "reply_chars": reply.chars().count(),
         "reply_head": reply.chars().take(160).collect::<String>(),
-        "tool_budget": 5,
-        "max_secs": 20,
-        "tools_scope": "read_only+web_fetch",
+        "tool_budget": tool_budget,
+        "max_secs": max_secs,
+        "tools_scope": scope.as_str(),
         "tools_used": tool_events,
         "tools_denied": denied,
     }));
     Json(serde_json::json!({
         "ok": ok, "reply": reply,
         "intent_id": intent_id,
-        "scope": "read_only+web_fetch", "tool_budget": 5, "max_secs": 20,
+        "scope": scope.as_str(), "tool_budget": tool_budget, "max_secs": max_secs,
         "tools_used": tool_events, "tools_denied": denied,
         "audited": true,
-        "note": "只读子集(Read + web_fetch): 无写/无执行; 每个工具调用已逐条审计"
+        "note": "按授权分级给工具面; 每个工具调用已逐条审计 (审计/预算/取消不可关)"
     }))
 }
 

@@ -477,6 +477,84 @@ pub async fn readonly_harness(
     (h, schemas)
 }
 
+/// 好友"信任"档可用的**写**类工具 (2026-11-04 leo 分级)
+///
+/// 刻意**不含** `delete_file` (不可逆) 与 `shell` (等于把本机交给对方)。
+pub const TRUSTED_WRITE_TOOLS: &[&str] = &["write_file", "edit_file", "mkdir", "move_file"];
+
+/// 好友指挥的工具可见面 (权限分级)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolScope {
+    /// 普通: 只读 + web_fetch
+    ReadOnly,
+    /// 信任: 只读 + 写 (无 shell, 无 delete)
+    ReadWrite,
+    /// 极度信任: 全量工具 (含 shell) —— 审计/预算/取消**不撤**
+    Root,
+}
+
+impl ToolScope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::ReadWrite => "read_write",
+            Self::Root => "root",
+        }
+    }
+}
+
+/// 按分级建 harness (好友指挥用; 三档共用同一套门/审计, 只是"发给模型 + 授予"的范围不同)
+pub async fn harness_for_scope(
+    scope: ToolScope,
+    calls: u32,
+    budget_ms: u64,
+    cancel: Arc<AtomicBool>,
+) -> (Arc<Harness>, Vec<ToolSchema>) {
+    match scope {
+        ToolScope::ReadOnly => readonly_harness(calls, budget_ms, cancel).await,
+        ToolScope::ReadWrite => {
+            let budget = Budget::new(calls, budget_ms);
+            let reg = Arc::new(ToolRegistry::new());
+            register_builtin_tools(&reg).await;
+            let exec = Arc::new(BuiltinExecutor::new(
+                cancel,
+                false,
+                crate::scratch::ScriptRunPort::noop(),
+            ));
+            let h = Arc::new(Harness::new(reg.clone(), exec, budget));
+            let defs: Vec<bolloon_harness::ToolDef> = builtin_tool_defs()
+                .into_iter()
+                .filter(|d| {
+                    READONLY_TOOL_NAMES.contains(&d.name.as_str())
+                        || TRUSTED_WRITE_TOOLS.contains(&d.name.as_str())
+                })
+                .collect();
+            for d in &defs {
+                h.grant(&d.name).await;
+            }
+            let schemas = tool_defs_to_schemas(&defs);
+            (h, schemas)
+        }
+        ToolScope::Root => {
+            // 全量: 等价于本机"完全访问", 但预算/取消/审计照旧 (Harness 门不拆)
+            let budget = Budget::new(calls, budget_ms);
+            let reg = Arc::new(ToolRegistry::new());
+            register_builtin_tools(&reg).await;
+            let exec = Arc::new(BuiltinExecutor::new(
+                cancel,
+                true,
+                crate::scratch::ScriptRunPort::noop(),
+            ));
+            let h = Arc::new(Harness::new(reg.clone(), exec, budget));
+            for d in reg.list().await {
+                h.grant(&d.name).await;
+            }
+            let schemas = tool_defs_to_schemas(&builtin_tool_defs());
+            (h, schemas)
+        }
+    }
+}
+
 /// 同 `builtin_harness`，但把经济层工具接上（principal 决定算谁的额度）。
 pub async fn builtin_harness_with_econ(
     calls: u32,
