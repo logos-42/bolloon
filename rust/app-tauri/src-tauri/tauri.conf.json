@@ -40,6 +40,9 @@
       "icons/icon.icns",
       "icons/icon.png"
     ],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "signingIdentity": "Bolloon Local Code Signing"
+    }
   }
 }

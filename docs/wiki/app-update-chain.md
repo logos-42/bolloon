@@ -1,3 +1,20 @@
+---
+title: App 自动更新链 (Tauri updater) — 原理、现状、换钥记录
+source: session
+created: 2026-11-04
+last_confirmed: 2026-11-04
+schema_version: 2
+audience: self
+stage: current
+status: current
+confidence: high
+entity_type: chapter
+type: design
+since: 2026-11-04
+owner: leo
+tags: [release, updater, tauri, minisign, codesign, tcc]
+---
+
 # App 自动更新链（Tauri updater）— 原理、现状、换钥记录
 
 > 2026-11-04 立档。起因：0.7.3–0.7.5 三次发布都没产出 `.sig`，线上清单停在 `0.7.0-1`，

@@ -30,6 +30,13 @@ die() { red "✗ $*"; exit 1; }
 
 echo "== 1/5 发布前自检 =="
 
+# ⓪ macOS 代码签名身份 (2026-11-04: 没有它构建会直接失败, 而且 TCC 记不住任何授权)
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  security find-identity -v -p codesigning 2>/dev/null | grep -qF "Bolloon Local Code Signing" \
+    || die "缺本地代码签名身份: 先跑 bash scripts/macos-codesign-local.sh identity"
+  green "✓ 代码签名身份就绪 (Bolloon Local Code Signing)"
+fi
+
 # ① 密钥三件套 (换钥事故的根因就是这里断的)
 [[ -f "$KEY" ]] || die "缺私钥 $KEY（签名必需；先找回或运行 tauri signer generate -w $KEY -p <密码>）"
 [[ -f "$PASSFILE" ]] || die "缺口令 $PASSFILE"
@@ -83,6 +90,22 @@ if [[ "${BUNDLE_READY:-0}" != "1" ]]; then
   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$PASSFILE")"
   ( cd "$SRC" && "$TAURI_BIN" build )
 fi
+
+echo "== 2.5/5 代码签名门 (TCC 靠它记住「已允许」) =="
+# 2026-11-05: .app 以前完全没签名, tccd 日志里 responsible 进程是 `<ID of InvalidCode>`
+# 且每次访问 桌面/文稿/下载 都重新弹窗。签名身份由 `scripts/macos-codesign-local.sh identity`
+# 建 (自签, requirement = identifier + 证书根哈希 ⇒ 跨重建稳定)。签在**打包前**才有效,
+# 所以这里只做门 (fail-closed), 不做补签 —— 补签会让 .app.tar.gz 与包内 App 不一致。
+APP_BUNDLE="$SRC/src-tauri/target/release/bundle/macos/Bolloon.app"
+[[ -d "$APP_BUNDLE" ]] || die "没找到 $APP_BUNDLE"
+codesign --verify --strict "$APP_BUNDLE" >/dev/null 2>&1 || die \
+  ".app 未签名: tauri.conf.json 的 bundle.macOS.signingIdentity 没生效 (先跑 bash scripts/macos-codesign-local.sh identity 再重建)"
+APP_REQ="$(codesign -d -r- "$APP_BUNDLE" 2>&1 | grep 'designated =>' || true)"
+[[ -n "$APP_REQ" ]] || die "读不到 designated requirement: $APP_BUNDLE"
+case "$APP_REQ" in
+  *cdhash*) die "requirement 是 cdhash (ad-hoc 签名): 每次重建 macOS 都会重新问一遍权限 —— 用自签身份签" ;;
+esac
+green "✓ 稳定签名: $APP_REQ"
 
 echo "== 3/5 收集产物 =="
 BUNDLE="$SRC/src-tauri/target/release/bundle"
