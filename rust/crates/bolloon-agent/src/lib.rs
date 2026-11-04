@@ -7,6 +7,10 @@ pub mod econ_shadow;
 // 观察者/工具签名用到的 harness 基础类型: 让上层 (web/cli) 不必再直接依赖 harness crate
 pub use bolloon_harness::{GateOutcome, ToolCall, ToolExecutor};
 pub mod bootstrap;
+pub mod belief;
+pub mod belief_tools;
+/// 一次性授权（工具/命令/二进制/路径）—— 三平台同一套，落盘记住（2026-11-04）
+pub mod grants;
 pub mod builtin_tools;
 pub mod character;
 pub mod clarity;
@@ -29,6 +33,7 @@ pub mod group_chat;
 pub mod heartbeat;
 pub mod home;
 pub mod hooks;
+pub mod initiative;
 pub mod invite_tools;
 pub mod ipfs_tools;
 pub mod judgeness;
@@ -71,6 +76,7 @@ pub mod workflow;
 pub mod workspace;
 pub mod world;
 pub use character::*;
+pub use belief::*;
 pub use contacts::*;
 pub use deliberation::*;
 pub use efficode::*;

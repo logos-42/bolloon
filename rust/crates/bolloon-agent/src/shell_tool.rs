@@ -107,6 +107,18 @@ pub struct PrecheckDeny {
 /// `bypass`（完全访问）= 所有权限开放 ⇒ **直接放行**，denylist / 命令白名单 / 路径保护全跳过。
 /// 这是用户按"完全访问"时的显式选择；超时·取消·预算·审计不在本函数内（运行控制，不随权限撤）。
 pub fn precheck(cmd: &str, bypass: bool) -> Result<(), PrecheckDeny> {
+    precheck_with_grants(cmd, bypass, &crate::grants::GrantStore::default())
+}
+
+/// 带「一次性授权库」的预检（2026-11-04 leo: 工具/命令/文件/目录允许一次就永久记住，三平台一致）
+///
+/// 与 `precheck` 的唯一区别：白名单外的 bin / 受保护路径，如果用户**明确允许过**就放行。
+/// **denylist 永远不能被 grant 打开**（`rm -rf /`、sudo、凭据路径是硬边界）。
+pub fn precheck_with_grants(
+    cmd: &str,
+    bypass: bool,
+    grants: &crate::grants::GrantStore,
+) -> Result<(), PrecheckDeny> {
     if bypass {
         return Ok(());
     }
@@ -117,22 +129,30 @@ pub fn precheck(cmd: &str, bypass: bool) -> Result<(), PrecheckDeny> {
         });
     }
     let bin = first_bin(cmd);
-    if !ALLOWED_BINS.contains(&bin.as_str()) {
+    let granted_command = grants.allows_command(cmd);
+    if !ALLOWED_BINS.contains(&bin.as_str()) && !grants.allows_bin(&bin) && !granted_command {
         return Err(PrecheckDeny {
             kind: "bin_not_allowed",
             msg: format!(
-                "shell 拒绝执行: 命令 `{bin}` 不在白名单（允许: {}）",
+                "shell 拒绝执行: 命令 `{bin}` 不在白名单（允许: {}）。允许一次并记住: 授权弹窗点「允许」或 POST /api/grants {{\"kind\":\"bins\",\"value\":\"{bin}\"}}",
                 ALLOWED_BINS.join(" ")
             ),
         });
     }
     if let Some(p) = denied_path(cmd) {
-        return Err(PrecheckDeny {
-            kind: "path_denied",
-            msg: format!(
-                "shell 拒绝执行: 命令涉及受保护路径 `{p}`（默认/授权模式不拦截；完全访问下放行）"
-            ),
-        });
+        // 路径级一次性授权: 受保护路径被明确允许过才放行（凭据路径仍由执行器侧硬拒）
+        let allowed_path = cmd
+            .split_whitespace()
+            .filter(|t| t.starts_with('/') || t.starts_with('~') || t.contains('/'))
+            .any(|t| grants.allows_path(t.trim_matches(|c| c == '"' || c == '\'')));
+        if !allowed_path {
+            return Err(PrecheckDeny {
+                kind: "path_denied",
+                msg: format!(
+                    "shell 拒绝执行: 命令涉及受保护路径 `{p}`（默认/授权模式不拦截；完全访问下放行）"
+                ),
+            });
+        }
     }
     Ok(())
 }
@@ -270,7 +290,7 @@ impl ToolExecutor for ShellExecutor {
         //    **完全访问 (bypass)** 下整段跳过（用户显式选择"所有权限都开放"）。
         //    超时 / 取消 / 预算 / 审计不在预检里 —— 它们是运行控制，不随权限撤。
         for c in &cmds {
-            if let Err(d) = precheck(c, self.bypass) {
+            if let Err(d) = precheck_with_grants(c, self.bypass, &crate::grants::snapshot()) {
                 // detail 要同时进三处 (审计 / 输出 / 证据) ⇒ 先取一份 owned, 别让 json! 把它 move 走
                 let detail = d.msg.clone();
                 audit(serde_json::json!({

@@ -28,7 +28,7 @@ use bolloon_x402::{
     direct_payment::{verify_direct_payment, DirectPaymentConfig, PaymentClaim, RpcObservation},
     paid_info::{compute_content_hash, PaidInfoItem},
 };
-use bolloon_llm::{LlmRuntime, ProviderConfig};
+use bolloon_llm::{ChatMessage, GenerateParams, LlmRuntime, ProviderConfig};
 use bolloon_p2p::{make_invite_link, pubkey_of_did, verify_invite_link, GroupAcl, GroupOrbitHub, KeyPair};
 use std::io::Read;
 
@@ -87,6 +87,10 @@ pub struct CronStats {
     pub idle_verdict_last: String,
     /// 最近一轮空闲主动性自动入库的 skills 数
     pub initiative_skills_last: usize,
+    /// 最近一轮空闲主动性按**自己的信念**挑出的下一步 (目标 id: 动作; 空 = 没有活着的目标)
+    pub initiative_goal_last: String,
+    /// 最近一轮自我设计的结果 (信念+1 目标+2 …; 空 = 这轮没到自省时间或失败)
+    pub initiative_reflection_last: String,
 }
 
 /// 服务状态（从上层注入）
@@ -242,6 +246,7 @@ impl AppState {
                             images: vec![],
                             time: String::new(),
                             streaming: false,
+                            stages: vec![],
                         })
                         .collect();
                     if last.title == "新对话" {
@@ -515,6 +520,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/room/guide", post(crate::native::room_guide))
         // clarity 授权队列 (workspace 外路径: 仅一次/本项目/完全访问/拒绝)
         .route("/api/auth/requests", get(crate::native::auth_requests))
+        // 一次性授权库（工具/命令/二进制/路径）—— 三平台同一套
+        .route("/api/grants", get(crate::native::grants_get).post(crate::native::grants_add))
+        .route("/api/grants/revoke", post(crate::native::grants_revoke))
         .route("/api/auth/request", post(crate::native::auth_request))
         .route("/api/auth/decide", post(crate::native::auth_decide))
         // 自动更新 (前端 updateBtn)
@@ -589,6 +597,10 @@ pub fn app(state: AppState) -> Router {
                 .route("/api/groups/{id}/participants", post(set_group_participants))
         .route("/api/groups/{id}/update", post(update_group))
         .route("/api/groups/{id}/delete", post(delete_group))
+        .route("/api/groups/purge-closed", post(purge_closed_groups))
+        // 信念层 (2026-11-05): agent 自己写的信念/长短期目标 —— 看面 + 手动触发一次自我设计
+        .route("/api/beliefs", get(beliefs_get))
+        .route("/api/beliefs/reflect", post(beliefs_reflect))
         .route("/api/groups/{id}/publish", post(crate::native::publish_group_to_world))
         // 群内回合运行时设置：群里是否真执行（工具/kernel loop）、步数/时长/预算
         // 群内 API 共享: 配置 / 查看本群可借用的好友节点 + 对端借算力的入口
@@ -685,6 +697,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/health", get(health))
         // cron/心跳 运行状态 (2026-11-04 bug 7: 让"在跳"可观测, 而不是只有纯函数)
         .route("/api/cron", get(cron_status))
+        // 现在就按自己的信念走一步 (人手动触发, 绕过节流; 用于核对"它到底挑了哪条信念")
+        .route("/api/initiative/tick", post(initiative_tick))
         // SQL 工具类 (只读; 与 agent 工具同一实现)
         .route("/api/sql/query", post(sql_query))
         // 群聊
@@ -922,6 +936,8 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                 // world-proactive 那条补能力路径" —— 判定与执行分开, 才好测、好解释。
                 let mut idle_verdict = String::new();
                 let mut initiative_skills = 0usize;
+                let mut initiative_goal = String::new();
+                let mut initiative_reflection = String::new();
                 if idle_due {
                     const ORD: std::sync::atomic::Ordering = std::sync::atomic::Ordering::Relaxed;
                     let window = bolloon_agent::initiative::IdleWindow::default();
@@ -935,6 +951,24 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                     if verdict == bolloon_agent::initiative::Verdict::Act {
                         // **先**记时间戳再干活: 万一补能力中途失败, 也不在同一窗口里反复重试刷屏
                         st.last_initiative_ms.store(now, ORD);
+                        // ① 想清楚要什么: 每 6h 一次, 由模型自己复盘并修订信念 / 长短期目标
+                        // (这一步失败不影响下面照常推进已有目标)
+                        if let Some(note) = self_design(&st, now, false).await {
+                            initiative_reflection = note;
+                        }
+                        // 出手前先问自己"按我的信念, 现在该做什么":
+                        // 有**信念支撑**的目标 ⇒ 那一步落成 todo (下一轮 prompt 带着它执行);
+                        // 挑不出 ⇒ 不出手, 把理由原样写进 initiative_goal_last (不许装作在推进)。
+                        let (picked, why) = bolloon_agent::belief_tools::pick_for_initiative(now);
+                        initiative_goal = match picked.as_ref() {
+                            Some((gid, action)) => format!("{gid}: {action}"),
+                            None => format!("未出手 — {why}"),
+                        };
+                        if let Some((gid, action)) = picked.as_ref() {
+                            tracing::info!(goal = %gid, action = %action, why = %why, "空闲主动性: 按信念挑出下一步并写入待办");
+                        } else {
+                            tracing::info!(why = %why, "空闲主动性: 挑不出有信念支撑的一步, 本轮不出手");
+                        }
                         initiative_skills = author_skills_from_intents(&st, now, 5).await;
                         tracing::info!(
                             n = initiative_skills,
@@ -959,6 +993,10 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                 if !idle_verdict.is_empty() {
                     s.idle_verdict_last = idle_verdict;
                     s.initiative_skills_last = initiative_skills;
+                    s.initiative_goal_last = initiative_goal;
+                    if !initiative_reflection.is_empty() {
+                        s.initiative_reflection_last = initiative_reflection;
+                    }
                 }
             }
         });
@@ -1179,6 +1217,171 @@ async fn author_skills_from_intents(st: &AppState, now: u64, cap: usize) -> usiz
 }
 
 /// 文本短哈希 (意图 id 用, 只要稳定/可读, 不用于安全)
+/// 自我设计 (2026-11-04) —— 空闲出手时让**模型自己**复盘事实、修订信念、设定长短期目标。
+///
+/// 为什么要有这一步: 只从已有目标里机械挑一个, 信念会永远停在人写的那几条, 不会长。
+/// "agent 自己设计自己的信念和目标" 必须是**模型参与**的一步, 不是外部塞 JSON。
+///
+/// 三条纪律:
+/// - 节流 `REFLECTION_INTERVAL_MS` (6h), 且**先落时间戳再调模型** —— 模型挂了也不会在同一
+///   窗口里每 30s 重试打爆额度 (与空闲主动性同一条纪律);
+/// - 事实只给本机真实数据 (记忆/待办/统计); 没有就让它老实说没有, 不许空想;
+/// - 模型失败 / JSON 解析失败都写进 `reflection.json`, 不静默 —— "没发生"和"失败了"要能分开。
+///
+/// `force = true` 是给人用的 (`POST /api/beliefs/reflect`): 用户想**现在**看它自己的判断时,
+/// 不该被 6h 节流挡住。节流只为自动那条路挡重复烧钱。
+async fn self_design(st: &AppState, now: u64, force: bool) -> Option<String> {
+    let path = bolloon_agent::belief_tools::state_dir().join("reflection.json");
+    let prev: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let last_ms = prev.get("last_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+    if !force
+        && last_ms != 0
+        && now.saturating_sub(last_ms) < bolloon_agent::belief::REFLECTION_INTERVAL_MS
+    {
+        return None;
+    }
+    // 先落时间戳: 后面无论成败, 这一轮都算"做过了"
+    let mut record = serde_json::json!({
+        "last_ms": now,
+        "last_error": serde_json::Value::Null,
+        "last_result": serde_json::Value::Null,
+    });
+    let flush = |rec: &serde_json::Value| {
+        let body = serde_json::to_string_pretty(rec).unwrap_or_default();
+        let _ = std::fs::write(&path, body);
+    };
+
+    let cfg = bolloon_llm::config_store::load();
+    let resolved = match bolloon_llm::config_store::active_resolved(&cfg) {
+        Ok(r) => r,
+        Err(e) => {
+            record["last_error"] = serde_json::json!(format!("没有可用模型: {e}"));
+            flush(&record);
+            tracing::warn!(error = %e, "自我设计跳过: 没有可用模型");
+            return None;
+        }
+    };
+
+    // 事实: 最近记忆 + 未完成目标 + 心跳统计 (都是本机真数据, 不是编的)
+    let mut facts: Vec<String> = Vec::new();
+    {
+        let db = st.memory_db.lock().await;
+        if let Ok(rows) = db.recall("bolloon", None, 5, now) {
+            for r in rows {
+                facts.push(format!("记忆[{}] {}", r.layer, r.content));
+            }
+        }
+    }
+    let mut store = bolloon_agent::belief_tools::load_store();
+    if let Some(c) = bolloon_agent::belief_tools::todo_progress_text() {
+        facts.push(format!("未完成的待办:\n{c}"));
+    }
+    facts.push(format!("现在有 {} 条活着的信念、{} 个活着目标",
+        store.live_beliefs().len(), store.active_commitments().len()));
+
+    let (sys, user) = bolloon_agent::belief::reflection_prompt(&store, now, &facts);
+    let llm = st.llm_snapshot();
+    // 直接产出 JSON 的候选文本: content 里有 JSON 用 content, 否则看 reasoning_content
+    // (思考模型常常正文空、JSON 落在 reasoning 里), 两处都没有就拼起来当证据。
+    let pick_json = |r: &bolloon_llm::GenerateResult| -> String {
+        let content = r.content.trim().to_string();
+        let reasoning = r.reasoning_content.clone().unwrap_or_default();
+        if content.contains('{') {
+            content
+        } else if reasoning.contains('{') {
+            reasoning
+        } else {
+            format!("{content}\n{reasoning}")
+        }
+    };
+    // 最多两把: 第一把按规矩要 JSON; 若模型整段只输出推理 (真模型实测会这样, 被 max_tokens
+    // 截在思考中途) ⇒ 第二把明确"只输出 JSON", 并把上限放大。一把失败就整轮放弃是以前的病。
+    let mut raw = String::new();
+    let mut attempts = 0u32;
+    for attempt in 0..2u32 {
+        let mut msgs = vec![
+            ChatMessage {
+                role: "system".into(),
+                content: sys.clone(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+                images: vec![],
+                reasoning_content: None,
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: user.clone(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+                images: vec![],
+                reasoning_content: None,
+            },
+        ];
+        if attempt == 1 {
+            msgs.push(ChatMessage {
+                role: "user".into(),
+                content: "你上一条没有输出可解析的 JSON (只有推理)。现在**只**输出那个 JSON 对象: \
+                          第一个字符是 {, 不要任何解释、不要代码块、不要推理。"
+                    .into(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+                images: vec![],
+                reasoning_content: None,
+            });
+        }
+        let mut params = GenerateParams::new(resolved.model.clone(), msgs);
+        params.temperature = 0.4;
+        params.max_tokens = if attempt == 0 { 1600 } else { 2600 };
+        attempts = attempt + 1;
+        let result = match llm.generate(&resolved.id, params).await {
+            Ok(r) => r,
+            Err(e) => {
+                record["last_error"] = serde_json::json!(format!("模型调用失败: {e}"));
+                record["attempts"] = serde_json::json!(attempts);
+                flush(&record);
+                tracing::warn!(error = %e, "自我设计跳过: 模型调用失败");
+                return None;
+            }
+        };
+        raw = pick_json(&result);
+        if raw.contains('{') {
+            break;
+        }
+        tracing::warn!(attempt, "自我设计: 这一把没有 JSON, 换硬提示再来一把");
+    }
+    record["attempts"] = serde_json::json!(attempts);
+    record["last_raw"] = serde_json::json!(raw.chars().take(600).collect::<String>());
+    match bolloon_agent::belief::apply_reflection(&mut store, &raw, now) {
+        Ok(applied) => {
+            if let Err(e) = bolloon_agent::belief_tools::persist(&store) {
+                record["last_error"] = serde_json::json!(e);
+                flush(&record);
+                return None;
+            }
+            record["last_result"] = serde_json::to_value(&applied).unwrap_or(serde_json::Value::Null);
+            flush(&record);
+            let note = format!(
+                "信念+{} 目标+{} 退休{} 跳过{}",
+                applied.beliefs_written, applied.goals_written, applied.retired, applied.skipped
+            );
+            tracing::info!(note = %note, "自我设计: 按事实修订了自己的信念与目标");
+            Some(note)
+        }
+        Err(e) => {
+            record["last_error"] = serde_json::json!(format!("解析失败: {e}"));
+            flush(&record);
+            tracing::warn!(error = %e, "自我设计: 模型输出不是可解析的 JSON");
+            None
+        }
+    }
+}
+
 fn short_hash(s: &str) -> String {
     let mut h: u64 = 1469598103934665603;
     for b in s.as_bytes() {
@@ -1216,6 +1419,20 @@ async fn cron_status(State(st): State<AppState>) -> Json<serde_json::Value> {
         "idle_verdict": idle_now.as_str(),
         "idle_verdict_last": stats.idle_verdict_last,
         "initiative_skills_last": stats.initiative_skills_last,
+        // 按自己信念挑出的下一步 (来自 ~/.bolloon/agent/beliefs.json); 空 = 没有活着的目标
+        "initiative_goal_last": stats.initiative_goal_last,
+        // 自我设计最近一次结果 + 上一次失败原因 (没发生与失败要能分开看)
+        "initiative_reflection_last": stats.initiative_reflection_last,
+        "reflection": std::fs::read_to_string(
+            bolloon_agent::belief_tools::state_dir().join("reflection.json"),
+        )
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({"last_ms": 0, "note": "还没做过自我设计"})),
+        "beliefs": {
+            "live": bolloon_agent::belief_tools::load_store().live_beliefs().len(),
+            "active_goals": bolloon_agent::belief_tools::load_store().active_commitments().len(),
+        },
         "idle_window": {
             "idle_after_ms": window.idle_after_ms,
             "min_gap_ms": window.min_gap_ms,
@@ -1253,6 +1470,8 @@ async fn sessions(State(st): State<AppState>) -> Json<Vec<SessionMeta>> {
 }
 
 async fn send(State(st): State<AppState>, Json(req): Json<SendRequest>) -> Json<SendResponse> {
+    // 用户在说话 ⇒ 主动性退让 (见 touch_user_activity 的注释: 以前这笔账从没记过)
+    touch_user_activity(&st);
     let session_id = req.session_id.unwrap_or_else(|| "default".to_string());
 
     // 记录用户消息
@@ -1282,6 +1501,52 @@ async fn send(State(st): State<AppState>, Json(req): Json<SendRequest>) -> Json<
         session_id,
         reply,
     })
+}
+
+/// 用户在说话 ⇒ 主动性退让 (记一笔"刚活跃")。
+///
+/// 以前 `last_user_ms` 只在**进程启动**时设一次, 之后没有任何入口更新它:
+/// 于是"用户 10 分钟没说话"这个前提是假的 —— 人在聊, 心跳照样判该出手, 主动性就成了打扰。
+/// 每个真实用户入口 (本地对话 / 流式对话 / 发送) 都要把这一笔记账。
+pub fn touch_user_activity(st: &AppState) {
+    const ORD: std::sync::atomic::Ordering = std::sync::atomic::Ordering::Relaxed;
+    st.last_user_ms
+        .store(chrono::Utc::now().timestamp_millis().max(0) as u64, ORD);
+}
+
+/// POST /api/initiative/tick —— "现在就按我的信念走一步" (人手动触发, 绕过节流)
+///
+/// 平时这条由 cron `idle-initiative` 在空闲窗口自动做; 这里给的是**可复现的验证入口**:
+/// 不问"是否该出手"的时机, 直接走一遍「信念 → 目标 → 落 todo」, 把结果逐字返回,
+/// 人能核对它到底是按哪条信念挑的、或者为什么挑不出来。
+async fn initiative_tick(State(st): State<AppState>) -> Json<serde_json::Value> {
+    const ORD: std::sync::atomic::Ordering = std::sync::atomic::Ordering::Relaxed;
+    let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    let (picked, why) = bolloon_agent::belief_tools::pick_for_initiative(now);
+    // 出手时间照记: 手动触发也算一次真实出手, 免得紧接着的空闲窗口再刷一遍
+    st.last_initiative_ms.store(now, ORD);
+
+    let goal_last = match picked.as_ref() {
+        Some((gid, action)) => format!("{gid}: {action}"),
+        None => format!("未出手 — {why}"),
+    };
+    {
+        let mut s = st.cron_stats.lock().await;
+        s.initiative_goal_last = goal_last.clone();
+    }
+    let store = bolloon_agent::belief_tools::load_store();
+    Json(serde_json::json!({
+        "ok": true,
+        "acted": picked.is_some(),
+        "goal": picked.as_ref().map(|(g, _)| g.clone()),
+        "next_action": picked.as_ref().map(|(_, a)| a.clone()),
+        "why": why,
+        "initiative_goal_last": goal_last,
+        "beliefs_live": store.live_beliefs().len(),
+        "goals_active": store.active_commitments().len(),
+        "goals_belief_backed": store.belief_backed_count(),
+        "todo": bolloon_agent::belief_tools::todo_progress_text(),
+    }))
 }
 
 // ---------- 群聊 ----------
@@ -1489,6 +1754,134 @@ async fn delete_group(
         "hard": hard,
         "purged": purged,
         "scope": if hard { "本节点数据" } else { "本节点列表" },
+    }))
+}
+
+/// GET /api/beliefs —— 看 agent **自己的**信念与长短期目标 (它就写在 beliefs.json 里)
+///
+/// 只读。`render` 是注入 system prompt 的同一段文本 —— 前端/CLI 看到的就是模型看到的,
+/// 不另做一份"好看版", 否则两边口径会飘。
+async fn beliefs_get(State(_st): State<AppState>) -> Json<serde_json::Value> {
+    let store = bolloon_agent::belief_tools::load_store();
+    Json(serde_json::json!({
+        "ok": true,
+        "live": store.live_beliefs().len(),
+        "active_goals": store.active_commitments().len(),
+        "beliefs": store.live_beliefs().iter().map(|b| serde_json::json!({
+            "id": b.id, "statement": b.statement, "kind": b.kind.as_str(),
+            "confidence": b.confidence, "updated_ms": b.updated_ms,
+        })).collect::<Vec<_>>(),
+        "goals": store.active_commitments().iter().map(|g| serde_json::json!({
+            "id": g.id, "statement": g.statement, "horizon": g.horizon.as_str(),
+            "next_action": g.next_action, "progress": g.progress, "status": g.status.as_str(),
+            "due_ms": g.due_ms,
+        })).collect::<Vec<_>>(),
+        "render": store.render(2000),
+        "path": bolloon_agent::belief_tools::beliefs_path().to_string_lossy(),
+    }))
+}
+
+/// POST /api/beliefs/reflect —— 让 agent **现在**按事实重新设计自己的信念与目标
+///
+/// 平时这条由 cron `idle-initiative` 每 6h 在空闲窗口自动做; 这里给人手动触发 (绕过节流)。
+/// 没有可用模型 / 模型输出不是可解析 JSON ⇒ 如实报错, 不写半条假信念。
+async fn beliefs_reflect(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let now = chrono::Utc::now().timestamp_millis() as u64;
+    let before = bolloon_agent::belief_tools::load_store();
+    let (live0, goals0) = (before.live_beliefs().len(), before.active_commitments().len());
+    match self_design(&st, now, true).await {
+        Some(note) => {
+            let after = bolloon_agent::belief_tools::load_store();
+            Json(serde_json::json!({
+                "ok": true,
+                "note": note,
+                "before": { "live": live0, "active_goals": goals0 },
+                "after": {
+                    "live": after.live_beliefs().len(),
+                    "active_goals": after.active_commitments().len(),
+                },
+            }))
+        }
+        None => {
+            // 为什么没成: reflection.json 里记着 (没有可用模型 / 模型调用失败 / JSON 解析失败)
+            let rec: serde_json::Value = std::fs::read_to_string(
+                bolloon_agent::belief_tools::state_dir().join("reflection.json"),
+            )
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+            Json(serde_json::json!({
+                "ok": false,
+                "error": rec.get("last_error").cloned().unwrap_or(serde_json::Value::Null),
+                "detail": "模型没跑成/输出不可解析 —— 详见 reflection.json; 本次没有写入任何信念",
+            }))
+        }
+    }
+}
+
+/// 和群**共用同一份 orbit 索引**、但本身不是群的 store。清理已删群时一律绕开。
+///
+/// `intent-stream` 是眼镜实时意图流 (`list_groups` 会把它一起列出来, 所以它被当群删过一次);
+/// 把它跟着群一起 purge 会真删掉意图流数据 —— 那是另一种"删错东西"。
+const NON_GROUP_STORES: &[&str] = &["intent-stream"];
+
+/// POST /api/groups/purge-closed —— 把「从列表删过」的群残留真清掉
+///
+/// 为什么需要它: `/delete` 不带 `hard` 是 **soft 删** —— 只把 id 记进 `room_closed` 黑名单,
+/// 索引条目与 store 目录全都留着 (本义是"凭邀请可回")。用户在界面上只看到群消失了,
+/// 看不到"磁盘里还占着", 于是删过的群越积越多 = 「已删除的群没删干净」的体感来源。
+///
+/// 这里一次性把已删群的索引 + blocks 真删, 并从黑名单摘掉 (数据没了黑名单反而会挡同名重建)。
+async fn purge_closed_groups(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let closed: Vec<String> = {
+        let fs = st.forge.lock().await;
+        fs.room_closed.clone()
+    };
+    let mut purged: Vec<String> = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
+    let mut restored: Vec<String> = Vec::new();
+    for id in &closed {
+        if NON_GROUP_STORES.contains(&id.as_str()) {
+            // 非群 store 曾被当成群删过 ⇒ 数据其实一块没动, 挡住它的只是这条黑名单: 摘掉即恢复
+            restored.push(id.clone());
+            continue;
+        }
+        // 索引里本来就没有 ⇒ 不碰 (宁可少删, 不删错)
+        if st.groups.meta(id).is_none() {
+            kept.push(id.clone());
+            continue;
+        }
+        if st.groups.remove_group(id, true) {
+            purged.push(id.clone());
+        } else {
+            kept.push(id.clone());
+        }
+    }
+    if purged.is_empty() && restored.is_empty() {
+        return Json(serde_json::json!({
+            "ok": true, "purged": [], "restored": [], "kept": kept,
+            "note": "没有待清理的群残留",
+        }));
+    }
+    {
+        let mut fs = st.forge.lock().await;
+        fs.room_closed
+            .retain(|c| !purged.contains(c) && !restored.contains(c));
+        for id in &purged {
+            fs.group_overrides.remove(id);
+            fs.sheriffs.remove(id);
+            fs.rosters.remove(id);
+            fs.sheriff_by_group.remove(id);
+            fs.room_participants.remove(id);
+        }
+        fs.save(&data_dir());
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "purged": purged,
+        "restored": restored,
+        "kept": kept,
+        "scope": "本节点数据",
     }))
 }
 
@@ -1986,6 +2379,14 @@ pub(crate) async fn group_join(
                 return Json(serde_json::json!({ "error": why, "quota_exhausted": true }));
             }
             let meta = st.groups.import_group_as(&gid, manifest, req.parent.clone(), now);
+            // 重新加入 = 用户明确要它回来 ⇒ 把它从"已删名单"里摘掉。
+            // (以前这里没摘: 删过的群即使凭邀请重新加入, 也永远被当成不存在 —— 这就是"删不干净的镜像面: 加不回来")
+            {
+                let mut fs = st.forge.lock().await;
+                fs.room_closed.retain(|x| x != &meta.id);
+                fs.active_group = meta.id.clone();
+                fs.save(&data_dir());
+            }
             Json(serde_json::json!({
                 "group_id": meta.id, "name": meta.name, "parent": meta.parent,
                 "address": meta.address,

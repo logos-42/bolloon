@@ -75,8 +75,14 @@ pub struct UiMessage {
     pub stages: Vec<String>,
 }
 
-/// 会话历史里每个回答**保留的阶段条数** (前端只渲染这么几条, 多了折叠栏过长、最新那条反而看不到)
-pub const STAGES_IN_HISTORY: usize = 5;
+/// 会话历史里每个回答**保留的阶段条数**。
+///
+/// 2026-11-04 (leo: 「5 个阶段硬编码导致不断覆盖新记录」):
+/// **存储不设 5** —— 历史里留 40 条，前端只渲染最新 5 条（`STAGES_SHOWN`）。
+/// 以前落盘也砍到 5，一有新阶段就把旧记录挤掉，看起来像"一直被旧记录覆盖"。
+pub const STAGES_IN_HISTORY: usize = 40;
+/// 前端**展示**条数（折叠栏只显示最新的这几条；与历史保留量解耦）
+pub const STAGES_SHOWN: usize = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiSession {
@@ -2438,6 +2444,13 @@ pub async fn reply_with_agent_cfg(
         )
         .await
     };
+    // 2026-11-04 (leo): 一次性授权库里的工具直接补授 (三平台同一套; 重启后仍有效)
+    {
+        let g = bolloon_agent::grants::snapshot();
+        for name in &g.tools {
+            harness.grant(name).await;
+        }
+    }
     // 受治理配置: 安全紧急控制 + 超时覆盖 (harness)
     let harness = {
         let h = std::sync::Arc::get_mut(&mut harness).expect("harness Arc 应唯一");
@@ -2573,11 +2586,19 @@ pub async fn reply_with_agent_cfg(
         steps.len() as u32,
         steps.iter().map(|s| s.tool_calls.len() as u32).sum(),
     );
-    let mut final_text = steps
-        .iter()
-        .rev()
-        .find_map(|s| s.response.as_ref().map(|r| r.content.trim().to_string()))
+    // 2026-11-04 (leo: 「（小宝 这一轮没有产出内容）」偶发): 思考模型 (deepseek 等) 有时
+    // **只给 reasoning_content、正文为空** —— 以前这里直接落到「没有产出内容」, 用户看到的是空气泡。
+    // 现在: 正文空 ⇒ 用这一轮的思考兜底并**如实标注**(不冒充正文), 实在没有才说没产出。
+    let last_resp = steps.iter().rev().find_map(|s| s.response.as_ref());
+    let mut final_text = last_resp
+        .map(|r| r.content.trim().to_string())
         .filter(|c| !c.is_empty())
+        .or_else(|| {
+            last_resp.and_then(|r| r.reasoning_content.clone()).map(|rc| {
+                let t: String = rc.trim().chars().take(1200).collect();
+                format!("（这一轮模型只给了思考、没有正文；以下是它的原始思考）\n\n{t}")
+            })
+        })
         .unwrap_or_else(|| {
             format!(
                 "（{} 这一轮没有产出内容）",
@@ -4371,6 +4392,43 @@ pub async fn auth_requests(State(st): State<AppState>) -> Json<serde_json::Value
     Json(serde_json::json!({ "requests": pending }))
 }
 
+/// GET /api/grants —— 一次性授权库（工具 / 命令 / 二进制 / 路径）
+pub async fn grants_get() -> Json<serde_json::Value> {
+    let g = bolloon_agent::grants::snapshot();
+    Json(serde_json::json!({
+        "ok": true,
+        "tools": g.tools, "bins": g.bins, "commands": g.commands, "paths": g.paths,
+        "path": bolloon_agent::grants::grants_path().to_string_lossy(),
+        "hint": "POST /api/grants {kind,value} 允许一次并永久记住; POST /api/grants/revoke 收回",
+    }))
+}
+
+/// POST /api/grants {kind, value} —— 允许一次并永久记住（denylist / 凭据路径不在此列）
+pub async fn grants_add(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let kind = req["kind"].as_str().unwrap_or_default();
+    let value = req["value"].as_str().unwrap_or_default();
+    match bolloon_agent::grants::grant(kind, value) {
+        Ok(g) => Json(serde_json::json!({
+            "ok": true, "granted": { "kind": kind, "value": value },
+            "tools": g.tools, "bins": g.bins, "commands": g.commands, "paths": g.paths,
+        })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
+/// POST /api/grants/revoke {kind, value} —— 收回一次授权
+pub async fn grants_revoke(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let kind = req["kind"].as_str().unwrap_or_default();
+    let value = req["value"].as_str().unwrap_or_default();
+    match bolloon_agent::grants::revoke(kind, value) {
+        Ok((removed, g)) => Json(serde_json::json!({
+            "ok": true, "removed": removed,
+            "tools": g.tools, "bins": g.bins, "commands": g.commands, "paths": g.paths,
+        })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
 /// POST /api/auth/decide (仅一次/本项目/完全访问/拒绝; 敏感路径 allow_* 拒)
 pub async fn auth_decide(
     State(st): State<AppState>,
@@ -4389,7 +4447,38 @@ pub async fn auth_decide(
     if decision == "allow_full" {
         st.full_access.store(true, Ordering::SeqCst);
     }
-    Json(serde_json::json!({ "ok": true, "status": r.status }))
+    // 2026-11-04 (leo: 工具/命令/文件/目录允许一次就永久记住, 三平台一致):
+    // 「本项目」= 记住这条(目录/命令/二进制); 「完全访问」= 记下全部内置工具。
+    let (op, target) = (r.op.clone(), r.path.clone());
+    let mut granted: Vec<String> = Vec::new();
+    if decision == "allow_project" || decision == "allow_full" {
+        let mut push = |kind: &str, value: &str| match bolloon_agent::grants::grant(kind, value) {
+            Ok(_) => granted.push(format!("{kind}:{value}")),
+            Err(e) => tracing::warn!(error = %e, kind, value, "授权落盘失败"),
+        };
+        if decision == "allow_full" {
+            for t in bolloon_agent::builtin_tools::DEFAULT_GRANTED_TOOLS {
+                push("tools", t);
+            }
+            // 完全访问是"全部放开" —— 用现成的进程级开关，不靠一条条 grant 堆
+            push("tools", "shell");
+        }
+        if op == "shell" {
+            // shell 请求里 path 字段放的是命令原文: 允许这条命令, 并把它的 bin 也记住
+            if let Some(bin) = target.split_whitespace().next() {
+                push("bins", bin.trim());
+            }
+            if !target.trim().is_empty() {
+                push("commands", target.trim());
+            }
+        } else if !target.trim().is_empty() {
+            // 文件/目录请求: 记住目录前缀（文件则记它的父目录）
+            let p = std::path::Path::new(target.trim());
+            let dir = if p.is_dir() { p.to_path_buf() } else { p.parent().unwrap_or(p).to_path_buf() };
+            push("paths", &dir.to_string_lossy());
+        }
+    }
+    Json(serde_json::json!({ "ok": true, "status": r.status, "granted": granted }))
 }
 
 
@@ -9865,30 +9954,27 @@ mod stage_tests {
         }
         runs.finish("s4", "finished", "好");
         let of = runs.stages_of("s4");
-        assert_eq!(of, vec!["步骤 2", "步骤 3", "步骤 4", "步骤 5", "步骤 6"], "收尾后仍是尾部(最新)那 5 条");
-        assert_eq!(runs.snapshot("s4")["stages"].as_array().unwrap().len(), STAGES_IN_HISTORY);
+        assert_eq!(of, vec!["步骤 1", "步骤 2", "步骤 3", "步骤 4", "步骤 5", "步骤 6"], "收尾后阶段不丢(历史留 40)");
         assert_eq!(runs.snapshot("s4")["stages"].as_array().unwrap().last().unwrap(), "步骤 6");
     }
 
     /// 2026-11-04 (leo: 折叠栏过长 · 最新更新不出现): 对前端只给**最新 5 条**,
     /// 后端仍留 40 条历史 (stages_of 也是尾部 5 条, 落会话历史用同一口径)。
     #[test]
-    fn stages_are_capped_to_latest_five() {
+    fn stages_are_kept_up_to_forty_and_never_lose_the_newest() {
         let runs = ChatRuns::default();
         let _c = runs.begin("s3");
-        for i in 1..=8 {
+        for i in 1..=45 {
             runs.stage("s3", &format!("步骤 {i}"));
         }
         let snap = runs.snapshot("s3");
         let arr = snap["stages"].as_array().expect("stages 数组");
-        assert_eq!(arr.len(), STAGES_IN_HISTORY, "对前端只回最新 5 条");
-        assert_eq!(arr.last().unwrap(), "步骤 8", "最新的必须在内");
-        assert_eq!(arr.first().unwrap(), "步骤 4", "更早的被截掉");
-        assert_eq!(snap["stage"], "步骤 8");
-        assert_eq!(
-            runs.stages_of("s3"),
-            vec!["步骤 4", "步骤 5", "步骤 6", "步骤 7", "步骤 8"]
-        );
+        assert_eq!(arr.len(), STAGES_IN_HISTORY, "历史保留 40 条 (展示端只渲染 5 条)");
+        assert_eq!(arr.last().unwrap(), "步骤 45", "最新的一定在内");
+        assert_eq!(arr.first().unwrap(), "步骤 6", "只丢掉更早的");
+        assert_eq!(snap["stage"], "步骤 45");
+        assert_eq!(runs.stages_of("s3").last().unwrap(), "步骤 45");
+        assert_eq!(STAGES_SHOWN, 5, "展示条数与存储条数解耦");
     }
 
     /// 2026-11-04 (leo: 流光卡片会突然消失): 阶段必须能**落进会话历史**并反序列化回来,
