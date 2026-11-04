@@ -3014,27 +3014,105 @@ function renderWorldSideCards(list){
   if($('worldSideNote'))$('worldSideNote').textContent=rows.length?('最近看过 / 可能有用 · '+rows.length):'';
 }
 let menuWorldCard='', menuWorldUrl='', worldCardsById={};
+// 2026-11-04 (leo): 世界链接支持 IPFS / IPNS / Web —— 非 web 协议转公共网关在网页打开
+function worldUrlToWeb(u){
+  const s=String(u||'').trim();
+  if(!s)return '';
+  if(/^https?:\/\//i.test(s))return s;
+  let m=s.match(/^(ipfs|ipns):\/\/(.+)$/i);
+  if(m)return 'https://ipfs.io/'+m[1].toLowerCase()+'/'+m[2].replace(/^\//,'');
+  // 裸 CID (Qm… 46 位 base58 / bafy… v1) 才认, 不猜
+  if(/^(Qm[1-9A-HJ-NP-Za-km-z]{44}|bafy[a-z0-9]{50,})$/.test(s))return 'https://ipfs.io/ipfs/'+s;
+  return '';
+}
+function firstCardLink(o){
+  if(!o)return '';
+  const cands=[o.url,(o.card&&o.card.actions||[]).map(a=>a.url),(o.links||[]),(o.card&&o.card.media||[]).map(m=>m.url)]
+    .flat().filter(Boolean);
+  for(const u of cands){const w=worldUrlToWeb(u);if(w)return w;}
+  return '';
+}
 function openWorldCardUrl(id){
-  const url=(worldCardsById[id]||{}).url;
-  if(url)window.open(url,'_blank');
-  else toast('这张卡片没有外链');
+  const w=firstCardLink(worldCardsById[id]);
+  if(w)window.open(w,'_blank');
+  else toast('这张卡片没有可打开的链接 (web/ipfs/ipns)');
 }
 function openWorldCardMenu(e,id){
   if(e&&e.stopPropagation)e.stopPropagation();
   menuWorldCard=id;
-  menuWorldUrl=(worldCardsById[id]||{}).url||'';
-  const m=$('groupMenu');
-  if(!m){toast('菜单容器缺失');return;}
+  const o=worldCardsById[id]||{};
+  menuWorldUrl=o.url||'';
+  let m=document.getElementById('worldCardMenu');
+  if(!m){m=document.createElement('div');m.id='worldCardMenu';m.className='menu hidden';document.body.appendChild(m);}
+  $('groupMenu')?.classList.add('hidden');
   m.innerHTML=`
-    <button onclick="openWorldCard(menuWorldCard)">打开</button>
-    <button onclick="openWorldCardUrl(menuWorldCard)">${menuWorldUrl?'打开链接':'（无外链）'}</button>
-    <button onclick="voteWorldCard(menuWorldCard,'up')">赞一下（往前）</button>
-    <button onclick="voteWorldCard(menuWorldCard,'down')">踩一下（往后）</button>
+    <button onclick="openWorldCardUrl(menuWorldCard)">打开链接</button>
+    <button onclick="shareWorldCard(menuWorldCard)">分享给好友</button>
+    <button onclick="pinWorldCard(menuWorldCard)">${o.pinned?'取消固定':'固定'}</button>
+    <button onclick="watchWorldCard(menuWorldCard)">${o.watch?'关闭持续更新':'持续更新'}</button>
+    <button onclick="acceptWorldCard(menuWorldCard)">接受</button>
+    <button onclick="rejectWorldCard(menuWorldCard)">拒绝</button>
+    <button onclick="voteWorldCard(menuWorldCard,'up')">赞（往前）</button>
+    <button onclick="voteWorldCard(menuWorldCard,'down')">踩（往后）</button>
     <button onclick="deleteWorldCard()">删除（本机）</button>`;
   m.classList.remove('hidden');
-  const w=196,h=210;
+  const w=200,h=300;
   m.style.left=Math.max(8,Math.min(e.clientX,innerWidth-w))+'px';
   m.style.top=Math.max(8,Math.min(e.clientY,innerHeight-h))+'px';
+  m.querySelectorAll('button').forEach(btn=>btn.addEventListener('click',()=>m.classList.add('hidden')));
+  if(!window.__wcmBound){
+    window.__wcmBound=true;
+    document.addEventListener('click',(ev)=>{
+      const mm=document.getElementById('worldCardMenu');
+      if(!mm||mm.classList.contains('hidden'))return;
+      if(mm.contains(ev.target))return;
+      mm.classList.add('hidden');
+    });
+    document.addEventListener('keydown',(ev)=>{ if(ev.key==='Escape')document.getElementById('worldCardMenu')?.classList.add('hidden'); });
+  }
+}
+async function pinWorldCard(id){
+  const o=worldCardsById[id]||{};
+  const r=await api('/api/opportunities/'+encodeURIComponent(id)+'/pin',{method:'POST',body:JSON.stringify({on:!o.pinned})}).catch(e=>({error:e.message}));
+  if(r.error){toast('操作失败: '+r.error);return;}
+  toast(o.pinned?'已取消固定':'已置顶（排最前）');
+  await loadWorld();
+}
+async function watchWorldCard(id){
+  const o=worldCardsById[id]||{};
+  const r=await api('/api/opportunities/'+encodeURIComponent(id)+'/watch',{method:'POST',body:JSON.stringify({on:!o.watch})}).catch(e=>({error:e.message}));
+  if(r.error){toast('操作失败: '+r.error);return;}
+  toast(o.watch?'已关闭持续更新':'已开启持续更新（每 30 分钟抓一次）');
+  await loadWorld();
+}
+async function acceptWorldCard(id){
+  try{await api('/api/opportunities/'+encodeURIComponent(id)+'/accept',{method:'POST',body:'{}'});toast('已接受');await loadWorld();}
+  catch(e){toast('接受失败: '+e.message);}
+}
+async function rejectWorldCard(id){
+  try{await api('/api/opportunities/'+encodeURIComponent(id)+'/ignore',{method:'POST',body:'{}'});toast('已拒绝 — 同源不再进推荐流');await loadWorld();}
+  catch(e){toast('拒绝失败: '+e.message);}
+}
+async function shareWorldCard(id){
+  const o=worldCardsById[id]; if(!o){toast('卡片不存在');return;}
+  await loadContacts();
+  const names=contactNameMap();
+  const friends=(contacts&&contacts.friends)||[];
+  if(!friends.length){toast('还没有好友 — 先去通讯录加好友');return;}
+  const r=await pickDialog({title:'分享卡片给好友',hint:'会按 bolloon-world-card 协议签名投递',items:friends.map(d=>({value:d,label:names[d]||shortDid(d),sub:shortDid(d)}))});
+  if(!r||!r.selected.length)return;
+  // 组装可跨机的 WorldCard (fulfill 卡有完整 card; 收件箱直放条目就地构造, 不编字段)
+  const card=o.card||{
+    title:o.title||'', summary:o.summary||'', media:o.media||[], cover:null,
+    provider_did:o.by||'', provider_name:null, scope:'public',
+    issued_at_ms:o.ts||Date.now(), category:null, tags:o.tags||[], actions:[], reply_to:o.intent_id||null,
+  };
+  let ok=0;const fail=[];
+  for(const d of r.selected){
+    const x=await api('/api/world/cards/share',{method:'POST',body:JSON.stringify(card)}).catch(e=>({error:e.message}));
+    if(x&&x.error)fail.push((names[d]||shortDid(d))+': '+x.error);else ok++;
+  }
+  toast(fail.length?`已分享 ${ok} 位；失败 ${fail[0]}`:`已按协议分享给 ${ok} 位好友`);
 }
 async function deleteWorldCard(){
   try{
@@ -3050,7 +3128,8 @@ async function loadWorld() {
     box.innerHTML = (j.opportunities || []).map(o => {
       const tags = (o.tags || []).map(t => `<span class="tag-chip">${escapeHTML(t)}</span>`).join("");
       const scopeIcon = o.kind === "card" ? "🎴" : (o.scope === "public" ? "🌐" : "🌍");
-      const url = o.url ? ` <a href="${escapeHTML(o.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">链接</a>` : "";
+      const webUrl = worldUrlToWeb(o.url);   // ipfs:// ipns:// 裸CID → 网关; web 原样
+      const url = webUrl ? ` <a href="${escapeHTML(webUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">打开链接</a>` : "";
       const cv = cardCover(o);
     // 媒体槽 (2026-10-30 leo: 卡片里预留视频流/图片格式, 外部智能体可推)
     // 优先用推送里的 media[]; 没有就从 links 里认出扩展名 (只认不猜)
@@ -3069,7 +3148,7 @@ async function loadWorld() {
     }).join("");
       return `<div class="opp-card ${cv.tier}" data-oid="${escapeHTML(o.id)}" onclick="toggleCardDetail(event,'${escapeHTML(o.id)}')">
         <div class="oh"><b>${escapeHTML(o.title)}</b><span class="scope">${o.by?('by '+escapeHTML(o.by)):(scopeIcon + ' ' + escapeHTML(o.kind || "world"))}</span><span class="score">${(o.score ?? 0).toFixed(2)}</span></div>
-        <div class="sum">${escapeHTML(o.summary || "")}${url}</div>
+        <div class="sum">${escapeHTML(o.summary || "")}${url}${o.pinned?' <span class="tag-chip" style="color:var(--accent);border-color:var(--accent)">🔖 固定</span>':''}${o.watch?' <span class="tag-chip">👁 持续更新</span>':''}</div>
         ${cv.html}
         ${mediaHtml}
         ${cardLine(o)}
@@ -3079,6 +3158,7 @@ async function loadWorld() {
           ${o.accepted ? '<span class="tag-chip" style="color:var(--accent);border-color:var(--accent)">已接受</span>' : `<button data-act="accept" data-id="${o.id}">接受</button>`}
           <button data-act="ignore" data-id="${o.id}">忽略</button>
           <span class="wcard-vote"><button class="up" onclick="voteWorldCard('${o.id}','up')">👍 ${o.up||0}</button><button onclick="voteWorldCard('${o.id}','down')">👎 ${o.down||0}</button></span>
+          <button class="dots" title="卡片操作" onclick="event.stopPropagation();openWorldCardMenu(event,'${o.id}')">⋯</button>
           <span class="why">${escapeHTML(o.why || o.reason || "")}</span>
           <div class="opp-detail" id="detail-${escapeHTML(o.id)}" style="display:none">
           <div style="white-space:pre-wrap;font-size:12.5px;line-height:1.55;margin:4px 0">${escapeHTML(o.summary || '(没有正文)')}</div>

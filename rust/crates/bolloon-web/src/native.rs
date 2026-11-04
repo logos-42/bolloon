@@ -4470,6 +4470,42 @@ pub async fn remove_intent(
 }
 
 /// GET /api/opportunities → 机会流 (按意图重打分; 校准环过滤; 信箱置顶)
+/// 通用: 找信箱条目并设置标记 (pin/watch)
+async fn set_inbox_flag(st: &AppState, id: &str, flag: &str, on: bool) -> bool {
+    let mut fs = st.forge.lock().await;
+    for item in fs.inbox.iter_mut() {
+        let cur = item["id"].as_str().unwrap_or_default();
+        if cur == id {
+            item[flag] = serde_json::json!(on);
+            fs.save(&data_dir());
+            return true;
+        }
+    }
+    false
+}
+
+/// POST /api/opportunities/{id}/pin {on}: 置顶/取消 (置顶 = 排序权重 +10)
+pub async fn pin_opportunity(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let on = req["on"].as_bool().unwrap_or(true);
+    let ok = set_inbox_flag(&st, &id, "pinned", on).await;
+    Json(serde_json::json!({ "ok": ok, "id": id, "pinned": on }))
+}
+
+/// POST /api/opportunities/{id}/watch {on}: 持续更新开关 (cron world-watch 每 30 分钟抓一次)
+pub async fn watch_opportunity(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let on = req["on"].as_bool().unwrap_or(true);
+    let ok = set_inbox_flag(&st, &id, "watch", on).await;
+    Json(serde_json::json!({ "ok": ok, "id": id, "watch": on }))
+}
+
 pub async fn list_opportunities(
     State(st): State<AppState>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -4521,7 +4557,15 @@ pub async fn list_opportunities(
         } else {
             RankWeights::HALF_LIFE_H // 没时间戳 ⇒ 按"半天旧"处理, 不假装最新
         };
-        let (rank, why) = rank_card(score, opened, up, down, age_h);
+        let pinned = item.get("pinned").and_then(|v| v.as_bool()).unwrap_or(false);
+        let watching = item.get("watch").and_then(|v| v.as_bool()).unwrap_or(false);
+        // 置顶 = 排序权重 +10 (盖过标签分, 但仍是同一排序管线)
+        let score_eff = if pinned { score + 10.0 } else { score };
+        let (mut rank, mut why) = rank_card(score_eff, opened, up, down, age_h);
+        if pinned {
+            rank = 0.0;
+            why = "置顶".into();
+        }
         // json! 里不能放带 let 的块, 先算好 (空 ⇒ 默认值, 不编造"已验证")
         let verification = {
             let v = pick("verification");
@@ -4536,8 +4580,10 @@ pub async fn list_opportunities(
             "title": title,
             "summary": summary,
             "tags": tags,
-            "score": score,
+            "score": score_eff,
             "reason": reason,
+            "pinned": pinned,
+            "watch": watching,
             "url": pick("url"),
             "kind": pick("kind").as_str().unwrap_or("card").to_string(),
             "source": item.get("from").and_then(|f| f.as_str()).unwrap_or("world-card"),

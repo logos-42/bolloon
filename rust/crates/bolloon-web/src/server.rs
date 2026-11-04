@@ -81,6 +81,8 @@ pub struct CronStats {
     pub portal_ok_last: usize,
     /// 最近一轮"世界主动补能力"自动入库的 skills 数
     pub skills_authored_last: usize,
+    /// 最近一轮"世界卡片持续更新"刷新的卡片数
+    pub world_watch_last: usize,
 }
 
 /// 服务状态（从上层注入）
@@ -504,6 +506,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/intents/remove", post(crate::native::remove_intent))
         .route("/api/opportunities", get(crate::native::list_opportunities))
         .route("/api/opportunities/{id}/ignore", post(crate::native::ignore_opportunity))
+        // 世界卡片菜单: 置顶 / 持续更新 (cron 每 30 分钟抓一次)
+        .route("/api/opportunities/{id}/pin", post(crate::native::pin_opportunity))
+        .route("/api/opportunities/{id}/watch", post(crate::native::watch_opportunity))
         .route("/api/opportunities/{id}/accept", post(crate::native::accept_opportunity))
         .route("/api/world/profile", get(crate::native::world_profile))
         .route("/api/world/watch", get(crate::native::world_watch))
@@ -762,6 +767,13 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                 // 2026-11-04 (leo): 世界模式的**主动行动** —— 定期扫活跃意图,
                 // 发现能力差距就自动写方法型 skill (不等用户再问一次)
                 c.register(bolloon_kernel::cron::CronTask {
+                    id: "world-watch".into(),
+                    name: "世界卡片持续更新".into(),
+                    interval_ms: 30 * 60 * 1000,
+                    enabled: true,
+                    dnd_window: None,
+                });
+                c.register(bolloon_kernel::cron::CronTask {
                     id: "world-proactive".into(),
                     name: "世界意图主动补能力".into(),
                     interval_ms: 10 * 60 * 1000,
@@ -773,25 +785,27 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 let minute = ((now / 60_000) % 1440) as u16;
-                let (due, swept, portal_due, world_due) = {
+                let (due, swept, portal_due, world_due, world_watch_due) = {
                     let mut c = st.cron.lock().await;
                     let due = c.due_tasks(now, minute);
                     // 任务执行器尚未注册真实任务（任务源=后续接线），此处只走"拿锁→放锁"记账，
                     // 不伪造任何未发生的执行。
                     let mut portal_due = false;
                     let mut world_due = false;
+                    let mut world_watch_due = false;
                     for id in &due {
                         if c.begin(id, now) {
                             match id.as_str() {
                                 "portal-refresh" => portal_due = true,
                                 "world-proactive" => world_due = true,
+                                "world-watch" => world_watch_due = true,
                                 _ => {}
                             }
                             c.finish(id);
                         }
                     }
                     let swept = st.heartbeats.lock().await.sweep(now, 90_000);
-                    (due.len(), swept, portal_due, world_due)
+                    (due.len(), swept, portal_due, world_due, world_watch_due)
                 };
                 let mut portal_ok = 0usize;
                 if portal_due {
@@ -804,6 +818,62 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                         if r["ok"] == serde_json::json!(true) {
                             portal_ok += 1;
                         }
+                    }
+                }
+                // 世界卡片持续更新: watch=true 且有 url 的卡片, 重新抓取刷新摘要 (≤5 条/轮)
+                let mut watch_updated = 0usize;
+                if world_watch_due {
+                    let targets: Vec<(String, String)> = {
+                        let fs = st.forge.lock().await;
+                        fs.inbox
+                            .iter()
+                            .filter(|it| it.get("watch").and_then(|v| v.as_bool()).unwrap_or(false))
+                            .filter_map(|it| {
+                                let id = it["id"].as_str()?.to_string();
+                                let url = it["url"].as_str()?.to_string();
+                                Some((id, url))
+                            })
+                            .take(5)
+                            .collect()
+                    };
+                    for (id, url) in targets {
+                        use bolloon_agent::ToolExecutor as _;
+                        let r = bolloon_agent::net_tools::NetExecutor
+                            .execute(bolloon_agent::ToolCall {
+                                id: format!("world-watch-{id}"),
+                                name: "web_fetch".into(),
+                                arguments: serde_json::json!({ "url": url }),
+                            })
+                            .await;
+                        if !r.ok {
+                            continue;
+                        }
+                        let body = bolloon_agent::skill_install::parse_fetch_output(&r.output)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        if body.is_empty() {
+                            continue;
+                        }
+                        let mut fs = st.forge.lock().await;
+                        if let Some(item) = fs
+                            .inbox
+                            .iter_mut()
+                            .find(|it| it["id"].as_str() == Some(id.as_str()))
+                        {
+                            let snip: String = body.chars().take(400).collect();
+                            item["summary"] = serde_json::json!(snip);
+                            item["ts"] = serde_json::json!(now);
+                            watch_updated += 1;
+                        }
+                        drop(fs);
+                        let _ = {
+                            let fs = st.forge.lock().await;
+                            fs.save(&crate::server::data_dir())
+                        };
+                    }
+                    if watch_updated > 0 {
+                        tracing::info!(n = watch_updated, "world-watch: 刷新了持续更新的卡片");
                     }
                 }
                 // 世界模式的主动行动: 活跃意图 → 差距 → 自动写 skill (最多 10 条/轮, 免刷屏)
@@ -844,6 +914,9 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                 }
                 if world_due {
                     s.skills_authored_last = skills_authored;
+                }
+                if world_watch_due {
+                    s.world_watch_last = watch_updated;
                 }
             }
         });
@@ -1057,6 +1130,7 @@ async fn cron_status(State(st): State<AppState>) -> Json<serde_json::Value> {
         "heartbeats_swept": stats.swept_last,
         "portal_ok_last": stats.portal_ok_last,
         "skills_authored_last": stats.skills_authored_last,
+        "world_watch_last": stats.world_watch_last,
         "tasks": tasks,
         "alive": alive,
         "thinking": thinking,
