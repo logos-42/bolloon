@@ -2377,8 +2377,11 @@ async function shareAgent(id){
   try{
     const r=await api('/api/agents/share',{method:'POST',body:JSON.stringify({id})});
     if(r.error)throw new Error(r.error);
-    const link=location.origin+r.url;
-    try{await navigator.clipboard.writeText(link);toast('分享链接已复制: '+link);}catch(_){toast('分享链接: '+link);}
+    // 2026-11-04 (leo): 分享记录走 IPFS —— 优先给 IPFS 链接 (内容寻址, 不依赖本节点在线);
+    // Kubo 不可用时才退回本地 /share 链接, 并在提示里如实说明。
+    const link=r.gateway||(location.origin+r.url);
+    const note=r.ipfs?('IPFS 已发布('+String(r.ipfs).slice(0,12)+'…) '):('本地分享链接 '+(r.ipfs_error?('(IPFS 不可用: '+r.ipfs_error+') '):''));
+    try{await navigator.clipboard.writeText(link);toast(note+'已复制: '+link);}catch(_){toast(note+link);}
   }catch(err){toast('分享失败: '+err.message);}
 }
 
@@ -2942,6 +2945,12 @@ async function submitMessage(text,images){
     assistant.think='';
     // 2026-11-05 (用户: 流光卡片会突然消失): 阶段不再一刀抹掉 —— 跑完**折起来**留一行标题,
     // 想看再展开。清空会让人以为卡住/闪退, 也让"刚才它做了什么"彻底查不到。
+    // 2026-11-04 (leo: 折叠里「一直是旧的那 5 条」): 收尾再拉一次服务端阶段 ——
+    // 服务端现在保留最后一轮的尾部 (last_stages), 这里以它为准, 免得 SSE 漏掉收尾那几条。
+    try{
+      const q=await api('/api/chat/status?session_id='+encodeURIComponent(s.id));
+      if(Array.isArray(q.stages)&&q.stages.length)assistant.stages=q.stages.slice(-STAGES_SHOWN);
+    }catch(_){}
     if(!Array.isArray(assistant.stages)||!assistant.stages.length)assistant.stages=[];
     else assistant.stagesFolded=true;
     renderSidebar();renderChat();

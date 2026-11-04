@@ -116,6 +116,79 @@ pub fn ipfs_tool_defs() -> Vec<ToolDef> {
     ]
 }
 
+// ── 自动拉起 Kubo (leo 2026-11-04: 「分享用 IPFS 发布」不能要求人先手动开 daemon) ──
+
+/// 找 `ipfs` 可执行文件：`BOLLOON_IPFS_BIN` > PATH > ~/bin > /usr/local/bin > /opt/homebrew/bin
+fn ipfs_bin() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("BOLLOON_IPFS_BIN") {
+        let p = std::path::PathBuf::from(p);
+        if p.is_file() { return Some(p); }
+    }
+    let mut cands: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in path.split(':') {
+            cands.push(std::path::Path::new(dir).join("ipfs"));
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        cands.push(std::path::Path::new(&home).join("bin/ipfs"));
+        cands.push(std::path::Path::new(&home).join(".local/bin/ipfs"));
+    }
+    cands.push("/usr/local/bin/ipfs".into());
+    cands.push("/opt/homebrew/bin/ipfs".into());
+    cands.into_iter().find(|p| p.is_file())
+}
+
+fn probe_api() -> Result<(), String> {
+    ureq::post(&format!("{}/api/v0/id", api_base()))
+        .timeout(std::time::Duration::from_millis(700))
+        .call()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Kubo 没连上就**自动起一个**（幂等，已有就立刻返回）。最多等 `wait_ms`。
+///
+/// 这是给人用的：点一次「分享」不该先教他去终端敲 `ipfs daemon`。
+/// daemon 脱离当前进程运行（stdio 丢掉），App 退出也不会把它带走。
+pub fn ensure_daemon(wait_ms: u64) -> Result<(), String> {
+    if probe_api().is_ok() {
+        return Ok(());
+    }
+    let Some(bin) = ipfs_bin() else {
+        return Err(not_running("找不到 ipfs 可执行文件"));
+    };
+    // 仓库没初始化过就先 init（幂等；已有配置会直接报 already exists，忽略即可）
+    if let Ok(home) = std::env::var("HOME") {
+        let repo = std::path::Path::new(&home).join(".ipfs");
+        if !repo.join("config").is_file() {
+            let _ = std::process::Command::new(&bin)
+                .arg("init")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+    std::process::Command::new(&bin)
+        .arg("daemon")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("启动 ipfs daemon 失败: {e}"))?;
+    let step = std::time::Duration::from_millis(300);
+    let tries = (wait_ms / 300).max(1);
+    for _ in 0..tries {
+        std::thread::sleep(step);
+        if probe_api().is_ok() {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "已启动 ipfs daemon, 但 {wait_ms}ms 内 API 仍不可用（首次启动可能要初始化/同步）"
+    ))
+}
+
 // ── 可复用原语（web 侧的「智能体对外门户」直接用这些，不再复制 HTTP 细节） ──
 
 /// 上传一段文本，返回 CID

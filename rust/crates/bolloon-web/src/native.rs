@@ -2862,6 +2862,9 @@ pub struct ChatRun {
     pub running: bool,
     pub started_ms: u64,
     pub stages: Vec<String>,
+    /// finish() 之后保留的最后一轮阶段 (回到会话/落历史时取这里 —— 否则收尾那几条
+    /// 「完成 N 步」会在清空时丢掉, 界面看起来就是「一直停在旧的那 5 条」)
+    pub last_stages: Vec<String>,
     pub text: String,
     /// "" | finished | aborted | failed | max_steps
     pub stop: String,
@@ -2876,6 +2879,7 @@ impl Default for ChatRun {
             running: false,
             started_ms: 0,
             stages: vec![],
+            last_stages: vec![],
             text: String::new(),
             stop: String::new(),
             turns: 0,
@@ -2946,7 +2950,9 @@ impl ChatRuns {
         if let Some(r) = m.get_mut(sid) {
             r.running = false;
             r.stop = stop.to_string();
-            // 2026-11-04: 阶段清空 —— 以前保留上一轮的 stages, 刷新/续看时把旧阶段当本轮显示
+            // 2026-11-04: 阶段清空 —— 以前保留上一轮的 stages, 刷新/续看时把旧阶段当本轮显示。
+            // 但**先存一份**到 last_stages: 收尾的「完成 N 步」必须还能被落盘/查询到。
+            r.last_stages = r.stages.clone();
             r.stages.clear();
             if !text.is_empty() {
                 r.text = text.to_string();
@@ -2970,8 +2976,10 @@ impl ChatRuns {
         let m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
         match m.get(sid) {
             Some(r) => {
-                let n = STAGES_IN_HISTORY.min(r.stages.len());
-                r.stages[r.stages.len() - n..].to_vec()
+                // 运行中看实时, 收尾后看 last_stages —— 谁非空用谁, 取的都是**尾部**
+                let src = if r.stages.is_empty() { &r.last_stages } else { &r.stages };
+                let n = STAGES_IN_HISTORY.min(src.len());
+                src[src.len() - n..].to_vec()
             }
             None => vec![],
         }
@@ -2982,9 +2990,11 @@ impl ChatRuns {
         let m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
         match m.get(sid) {
             Some(r) => {
-            // 只回最新 5 条: 折叠栏不再越滚越长, 最新那条永远在视野里 (leo 2026-11-04)
-            let n = STAGES_IN_HISTORY.min(r.stages.len());
-            let tail = &r.stages[r.stages.len() - n..];
+            // 只回最新 5 条: 折叠栏不再越滚越长, 最新那条永远在视野里 (leo 2026-11-04)。
+            // 收尾后 stages 已清空 ⇒ 回 last_stages 的尾部, 不返回空数组。
+            let src = if r.stages.is_empty() { &r.last_stages } else { &r.stages };
+            let n = STAGES_IN_HISTORY.min(src.len());
+            let tail = &src[src.len() - n..];
             serde_json::json!({
                 "running": r.running,
                 "text": r.text,
@@ -9059,12 +9069,40 @@ pub async fn share_agent(
     ) {
         return Json(serde_json::json!({ "error": e.to_string() }));
     }
-    Json(serde_json::json!({
+    // 2026-11-04 (leo): 分享的记录**用 IPFS 发布** —— CID 是不可变内容的地址,
+    // 把链接发出去, 对方在哪台机器都能按内容取回同一份快照 (不依赖本节点在线)。
+    // 本机 Kubo 不可用时如实回报 ipfs_error, 本地 /share 链接照旧可用 (不假装发上去了)。
+    let body_ipfs = serde_json::to_string_pretty(&snapshot).unwrap_or_default();
+    let ipfs_name = format!("{token}.json");
+    let ipfs = tokio::task::spawn_blocking(move || -> Result<(String, String), String> {
+        // 没有 daemon 就自己拉起来 (幂等, 最多等 8s) —— 点「分享」不该要求人先开终端
+        bolloon_agent::ipfs_tools::ensure_daemon(8_000)?;
+        let cid = bolloon_agent::ipfs_tools::add_text(&body_ipfs, &ipfs_name)?;
+        let gateway = format!("https://ipfs.io/ipfs/{cid}");
+        Ok((cid, gateway))
+    })
+    .await;
+    let (cid, gateway, ipfs_error) = match ipfs {
+        Ok(Ok((cid, gateway))) => (Some(cid), Some(gateway), None),
+        Ok(Err(e)) => (None, None, Some(e)),
+        Err(e) => (None, None, Some(format!("IPFS 发布任务失败: {e}"))),
+    };
+    let mut out = serde_json::json!({
         "ok": true,
         "url": format!("/share/{token}"),
         "token": token,
         "name": agent.name,
-    }))
+    });
+    if let Some(cid) = cid {
+        out["ipfs"] = serde_json::json!(cid.clone());
+        out["gateway"] = serde_json::json!(gateway);
+        // IPFS 原生 URL (有 IPFS 客户端的机器可直接取)
+        out["ipfs_url"] = serde_json::json!(format!("ipfs://{cid}"));
+    }
+    if let Some(e) = ipfs_error {
+        out["ipfs_error"] = serde_json::json!(e);
+    }
+    Json(out)
 }
 
 /// POST /api/agents/pin {id, pinned?} → 置顶(固定)该智能体, 并**立刻 ping 一次**
@@ -9814,6 +9852,22 @@ mod stage_tests {
             Ok(StreamChunk::Stage(t)) => assert_eq!(t, "第 1 轮 · 想下一步"),
             _ => panic!("stage 事件没发出去"),
         }
+    }
+
+    /// 2026-11-04 (leo: 折叠里一直是旧的那 5 条): finish() 清空 stages 之后,
+    /// 「完成 N 步」这类收尾阶段仍要能被落盘/查询到 —— 否则历史里留下的是**旧的 5 条**。
+    #[test]
+    fn stages_survive_finish_so_history_keeps_the_newest() {
+        let runs = ChatRuns::default();
+        let _c = runs.begin("s4");
+        for i in 1..=6 {
+            runs.stage("s4", &format!("步骤 {i}"));
+        }
+        runs.finish("s4", "finished", "好");
+        let of = runs.stages_of("s4");
+        assert_eq!(of, vec!["步骤 2", "步骤 3", "步骤 4", "步骤 5", "步骤 6"], "收尾后仍是尾部(最新)那 5 条");
+        assert_eq!(runs.snapshot("s4")["stages"].as_array().unwrap().len(), STAGES_IN_HISTORY);
+        assert_eq!(runs.snapshot("s4")["stages"].as_array().unwrap().last().unwrap(), "步骤 6");
     }
 
     /// 2026-11-04 (leo: 折叠栏过长 · 最新更新不出现): 对前端只给**最新 5 条**,
