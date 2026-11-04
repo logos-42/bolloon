@@ -60,22 +60,17 @@ ident = base64.b64decode(conf_pub).decode().splitlines()[0]
 print(f'✓ 公钥一致：{ident}')
 PY
 
-# ③ 版本一致 (四处必须同一个号)
+# ③ 版本一致（2026-11-04 leo: **npm 与 App 各自独立编号**，app 0.7.9 / npm 0.7.6）
+#    两条链各自自洽即可：
+#      App 链 = tauri.conf ↔ tauri crate
+#      npm 链 = package.json ↔ rust workspace (CLI 二进制在运行时自报 workspace 版本)
 VER_CONF=$(python3 -c "import json;print(json.load(open('$CONF'))['version'])")
 VER_NPM=$(python3 -c "import json;print(json.load(open('$ROOT/package.json'))['version'])")
 VER_RS=$(grep -m1 '^version' "$ROOT/rust/Cargo.toml" | cut -d'"' -f2)
 VER_TAURI=$(grep -m1 '^version' "$SRC/src-tauri/Cargo.toml" | cut -d'"' -f2)
-# App/npm 允许四段版本 (如 0.7.7.1); Cargo 只能三段 ⇒ 校验"前缀一致"即可
-if [[ "$VER_CONF" != "$VER_NPM" ]]; then
-  die "app 版本不一致: conf=$VER_CONF npm=$VER_NPM"
-fi
-for v in "$VER_RS" "$VER_TAURI"; do
-  case "$VER_CONF" in
-    "$v"|"$v".*) ;;
-    *) die "Cargo 版本 $v 与 App 版本 $VER_CONF 对不上" ;;
-  esac
-done
-green "✓ 版本一致：$VER_CONF"
+[[ "$VER_TAURI" == "$VER_CONF" ]] || die "tauri crate=$VER_TAURI 与 conf=$VER_CONF 不一致"
+[[ "$VER_RS" == "$VER_NPM" ]] || die "rust workspace=$VER_RS 与 npm=$VER_NPM 不一致（CLI 自报版本必须等于 npm 版本）"
+green "✓ 版本自洽：App $VER_CONF · npm $VER_NPM"
 
 [[ "$CHECK_ONLY" == "1" ]] && { green "自检通过（--check 模式，不构建）"; exit 0; }
 
@@ -120,7 +115,11 @@ green "✓ 稳定签名: $APP_REQ"
 
 echo "== 3/5 收集产物 =="
 BUNDLE="$SRC/src-tauri/target/release/bundle"
-mapfile -t PKGS < <(find "$BUNDLE" -name '*.app.tar.gz' -o -name '*.nsis.zip' -o -name '*.AppImage.tar.gz' 2>/dev/null)
+# macOS 自带 bash 3.2 没有 mapfile ⇒ 用可移植的读循环（2026-11-04 实测踩到）
+PKGS=()
+while IFS= read -r line; do
+  [[ -n "$line" ]] && PKGS+=("$line")
+done < <(find "$BUNDLE" -name '*.app.tar.gz' -o -name '*.nsis.zip' -o -name '*.AppImage.tar.gz' 2>/dev/null)
 [[ ${#PKGS[@]} -gt 0 ]] || die "没找到可更新的产物 (*.app.tar.gz 等) —— 检查 bundle.createUpdaterArtifacts=true"
 for p in "${PKGS[@]}"; do
   [[ -f "$p.sig" ]] || die "产物缺签名: $p.sig（这就是 0.7.3–0.7.5 的症状）"
@@ -149,6 +148,6 @@ fi
 echo
 green "全链路通过。产物清单：$OUT_DIR/latest.json"
 yellow "别忘了："
-yellow "  1) 把 latest.json 与产物上传到 $BASE_URL（路径要与清单里的 url 一致）"
-yellow "  2) 部署后再验一次线上：node scripts/verify-updater-signature.mjs --manifest $BASE_URL/latest.json --pubkey <pubkey>"
+yellow "  1) 把 latest.json 与产物上传到 ${BASE_URL}（路径要与清单里的 url 一致）"
+yellow "  2) 部署后再验一次线上：node scripts/verify-updater-signature.mjs --manifest ${BASE_URL}/latest.json --pubkey <pubkey>"
 yellow "  3) 换钥发布 ⇒ 已装旧版(≤0.7.5)客户端无法自动升级，需要手动重装一次"
