@@ -80,6 +80,14 @@ green "✓ 版本一致：$VER_CONF"
 [[ "$CHECK_ONLY" == "1" ]] && { green "自检通过（--check 模式，不构建）"; exit 0; }
 
 echo "== 2/5 构建 (tauri build) =="
+# 2026-11-04: 上一轮 dmg 打包失败会在 /Volumes 留下挂着的 rw 镜像, 下次 bundle_dmg.sh
+# 会因 "hdiutil: couldn't unmount - 资源忙" 再失败一次 —— 先清掉残留卷。
+for vol in /Volumes/dmg.*; do
+  [[ -d "$vol" ]] || continue
+  dev="$(hdiutil info 2>/dev/null | awk -v v="$vol" '$0 ~ v {print $1}' | head -1)"
+  [[ -n "$dev" ]] && hdiutil detach "$dev" -force >/dev/null 2>&1 || true
+  yellow "⊘ 清掉残留挂载: $vol"
+done
 if [[ "${SKIP_BUILD:-0}" == "1" ]]; then
   yellow "⊘ SKIP_BUILD=1：跳过构建，直接收集已有产物"
   BUNDLE_READY=1
