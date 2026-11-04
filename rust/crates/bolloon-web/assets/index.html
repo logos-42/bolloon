@@ -487,6 +487,10 @@
      第三栏 main           — 主内容区: 自适应剩余空间 (room 面板仍是可开合的附加区)
      ============================================================ */
   .primary-rail{display:none}
+  /* 2026-11-04 (leo): App 桌面壳里去掉右上角「帛龙订阅」按钮 (网页端保留)。
+     只是收掉这个按钮 —— 充值时额度入口仍在账户区 payBtn / 设置页, 功能没删。 */
+  html.tauri #subBtn, html.tauri #dragonSubBtn,
+  body.desktop3col #subBtn, body.desktop3col #dragonSubBtn{display:none !important}
   /* 第一栏 = 外壳的左半边: 毛玻璃 + 整列拖拽区; 跨两行 (红绿灯浮在它顶部, 原地不动) */
   body.desktop3col .primary-rail{
     display:flex;flex-direction:column;align-items:center;gap:14px;
@@ -947,7 +951,10 @@
         <div id="topicList" style="display:flex;flex-direction:column;gap:4px"></div>
       </div>
       <div class="group-intro" id="groupIntro"></div>
-      <div id="groupMessages"></div>
+      <!-- 2026-11-05 (leo: 流光卡片会突然消失): 消息区与「正在想」流光**拆成两个节点**。
+           以前每 2.5s 轮询整块 innerHTML 重建: ① 流光动画每轮从头开始(看着像闪); ② 两轮之间的空窗
+           那一次 thinking 为空 ⇒ 整条流光被抹掉, 下一次又画回来 = 「突然消失」。 -->
+      <div id="groupMessages"><div id="groupMsgList" style="display:contents"></div><div id="groupThinking"></div></div>
       <!-- 议程成员: 点一下就加入/退出本群, 绿色 = 会在这个群接话 (2026-10-30 leo) -->
       <div id="groupChips" class="group-chips" title="点选议程成员：绿色 = 会在这个群接话"></div>
       <div class="group-composer">
@@ -1680,9 +1687,11 @@ function renderChat(){
     const streaming=m.streaming?' streaming':'';
     // 真实想法 (模型 reasonig 流) — 不是我们编的进度文案; 点一下可折叠
     const thinkBox=(m.role!=='user'&&m.think)?`<div class="msg-think" onclick="this.classList.toggle('folded')" title="点击折叠/展开">${escapeHTML(m.think)}</div>`:'';
-    // 阶段列表 (2026-11-04): 后端 ChatRuns.stage 真的写了; 只在运行中显示, 点标题折叠
-    const stages=(m.role!=='user'&&Array.isArray(m.stages)&&m.stages.length)
-      ?`<div class="msg-stages"><span class="ms-hd" onclick="this.parentNode.classList.toggle('folded')">阶段 ${m.stages.length} · 点击折叠/展开</span><ol>${m.stages.map(s=>`<li>${escapeHTML(String(s))}</li>`).join('')}</ol></div>`:'';
+    // 阶段列表 (2026-11-04): 只显示**最新 5 条** —— 阶段一多, 折叠栏变很长, 最新那条反而看不到。
+    // 完整的 40 条仍在后端 ChatRuns 里 (前端只取尾部 5 条渲染)。
+    const stList=(m.role!=='user'&&Array.isArray(m.stages))?m.stages.slice(-STAGES_SHOWN):[];
+    const stages=stList.length
+      ?`<div class="msg-stages${m.stagesFolded?' folded':''}"><span class="ms-hd" onclick="toggleStages(this)">阶段 ${m.stages.length}${m.stages.length>STAGES_SHOWN?'（最新 '+STAGES_SHOWN+'）':''} · 点击折叠/展开</span><ol>${stList.map(s=>`<li>${escapeHTML(String(s))}</li>`).join('')}</ol></div>`:'';
     return `<div class="msg-row ${role}" data-index="${i}">
       <div class="msg ${role}${streaming}">${thinkBox}${stages}${body}
         ${(m.images||[]).map(im=>`<img src="${im}" alt="">`).join('')}
@@ -1737,8 +1746,14 @@ function paintStreamingBubble(index,text,think){
   let body=msg.querySelector(':scope > .stream-body');
   if(!body){
     body=document.createElement('div');body.className='stream-body';
-    // 第一次进流式: 把 renderChat 画出来的空正文/旧节点让位给一个稳定容器, 之后只改它的内容
-    [...msg.childNodes].forEach(n=>{ if(n!==thinkBox&&!(n.tagName==='IMG'))msg.removeChild(n); });
+    // 第一次进流式: 把 renderChat 画出来的空正文/旧节点让位给一个稳定容器, 之后只改它的内容。
+    // 2026-11-05 (用户: 流光卡片会突然消失): **阶段卡片不是旧节点** —— 以前这里把 .msg-stages
+    // 一起删了, 于是第一个增量到达就把卡片抹掉。卡片属于「过程」, 流式期间要一直在。
+    [...msg.childNodes].forEach(n=>{
+      if(n===thinkBox)return;
+      if(n.nodeType===1&&(n.classList.contains('msg-stages')||n.tagName==='IMG'))return;
+      msg.removeChild(n);
+    });
     msg.appendChild(body);
   }
   if(body.dataset.raw!==text){
@@ -1748,6 +1763,51 @@ function paintStreamingBubble(index,text,think){
   if(nearBottom(chat))chat.scrollTop=chat.scrollHeight;
 }
 
+const STAGES_SHOWN=5; // 阶段列表只渲染最新 5 条 (后端仍留 40 条历史)
+/* 2026-11-05 (用户: 流光卡片会突然消失): 阶段卡片 = 这轮的「过程」, 后端 ChatRuns.stages 是唯一事实来源。
+   以前 ① SSE 里根本没有 stage 事件 (chat_stream 注释写了 stage, StreamChunk 只有 thought/delta/done);
+        ② paintStreamingBubble 建 .stream-body 时把 .msg-stages 当旧节点一起删了 —— 卡片于是闪一下就没了。
+   现在: 后端补了 stage 事件当场推; 前端只改 li 增量更新 (不整块重排, 流光才不卡)。 */
+function toggleStages(hd){
+  const box=hd.parentNode;
+  const on=box.classList.toggle('folded');
+  const row=hd.closest('.msg-row');
+  const i=row?Number(row.dataset.index):-1;
+  const s=state&&state.sessions.find(x=>x.id===state.active_session_id);
+  if(s&&i>=0&&s.messages&&s.messages[i])s.messages[i].stagesFolded=on;
+}
+function paintStages(index,stages){
+  const row=$('chat').querySelector(`.msg-row[data-index="${index}"]`);
+  if(!row)return;
+  const msg=row.querySelector('.msg.bot');
+  if(!msg)return;
+  let box=msg.querySelector(':scope > .msg-stages');
+  const all=Array.isArray(stages)?stages:[];
+  const list=all.slice(-STAGES_SHOWN);
+  if(list.length===0){ if(box)box.remove(); return; }
+  if(!box){
+    box=document.createElement('div');
+    box.className='msg-stages';
+    const hd=document.createElement('span');
+    hd.className='ms-hd';
+    hd.onclick=()=>toggleStages(hd);
+    box.appendChild(hd);
+    box.appendChild(document.createElement('ol'));
+    msg.insertBefore(box,msg.querySelector(':scope > .stream-body')||null);
+  }
+  const hd=box.querySelector('.ms-hd');
+  const title=`阶段 ${all.length}${all.length>STAGES_SHOWN?'（最新 '+STAGES_SHOWN+'）':''} · 点击折叠/展开`;
+  if(hd&&hd.textContent!==title)hd.textContent=title;
+  const ol=box.querySelector('ol');
+  const sig=list.join('\u0001');
+  if(ol&&ol.dataset.sig!==sig){
+    ol.dataset.sig=sig;
+    ol.innerHTML=list.map(s=>`<li>${escapeHTML(String(s))}</li>`).join('');
+  }
+  // 2026-11-04 (leo: 最新更新不出现): 阶段贴在气泡顶部, 内容一多用户就看不见最新那条 —— 贴底跟随
+  const chat=$('chat');
+  if(chat&&nearBottom(chat))chat.scrollTop=chat.scrollHeight;
+}
 function providerGroupOf(p){return p.origin==='builtin'?'内置':(p.origin==='custom'?'自定义':'目录');}
 function providerOptionLabel(p){
   const tags=[p.protocol||'',(p.models_count?p.models_count+' 模型':'')].filter(Boolean).join(' / ');
@@ -2757,7 +2817,7 @@ if($('worldIntentInput'))$('worldIntentInput').addEventListener('keydown',e=>{if
 
 document.addEventListener('click',()=>{const m=$('groupMenu');if(m)m.classList.add('hidden');});
 
-async function streamChat(payload,onDelta,signal,onThought){
+async function streamChat(payload,onDelta,signal,onThought,onStage){
   const r=await fetch('/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal});
   if(!r.ok){const t=await r.text();throw new Error(t||('HTTP '+r.status));}
   const reader=r.body.getReader(),dec=new TextDecoder();
@@ -2777,6 +2837,7 @@ async function streamChat(payload,onDelta,signal,onThought){
       if(!data)continue;
       let obj={};try{obj=JSON.parse(data)}catch{obj={text:data}}
       if(event==='thought'&&obj.text){if(onThought)onThought(obj.text);}
+      else if(event==='stage'&&obj.text){if(onStage)onStage(obj.text);}
       else if(event==='delta'&&obj.text)onDelta(obj.text);
       else if(event==='error'){const e=new Error(obj.error||'流式错误');e.sse=true;throw e;}
       else if(event==='done')final=obj.reply||'';
@@ -2826,6 +2887,16 @@ async function submitMessage(text,images){
   const aiIndex=s.messages.length-1;
   renderChat();
   const payload={session_id:s.id,agent_id:state.active_agent_id,message:text,images};
+  // 2026-11-05: 流式期间把后端 ChatRuns.stages 补到卡片上 (SSE 不推 stage, 只有 status 拿得到)。
+  // 900ms 一次, 只在流式期间开, 结束立刻关 —— 不多耗, 也不跟 delta 抢帧。
+  const stageTimer=setInterval(async()=>{
+    try{
+      const q=await api('/api/chat/status?session_id='+encodeURIComponent(s.id));
+      if(!Array.isArray(q.stages)||!q.stages.length)return;
+      assistant.stages=q.stages.slice();
+      if(state&&state.active_session_id===s.id)paintStages(aiIndex,assistant.stages);
+    }catch(_){}
+  },900);
   try{
     const reply=await streamChat(payload,delta=>{
       assistant.text+=delta;
@@ -2834,6 +2905,11 @@ async function submitMessage(text,images){
       // 模型真实的想法 (思考模式的 reasoning 流) —— 不是我们编的进度
       assistant.think=(assistant.think||'')+thought;
       updateStreamingBubble(aiIndex,assistant.text,assistant.think);
+    },stage=>{
+      // 2026-11-05: 后端 stage 事件 (第几轮 / 哪个工具 · 结果) —— 当场亮, 不等轮询
+      if(!Array.isArray(assistant.stages))assistant.stages=[];
+      if(assistant.stages[assistant.stages.length-1]!==stage)assistant.stages.push(stage);
+      if(state&&state.active_session_id===s.id)paintStages(aiIndex,assistant.stages);
     });
     if(reply)assistant.text=reply;
     if(!assistant.text)throw new Error('模型没有返回内容');
@@ -2860,10 +2936,14 @@ async function submitMessage(text,images){
       assistant.text='（没有收到正文：'+((e&&e.message)||'连接中断')+'）';
     }
   }finally{
+    clearInterval(stageTimer);
     aborts.delete(s.id);assistant.streaming=false;setBusy(s.id,false);
-    // 2026-11-04: 收尾必须清场 (想法/阶段是"过程", 不看就留在气泡里会越来越脏, 刷新还会被当本轮)
+    // 2026-11-04: 想法是"过程", 收尾清掉 (否则留在气泡里会越来越脏)
     assistant.think='';
-    assistant.stages=[];
+    // 2026-11-05 (用户: 流光卡片会突然消失): 阶段不再一刀抹掉 —— 跑完**折起来**留一行标题,
+    // 想看再展开。清空会让人以为卡住/闪退, 也让"刚才它做了什么"彻底查不到。
+    if(!Array.isArray(assistant.stages)||!assistant.stages.length)assistant.stages=[];
+    else assistant.stagesFolded=true;
     renderSidebar();renderChat();
   }
 }
@@ -3555,7 +3635,8 @@ function openGroupMenu(e,id){
     <button onclick="toggleRoomRuntime()">群里真执行：${(roomRuntime&&roomRuntime.tools)?'开':'关'}</button>
     <button onclick="toggleGroupPool()">借用好友算力（API 共享）</button>
     <button onclick="publishGroup()">推到世界</button>
-    <button onclick="deleteGroup()">删除（本机列表）</button>`;
+    <button onclick="deleteGroup()">删除（本机列表）</button>
+    <button onclick="purgeClosedGroups()">清理已删除的群（残留）</button>`;
   // 2026-11-04 修「群组 ⋯ 点开就关不掉」: 这份菜单是动态创建的, 以前没有任何关闭逻辑。
   $('groupMenu')?.classList.add('hidden');            // 与群头菜单互斥
   m.classList.remove('hidden');
@@ -3676,9 +3757,24 @@ async function publishGroup(){
     await loadWorld();
   }catch(e){toast('推送失败: '+e.message);}
 }
+// 2026-11-05 (leo: 已删除的群为什么没删干净): soft 删只记一条黑名单, **索引与 store 目录全留在磁盘上**。
+// 这里一次性真清 —— 只清"从列表删过"的群, `intent-stream` 这类非群 store 由后端绕开, 不会误删。
+async function purgeClosedGroups(){
+  try{
+    const r=await api('/api/groups/purge-closed',{method:'POST',body:'{}'});
+    if(r&&r.error)throw new Error(r.error);
+    const list=r.purged||[], rest=r.restored||[];
+    if(!list.length&&!rest.length){toast('没有待清理的群残留'+(r.kept&&r.kept.length?('（保留：'+r.kept.join('、')+'）'):''));return;}
+    const msg=[];
+    if(list.length)msg.push('已清理 '+list.length+' 个已删群的索引与消息块：'+list.join('、'));
+    if(rest.length)msg.push('恢复 '+rest.length+' 个被误当群删掉的 store：'+rest.join('、'));
+    toast(msg.join('；'));
+    await loadContacts();
+  }catch(e){toast('清理失败: '+e.message);}
+}
 async function deleteGroup(){
   const g=((contactGroups&&contactGroups.groups)||[]).find(x=>x.id===menuGroupId)||{};
-  const ok=await askText('删除群组「'+(g.name||'')+'」','yes','输入 yes = 只从本机列表移除(消息保留, 凭邀请可回)；输入 delete = 本机彻底删除(索引+消息块一起清, 不可恢复)');
+  const ok=await askText('删除群组「'+(g.name||'')+'」','yes','输入 yes = 只从本机列表移除(消息保留, 凭邀请可回)；输入 delete = 本机彻底删除(索引+消息块一起清, 不可恢复)。⚠ 选 yes 的话索引和消息块仍留在磁盘上, 之后用「清理已删除的群（残留）」一次清掉');
   const ans=(ok||'').trim().toLowerCase();
   if(ans!=='yes'&&ans!=='delete')return;
   const hard=ans==='delete';
@@ -4220,30 +4316,55 @@ async function loadGroupMessages(){
 }
 function thinkingName(t){return typeof t==='string'?t:((t&&(t.name||t.agent_id))||'');}
 function thinkingStage(t){return (t&&typeof t==='object'&&t.stage)||'';}
+/* 2026-11-05 (leo: 流光卡片会突然消失): 群消息每 2.5s 轮询, 以前整块 innerHTML 重建 ——
+   消息节点、图片、正在读的位置、以及那道「正在想」的流光全被销毁重画。现在:
+   ① 消息列表只在「条数/最后一条」真变了才重画 (签名里带群 id, 切群不会错画);
+   ② 流光单独一个节点, 只在「谁 · 哪一步」变了才改文本 —— 动画不会每隔 2.5s 从头开始;
+   ③ 空窗容错: 两轮之间的那一瞬 thinking 为空不算跑完, **连续两次空**才收起。 */
+let groupMsgSig='', groupThinkingSig='', groupThinkingEmpty=0, groupThinkingOfGroup='';
 function renderGroupMessages(msgs,thinking){
-  const box=$('groupMessages');
-  if(!box)return;
+  const box=$('groupMessages'), list=$('groupMsgList'), tbox=$('groupThinking');
+  if(!box||!list||!tbox)return;
+  // 切群: 流光属于上一个群, 立刻清掉 (不然会顶着一个群残留的「正在想」)
+  if((activeGroupId||'')!==groupThinkingOfGroup){
+    groupThinkingOfGroup=activeGroupId||'';
+    groupThinkingSig='';groupThinkingEmpty=0;tbox.innerHTML='';
+  }
   const stick=box.scrollHeight-box.scrollTop-box.clientHeight<140;
   const me=(state&&state.profile&&state.profile.did)||'';
   const amap={};((state&&state.agents)||[]).forEach(a=>amap[a.id]=a);
   const labels={report:'汇报',message:'消息',guide:'指导','member-join':'入群'};
-  box.innerHTML=msgs.length?msgs.map(m=>{
-    const a=amap[m.from];
-    const who=(a&&a.name)||shortDid(m.from||m.sender);
-    const ava=a?`<img class="ravatar" src="${avatarURL(a.id,a.avatar)}" alt="">`:'<span class="ravatar sys">✦</span>';
-    const kind=m.kind&&m.kind!=='message'?` · ${labels[m.kind]||m.kind}`:'';
-    // 2026-10-30 (leo): 智能体的气泡在左, 人类(我)的在右 —— 判据是"谁说的", 不是 DID 有没有拼错
-    const fromAgent=!!(amap[m.from]||amap[m.sender]);
-    const mine=!fromAgent&&((me&&(m.sender===me||m.from===me))||m.sender==='me'||m.from==='me');
-    return `<div class="gmsg${mine?' mine':''}">
-      <div class="gmeta">${ava}<b>${escapeHTML(who)}</b>${kind}${m.signature?' · ✓':''}</div>
-      <div class="gbody">${mdToHTML(String(m.content||''))}</div>
-    </div>`;
-  }).join(''):'<div class="hint">(还没有消息 — 说第一句)</div>';
-  if(thinking&&thinking.length){
-    // 只给「阶段性过程」: 谁 + 到哪一步 (流光), 工具细节留在后台
-    const who=thinking.map(t=>escapeHTML(thinkingName(t))+(thinkingStage(t)?` · ${escapeHTML(thinkingStage(t))}`:'')).join('、');
-    box.innerHTML+=`<div class="gmsg typing shimmer"><div class="gbody"><b>${who}</b> 正在想<span class="tdots">…</span></div></div>`;
+  const rows=msgs||[];
+  const last=rows.length?rows[rows.length-1]:null;
+  const sig=(activeGroupId||'')+'|'+rows.length+'|'+(last?((last.seq||0)+':'+String(last.content||'').length):'');
+  if(sig!==groupMsgSig){
+    groupMsgSig=sig;
+    list.innerHTML=rows.length?rows.map(m=>{
+      const a=amap[m.from];
+      const who=(a&&a.name)||shortDid(m.from||m.sender);
+      const ava=a?`<img class="ravatar" src="${avatarURL(a.id,a.avatar)}" alt="">`:'<span class="ravatar sys">✦</span>';
+      const kind=m.kind&&m.kind!=='message'?` · ${labels[m.kind]||m.kind}`:'';
+      // 2026-10-30 (leo): 智能体的气泡在左, 人类(我)的在右 —— 判据是"谁说的", 不是 DID 有没有拼错
+      const fromAgent=!!(amap[m.from]||amap[m.sender]);
+      const mine=!fromAgent&&((me&&(m.sender===me||m.from===me))||m.sender==='me'||m.from==='me');
+      return `<div class="gmsg${mine?' mine':''}">
+        <div class="gmeta">${ava}<b>${escapeHTML(who)}</b>${kind}${m.signature?' · ✓':''}</div>
+        <div class="gbody">${mdToHTML(String(m.content||''))}</div>
+      </div>`;
+    }).join(''):'<div class="hint">(还没有消息 — 说第一句)</div>';
+  }
+  // 只给「阶段性过程」: 谁 + 到哪一步 (流光), 工具细节留在后台
+  const items=(thinking||[]).map(t=>thinkingName(t)+(thinkingStage(t)?' · '+thinkingStage(t):'')).filter(Boolean);
+  const tsig=items.join('、');
+  if(items.length){
+    groupThinkingEmpty=0;
+    if(tsig!==groupThinkingSig){
+      groupThinkingSig=tsig;
+      tbox.innerHTML=`<div class="gmsg typing shimmer"><div class="gbody"><b>${escapeHTML(tsig)}</b> 正在想<span class="tdots">…</span></div></div>`;
+    }
+  }else if(groupThinkingSig){
+    groupThinkingEmpty++;
+    if(groupThinkingEmpty>=2){ groupThinkingSig=''; tbox.innerHTML=''; }
   }
   if(stick)box.scrollTop=box.scrollHeight;
 }

@@ -68,7 +68,15 @@ pub struct UiMessage {
     pub time: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub streaming: bool,
+    /// 这一轮的阶段 (最新 N 条)。落进会话历史才会「刷新/切会话/同步后不消失」——
+    /// 以前阶段只活在内存与前端对象里, 任何一次 syncState 重画就把卡片抹掉
+    /// (leo 2026-11-04: 流光卡片会突然消失)。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<String>,
 }
+
+/// 会话历史里每个回答**保留的阶段条数** (前端只渲染这么几条, 多了折叠栏过长、最新那条反而看不到)
+pub const STAGES_IN_HISTORY: usize = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiSession {
@@ -119,6 +127,9 @@ pub const WRITE_TOOLS: &[&str] = &["shell", "python.run", "mem", "tasks"];
 
 /// 技能索引注入条数上限 (一条一行, 防上下文腐烂)
 pub const SKILLS_INDEX_LIMIT: usize = 30;
+
+/// 信念与目标注入字数上限 (信念 + 长/短期目标 + "现在该做"一层, 防挤掉别的层)
+pub const BELIEF_PROMPT_CHARS: usize = 1200;
 
 fn sensitive_path(path: &str) -> bool {
     let p = path.to_lowercase();
@@ -1508,13 +1519,26 @@ pub async fn build_web_system(
         bolloon_agent::skills_runtime::prompt_index(&ev, &project_root, SKILLS_INDEX_LIMIT)
     };
 
+    // 信念与目标 (2026-11-04): agent **自己写的**判断与长短期目标 —— 每轮现读 beliefs.json,
+    // 有内容才注入 (空表不注入空标题)。这是"按自己的信念做事"的输入面:
+    // 心跳里挑出的目标、tool 里立的信念, 都要能进到这里, 否则写了等于没写。
+    let commitments_block = {
+        let store = bolloon_agent::belief_tools::load_store();
+        let text = store.render(BELIEF_PROMPT_CHARS);
+        if text.is_empty() { String::new() } else { format!("\n\n{text}") }
+    };
+
+    // 计划进度 (2026-11-04): 心跳按信念挑出的下一步落在 todo.json, 这里每轮现读注入。
+    // 以前调用方一直传 None ⇒ todo 层永远是空的, 工具/心跳写的待办模型一轮也看不见。
+    let todo_progress = bolloon_agent::belief_tools::todo_progress_text();
+
     let base = match docs {
         Ok(docs) => {
             let ctx = bolloon_agent::prompt::AssembleContext { channel: "web", role: None, tool: None };
             bolloon_agent::prompt::build_system_prompt(
                 &docs,
                 skills_index.as_deref(),
-                None,
+                todo_progress.as_deref(),
                 Some(&judgment),
                 0,
                 "",
@@ -1531,11 +1555,13 @@ pub async fn build_web_system(
         },
     };
     format!(
-        "{}{}{}{}{}{}{}{}{}",
+        "{}{}{}{}{}{}{}{}{}{}",
         private_identity_block(agent),
         // 说话风格: 抓重点/说人话 (leo) —— 紧贴身份块, 优先级高于默认身份描述
         STYLE_PROMPT,
         base,
+        // 信念与目标: agent 自己写的判断, 每轮现读 (空则不注入)
+        commitments_block,
         // 主人昵称 + DID + 所属权 (全局事实, 每个智能体都带)
         owner_block,
         // 能力/接口/群规则/资源池 (2026-10-31 leo: 系统提示词和接口权限给到)
@@ -2156,6 +2182,9 @@ pub enum StreamChunk {
     Thought(String),
     /// 正文增量（模型真实的回答）
     Delta(String),
+    /// 阶段（第几轮 / 哪个工具 / 结果如何）—— 只进界面上的「阶段」卡片, 不冒充 AI 的话。
+    /// 2026-11-05: 以前只在文档注释里写了 stage 事件, 实现没有 ⇒ 卡片永远拿不到数据。
+    Stage(String),
     Done { reply: String, stop: String },
 }
 
@@ -2196,6 +2225,54 @@ impl bolloon_agent::kernel_loop::LoopObserver for FriendAuditObserver {
             "denied": outcome.denied,
             "elapsed_ms": outcome.elapsed_ms,
         }));
+    }
+}
+
+/// 阶段观察者 (2026-11-05): 把「第几轮 / 哪个工具 / 结果如何」写成**人话阶段**, 一次写两处 —
+/// ① `ChatRuns.stages` (刷新页面、换回会话时 `/api/chat/status` 靠它续看)
+/// ② SSE `stage` 事件 (正在看的人立刻看到卡片亮起来, 不用等下一轮轮询)
+///
+/// 只写**事实**(轮次、工具名、耗时、是否被拒), 不编"正在思考…"这类冒充 AI 口吻的文案;
+/// 卡片在气泡左侧独立显示, 正文仍然是模型真吐出来的字节。
+struct StageObserver {
+    runs: Arc<ChatRuns>,
+    session_id: String,
+    sink: Option<tokio::sync::mpsc::Sender<StreamChunk>>,
+}
+
+impl StageObserver {
+    fn emit(&self, label: String) {
+        self.runs.stage(&self.session_id, &label);
+        if let Some(tx) = &self.sink {
+            let _ = tx.try_send(StreamChunk::Stage(label));
+        }
+    }
+}
+
+#[async_trait]
+impl bolloon_agent::kernel_loop::LoopObserver for StageObserver {
+    async fn on_turn_start(&self, turn: u32, _max_steps: u32) {
+        self.emit(format!("第 {turn} 轮 · 想下一步"));
+    }
+
+    async fn on_tool_begin(&self, _turn: u32, call: &bolloon_agent::ToolCall) {
+        self.emit(format!("{} · 开始", call.name));
+    }
+
+    async fn on_tool_result(
+        &self,
+        _turn: u32,
+        call: &bolloon_agent::ToolCall,
+        outcome: &bolloon_agent::GateOutcome,
+    ) {
+        let label = if outcome.denied.is_some() {
+            format!("{} · 被拒", call.name)
+        } else if outcome.elapsed_ms >= 1000 {
+            format!("{} · 完成（{:.1}s）", call.name, outcome.elapsed_ms as f64 / 1000.0)
+        } else {
+            format!("{} · 完成", call.name)
+        };
+        self.emit(label);
     }
 }
 
@@ -2408,8 +2485,15 @@ pub async fn reply_with_agent_cfg(
     // 不再从工具回调拼进度文案 (那是把我们的措辞冒充成 AI 的话)。
     // 2026-11-04: 好友只读指挥额外挂一个**工具级审计**观察者 (与 UI/经济观察者互不干扰)
     let friend_audit = opts.audit_sink.clone().map(|sink| FriendAuditObserver { sink });
+    // 2026-11-05 (用户: 流光卡片会突然消失): 阶段得**当场推给前端**, 不能只落在 ChatRuns 里等轮询。
+    let stage_obs = StageObserver {
+        runs: st.chat_runs.clone(),
+        session_id: session_id.to_string(),
+        sink: sink.clone(),
+    };
     let chain = bolloon_agent::kernel_loop::ObserverChain::new({
         let mut v: Vec<&dyn bolloon_agent::kernel_loop::LoopObserver> = Vec::new();
+        v.push(&stage_obs as &dyn bolloon_agent::kernel_loop::LoopObserver);
         if let Some(e) = econ_obs.as_ref() {
             v.push(e as &dyn bolloon_agent::kernel_loop::LoopObserver);
         }
@@ -2621,6 +2705,7 @@ async fn remember_user(st: &AppState, text: &str, session_id: Option<&str>) {
                 images: vec![],
                 time: chrono::Local::now().format("%H:%M").to_string(),
                 streaming: false,
+                stages: vec![],
             });
             if sess.title == "新对话" && !text.trim().is_empty() {
                 sess.title = text.trim().chars().take(18).collect();
@@ -2638,6 +2723,7 @@ async fn remember_turn(
     who: Option<&str>,
     session_id: Option<&str>,
     user_saved: bool,
+    stages: &[String],
 ) {
     let mut msgs = st.messages.lock().await;
     if !user_saved {
@@ -2677,6 +2763,7 @@ async fn remember_turn(
                         images: vec![],
                         time: now.clone(),
                         streaming: false,
+                        stages: vec![],
                     });
                 }
                 let _ = who; // 名字由前端按 agent_id 取, 会话条目里不重复存
@@ -2686,6 +2773,8 @@ async fn remember_turn(
                     images: vec![],
                     time: now,
                     streaming: false,
+                    // 阶段随回答一起落盘 (最新 5 条) ⇒ 刷新/切会话/syncState 之后卡片还在
+                    stages: stages.iter().rev().take(STAGES_IN_HISTORY).rev().cloned().collect(),
                 });
                 if sess.title == "新对话" && !text.trim().is_empty() {
                     sess.title = text.trim().chars().take(18).collect();
@@ -2696,6 +2785,38 @@ async fn remember_turn(
     }
 }
 
+
+/// 中止/失败的回答：**只写会话历史**（界面留痕），**不写** `st.messages`（不进下一轮上下文）。
+///
+/// leo 2026-11-04: 「中断任务后前端 app 没有留下任何内容，气泡消失了」——
+/// 中止时 `remember_turn` 故意不写（半截答案不该被下一轮当上下文），但前端 `syncState`
+/// 拿服务端会话整包重画，本地那个气泡就被抹掉。折中：显示面留一条，上下文里不留。
+async fn remember_display_only(
+    st: &AppState,
+    reply: &str,
+    session_id: Option<&str>,
+    stages: &[String],
+    note: &str,
+) {
+    let mut fs = st.forge.lock().await;
+    let sid = match session_id {
+        Some(s) => Some(s.to_string()),
+        None => fs.sessions.first().map(|s| s.id.clone()),
+    };
+    let Some(sid) = sid else { return };
+    if let Some(sess) = fs.sessions.iter_mut().find(|s| s.id == sid) {
+        let text = if reply.trim().is_empty() { note.to_string() } else { reply.to_string() };
+        sess.messages.push(UiMessage {
+            role: "assistant".into(),
+            text,
+            images: vec![],
+            time: chrono::Local::now().format("%H:%M").to_string(),
+            streaming: false,
+            stages: stages.iter().rev().take(STAGES_IN_HISTORY).rev().cloned().collect(),
+        });
+    }
+    fs.save(&data_dir());
+}
 
 /// GET /api/turns?since=N —— 桌面/CLI 的对话轮次增量（眼镜端轮询成"卡片传输流"）
 ///
@@ -2844,14 +2965,30 @@ impl ChatRuns {
         }
     }
 
+    /// 本轮阶段的尾部 (最新 STAGES_IN_HISTORY 条) —— 回答落盘时写进会话消息
+    pub fn stages_of(&self, sid: &str) -> Vec<String> {
+        let m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        match m.get(sid) {
+            Some(r) => {
+                let n = STAGES_IN_HISTORY.min(r.stages.len());
+                r.stages[r.stages.len() - n..].to_vec()
+            }
+            None => vec![],
+        }
+    }
+
     /// 状态快照（前端 `/api/chat/status` 的唯一事实来源）
     pub fn snapshot(&self, sid: &str) -> serde_json::Value {
         let m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
         match m.get(sid) {
-            Some(r) => serde_json::json!({
+            Some(r) => {
+            // 只回最新 5 条: 折叠栏不再越滚越长, 最新那条永远在视野里 (leo 2026-11-04)
+            let n = STAGES_IN_HISTORY.min(r.stages.len());
+            let tail = &r.stages[r.stages.len() - n..];
+            serde_json::json!({
                 "running": r.running,
                 "text": r.text,
-                "stages": r.stages,
+                "stages": tail,
                 "stage": r.stages.last().cloned().unwrap_or_default(),
                 "stop": r.stop,
                 "turns": r.turns,
@@ -2859,7 +2996,8 @@ impl ChatRuns {
                 "elapsed_ms": if r.started_ms == 0 { 0 } else {
                     (chrono::Utc::now().timestamp_millis() as u64).saturating_sub(r.started_ms)
                 },
-            }),
+            })
+            }
             None => serde_json::json!({
                 "running": false, "text": "", "stages": [], "stage": "", "stop": "",
                 "turns": 0, "tools": 0, "elapsed_ms": 0,
@@ -2946,6 +3084,8 @@ pub async fn chat(
     let text = req["message"].as_str().unwrap_or_default().to_string();
     let sid = req["session_id"].as_str().unwrap_or_default().to_string();
     let agent = agent_by_id(&st, req["agent_id"].as_str()).await;
+    // 用户在说话 ⇒ 主动性退让 (这笔账以前只在进程启动时记过一次)
+    crate::server::touch_user_activity(&st);
     // 用户这条立刻落盘 (切会话/刷新不再丢气泡), 回答收尾时只补 assistant
     remember_user(&st, &text, req["session_id"].as_str()).await;
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2954,6 +3094,8 @@ pub async fn chat(
         Err(e) => e, // 错误也是"回答"：界面要能看到到底缺什么
     };
     if !reply.is_empty() {
+        // 阶段随回答落盘: 刷新/切会话/前端 syncState 重画之后卡片仍在 (不再「闪一下就消失」)
+        let run_stages = st.chat_runs.stages_of(&sid);
         remember_turn(
             &st,
             &text,
@@ -2961,6 +3103,7 @@ pub async fn chat(
             agent.as_ref().map(|a| a.name.as_str()),
             req["session_id"].as_str(),
             true,
+            &run_stages,
         )
         .await;
     }
@@ -2980,6 +3123,9 @@ pub async fn chat_stream(
     let text = req["message"].as_str().unwrap_or_default().to_string();
     let sid = req["session_id"].as_str().unwrap_or_default().to_string();
     let agent = agent_by_id(&st, req["agent_id"].as_str()).await;
+
+    // 用户在说话 ⇒ 主动性退让 (流式入口同样要记账, 否则界面一换就不会记)
+    crate::server::touch_user_activity(&st);
 
     // 用户这条**在开始跑之前**就落盘: 中途中止/刷新/切会话, 气泡都还在 (修「切回来用户消息消失」)
     remember_user(&st, &text, Some(&sid)).await;
@@ -3008,7 +3154,11 @@ pub async fn chat_stream(
             Err(e) if aborted || e.contains("已停止") => ("（已停止）".to_string(), "aborted".to_string(), false),
             Err(e) => (e, "failed".to_string(), false),
         };
-        // 中止的运行不写会话历史 (半截答案不该被下一轮当上下文)
+        // 阶段必须在 finish() 清空 ChatRuns 之前取走 —— 否则落盘的就是空数组
+        let run_stages = st2.chat_runs.stages_of(&sid2);
+        // 中止/失败的回答**不进上下文**(半截答案是脏上下文), 但必须**留在界面上**:
+        // 只写显示层会丢 —— `syncState` 拿服务端会话整包重画, 本地气泡就凭空消失
+        // (leo 2026-11-04: 「中断任务后前端没有留下任何内容，气泡消失了」)。
         if ok && !reply.is_empty() {
             remember_turn(
                 &st2,
@@ -3017,8 +3167,12 @@ pub async fn chat_stream(
                 agent.as_ref().map(|a| a.name.as_str()),
                 Some(&sid2),
                 true, // 用户那条已由 remember_user 写过
+                &run_stages,
             )
             .await;
+        } else {
+            let note = if stop == "aborted" { "（已停止）" } else { "（本轮没有完成）" };
+            remember_display_only(&st2, &reply, Some(&sid2), &run_stages, note).await;
         }
         // 私聊收尾同样沉淀 (skills/意图/判断力/记忆) — 只在成功轮
         if ok {
@@ -3040,6 +3194,9 @@ pub async fn chat_stream(
                 .data(serde_json::json!({ "text": t }).to_string()),
             StreamChunk::Delta(t) => Event::default()
                 .event("delta")
+                .data(serde_json::json!({ "text": t }).to_string()),
+            StreamChunk::Stage(t) => Event::default()
+                .event("stage")
                 .data(serde_json::json!({ "text": t }).to_string()),
             StreamChunk::Done { reply, stop } => Event::default()
                 .event("done")
@@ -9628,5 +9785,96 @@ mod pool_tests {
         assert_eq!(pool_allowance(30, 5, 2), 36, "欠 3 次 ⇒ +6");
         assert_eq!(pool_allowance(30, 2, 5), 30, "还多了不加额度");
         assert_eq!(pool_allowance(30, 100, 0), 150, "加成封顶 4×base");
+    }
+}
+
+/// 2026-11-05 (用户: 流光卡片会突然消失): 阶段必须**当场**同时落到两处 ——
+/// ChatRuns (刷新/续看的事实来源) 与 SSE (正在看的人立刻看到)。
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stage_observer_writes_runs_and_pushes_event() {
+        let runs = Arc::new(ChatRuns::default());
+        let _cancel = runs.begin("s1");
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<StreamChunk>(8);
+        let obs = StageObserver {
+            runs: runs.clone(),
+            session_id: "s1".to_string(),
+            sink: Some(tx),
+        };
+        obs.emit("第 1 轮 · 想下一步".to_string());
+        // ① ChatRuns: 刷新页面 / 换回会话时 status 还能续看
+        let snap = runs.snapshot("s1");
+        assert_eq!(snap["stages"][0], "第 1 轮 · 想下一步");
+        assert_eq!(snap["stage"], "第 1 轮 · 想下一步");
+        // ② SSE: 端上立刻收到 stage 事件 (以前这条完全不发)
+        match rx.try_recv() {
+            Ok(StreamChunk::Stage(t)) => assert_eq!(t, "第 1 轮 · 想下一步"),
+            _ => panic!("stage 事件没发出去"),
+        }
+    }
+
+    /// 2026-11-04 (leo: 折叠栏过长 · 最新更新不出现): 对前端只给**最新 5 条**,
+    /// 后端仍留 40 条历史 (stages_of 也是尾部 5 条, 落会话历史用同一口径)。
+    #[test]
+    fn stages_are_capped_to_latest_five() {
+        let runs = ChatRuns::default();
+        let _c = runs.begin("s3");
+        for i in 1..=8 {
+            runs.stage("s3", &format!("步骤 {i}"));
+        }
+        let snap = runs.snapshot("s3");
+        let arr = snap["stages"].as_array().expect("stages 数组");
+        assert_eq!(arr.len(), STAGES_IN_HISTORY, "对前端只回最新 5 条");
+        assert_eq!(arr.last().unwrap(), "步骤 8", "最新的必须在内");
+        assert_eq!(arr.first().unwrap(), "步骤 4", "更早的被截掉");
+        assert_eq!(snap["stage"], "步骤 8");
+        assert_eq!(
+            runs.stages_of("s3"),
+            vec!["步骤 4", "步骤 5", "步骤 6", "步骤 7", "步骤 8"]
+        );
+    }
+
+    /// 2026-11-04 (leo: 流光卡片会突然消失): 阶段必须能**落进会话历史**并反序列化回来,
+    /// 否则 syncState/刷新重画之后卡片就没了 (以前只活在前端对象里)。
+    #[test]
+    fn ui_message_persists_stages_and_old_sessions_still_parse() {
+        let m = UiMessage {
+            role: "assistant".into(),
+            text: "回复".into(),
+            images: vec![],
+            time: "12:00".into(),
+            streaming: false,
+            stages: vec!["第 1 轮".into(), "shell · 完成".into()],
+        };
+        let js = serde_json::to_string(&m).unwrap();
+        assert!(js.contains("\"stages\""), "非空阶段必须落盘: {js}");
+        let back: UiMessage = serde_json::from_str(&js).unwrap();
+        assert_eq!(back.stages, m.stages);
+
+        // 旧会话文件没有 stages 字段 ⇒ 必须照常能读, 不能整段会话失效
+        let old: UiMessage =
+            serde_json::from_str(r#"{"role":"assistant","text":"x","time":"12:00"}"#).unwrap();
+        assert!(old.stages.is_empty());
+
+        // 空阶段不写进 JSON (不把历史文件撑大)
+        let empty = UiMessage { stages: vec![], ..m.clone() };
+        assert!(!serde_json::to_string(&empty).unwrap().contains("stages"));
+    }
+
+    /// 没接前端 (非流式调用) 时 stage 也要记进 ChatRuns, 只是不外发
+    #[tokio::test]
+    async fn stage_without_sink_still_records() {
+        let runs = Arc::new(ChatRuns::default());
+        let _cancel = runs.begin("s2");
+        let obs = StageObserver {
+            runs: runs.clone(),
+            session_id: "s2".to_string(),
+            sink: None,
+        };
+        obs.emit("read_file · 完成".to_string());
+        assert_eq!(runs.snapshot("s2")["stages"][0], "read_file · 完成");
     }
 }
