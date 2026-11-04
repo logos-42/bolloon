@@ -170,6 +170,12 @@ pub struct NativeState {
     #[serde(default)]
     pub dreams: Vec<String>,
     pub active_group: String,
+    /// 当前选中的智能体 (UI 重开 / 交流结束刷新 都要回到它)
+    ///
+    /// 之前没有这个字段 ⇒ bootstrap 恒回 `agents.first()` ⇒ 用户切到别的智能体后,
+    /// 一交流(一轮 chat 结束会重新 bootstrap)/一刷新就被弹回**创建时间最早**的那个页面。
+    #[serde(default)]
+    pub active_agent: String,
     pub next_agent: u64,
     pub next_session: u64,
     pub next_auth: u64,
@@ -280,14 +286,32 @@ pub async fn bootstrap_native(State(st): State<AppState>) -> Json<serde_json::Va
         });
     }
     let update = native_update_info(&st);
+    // 「当前智能体」必须来自**用户上次的选择**, 不能每次都取 agents.first():
+    // 列表顺序 = 创建顺序 ⇒ 恒等于"最早建的那个" ⇒ 交流一轮/刷新一次就被弹回去。
+    let active_agent_id = if !fs.active_agent.is_empty()
+        && fs.agents.iter().any(|a| a.id == fs.active_agent)
+    {
+        fs.active_agent.clone()
+    } else {
+        fs.agents.first().map(|a| a.id.clone()).unwrap_or_default()
+    };
+    // 会话也跟着智能体走 (以前取全局 sessions.first(), 会把别的智能体的会话当成当前会话)
+    let active_session_id = fs
+        .sessions
+        .iter()
+        .filter(|s| s.agent_id == active_agent_id)
+        .max_by_key(|s| (s.pinned, s.created_at_ms))
+        .or_else(|| fs.sessions.first())
+        .map(|s| s.id.clone())
+        .unwrap_or_default();
     let payload = serde_json::json!({
         "state": {
             "agents": fs.agents,
             "sessions": fs.sessions,
             "profile": fs.profile,
             "settings": fs.settings,
-            "active_agent_id": fs.agents.first().map(|a| a.id.clone()).unwrap_or_default(),
-            "active_session_id": fs.sessions.first().map(|s| s.id.clone()).unwrap_or_default(),
+            "active_agent_id": active_agent_id,
+            "active_session_id": active_session_id,
             "did": st.identity.did.as_str(),
             "edge": false,
             "messages": messages,
@@ -636,6 +660,23 @@ pub async fn create_agent(
     Json(serde_json::json!({ "agent": agent, "session": session }))
 }
 
+/// POST /api/agents/active { id } — 记住用户选了哪个智能体
+///
+/// 只改内存不落盘的旧行为 = 一刷新/一交流就被 bootstrap 弹回"最早建的那个"。
+pub async fn set_active_agent(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut fs = st.forge.lock().await;
+    let id = req["id"].as_str().unwrap_or_default().to_string();
+    if !fs.agents.iter().any(|a| a.id == id) {
+        return Json(serde_json::json!({ "error": "智能体不存在" }));
+    }
+    fs.active_agent = id.clone();
+    fs.save(&data_dir());
+    Json(serde_json::json!({ "active_agent_id": id }))
+}
+
 /// POST /api/agents/update
 pub async fn update_agent(
     State(st): State<AppState>,
@@ -958,6 +999,8 @@ pub async fn build_web_system(
     agent: Option<&AgentView>,
     extra: &str,
 ) -> String {
+    // 记一次"有人在跟我说话": 主动性心跳据此判空闲, 不抢话
+    LAST_TURN_MS.store(now_ms(), Ordering::Relaxed);
     let home = bolloon_agent::home::BolloonHome::resolve();
     let agent_key = agent.map(|a| a.id.clone()).unwrap_or_else(|| "bolloon".to_string());
     let project_root = agent
@@ -985,7 +1028,31 @@ pub async fn build_web_system(
     let base = match docs {
         Ok(docs) => {
             let ctx = bolloon_agent::prompt::AssembleContext { channel: "web", role: None, tool: None };
-            bolloon_agent::prompt::build_system_prompt(&docs, None, None, None, 0, "", Some(&memory_text), &ctx).text
+            // 自定信念与目标 (agent 自己立的立场; 空模型 → 不占预算)
+            let model = bolloon_agent::belief::SelfModel::load_default();
+            let mut self_model = model.render_prompt();
+            // 主动性: 后台心跳已按信念排好的一步, 这里取走执行 (读后清空, 不反复催)
+            let staged = bolloon_agent::belief::render_staged_block(
+                &bolloon_agent::belief::drain_staged(&bolloon_agent::belief::default_dir()),
+            );
+            if !staged.is_empty() {
+                if !self_model.is_empty() {
+                    self_model.push_str("\n\n");
+                }
+                self_model.push_str(&staged);
+            }
+            bolloon_agent::prompt::build_system_prompt_with_self(
+                &docs,
+                None,
+                None,
+                None,
+                0,
+                "",
+                Some(&memory_text),
+                Some(&self_model),
+                &ctx,
+            )
+            .text
         }
         Err(_) => WEB_SYSTEM_PROMPT.to_string(),
     };
@@ -3226,6 +3293,158 @@ pub async fn dream_last(State(st): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "last": fs.last_dream, "dreams": fs.dreams }))
 }
 
+// ────────────────────────── 自定信念与目标 (Self-Model) ──────────────────────────
+//
+// 主动性的一环: agent 立自己的信念, 把信念投成短期/中期/长期目标, 空闲时按信念挑动作。
+// 这三个端点就是"模型自己能读写"的那一面 (对话工具 self_model 与本处同一实现)。
+
+/// 主动性空闲阈值 (默认 5 分钟; 忙或不够空闲不打扰)
+pub const PROACTIVE_IDLE_MS: u64 = 5 * 60 * 1000;
+
+/// 主动性心跳周期 (秒): 每轮只挑一步, 空闲才动
+pub const PROACTIVE_TICK_SECS: u64 = 60;
+
+/// 最近一次对话装配的时刻 (0 = 从没聊过) —— 主动性循环据此判空闲, 不抢用户的话
+pub static LAST_TURN_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 主动性该不该动 (纯函数): 从没聊过 → 动; 最近 idle 阈值内聊过 → 不动 (不抢话)
+pub fn should_act_now(last_turn_ms: u64, now_ms: u64, idle_threshold_ms: u64) -> bool {
+    if last_turn_ms == 0 {
+        return true;
+    }
+    now_ms.saturating_sub(last_turn_ms) >= idle_threshold_ms
+}
+
+/// 主动性心跳一拍 (后台循环调用, 不是 HTTP 端点):
+///
+/// 1. 从没立过信念 → 直接返回 None (不空转, 不编动作)
+/// 2. 最近 [`PROACTIVE_IDLE_MS`] 内还在对话 → busy ⇒ 这一步不动
+/// 3. 空闲 → 按信念挑一步入队 (同一目标 30 分钟冷却), 下一轮 prompt 装配时取走执行
+///
+/// 返回本轮派出的指令 (None = 没动), 供日志/调试观测。
+pub fn proactive_heartbeat_tick() -> Option<String> {
+    tick_common(false)
+}
+
+/// 内部: force_idle=true 表示调用方已按自己的空闲判定放行 (HTTP 显式 tick), 不再看 LAST_TURN_MS
+fn tick_common(force_idle: bool) -> Option<String> {
+    let model = bolloon_agent::belief::SelfModel::load_default();
+    if model.is_empty() {
+        return None; // 还没立过信念与目标: 主动性没有方向, 不许空转
+    }
+    let now = now_ms();
+    let busy = if force_idle {
+        false
+    } else {
+        !should_act_now(LAST_TURN_MS.load(Ordering::Relaxed), now, PROACTIVE_IDLE_MS)
+    };
+    let ctx = bolloon_agent::belief::ActionContext::new(now, busy);
+
+    // 先取判定结果: 出手必须能说出"指向哪条目标", 说不出来就不出手
+    let target = match model.next_action(&ctx) {
+        bolloon_agent::belief::NextAction::Act { goal_id, statement, .. } => format!("{goal_id}: {statement}"),
+        bolloon_agent::belief::NextAction::Skip { .. } => return None,
+    };
+    let staged =
+        bolloon_agent::belief::stage_next_action(&model, &bolloon_agent::belief::default_dir(), &ctx)?;
+    // 留痕: 让"按信念行动"可被外部观测 (对应 /api/proactive/status)
+    if let Ok(mut cell) = last_initiative_cell().lock() {
+        *cell = Some((now, target));
+    }
+    tracing::info!("主动性: 按信念派出一步 → {}", staged.directive);
+    Some(staged.directive)
+}
+
+/// 上一次主动性出手 (时刻 ms, 目标文本) —— 给 /api/proactive/status 观测用
+pub static LAST_INITIATIVE: std::sync::OnceLock<std::sync::Mutex<Option<(u64, String)>>> =
+    std::sync::OnceLock::new();
+
+fn last_initiative_cell() -> &'static std::sync::Mutex<Option<(u64, String)>> {
+    LAST_INITIATIVE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// GET /api/proactive/status → 主动性状态: 上次出手指向哪个目标 + 此刻会挑什么
+///
+/// 判据 (可被外部逐字核对): 每次 act 都必须有 initiative_goal_last 非空,
+/// 且该文本能在信念/目标里找到出处 —— 否则就是空转, 状态里如实为空。
+pub async fn proactive_status() -> Json<serde_json::Value> {
+    let model = bolloon_agent::belief::SelfModel::load_default();
+    let last = last_initiative_cell()
+        .lock()
+        .ok()
+        .and_then(|g| g.clone());
+    let now = now_ms();
+    let busy = !should_act_now(LAST_TURN_MS.load(Ordering::Relaxed), now, PROACTIVE_IDLE_MS);
+    Json(serde_json::json!({
+        "initiative_goal_last": last.as_ref().map(|(_, s)| s.clone()),
+        "last_initiative_ms": last.map(|(ms, _)| ms),
+        "beliefs": model.beliefs.len(),
+        "goals": model.goals.len(),
+        "busy": busy,
+        "next_action": model.next_action(&bolloon_agent::belief::ActionContext::new(now, busy)),
+    }))
+}
+
+/// GET /api/self-model → 信念 + 目标 + 注入 prompt 的文本 + 此刻该做的动作
+pub async fn self_model_get() -> Json<serde_json::Value> {
+    let model = bolloon_agent::belief::SelfModel::load_default();
+    let next = model.next_action(&bolloon_agent::belief::ActionContext::new(now_ms(), false));
+    Json(serde_json::json!({
+        "beliefs": model.beliefs,
+        "goals": model.goals,
+        "driving": model.driving_beliefs().len(),
+        "prompt_block": model.render_prompt(),
+        "next_action": next,
+    }))
+}
+
+/// POST /api/self-model → agent 自己立信念 / 定目标 / 改状态 (action 同 self_model 工具)
+pub async fn self_model_apply(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let action = req["action"].as_str().unwrap_or("").trim().to_string();
+    if action.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "action 必填" }));
+    }
+    let mut model = bolloon_agent::belief::SelfModel::load_default();
+    match bolloon_agent::belief::run_action(&mut model, &action, &req, now_ms()) {
+        Ok(out) => Json(serde_json::json!({
+            "ok": true,
+            "action": action,
+            "output": out,
+            "beliefs": model.beliefs.len(),
+            "goals": model.goals.len(),
+            // 撞底线的"信念"不会走到这里 —— belief::violates_floor 已在入库前拒了
+        })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "action": action, "error": e })),
+    }
+}
+
+/// POST /api/proactive/tick → 主动性回合: 按信念挑下一个动作 (入队 + 返回指令, 读后清空)
+///
+/// 这是心跳/cron 的入口: 忙或不够空闲 → skipped; 没目标 → acted=false 并如实说原因。
+pub async fn proactive_tick(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let busy = req["busy"].as_bool().unwrap_or(false);
+    let idle_ms = req["idle_ms"].as_u64().unwrap_or(u64::MAX);
+    let threshold = req["threshold_ms"].as_u64().unwrap_or(PROACTIVE_IDLE_MS);
+    if busy || idle_ms < threshold {
+        return Json(serde_json::json!({
+            "acted": false,
+            "skipped": if busy { "busy" } else { "not-idle-enough" },
+            "threshold_ms": threshold,
+        }));
+    }
+    // 与后台心跳同一实现: 判目标 → 入队 → 留痕 (last_initiative); 空闲判定已由入参做完
+    let directive = tick_common(true);
+    let model = bolloon_agent::belief::SelfModel::load_default();
+    let ctx = bolloon_agent::belief::ActionContext::new(now_ms(), false);
+    Json(serde_json::json!({
+        "acted": directive.is_some(),
+        "directive": directive.unwrap_or_default(),
+        "next_action": model.next_action(&ctx),
+        "beliefs": model.beliefs.len(),
+        "goals": model.goals.len(),
+    }))
+}
+
 /// POST /api/dream/topic → 梦想文档 (对齐 TS `/dream <主题>` 落盘; 作者取真实 profile)
 pub async fn dream_topic(
     State(st): State<AppState>,
@@ -3858,5 +4077,33 @@ pub async fn intent_observe(
             }))
         }
         Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("{e}") })),
+    }
+}
+
+#[cfg(test)]
+mod proactive_tests {
+    use super::*;
+
+    #[test]
+    fn act_only_when_idle_or_never_talked() {
+        let th = PROACTIVE_IDLE_MS;
+        assert!(should_act_now(0, 1_000_000, th), "从没聊过 → 主动性可以动");
+        assert!(!should_act_now(1_000_000, 1_000_000 + th - 1, th), "刚聊过 → 不抢话");
+        assert!(should_act_now(1_000_000, 1_000_000 + th, th), "空闲够了 → 动");
+        // 时钟偏差 (last 在未来) 不 panic, 视为刚聊过
+        assert!(!should_act_now(9_999_999, 1_000, th));
+    }
+
+    #[test]
+    fn tick_does_nothing_without_beliefs() {
+        // 空自模型: 主动性没有方向, 一拍都不许编动作
+        let dir = std::env::temp_dir().join(format!("bolloon-pro-tick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("BOLLOON_AGENT_DIR", &dir) };
+        LAST_TURN_MS.store(0, Ordering::Relaxed);
+        assert!(proactive_heartbeat_tick().is_none(), "没信念 → 不空转");
+        assert!(bolloon_agent::belief::read_staged(&dir).is_empty(), "也不许留空指令");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

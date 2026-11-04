@@ -258,6 +258,19 @@ export class Scheduler {
         };
       }
 
+      // 自定信念与目标: 空闲心跳里按信念挑一步 → 进 suggestion 队列 (不直接开 Goal,
+      // 升级成 Goal 由 agent/用户决定, 不越 goal-flywheel 的冻结纪律)。
+      // 失败不拖垮 tick: 自模型是可选主动性, 坏了只记日志。
+      try {
+        const { selfModelTick } = await import('../agents/self-model.js');
+        const ticked = await selfModelTick({ now: now.getTime(), home: this.home });
+        if (ticked.acted) {
+          cronLog('info', 'self-model', `按信念派出一步: ${ticked.summary ?? ''}`, { goalId: ticked.goalId }, this.home);
+        }
+      } catch (e) {
+        cronLog('info', 'self-model', `自模型心跳失败: ${e instanceof Error ? e.message : String(e)}`, {}, this.home);
+      }
+
       const jobs = await this.runDue(now, tickId, records);
       const ran = jobs.filter((j) => j.status === 'ok').length;
       const failed = jobs.filter((j) => j.status === 'failed' || j.status === 'timeout').length;

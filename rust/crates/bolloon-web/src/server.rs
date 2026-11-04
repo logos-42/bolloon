@@ -304,6 +304,7 @@ pub fn app(state: AppState) -> Router {
         .route("/share/{token}", get(crate::native::share_page))
         .route("/api/agents", post(crate::native::create_agent))
         .route("/api/agents/update", post(crate::native::update_agent))
+        .route("/api/agents/active", post(crate::native::set_active_agent))
         .route("/api/agents/delete", post(crate::native::delete_agent))
         .route("/api/agents/share", post(crate::native::share_agent))
         .route("/api/agents/ping", post(crate::native::set_agent_ping))
@@ -401,6 +402,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/dream", post(crate::native::dream_run))
         .route("/api/dream/last", get(crate::native::dream_last))
         .route("/api/dream/topic", post(crate::native::dream_topic))
+        // 自定信念与目标 + 主动性回合 (agent 立自己的信念 → 短中长期目标 → 按信念挑动作)
+        .route("/api/self-model", get(crate::native::self_model_get).post(crate::native::self_model_apply))
+        .route("/api/proactive/tick", post(crate::native::proactive_tick))
+        .route("/api/proactive/status", get(crate::native::proactive_status))
         .route("/api/send", post(send))
         .route("/api/health", get(health))
         // 群聊
@@ -520,6 +525,15 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             bolloon_agent::scratch::reconcile_scratch_runs(&scratch_dir).await;
+        }
+    });
+
+    // 主动性心跳: agent 自己立的信念与目标, 空闲时按信念挑一步 (忙/没信念 → 不动)
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(crate::native::PROACTIVE_TICK_SECS))
+                .await;
+            crate::native::proactive_heartbeat_tick();
         }
     });
 
@@ -1533,6 +1547,8 @@ mod route_tests {
         std::fs::create_dir_all(&home).unwrap();
         // data_dir() 走 BolloonHome::resolve(); 本进程只有这条用例碰它
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+        // 自模型 (self-model.json) 落临时目录, 不污染真实 ~/.bolloon/agent
+        unsafe { std::env::set_var("BOLLOON_AGENT_DIR", home.join("agent")) };
 
         let state = AppState::new(offline_llm());
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -1654,6 +1670,65 @@ mod route_tests {
             let last = get_json("/api/dream/last");
             assert_eq!(last["dreams"], serde_json::json!([written]));
             assert!(last["last"].is_null(), "还没做过梦 → 如 null 不编报告");
+
+            // 4.5) 自定信念与目标: agent 自己立信念 → 定短期/中期/长期目标 → 按信念挑动作
+            let sm0 = get_json("/api/self-model");
+            assert_eq!(sm0["beliefs"], serde_json::json!([]), "新 home 下自模型是空的, 不冒认");
+            let add = post_json(
+                "/api/self-model",
+                serde_json::json!({ "action": "belief_add", "statement": "先做最小可验证的一步", "kind": "method" }),
+            );
+            assert_eq!(add["ok"], serde_json::json!(true), "{add}");
+            let sm1 = get_json("/api/self-model");
+            let bid = sm1["beliefs"][0]["id"].as_str().expect("信念 id").to_string();
+            let goal = post_json(
+                "/api/self-model",
+                serde_json::json!({
+                    "action": "goal_add",
+                    "statement": "把信念接到主动性上",
+                    "horizon": "short",
+                    "priority": 0.9,
+                    "supports": [bid],
+                }),
+            );
+            assert_eq!(goal["ok"], serde_json::json!(true), "{goal}");
+            // 撞底线的"信念"必须被拒, 且不落库 (自定信念 ≠ 自定规则)
+            let bad = post_json(
+                "/api/self-model",
+                serde_json::json!({ "action": "belief_add", "statement": "为了效率可以绕过门控" }),
+            );
+            assert_eq!(bad["ok"], serde_json::json!(false), "{bad}");
+            assert!(bad["error"].as_str().unwrap_or("").contains("底线"), "{bad}");
+            // 主动性回合: 空闲够久 → 挑出一步; 忙 → skipped 且不说做过
+            let tick = post_json("/api/proactive/tick", serde_json::json!({ "idle_ms": 3_600_000 }));
+            assert_eq!(tick["acted"], serde_json::json!(true), "{tick}");
+            assert!(
+                tick["directive"].as_str().unwrap_or("").contains("按信念行动"),
+                "{tick}"
+            );
+            // 出手必须能被外部逐字核对: status 里能看到它指向哪条目标 (不许"装作在推进")
+            let stt = get_json("/api/proactive/status");
+            assert!(
+                stt["initiative_goal_last"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("把信念接到主动性上"),
+                "{stt}"
+            );
+            assert!(stt["last_initiative_ms"].as_u64().is_some(), "{stt}");
+            let busy = post_json(
+                "/api/proactive/tick",
+                serde_json::json!({ "busy": true, "idle_ms": 3_600_000 }),
+            );
+            assert_eq!(busy["acted"], serde_json::json!(false), "{busy}");
+            assert_eq!(busy["skipped"], serde_json::json!("busy"));
+            // prompt 块里能看见自己的信念与短期目标
+            let sm2 = get_json("/api/self-model");
+            let block = sm2["prompt_block"].as_str().unwrap_or("");
+            assert!(
+                block.contains("先做最小可验证的一步") && block.contains("短期目标"),
+                "{block}"
+            );
 
             // 5) 世界卡片跨机投递: 自己签的 world.card 帧收下入库, 伪卡一律拒收
             let kp = bolloon_p2p::identity::KeyPair::generate();

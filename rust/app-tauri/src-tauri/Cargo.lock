@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-agent"
-version = "0.6.11"
+version = "0.6.13"
 dependencies = [
  "async-trait",
  "bolloon-harness",
@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-harness"
-version = "0.6.11"
+version = "0.6.13"
 dependencies = [
  "async-trait",
  "bolloon-kernel",
@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-kernel"
-version = "0.6.11"
+version = "0.6.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-llm"
-version = "0.6.11"
+version = "0.6.13"
 dependencies = [
  "async-trait",
  "chrono",
@@ -326,8 +326,9 @@ dependencies = [
 
 [[package]]
 name = "bolloon-p2p"
-version = "0.6.11"
+version = "0.6.13"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bolloon-kernel",
  "bs58",
@@ -335,7 +336,9 @@ dependencies = [
  "ed25519-dalek",
  "futures",
  "hex",
+ "quinn",
  "rand 0.8.8",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -347,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-tauri"
-version = "0.6.11"
+version = "0.6.13"
 dependencies = [
  "bolloon-llm",
  "bolloon-web",
@@ -364,11 +367,12 @@ dependencies = [
 
 [[package]]
 name = "bolloon-web"
-version = "0.6.11"
+version = "0.6.13"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "bolloon-agent",
  "bolloon-kernel",
  "bolloon-llm",
@@ -378,6 +382,7 @@ dependencies = [
  "futures",
  "hashavatar",
  "hex",
+ "qrcode",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -390,7 +395,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-x402"
-version = "0.6.11"
+version = "0.6.13"
 dependencies = [
  "bolloon-p2p",
  "hex",
@@ -3084,6 +3089,15 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+dependencies = [
+ "image",
+]
 
 [[package]]
 name = "quick-error"

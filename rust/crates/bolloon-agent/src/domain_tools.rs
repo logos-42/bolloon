@@ -278,6 +278,22 @@ async fn do_task_list(call: ToolCall) -> ToolResult {
     ok(body, json!({ "count": items.len() }))
 }
 
+/// `self_model` — agent 立自己的信念 / 定短期·中期·长期目标 / 按信念挑下一个动作
+///
+/// 状态落在 agent 自身目录下的 `self-model.json` (与 todo.json 同级);
+/// 撞硬底线的"信念"由 `belief::violates_floor` 拒, 工具不提供后门。
+async fn do_self_model(call: ToolCall) -> ToolResult {
+    let action = match call.arguments.get("action").and_then(|v| v.as_str()) {
+        Some(a) if !a.trim().is_empty() => a.trim().to_string(),
+        _ => return fail(ErrorCode::InvalidArgument, "self_model: action 必填 (list/belief_add/goal_add/next_action/...)"),
+    };
+    let mut model = crate::belief::SelfModel::load_default();
+    match crate::belief::run_action(&mut model, &action, &call.arguments, now_ms()) {
+        Ok(out) => ok(out, json!({ "action": action, "beliefs": model.beliefs.len(), "goals": model.goals.len() })),
+        Err(e) => fail(ErrorCode::InvalidArgument, &e),
+    }
+}
+
 pub struct DomainExecutor;
 
 #[async_trait]
@@ -292,6 +308,7 @@ impl ToolExecutor for DomainExecutor {
             "remember" => do_remember(call).await,
             "recall" => do_recall(call).await,
             "task_list" => do_task_list(call).await,
+            "self_model" => do_self_model(call).await,
             other => ToolResult {
                 ok: false,
                 output: format!("领域族没有 `{other}`（不许冒充成功）"),
@@ -360,6 +377,29 @@ pub fn domain_tool_defs() -> Vec<ToolDef> {
             "properties": { "capability": { "type": "string", "description": "可选按能力过滤" } },
             "additionalProperties": false
         }), EffectKind::Read),
+        def(
+            "self_model",
+            "你自己的信念与目标（可自定、可修订、据此行事）。action: list 看全部; belief_add 立信念(statement, kind=value/identity/worldview/method, origin=self/user/experience/peer, confidence?); belief_reinforce/belief_contradict/belief_retire (id); goal_add 定目标(statement, horizon=short/mid/long, priority?, supports?); goal_state (id, state=proposed/active/paused/done/dropped, note?); goal_note 记进展(id, note); derive 由信念派生目标; next_action 按信念挑下一个动作; render 看注入 prompt 的文本。",
+            json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "description": "list/belief_add/belief_reinforce/belief_contradict/belief_retire/goal_add/goal_state/goal_note/derive/next_action/render" },
+                    "statement": { "type": "string", "description": "信念或目标的一句话陈述" },
+                    "kind": { "type": "string", "description": "信念类别: value/identity/worldview/method" },
+                    "origin": { "type": "string", "description": "信念来源: self/user/experience/peer" },
+                    "confidence": { "type": "number", "description": "可选置信度 0~1" },
+                    "evidence": { "type": "string", "description": "可选证据" },
+                    "horizon": { "type": "string", "description": "目标尺度: short/mid/long" },
+                    "priority": { "type": "number", "description": "目标权重 0~1" },
+                    "supports": { "type": "array", "items": { "type": "string" }, "description": "支撑它的信念 id" },
+                    "state": { "type": "string", "description": "目标状态: proposed/active/paused/done/dropped" },
+                    "id": { "type": "string", "description": "信念或目标 id" },
+                    "note": { "type": "string", "description": "进展/结束说明" }
+                },
+                "required": ["action"], "additionalProperties": false
+            }),
+            EffectKind::Write,
+        ),
     ]
 }
 

@@ -215,6 +215,24 @@ const STATIC_LAYERS: Omit<PromptLayer, 'content'>[] = [
  * 接入现有 project-context.ts + value-injection.ts, 不重复实现
  */
 const DYNAMIC_LAYERS: PromptLayer[] = [
+  // 自定信念与目标: agent 自己立的立场进每一轮装配 (空模型 → 空串, 不占预算)。
+  // 这是"根据信念来做"的生效点: 模型每轮都能看到自己立过什么、在推什么。
+  {
+    id: 'dynamic.self-model',
+    version: '1.0.0',
+    priority: 290,
+    appliesTo: ['all'],
+    source: 'function',
+    maxChars: 900,
+    resolver: async () => {
+      try {
+        const { loadSelfModel, renderSelfModelBlock } = await import('../../agents/self-model.js');
+        return renderSelfModelBlock(await loadSelfModel());
+      } catch {
+        return '';
+      }
+    },
+  },
   {
     id: 'dynamic.project-context',
     version: '1.0.0',

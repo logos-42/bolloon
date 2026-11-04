@@ -1267,6 +1267,8 @@ function cancelEdit(){editingMessageIndex=null;editingSessionId='';}
 async function pickAgent(id){
   cancelEdit();
   state.active_agent_id=id;
+  // 落盘: 否则一刷新 / 一交流结束就回落到"最早建的那个"智能体 (bootstrap 默认值)
+  try{await api('/api/agents/active',{method:'POST',body:JSON.stringify({id})});}catch(_){}
   let s=state.sessions.find(x=>x.agent_id===id);
   if(!s){s=await api('/api/sessions',{method:'POST',body:JSON.stringify({agent_id:id})});state.sessions.push(s);}
   state.active_session_id=s.id;renderSidebar();renderHeader();renderChat();flushQueue();renderSendState();resumeRunning();
@@ -1346,8 +1348,11 @@ async function resumeRunning(){
         clearInterval(timer);resumeTimers.delete(s.id);
         a.streaming=false;setBusy(s.id,false);
         const active=state&&state.active_session_id;
+        const activeAgent=state&&state.active_agent_id;
         const j=await api('/api/bootstrap');
         state=j.state;update=j.update;
+        // 交流结束后的重载不能把"用户当前选的智能体/会话"覆盖成默认值 (默认 = 最早建的那个)
+        if(activeAgent)state.active_agent_id=activeAgent;
         if(active)state.active_session_id=active;
         renderAll();
       }
@@ -1618,6 +1623,8 @@ $('agentSave').onclick=async()=>{
       const j=await api('/api/agents',{method:'POST',body:JSON.stringify(payload)});
       state.agents.push(j.agent);state.sessions.push(j.session);
       state.active_agent_id=j.agent.id;state.active_session_id=j.session.id;
+      // 同上: 新建后选的智能体要落盘, 不然刷新就回落到最早建的那个
+      try{await api('/api/agents/active',{method:'POST',body:JSON.stringify({id:j.agent.id})});}catch(_){}
     }
     editingAgentId='';
     document.getElementById('agentDlg').close();renderAll();

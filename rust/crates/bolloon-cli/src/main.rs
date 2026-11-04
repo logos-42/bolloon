@@ -1312,7 +1312,37 @@ fn build_bolloon_system(channel: &str) -> String {
     };
     // 记忆召回 (top-N) 接进 system prompt —— 之前这一项恒为空, 记忆从未进 prompt
     let memory_text = cli_memory_recall_text();
-    bolloon_agent::prompt::build_system_prompt(&docs, None, None, None, 0, "", Some(&memory_text), &ctx).text
+    // 自定信念与目标: agent 自己立的立场, 每轮注入 (空模型 → 空串, 不占预算)
+    // 主动性: 若按信念挑到"下一个该做的动作", 一并派给它 (读后清空, 不反复催)
+    let model = bolloon_agent::belief::SelfModel::load_default();
+    let mut self_model = model.render_prompt();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let staged = bolloon_agent::belief::proactive_block(
+        &model,
+        &bolloon_agent::belief::default_dir(),
+        &bolloon_agent::belief::ActionContext::new(now_ms, false),
+    );
+    if !staged.is_empty() {
+        if !self_model.is_empty() {
+            self_model.push_str("\n\n");
+        }
+        self_model.push_str(&staged);
+    }
+    bolloon_agent::prompt::build_system_prompt_with_self(
+        &docs,
+        None,
+        None,
+        None,
+        0,
+        "",
+        Some(&memory_text),
+        Some(&self_model),
+        &ctx,
+    )
+    .text
 }
 
 /// 组装启动 Dashboard 的数据快照 (全部从运行时读, 不硬编码示例)

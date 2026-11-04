@@ -460,6 +460,7 @@ pub fn inject_judgment_gate(
 /// **完整 system prompt 组装** (统一入口: 借 TS registry + 快照 + 判断力唤起 + skills + todo + history 提示)
 ///
 /// history 已由 compaction 压缩 (runtime), 这里只拼"历史注入说明"段 (真历史走 messages 数组)
+/// `self_model` = 自定信念与目标块 (belief::SelfModel::render_prompt); 空串 = 不拼该层
 pub fn build_system_prompt(
     docs: &crate::home::AgentDocs,
     skills_index: Option<&str>,
@@ -470,7 +471,46 @@ pub fn build_system_prompt(
     memory_recall: Option<&str>,
     ctx: &AssembleContext,
 ) -> SystemPromptText {
+    build_system_prompt_with_self(
+        docs,
+        skills_index,
+        todo_progress,
+        judgment_injection,
+        history_chars,
+        dynamic,
+        memory_recall,
+        None,
+        ctx,
+    )
+}
+
+/// 带自模型 (信念/目标) 的完整装配 — 旧签名保持兼容, 新调用走这里
+#[allow(clippy::too_many_arguments)]
+pub fn build_system_prompt_with_self(
+    docs: &crate::home::AgentDocs,
+    skills_index: Option<&str>,
+    todo_progress: Option<&str>,
+    judgment_injection: Option<&InjectionResult>,
+    history_chars: usize,
+    dynamic: &str,
+    memory_recall: Option<&str>,
+    self_model: Option<&str>,
+    ctx: &AssembleContext,
+) -> SystemPromptText {
     let mut layers = builtin_layers();
+    // 自定信念与目标 (最高优先级的"我为什么这么干"): 紧跟快照, 先于 skills/todo
+    if let Some(sm) = self_model {
+        if !sm.trim().is_empty() {
+            layers.push(PromptLayer {
+                id: "dynamic.self-model".into(),
+                version: "1.0.0".into(),
+                priority: 201,
+                applies_to: vec![AppliesTo::All],
+                max_chars: crate::belief::SELF_MODEL_MAX_CHARS,
+                content: sm.into(),
+            });
+        }
+    }
     // 快照层 (home 冻结文档; 随动态加入) — 身份细分: agent 名 + ID 分类(channel) + persona + soul + agent
     layers.push(PromptLayer {
         id: "dynamic.snapshot".into(),
@@ -787,5 +827,49 @@ mod tests {
         assert!(p.text.contains("群聊合作语气"));
         assert!(p.text.contains("友好和善"), "群聊合作机制支持友好和善");
         assert!(p.text.contains("bolloon://join"), "分享链接要有");
+    }
+
+    #[tokio::test]
+    async fn self_model_layer_injected_when_present() {
+        let h = home("selfmodel");
+        let docs = crate::home::AgentDocs::freeze(&h, "a1").unwrap();
+        let mut model = crate::belief::SelfModel::new();
+        model
+            .adopt(crate::belief::BeliefDraft::method("先做最小可验证的一步"), 1)
+            .unwrap();
+        model.derive_goals(2);
+        let block = model.render_prompt();
+        let p = build_system_prompt_with_self(
+            &docs,
+            None,
+            None,
+            None,
+            0,
+            "",
+            None,
+            Some(&block),
+            &AssembleContext { channel: "local", role: None, tool: None },
+        );
+        assert!(p.layer_ids.contains(&"dynamic.self-model".into()), "{:?}", p.layer_ids);
+        assert!(p.text.contains("我的信念与目标"), "信念层进正文");
+        assert!(p.text.contains("先做最小可验证的一步"));
+    }
+
+    #[tokio::test]
+    async fn empty_self_model_adds_no_layer() {
+        let h = home("selfempty");
+        let docs = crate::home::AgentDocs::freeze(&h, "a1").unwrap();
+        let p = build_system_prompt_with_self(
+            &docs,
+            None,
+            None,
+            None,
+            0,
+            "",
+            None,
+            Some(""),
+            &AssembleContext { channel: "local", role: None, tool: None },
+        );
+        assert!(!p.layer_ids.contains(&"dynamic.self-model".into()), "空模型不占预算");
     }
 }
