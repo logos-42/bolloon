@@ -49,6 +49,9 @@
      (用户 2026-10-30: "第二栏不透明, 目前的第二栏被透明了" —— 所以这里不许再给 aside 加 rgba)。 */
   html.tauri body{background:transparent}
   html.tauri main{background:var(--bg)}
+  /* 2026-11-05: Windows 壳的窗口本身已不透明, 页面底色也必须是实色,
+     否则 WebView2 会露出默认白底, 与深色主题不一致。Mac 继续用上面两行。 */
+  html.tauri.win-shell body{background:var(--bg)}
   #app{display:grid;grid-template-columns:284px 1fr;height:100vh;overflow:hidden;transition:grid-template-columns .18s ease}
   #app.collapsed{grid-template-columns:66px 1fr}
   #app.room-open{grid-template-columns:284px minmax(0,1fr) var(--roomw,360px)}
@@ -507,6 +510,21 @@
     border-bottom:1px solid var(--line);color:var(--accent);font-weight:700;font-size:13px;letter-spacing:.3px;user-select:none;
   }
   body.desktop3col #topBar .grow{flex:1}
+  /* 2026-11-05 (Windows 壳): 顶部提示栏与第一栏一律**不透明**, 边框保持实色;
+     Mac 继续用上面的 --glass + blur(20px), 不受影响。
+     窗口级透明已经在 Tauri 壳里按平台关掉 (build_main_window)。 */
+  html.win-shell body.desktop3col .primary-rail,
+  html.win-shell body.desktop3col #topBar{
+    background:var(--panel);
+    backdrop-filter:none;-webkit-backdrop-filter:none;
+  }
+  html.win-shell body.desktop3col .primary-rail{border-right:1px solid var(--line)}
+  html.win-shell body.desktop3col #topBar{
+    border-bottom:1px solid var(--line);
+    padding-left:10px; /* Windows 没有 macOS 红绿灯, 不必让开 22px */
+  }
+  /* Windows 壳里 alert 改走页内 toast (见文件头脚本), 长文本要能折行、不撑破屏 */
+  html.win-shell .toast{white-space:pre-wrap;max-width:min(560px,88vw);max-height:40vh;overflow:auto}
   body.desktop3col #app.room-open #topBar{grid-column:2 / span 3}
   body.desktop3col aside{grid-column:2;grid-row:2}
   body.desktop3col main{grid-column:3;grid-row:2}
@@ -655,7 +673,35 @@
   .pay-pricing td:last-child{text-align:right;color:var(--text)}
   .pay-note{padding:0 18px 16px;line-height:1.6}
 </style>
-<script>if(window.__TAURI__&&window.__TAURI__.core&&window.__TAURI__.core.invoke)document.documentElement.classList.add('tauri');</script>
+<script>
+/* 桌面壳识别 + Windows 弹窗治理 (2026-11-05) */
+(function(){
+  var t = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+  if(!t) return;                       /* 普通浏览器: 什么都不改 */
+  var root = document.documentElement;
+  root.classList.add('tauri');
+  if(!/[?&]shell=windows\b/.test(location.search)) return;  /* Mac / Linux 原样保留 */
+  root.classList.add('win-shell');
+  // WebView2 的 window.alert 是**系统模态弹窗**: 页面里 30 多处 catch 都调它,
+  // 后端一次抖动就会连着弹好几个框。改成页内 toast, 同一条消息 4 秒内只提示一次。
+  var last = '', lastAt = 0;
+  window.alert = function(msg){
+    var s = String(msg == null ? '' : msg), now = Date.now();
+    if(s === last && now - lastAt < 4000) return;
+    last = s; lastAt = now;
+    var show = function(){
+      var el = document.getElementById('toast');
+      if(!el) return;
+      el.textContent = s;
+      el.classList.remove('hidden');
+      clearTimeout(el._h);
+      el._h = setTimeout(function(){ el.classList.add('hidden'); }, 3200);
+    };
+    if(document.getElementById('toast')) show();
+    else document.addEventListener('DOMContentLoaded', show, { once:true });
+  };
+})();
+</script>
 </head>
 <body>
   <div id="splash">

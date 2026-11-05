@@ -15,6 +15,17 @@
 
 use std::path::{Path, PathBuf};
 
+/// Windows 上 npm 是 npm.cmd (控制台程序), GUI 进程里跑它会弹黑框 ⇒ 隐藏窗口。
+/// 只影响子进程窗口, stdout/stderr 仍由 .output() 收走。非 Windows 是空操作。
+#[cfg(windows)]
+fn no_console_window(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+#[cfg(not(windows))]
+fn no_console_window(_cmd: &mut std::process::Command) {}
+
 /// 清单里的平台键 (与 Tauri `latest.json` 的 `platforms` 键一致)
 pub fn platform_key() -> String {
     let os = if cfg!(target_os = "macos") {
@@ -166,8 +177,10 @@ fn append_log(line: &str) {
 /// (`npm i -g @bolloon/bolloon-agent@latest`)。失败**不假装成功**, 全部输出落 update.log。
 pub fn npm_install_latest() -> Result<PathBuf, String> {
     append_log("=== 开始 npm 更新 ===");
-    let out = std::process::Command::new("npm")
-        .args(["i", "-g", "@bolloon/bolloon-agent@latest"])
+    let mut cmd = std::process::Command::new("npm");
+    cmd.args(["i", "-g", "@bolloon/bolloon-agent@latest"]);
+    no_console_window(&mut cmd);
+    let out = cmd
         .output()
         .map_err(|e| {
             let msg = format!("调用 npm 失败 (没装 npm?): {e}");
@@ -180,8 +193,10 @@ pub fn npm_install_latest() -> Result<PathBuf, String> {
         return Err(format!("npm 安装失败 (退出码 {:?}), 详见 update.log", out.status.code()));
     }
     // 找到装好的二进制: `npm prefix -g` + /bin/bolloon
-    let prefix = std::process::Command::new("npm")
-        .args(["prefix", "-g"])
+    let mut prefix_cmd = std::process::Command::new("npm");
+    prefix_cmd.args(["prefix", "-g"]);
+    no_console_window(&mut prefix_cmd);
+    let prefix = prefix_cmd
         .output()
         .map_err(|e| e.to_string())?;
     let prefix = String::from_utf8_lossy(&prefix.stdout).trim().to_string();

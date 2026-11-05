@@ -335,19 +335,34 @@ fn install_chinese_menu(app: &tauri::App) -> tauri::Result<()> {
 /// (红绿灯浮在内容之上, 不占一行), 前端把第一栏顶部留出 30px 交给红绿灯并自己当拖拽区。
 #[cfg(desktop)]
 fn build_main_window(app: &tauri::AppHandle, port: u16) -> tauri::Result<()> {
+    // 2026-11-05 (用户): Windows 的顶部提示栏和窗口边框**不要透明**, Mac 保留毛玻璃。
+    // Windows 上 transparent 窗口配系统边框会留下半透明边、重绘时还容易闪;
+    // 因此平台差异放在壳这一层, 前端靠 URL 上的 shell=windows 认出自己是 Windows 壳。
+    let url = if cfg!(target_os = "windows") {
+        format!("http://127.0.0.1:{port}/?app=desktop&shell=windows")
+    } else {
+        format!("http://127.0.0.1:{port}/?app=desktop")
+    };
     #[allow(unused_mut)]
     let mut b = tauri::WebviewWindowBuilder::new(
         app,
         "main",
-        tauri::WebviewUrl::External(
-            format!("http://127.0.0.1:{port}/?app=desktop").parse().unwrap(),
-        ),
+        tauri::WebviewUrl::External(url.parse().unwrap()),
     )
     .title("Bolloon")
     .inner_size(1200.0, 800.0)
-    .min_inner_size(900.0, 600.0)
-    // 透明窗 = 左栏毛玻璃能虚化桌面 (macOS 需 macos-private-api 特性 + macOSPrivateApi)
-    .transparent(true);
+    .min_inner_size(900.0, 600.0);
+
+    #[cfg(target_os = "windows")]
+    {
+        // 不透明窗口 + 系统标准边框: 顶栏提示条与边框都由 Windows 画成实色
+        b = b.transparent(false).decorations(true);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 透明窗 = 左栏毛玻璃能虚化桌面 (macOS 需 macos-private-api 特性 + macOSPrivateApi)
+        b = b.transparent(true);
+    }
 
     #[cfg(target_os = "macos")]
     {

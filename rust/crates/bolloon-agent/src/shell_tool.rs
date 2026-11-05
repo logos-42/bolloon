@@ -22,6 +22,18 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+/// Windows 桌面 App 里 agent 每跑一条 shell 工具都会 spawn 一个控制台子进程;
+/// 不加 CREATE_NO_WINDOW 就会连着弹黑框 (2026-11-05 用户报「经常产生弹窗」)。
+/// 只隐藏窗口, 输出管道/超时/取消三道闸一律不变。
+#[cfg(windows)]
+fn no_console_window(cmd: &mut TokioCommand) {
+    // tokio::process::Command 自带 creation_flags (不需要 std 的 CommandExt trait)
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+#[cfg(not(windows))]
+fn no_console_window(_cmd: &mut TokioCommand) {}
+
 use async_trait::async_trait;
 use crate::tool_contract::{ErrorCode, error_evidence, with_error};
 use bolloon_harness::security::guard_shell;
@@ -440,6 +452,7 @@ async fn run_one(cmd: &str, timeout_ms: u64, cwd: Option<&str>, cancel: &AtomicB
     }
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
+    no_console_window(&mut command);
 
     let mut child = match command.spawn() {
         Ok(c) => c,

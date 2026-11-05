@@ -18,6 +18,19 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+/// Windows 的 Tauri App 是 GUI (windows 子系统) 进程; 它 spawn 的 powershell / security /
+/// secret-tool 都是控制台程序, 不加 CREATE_NO_WINDOW 系统会**给每个子进程新建一个黑色
+/// 控制台窗口**。凭据读取发生在每次模型调用/配置加载里 ⇒ 用户看到的「经常弹窗」(2026-11-05)。
+/// 这个 flag 只隐藏子进程的窗口, stdin/stdout/stderr 管道照常工作, 非 Windows 平台是空操作。
+#[cfg(windows)]
+fn no_console_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+#[cfg(not(windows))]
+fn no_console_window(_cmd: &mut Command) {}
+
 /// 凭据库 service 名 (同一 service 下每个 provider 一个 account)
 pub const SERVICE: &str = "bolloon.llm";
 
@@ -32,11 +45,14 @@ pub trait SecretBackend: Send + Sync {
 
 /// 跑一条命令, 把 `input` 喂进 stdin, 返回 (stdout, 是否成功, stderr)
 fn run_with_stdin(prog: &str, args: &[&str], input: &str) -> Result<String, String> {
-    let mut child = Command::new(prog)
+    let mut command = Command::new(prog);
+    command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    no_console_window(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|e| format!("调不起 {prog}: {e}"))?;
     if let Some(stdin) = child.stdin.as_mut() {
@@ -59,10 +75,13 @@ fn run_with_stdin(prog: &str, args: &[&str], input: &str) -> Result<String, Stri
 }
 
 fn which(prog: &str) -> bool {
-    Command::new(prog)
+    let mut command = Command::new(prog);
+    command
         .arg("--version")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    no_console_window(&mut command);
+    command
         .status()
         .map(|s| s.success())
         .unwrap_or(false)

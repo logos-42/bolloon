@@ -4722,7 +4722,14 @@ fn open_in_browser(url: &str) -> std::io::Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn()?;
+        // 2026-11-05: cmd 是控制台程序, GUI 进程里 spawn 会闪一个黑框 ⇒ 隐藏窗口。
+        // start 打开的是默认浏览器 (GUI 程序), 不受这个 flag 影响。
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", url])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?;
     }
     #[cfg(target_os = "linux")]
     {

@@ -250,6 +250,13 @@ the model you plug in.
 Website https://bolloon.cn · Docs https://bolloon.cn/docs · Gateway https://bolloon.cn/gateway ·
 Docker [docs/wiki/docker-deployment.md](./docs/wiki/docker-deployment.md)
 
+## 最近一次修复记录（2026-11-05）
+
+- **Windows 界面**：顶部提示栏、左侧外壳栏和窗口边框改成实色，不再透明、不再毛玻璃；Mac 保持原来的毛玻璃外观。
+- **Windows 弹窗**：两个原因一起修。一是程序读 API key、执行命令时会在后台启动 PowerShell / cmd 这类小程序，Windows 会顺手弹出黑色控制台窗口；二是网页报错在 Windows 上会弹出系统对话框。现在后台程序一律隐藏窗口，报错改成窗口内的小提示条。
+- **复盘与改进建议**：以后再加平台差异，请沿用「桌面壳按系统分叉 + 一个 `win-shell` 样式标记」这两个入口，不要在每个功能里各写一套；Windows 图形程序里新加的后台命令都要记得隐藏窗口。还没做到：Windows 真机装好后的目视验收、自动更新清单目前仍只有 macOS 条目。
+- 详细验证与边界见 [docs/wiki/log.md](./docs/wiki/log.md)。
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
