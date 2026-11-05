@@ -615,6 +615,9 @@
   #mobTabs button.on{color:var(--accent);font-weight:600}
   #mobBack{display:none;position:fixed;top:calc(8px + env(safe-area-inset-top));left:8px;z-index:81;width:38px;height:38px;border-radius:50%;background:var(--panel);border:1px solid var(--line);color:var(--text);font-size:20px;line-height:1}
   body.mobile #app.mob-detail #mobBack{display:block}
+  /* 余额入口: 手机端常驻, 点击打开充值/额度弹窗 */
+  #mobBalance{display:none}
+  body.mobile #mobBalance{display:block;position:fixed;top:calc(8px + env(safe-area-inset-top));right:8px;z-index:82;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:999px;padding:6px 11px;font-size:12px;line-height:1}
 
   /* ── 2026-10-30: 订阅/充值弹窗 ── */
   #payDlg{width:min(560px,94vw);padding:0;border-radius:16px;overflow:hidden}
@@ -2086,7 +2089,7 @@ function renderPay(){
     const label=PAY_LABEL[payChannel];
     t.innerHTML = c.qr
       ? `<div>扫${label}收款码转账，然后填写交易号提交。</div>
-         <div style="margin-top:8px"><img src="/api/pay/qr/${encodeURIComponent(c.qr)}" alt="${label}收款码" style="width:170px;border-radius:10px;border:1px solid var(--line)" /></div>
+         <div style="margin-top:8px"><img src="${/^https?:/i.test(c.qr) ? c.qr : '/api/pay/qr/' + encodeURIComponent(c.qr)}" alt="${label}收款码" onerror="this.parentElement.innerHTML='<span class=&#34;hint&#34;>收款码图片还没放进来（${c.qr}）</span>'" style="width:170px;border-radius:10px;border:1px solid var(--line)" /></div>
          <div class="hint" style="margin-top:6px">${c.note||''}</div>`
       : `<span class="hint">还没配置${label}收款码（config.${payChannel}.qr 填图片地址或 data URL）</span>`;
   }
@@ -4633,6 +4636,16 @@ boot().finally(()=>{
   const back=document.createElement('button'); back.id='mobBack'; back.type='button'; back.textContent='‹';
   back.setAttribute('aria-label','返回'); back.addEventListener('click',()=>app.classList.remove('mob-detail'));
   document.body.appendChild(back);
+  // 余额入口（用户: 「在余额那里是前端入口」）
+  const bal=document.createElement('button'); bal.id='mobBalance'; bal.type='button';
+  bal.textContent='余额 --'; bal.title='额度 / 充值';
+  bal.addEventListener('click',()=>{ if(typeof openPayDialog==='function') openPayDialog(); else if(typeof loadPay==='function') loadPay(); });
+  document.body.appendChild(bal);
+  const refreshBal=async()=>{
+    try{ const st=await api('/api/pay/summary'); bal.textContent='余额 $'+Number(st.balance_usd||0).toFixed(2); }
+    catch(_){ bal.textContent='余额 --'; }
+  };
+  setTimeout(refreshBal,1500); setInterval(refreshBal,60000);
   // 选中会话/智能体 → 进入详情（列表让位给主区）
   const _pickSession=pickSession;
   pickSession=function(id){ _pickSession(id); app.classList.add('mob-detail'); };

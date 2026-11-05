@@ -142,12 +142,21 @@ fn config() -> serde_json::Value {
         "currency": "USD",
         "crypto": {
             "chain": "base",
-            "address": std::env::var("BOLLOON_PAY_USDC_ADDRESS").unwrap_or_default(),
+            "address": std::env::var("BOLLOON_PAY_USDC_ADDRESS")
+                .unwrap_or_else(|_| "0xb4e9dCF79055A8232670ebb1c8c664Dff4E70066".to_string()),
             "asset": "USDC",
-            "note": "默认通道: 转到该地址后, 把交易哈希填进来, 本机确认到账后计入余额"
+            "note": "任选一条链转账，把交易哈希填进来；本机确认到账后计入余额",
+            // 2026-10-31 (leo): 多链收款地址 — UI 按这个数组逐条列出并可复制
+            "chains": [
+                { "label": "Ethereum", "chain": "eth",   "asset": "ETH / USDC",  "address": "0xb4e9dCF79055A8232670ebb1c8c664Dff4E70066" },
+                { "label": "Base",     "chain": "base",  "asset": "ETH / USDC",  "address": "0xb4e9dCF79055A8232670ebb1c8c664Dff4E70066" },
+                { "label": "Solana",   "chain": "sol",   "asset": "SOL / USDC",  "address": "8GVFhZHJVu3hThP9sALCLkojPZDymc4zTn3st1Gc1eXV" },
+                { "label": "Tron",     "chain": "tron",  "asset": "TRX / USDT",  "address": "TTu1yTtdEbBoSKduRu93zD7MQohSMUuQZS" }
+            ]
         },
-        "alipay": { "qr": "", "note": "支付宝个人收款: 扫码转账后填交易号, 由收款人本人核对后手动确认" },
-        "wechat": { "qr": "", "note": "微信个人收款: 同上" },
+        // 收款码图片放 <data_dir>/pay/alipay.png / wechat.png 即可被 /api/pay/qr/<name> 提供
+        "alipay": { "qr": "https://bolloon.cn/dl/alipay.jpg", "note": "支付宝个人收款: 扫码转账后填交易号, 由收款人本人核对后手动确认" },
+        "wechat": { "qr": "https://bolloon.cn/dl/wechat.jpg", "note": "微信个人收款: 扫码转账后填交易号, 由收款人本人核对后手动确认" },
         "paypal": { "link": "", "note": "PayPal.Me 个人收款链接; 到账后填交易号" },
         // 只卖两款 (2026-10-30 用户定): DeepSeek V4.1 Flash / V4 Pro —— 都从本人的私有 key 扣。
         // 单价是 micro-USD / 1K tokens (1e6 = 1 美元), 按档位乘数再打折。
