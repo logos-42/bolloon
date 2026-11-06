@@ -20,6 +20,7 @@ pub mod local_model;
 pub mod specialize;
 pub mod router;
 pub mod server;
+pub mod world_interact;
 pub mod x402_buy;
 pub mod updater;
 pub mod vision;

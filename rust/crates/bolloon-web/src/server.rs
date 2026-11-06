@@ -555,6 +555,11 @@ pub fn app(state: AppState) -> Router {
         .route("/api/world/inbox", get(crate::native::world_inbox).post(crate::native::world_inbox_post))
         // 意图交付面: 分类 → 差距检测 → 交付物卡片 (回应的是卡片集合, 不是聊天)
         .route("/api/world/fulfill", post(crate::native::world_fulfill))
+        // 交互沉淀 (任何点击 → 记忆/判断力/工作流/信念) + 媒体/gap 资产卡片
+        .route("/api/trace", post(crate::world_interact::trace_click))
+        .route("/api/trace/recent", get(crate::world_interact::trace_recent))
+        .route("/api/world/cards/media", post(crate::world_interact::media_card))
+        .route("/api/world/cards/from-gap", post(crate::world_interact::gap_asset_card))
         // 付费卡片: 智能体发布 (x402) + 报价 + 确认
         .route("/api/agents/{id}/cards/paid", post(crate::native::agent_card_paid))
         .route("/api/world/pay", post(crate::native::world_pay_quote))

@@ -198,6 +198,33 @@
   #worldOpportunities{column-count:3;column-gap:10px}
   @media (max-width:1100px){#worldOpportunities{column-count:2}}
   @media (max-width:760px){#worldOpportunities{column-count:1}}
+  /* 2026-11-06: 卡片排列规范化 —— 单一纵向流, 等宽等高间距 */
+  #worldOpportunities{display:flex;flex-direction:column;gap:10px}
+  #worldOpportunities .opp-card{display:block;width:100%;margin:0}
+  .opp-state{font-size:10px;border-radius:999px;padding:1px 7px;border:1px solid var(--line);color:var(--muted)}
+  .opp-state.accepted{color:#3aa675;border-color:#3aa675}
+  .opp-state.rejected{color:#b4472f;border-color:#b4472f}
+  .mstage{border:1px solid var(--line);border-radius:10px;padding:10px;margin:8px 0;background:var(--panel)}
+  .mstage .mrow{display:flex;gap:12px;align-items:center}
+  .mstage .disc{width:76px;height:76px;flex:none;border-radius:50%;
+    background:conic-gradient(from 0deg,#222,#555,#111,#444,#222);position:relative;animation:bolloonSpin 9s linear infinite}
+  .mstage .disc::after{content:'';position:absolute;inset:32%;border-radius:50%;background:var(--accent)}
+  .mstage.paused .disc{animation-play-state:paused}
+  @keyframes bolloonSpin{to{transform:rotate(360deg)}}
+  .mstage .lyrics{flex:1;max-height:96px;overflow:hidden;font-size:12px;line-height:1.7;color:var(--muted)}
+  .mstage .lyrics .line{transition:opacity .25s,color .25s;opacity:.45}
+  .mstage .lyrics .line.on{opacity:1;color:var(--accent);font-weight:600;font-size:14px}
+  .mstage .vposter{position:relative;width:100%;aspect-ratio:16/9;background:#000;overflow:hidden;border-radius:8px}
+  .mstage .vposter img{width:100%;height:100%;object-fit:cover;opacity:.72}
+  .mstage .vposter .play{position:absolute;inset:0;margin:auto;width:54px;height:54px;border-radius:50%;
+    border:none;background:rgba(255,255,255,.9);color:#111;font-size:22px;cursor:pointer}
+  .moverlay{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.96);display:flex;
+    flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#fff}
+  .moverlay.half{inset:auto 0 0 0;height:58vh}
+  .moverlay video,.moverlay iframe{width:min(92vw,1100px);height:min(76vh,620px);border:0;background:#000}
+  .moverlay .lyrics-full{text-align:center;font-size:20px;line-height:2;max-height:52vh;overflow:auto}
+  .moverlay .lyrics-full .line{opacity:.35}.moverlay .lyrics-full .line.on{opacity:1;color:#7fe3b0;font-size:26px}
+  .moverlay .mclose{position:absolute;top:12px;right:16px;background:none;border:0;color:#fff;font-size:26px;cursor:pointer}
   #worldOpportunities .opp-card{display:inline-block;width:100%;margin:0 0 10px;break-inside:avoid-page}
   #worldOpportunities .opp-card .cover{max-height:190px;overflow:hidden}
   #worldOpportunities .opp-card .cover img,#worldOpportunities .opp-card .cover video{width:100%;height:100%;object-fit:cover;display:block}
@@ -3067,6 +3094,102 @@ applyTheme(localStorage.getItem(THEME_KEY) || "");
 
 // ---------- 世界模式 (对齐 TS routes-world: 意图/机会流/校准环/信箱) ----------
 
+// ── 2026-11-06: 任何点击都优化 bolloon 本身 (记忆/判断力/工作流/信念) ──
+let __traceLast = 0;
+function traceEvent(event, target, label, tags) {
+  const t = Date.now();
+  if (t - __traceLast < 350) return;
+  __traceLast = t;
+  fetch('/api/trace', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({event, target:String(target||'').slice(0,80),
+      label:String(label||'').slice(0,80), tags:tags||[]})}).catch(()=>{});
+}
+document.addEventListener('click', (e) => {
+  const el = e.target && e.target.closest ? e.target.closest('button,a,.opp-card,.item') : null;
+  if (!el) return;
+  const card = el.closest ? el.closest('.opp-card') : null;
+  const id = (card && card.dataset.oid) || '';
+  const txt = String(el.innerText || el.getAttribute('title') || '').trim().slice(0,40);
+  let ev = 'click';
+  if (/接受/.test(txt)) ev = 'accept';
+  else if (/拒绝/.test(txt)) ev = 'reject';
+  else if (/固定/.test(txt)) ev = 'pin';
+  else if (/持续更新/.test(txt)) ev = 'watch';
+  else if (/打开链接|↗/.test(txt)) ev = 'open_link';
+  else if (/支付|x402/.test(txt)) ev = 'pay';
+  else if (/赞|👍/.test(txt)) ev = 'vote_up';
+  else if (/踩|👎/.test(txt)) ev = 'vote_down';
+  else if (/分享/.test(txt)) ev = 'share';
+  else if (/播放|▶/.test(txt)) ev = 'play';
+  else if (/全屏/.test(txt)) ev = 'fullscreen';
+  const raw = (card && worldCardsById[id]) || {};
+  traceEvent(ev, id, txt, (raw.card && raw.card.tags) || []);
+}, true);
+
+// ── 音乐 / 视频舞台 (presentation 扩展字段; 旧节点无此字段 ⇒ 退回普通卡片) ──
+function mediaStage(o) {
+  const p = o && o.card && o.card.presentation;
+  if (!p || !p.mode) return '';
+  const safe = u => escapeHTML(worldUrlToWeb(String(u||'')) || '');
+  if (p.mode === 'music') {
+    const lines = (Array.isArray(p.lyrics) ? p.lyrics : []).slice(0,200);
+    const lyricHtml = lines.length
+      ? lines.map((l,i)=>`<div class="line" data-li="${i}">${escapeHTML(typeof l==='string'?l:(l.text||''))}</div>`).join('')
+      : '<div class="line on">（未提供歌词）</div>';
+    return `<div class="mstage" data-music="${o.id}" data-sync="${p.sync_ms||4000}">
+      <div class="mrow"><div class="disc"></div><div class="lyrics">${lyricHtml}</div></div>
+      <audio controls preload="none" src="${safe(p.audio_url)}" style="width:100%;margin-top:8px"></audio>
+      <div class="row" style="margin-top:6px"><button onclick="openMediaOverlay('${o.id}','full')">歌词全屏</button><button onclick="openMediaOverlay('${o.id}','half')">半全屏</button></div>
+    </div>`;
+  }
+  if (p.mode === 'video') {
+    const poster = p.poster ? `<img src="${safe(p.poster)}" alt="" loading="lazy">` : '';
+    return `<div class="mstage" data-video="${o.id}">
+      <div class="vposter">${poster}<button class="play" onclick="openMediaOverlay('${o.id}','full')">▶</button></div>
+      <div class="row" style="margin-top:6px"><button onclick="openMediaOverlay('${o.id}','full')">全屏播放</button><button onclick="openMediaOverlay('${o.id}','half')">半全屏</button></div>
+    </div>`;
+  }
+  return '';
+}
+let __lyricTimer = null;
+function openMediaOverlay(id, size) {
+  const o = worldCardsById[id] || {}; const p = (o.card||{}).presentation || {};
+  let ov = document.getElementById('mediaOverlay');
+  if (!ov) { ov = document.createElement('div'); ov.id='mediaOverlay'; document.body.appendChild(ov); }
+  ov.className = 'moverlay' + (size === 'half' ? ' half' : '');
+  const url = worldUrlToWeb(p.mode==='video' ? p.video_url : p.audio_url) || '';
+  const lines = (Array.isArray(p.lyrics)?p.lyrics:[]).map(l=>typeof l==='string'?l:(l.text||''));
+  const lyricHtml = lines.map((t,i)=>`<div class="line" data-li="${i}">${escapeHTML(t)}</div>`).join('');
+  if (p.mode === 'video') {
+    const yt = url.match(/^https:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]+)/);
+    ov.innerHTML = `<button class="mclose" onclick="closeMediaOverlay()">✕</button>` +
+      (yt ? `<iframe src="https://www.youtube.com/embed/${yt[1]}?autoplay=1" allowfullscreen></iframe>`
+          : `<video controls autoplay src="${escapeHTML(url)}"></video>`) +
+      `<div class="lyrics-full">${lyricHtml||'<div class="line on">视频</div>'}</div>` +
+      `<div class="row"><button onclick="openMediaOverlay('${id}','full')">全屏</button><button onclick="openMediaOverlay('${id}','half')">半全屏</button></div>`;
+  } else {
+    ov.innerHTML = `<button class="mclose" onclick="closeMediaOverlay()">✕</button>
+      <div class="disc" style="width:150px;height:150px"></div>
+      <audio controls autoplay src="${escapeHTML(url)}" style="width:min(80vw,500px)"></audio>
+      <div class="lyrics-full">${lyricHtml||'<div class="line on">音乐</div>'}</div>
+      <div class="row"><button onclick="openMediaOverlay('${id}','full')">全屏</button><button onclick="openMediaOverlay('${id}','half')">半全屏</button></div>`;
+  }
+  clearInterval(__lyricTimer);
+  const step = () => {
+    const rows = [...ov.querySelectorAll('.lyrics-full .line')];
+    if (!rows.length) return;
+    const a = ov.querySelector('audio');
+    const per = Math.max(500, (p.sync_ms||4000));
+    const i = (a && Number.isFinite(a.currentTime))
+      ? Math.floor(a.currentTime*1000/per) % rows.length
+      : ((window.__lyricI=(window.__lyricI||0)+1) % rows.length);
+    rows.forEach((r,k)=>r.classList.toggle('on', k===i));
+    const first = rows[i]; if (first && first.scrollIntoView) first.scrollIntoView({block:'nearest'});
+  };
+  __lyricTimer = setInterval(step, Math.max(500, Math.min(4000, (p.sync_ms||4000)))); step();
+}
+function closeMediaOverlay(){ clearInterval(__lyricTimer); const o=document.getElementById('mediaOverlay'); if(o)o.remove(); }
+
 // 卡片封面区 —— cover.kind 决定高度档位 (video=高卡 16:9 / image=中卡 4:3 / 无封面=矮卡)
 function cardCover(o) {
   const c = (o && o.card && o.card.cover) ? o.card.cover : null;
@@ -3225,7 +3348,7 @@ async function watchWorldCard(id){
   await loadWorld();
 }
 async function acceptWorldCard(id){
-  try{await api('/api/opportunities/'+encodeURIComponent(id)+'/accept',{method:'POST',body:'{}'});toast('已接受');await loadWorld();}
+  try{const r=await api('/api/opportunities/'+encodeURIComponent(id)+'/accept',{method:'POST',body:'{}'});toast('已接受'+(r&&r.workflow?(' · '+r.workflow):''));await loadWorld();}
   catch(e){toast('接受失败: '+e.message);}
 }
 async function rejectWorldCard(id){
@@ -3290,10 +3413,49 @@ async function deleteWorldCard(){
     await loadWorld();
   }catch(e){toast('删除失败: '+e.message);}
 }
+// 世界页工具条: AI 自己生成媒体卡片 / gap 资产卡片 (去中心化分发走同一协议)
+async function publishMediaCard() {
+  const kind = await askText('卡片类型','music','music=音乐(歌词/唱片) / video=视频(封面/全屏)');
+  if (!kind || !kind.trim()) return;
+  const title = await askText('标题','','会显示在世界流里'); if (!title || !title.trim()) return;
+  const url = await askText('媒体链接','','http(s)/ipfs:// 的音频或视频地址'); if (!url || !url.trim()) return;
+  const lyrics = kind.trim() === 'music'
+    ? (await askText('歌词（每行一句；可留空）','','按节拍跟随高亮')) : '';
+  if (lyrics === null) return;
+  const body = {kind:kind.trim(), title:title.trim(), url:url.trim(), summary:'AI 生成的媒体卡片'};
+  if (kind.trim() === 'music' && lyrics && lyrics.trim()) body.lyrics = lyrics.split(/\r?\n/).filter(Boolean);
+  if (kind.trim() === 'video') {
+    const poster = await askText('视频封面（可留空）','','http(s) 图片地址; 留空为黑底');
+    if (poster === null) return;
+    if (poster.trim()) body.poster = poster.trim();
+  }
+  const dist = await askText('分发给好友？','','填 yes 走 bolloon-world-card 协议签名投递; 留空只入本机世界流');
+  if (dist && dist.trim() === 'yes') body.distribute = true;
+  const r = await api('/api/world/cards/media',{method:'POST',body:JSON.stringify(body)}).catch(e=>({error:e.message}));
+  if (r.error || r.ok === false) { toast('生成失败: ' + (r.error||'未知')); return; }
+  toast('已生成 '+body.kind+' 卡片'+(r.shared?(' · 已分发 '+r.shared+' 位'):''));
+  await loadWorld();
+}
+async function publishGapAsset() {
+  const r = await api('/api/world/cards/from-gap',{method:'POST',body:'{}'}).catch(e=>({error:e.message}));
+  if (r.error || r.ok === false) { toast('生成失败: ' + (r.error || '还没有 gap 记录')); return; }
+  toast('已把 '+r.count+' 条 gap 记录做成资产卡片');
+  await loadWorld();
+}
+function ensureWorldToolbar() {
+  const box = document.getElementById('worldOpportunities');
+  if (!box || document.getElementById('worldToolbar')) return;
+  const bar = document.createElement('div'); bar.id = 'worldToolbar';
+  bar.className = 'row'; bar.style.cssText = 'margin:0 0 10px;gap:6px';
+  bar.innerHTML = '<button onclick="publishMediaCard()">＋ 音乐/视频卡片</button><button onclick="publishGapAsset()">＋ gap 资产卡片</button>';
+  box.parentNode.insertBefore(bar, box);
+}
+
 async function loadWorld() {
   try {
     const j = await api("/api/opportunities");
     const box = $("worldOpportunities");
+    try { ensureWorldToolbar(); } catch(_) {}
     box.innerHTML = (j.opportunities || []).map(o => {
       const tags = (o.tags || []).map(t => `<span class="tag-chip">${escapeHTML(t)}</span>`).join("");
       const scopeIcon = o.kind === "card" ? "🎴" : (o.scope === "public" ? "🌐" : "🌍");
@@ -3322,9 +3484,11 @@ async function loadWorld() {
         ${mediaHtml}
         ${cardLine(o)}
         ${cardMedia((o.card && o.card.media) || o.media)}
+        ${mediaStage(o)}
         <div class="tags">${tags}</div>
         <div class="row">
-          ${o.accepted ? '<span class="tag-chip" style="color:var(--accent);border-color:var(--accent)">已接受</span>' : `<button data-act="accept" data-id="${o.id}">接受</button>`}
+          ${(o.accepted || o.state === 'accepted') ? '<span class="opp-state accepted">✓ 已接受 · 已进推荐正反馈</span>' : `<button data-act="accept" data-id="${o.id}">接受</button>`}
+          ${o.state === 'rejected' ? '<span class="opp-state rejected">⛔ 已拒绝 · 已降权</span>' : ''}
           <button data-act="ignore" data-id="${o.id}">忽略</button>
           ${(o.card&&o.card.actions||[]).some(a=>String(a.url||'').startsWith('x402:item/'))?`<button style="border-color:var(--accent);color:var(--accent)" onclick="event.stopPropagation();payWorldCard('${o.id}')">PAY x402</button>`:''}
           <span class="wcard-vote"><button class="up" onclick="voteWorldCard('${o.id}','up')">+${o.up||0}</button><button onclick="voteWorldCard('${o.id}','down')">-${o.down||0}</button></span>

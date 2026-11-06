@@ -190,6 +190,8 @@ pub fn builtin_tool_defs() -> Vec<ToolDef> {
     defs.extend(crate::net_tools::net_tool_defs());
     // SQL 工具类 (2026-11-04): 只读查询本地库; 与 web_fetch 同级注册, 三端共用同一份
     defs.extend(crate::sql_tools::sql_tool_defs());
+    // AI 自己生成/分发世界媒体卡片 (2026-11-06)
+    defs.extend(crate::world_card_tools::world_card_tool_defs());
     defs.extend(crate::domain_tools::domain_tool_defs());
     defs.extend(crate::updater_tools::updater_tool_defs());
     defs.extend(crate::scratch_tools::scratch_tool_defs());
@@ -264,6 +266,7 @@ impl ToolExecutor for BuiltinExecutor {
             | "git_commit" | "git_push" => self.git.execute(call).await,
             "web_fetch" | "web_search" => self.net.execute(call).await,
             "sql_query" => crate::sql_tools::SqlExecutor.execute(call).await,
+            "world_card_publish" => crate::world_card_tools::execute(&call),
             "read_skill" | "list_skills" | "todo_add" | "todo_list" | "todo_done" | "remember"
             | "recall" | "task_list" => self.domain.execute(call).await,
             // 信念层: agent 自己的信念/长短期目标 (写的是它自己的判断, 不是用户文件)

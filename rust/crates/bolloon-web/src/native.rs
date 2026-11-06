@@ -1618,6 +1618,9 @@ fn capability_block(st: &AppState, agent: Option<&AgentView>) -> String {
         "\n## 能力与接口权限（本机已授予，直接用，不用先问能不能）\n\
          - 文件/命令：`read_file` `write_file` `edit_file` `mkdir` `move_file` `shell` `git_add` `git_commit` `run_scratch_script`\n\
          - 付费卡片 (x402)：`POST /api/agents/<aid>/cards/paid`(参数 title/summary/content/price_atomic) — 用你钱包本里的地址收款，生成带支付按钮的卡片入世界流；买家付款验链通过才交付内容\n\
+         - **世界媒体卡片 (AI 可自己生成并分发)**：`POST /api/world/cards/media`(参数 kind=music/video, title, url, lyrics, poster, distribute, friends) —
+         音乐卡片有唱片动效与歌词跟随、视频卡片有封面与全屏/半全屏；distribute=true 按 bolloon-world-card 协议签名投递给好友
+         - **gap 资产卡片**：`POST /api/world/cards/from-gap` — 把交流中「能力差距 → 自动补齐方法」的真实记录做成可分发资产卡片；没有 gap 记录会如实拒
          - 需要显式授权才给：`delete_file`（不可逆）、`git_push`（对外）\n\
          - IPFS/IPNS：`ipfs_add`（内容→CID）、`ipfs_cat`（CID→内容）、`ipfs_ls`、`ipns_publish`、`ipns_resolve`\n\
          - 本机接口（HTTP，可直接 curl）：`GET /api/agents/{aid}/portal`、`POST /api/agents/{aid}/portal/publish`、\
@@ -5309,8 +5312,15 @@ pub async fn list_opportunities(
         };
         let pinned = item.get("pinned").and_then(|v| v.as_bool()).unwrap_or(false);
         let watching = item.get("watch").and_then(|v| v.as_bool()).unwrap_or(false);
-        // 置顶 = 排序权重 +10 (盖过标签分, 但仍是同一排序管线)
-        let score_eff = if pinned { score + 10.0 } else { score };
+        let state = item.get("state").and_then(|v| v.as_str()).unwrap_or("");
+        // 2026-11-06: 交互反馈直接进推荐引擎 (接受抬、拒绝压、置顶最高)
+        let feedback = item.get("feedback").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let state_bonus = match state {
+            "accepted" => 2.0,
+            "rejected" => -5.0,
+            _ => 0.0,
+        };
+        let score_eff = (score + feedback + state_bonus).max(0.0) + if pinned { 10.0 } else { 0.0 };
         let (mut rank, mut why) = rank_card(score_eff, opened, up, down, age_h);
         if pinned {
             rank = 0.0;
@@ -5334,6 +5344,8 @@ pub async fn list_opportunities(
             "reason": reason,
             "pinned": pinned,
             "watch": watching,
+            "state": state,
+            "bucket": if state == "accepted" { "accepted" } else { "inbox" },
             "url": pick("url"),
             "kind": pick("kind").as_str().unwrap_or("card").to_string(),
             "source": item.get("from").and_then(|f| f.as_str()).unwrap_or("world-card"),
@@ -5421,7 +5433,8 @@ pub fn bump_intent_weight(cur: f64, signal: &str) -> f64 {
         "up" => 0.25,
         "open" => 0.08,
         "down" => -0.30,
-        "ignore" => -0.40,
+        "ignore" | "reject" => -0.40,
+        "accept" => 0.45,
         _ => 0.0,
     };
     (cur + delta).clamp(0.1, 5.0)
@@ -5701,16 +5714,35 @@ pub async fn ignore_opportunity(
     if !fs.ignored.contains(&id) {
         fs.ignored.push(id.clone());
     }
-    // 忽略 = 强负信号: 对应意图权重下调 (下次判断不再优先这类)
-    let intents = fs.intents.clone();
-    for i in intents {
-        if id.contains(i.as_str()) {
-            let cur = fs.intent_weights.get(&i).copied().unwrap_or(1.0);
-            fs.intent_weights.insert(i.clone(), bump_intent_weight(cur, "ignore"));
+    // 拒绝也要有可见状态 + 反馈 (以前 id.contains(意图) 几乎永不命中)
+    let (title, tags) = match fs.inbox.iter_mut().find(|it| it["id"].as_str() == Some(id.as_str())) {
+        Some(it) => {
+            it["state"] = serde_json::json!("rejected");
+            (
+                it["title"].as_str().unwrap_or_default().to_string(),
+                it["card"]["tags"].as_array().cloned().unwrap_or_default(),
+            )
+        }
+        None => (String::new(), Vec::new()),
+    };
+    if !title.is_empty() {
+        let cur = fs.intent_weights.get(&title).copied().unwrap_or(1.0);
+        fs.intent_weights.insert(title.clone(), bump_intent_weight(cur, "reject"));
+        // 对**所有当前意图**做一次弱负反馈 (按标签交集, 不再用 id.contains)
+        for i in fs.intents.clone() {
+            if title.contains(&i) || i.contains(&title) {
+                let w = fs.intent_weights.get(&i).copied().unwrap_or(1.0);
+                fs.intent_weights.insert(i, bump_intent_weight(w, "reject"));
+            }
         }
     }
     fs.save(&data_dir());
-    Json(serde_json::json!({ "ignored": id }))
+    drop(fs);
+    let trace = crate::world_interact::record_interaction(
+        &st, "reject", &id,
+        serde_json::json!({ "label": title, "tags": tags }),
+    ).await;
+    Json(serde_json::json!({ "ignored": id, "state": "rejected", "trace": trace }))
 }
 
 /// POST /api/opportunities/{id}/accept → 接受 (进 Goal 证据面)
@@ -5718,12 +5750,63 @@ pub async fn accept_opportunity(
     State(st): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Json<serde_json::Value> {
-    let mut fs = st.forge.lock().await;
-    if !fs.accepted.contains(&id) {
-        fs.accepted.push(id.clone());
+    // 2026-11-06: 接受必须**有可见变化** —— 以前只 push 到 accepted 数组, 卡片状态、
+    // 推荐引擎、自动化工作流一概没动, 用户点了像没点。
+    let (title, tags) = {
+        let mut fs = st.forge.lock().await;
+        if !fs.accepted.contains(&id) {
+            fs.accepted.push(id.clone());
+        }
+        let (title, tags) = match fs.inbox.iter_mut().find(|it| it["id"].as_str() == Some(id.as_str())) {
+            Some(it) => {
+                it["state"] = serde_json::json!("accepted");
+                it["accepted_at_ms"] = serde_json::json!(now_ms());
+                (
+                    it["title"].as_str().unwrap_or_default().to_string(),
+                    it["card"]["tags"].as_array().cloned().unwrap_or_default(),
+                )
+            }
+            None => (String::new(), Vec::new()),
+        };
+        // 意图权重: 接受 = 强正信号 (推荐引擎下一轮就会体现)
+        if !title.is_empty() {
+            let cur = fs.intent_weights.get(&title).copied().unwrap_or(1.0);
+            fs.intent_weights.insert(title.clone(), bump_intent_weight(cur, "accept"));
+            if !fs.intents.contains(&title) {
+                fs.intents.push(title.clone());
+                if fs.intents.len() > 200 { fs.intents.remove(0); }
+            }
+        }
+        fs.save(&data_dir());
+        (title, tags)
+    };
+    // 四件套沉淀 (记忆/判断力/工作流/信念)
+    let trace = crate::world_interact::record_interaction(
+        &st, "accept", &id,
+        serde_json::json!({ "label": title, "tags": tags }),
+    ).await;
+    // 自动化工作流优化: 接受说明这类内容值得跟, 由差距自动写一条方法型 skill
+    let mut workflow = "本轮无能力差距；偏好已进推荐与信念系统".to_string();
+    if !title.is_empty() {
+        let cls = bolloon_agent::world::classify_intent(&title);
+        let intent = bolloon_agent::world::Intent {
+            id: format!("intent-accept-{}-{}", now_ms(), title.chars().count()),
+            text: title.clone(),
+            tags: title.split_whitespace().take(6).map(String::from).collect(),
+            active: true,
+            created_at_ms: now_ms(),
+            category: cls.category,
+            want: cls.want,
+            clarity: cls.clarity,
+        };
+        if let Some(name) = author_skill_for_intent(&st, &intent).await {
+            workflow = format!("已自动生成工作流 skill「{name}」");
+        }
     }
-    fs.save(&data_dir());
-    Json(serde_json::json!({ "accepted": id }))
+    Json(serde_json::json!({
+        "accepted": id, "state": "accepted", "workflow": workflow, "trace": trace,
+        "note": "卡片已标记、意图权重上调、工作流与四件套已更新"
+    }))
 }
 
 /// GET /api/world/profile → 世界画像 (意图/校准环/已接受)

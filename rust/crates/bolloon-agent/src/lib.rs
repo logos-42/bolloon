@@ -67,6 +67,7 @@ pub mod task_board;
 pub mod task_group;
 pub mod terminal;
 pub mod todo;
+pub mod world_card_tools;
 #[cfg(test)]
 pub(crate) mod test_env;
 pub mod tool_contract;
