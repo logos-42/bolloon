@@ -1571,7 +1571,19 @@ pub async fn build_web_system(
             None => WEB_SYSTEM_PROMPT.to_string(),
         },
     };
-    format!(
+    // 2026-11-06: 每个按钮都是上下文来源 —— 每轮现读点击插槽,
+    // 未对话全量注入, 对话中只留洞察项 (防分神)
+    let in_conversation = {
+        let fs = st.forge.lock().await;
+        let sid = fs.active_session_id.as_str();
+        fs.sessions
+            .iter()
+            .find(|s| s.id == sid)
+            .map(|s| !s.messages.is_empty())
+            .unwrap_or(false)
+    };
+    let click_context = crate::world_interact::context_for_prompt(in_conversation);
+    let sys = format!(
         "{}{}{}{}{}{}{}{}{}{}",
         private_identity_block(agent),
         // 说话风格: 抓重点/说人话 (leo) —— 紧贴身份块, 优先级高于默认身份描述
@@ -1587,7 +1599,8 @@ pub async fn build_web_system(
         wallet_block,
         self_hint,
         extra
-    )
+    );
+    format!("{}{}", sys, click_context)
 }
 
 
@@ -1621,6 +1634,10 @@ fn capability_block(st: &AppState, agent: Option<&AgentView>) -> String {
          - **世界媒体卡片 (AI 可自己生成并分发)**：`POST /api/world/cards/media`(参数 kind=music/video, title, url, lyrics, poster, distribute, friends) —
          音乐卡片有唱片动效与歌词跟随、视频卡片有封面与全屏/半全屏；distribute=true 按 bolloon-world-card 协议签名投递给好友
          - **gap 资产卡片**：`POST /api/world/cards/from-gap` — 把交流中「能力差距 → 自动补齐方法」的真实记录做成可分发资产卡片；没有 gap 记录会如实拒
+         - **贡献与善意 (非货币化合作)**：`POST /api/contribution/record`(记录为集体做的贡献) / `/api/contribution/ledger`(声誉分) /
+         `/api/contribution/anchor`(可选 IPFS CID / ETH tx_hash 锚定，本机不代签不编 CID) / `POST /api/world/cards/help`(发出求助意图卡片)；
+         声誉分不可转账、不可兑换、不设求助门槛；零分也分发，货币结算仅为可选通道
+         - **按钮上下文**：每次界面点击都会实时成为上下文来源 (未对话全量、对话中只留洞察项防分神)；`/api/context` 可查看当前注入内容
          - 需要显式授权才给：`delete_file`（不可逆）、`git_push`（对外）\n\
          - IPFS/IPNS：`ipfs_add`（内容→CID）、`ipfs_cat`（CID→内容）、`ipfs_ls`、`ipns_publish`、`ipns_resolve`\n\
          - 本机接口（HTTP，可直接 curl）：`GET /api/agents/{aid}/portal`、`POST /api/agents/{aid}/portal/publish`、\
@@ -2728,6 +2745,25 @@ struct WebStrategy {
 impl WebStrategy {
     /// 模型一次调用: 有出口就走真流式(想法+正文实时推), 没有就一次性拿全
     /// 真正发一次模型请求 (流式/非流式两条出口共用)
+    /// 在途模型调用可被「中断」立刻掐断: 每 120ms 看一次取消标志,
+    /// 不再傻等模型把整段回复生成完 (群并发 20 个回合时这是主要浪费)。
+    async fn cancellable<F>(&self, fut: F) -> Result<GenerateResult, bolloon_llm::LlmError>
+    where
+        F: std::future::Future<Output = Result<GenerateResult, bolloon_llm::LlmError>>,
+    {
+        tokio::pin!(fut);
+        loop {
+            tokio::select! {
+                r = &mut fut => return r,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(120)) => {
+                    if self.cancel.load(Ordering::SeqCst) {
+                        return Err(bolloon_llm::LlmError::Network("已停止".into()));
+                    }
+                }
+            }
+        }
+    }
+
     async fn raw_call(
         &self,
         provider_id: &str,
@@ -2737,7 +2773,7 @@ impl WebStrategy {
             Some(tx) => {
                 let t = tx.clone();
                 let d = tx.clone();
-                self.llm
+                let fut = self.llm
                     .generate_streaming_full(
                         provider_id,
                         params.clone(),
@@ -2747,10 +2783,13 @@ impl WebStrategy {
                         move |piece| {
                             let _ = d.try_send(StreamChunk::Delta(piece.to_string()));
                         },
-                    )
-                    .await
+                    );
+            self.cancellable(fut).await
             }
-            None => self.llm.generate(provider_id, params.clone()).await,
+            None => {
+                let fut = self.llm.generate(provider_id, params.clone());
+                self.cancellable(fut).await
+            }
         }
     }
 
@@ -3142,6 +3181,21 @@ impl ChatRuns {
         }
     }
 
+    /// 2026-11-06: 群「中断」必须一次停掉**所有**并发回合。
+    /// 群回合共用 sid=room-<gid>, 但 begin() 每次 insert 覆盖并返回新的 cancel Arc,
+    /// 所以按 sid 单点 cancel 只能停最后一个 ⇒ 其余 19 个照跑。这里按前缀广播。
+    pub fn cancel_prefix(&self, prefix: &str) -> usize {
+        let mut m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        let mut n = 0usize;
+        for (sid, r) in m.iter_mut() {
+            if sid.starts_with(prefix) && r.running {
+                r.cancel.store(true, Ordering::SeqCst);
+                r.running = false;   // 已停的不再重复计入 (再点一次停应回 0)
+                n += 1;
+            }
+        }
+        n
+    }
     pub fn cancel(&self, sid: &str) -> bool {
         let m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
         match m.get(sid) {
@@ -4292,9 +4346,14 @@ pub async fn room_stop(
 ) -> Json<serde_json::Value> {
     let gid = req["group_id"].as_str().unwrap_or_default().to_string();
     st.forge.lock().await.room_running.insert(gid.clone(), false);
-    // 正在跑的工具轮立刻停 (以前 stop 只翻一个 flag, 已经在执行的那一轮照跑不误)
-    let stopped = st.chat_runs.cancel(&format!("room-{gid}"));
-    Json(serde_json::json!({ "ok": true, "stopped_turn": stopped }))
+    // 广播取消: 同一群的所有并发回合 (sid 前缀 room-<gid>) 一次全停
+    let prefix = format!("room-{gid}");
+    let stopped_all = st.chat_runs.cancel_prefix(&prefix);
+    let stopped = st.chat_runs.cancel(&prefix);
+    Json(serde_json::json!({
+        "ok": true, "stopped_turn": stopped, "stopped_all": stopped_all,
+        "note": "已广播取消该群所有在跑回合; 在途模型调用每 120ms 检查一次, 不再等回复"
+    }))
 }
 
 /// POST /api/room/close {group_id, hard?}

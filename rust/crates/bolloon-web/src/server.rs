@@ -558,6 +558,12 @@ pub fn app(state: AppState) -> Router {
         // 交互沉淀 (任何点击 → 记忆/判断力/工作流/信念) + 媒体/gap 资产卡片
         .route("/api/trace", post(crate::world_interact::trace_click))
         .route("/api/trace/recent", get(crate::world_interact::trace_recent))
+        .route("/api/context", get(crate::world_interact::context_view))
+        // 贡献记录 / 善意积分 / 求助意图卡片 (非货币化合作)
+        .route("/api/contribution/record", post(crate::contribution::record))
+        .route("/api/contribution/ledger", get(crate::contribution::ledger))
+        .route("/api/contribution/anchor", post(crate::contribution::anchor))
+        .route("/api/world/cards/help", post(crate::contribution::help_card))
         .route("/api/world/cards/media", post(crate::world_interact::media_card))
         .route("/api/world/cards/from-gap", post(crate::world_interact::gap_asset_card))
         // 付费卡片: 智能体发布 (x402) + 报价 + 确认

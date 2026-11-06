@@ -453,6 +453,14 @@ pub fn spawn_reports(
                 Ok(p) => p,
                 Err(_) => return,
             };
+            // 2026-11-06: 排队中的回合在「中断」之后不许再启动 (否则点了停还在排队开跑)
+            let stopped = {
+                let fs = st.forge.lock().await;
+                !fs.room_running.get(&gid).copied().unwrap_or(true)
+            };
+            if stopped {
+                return;
+            }
             if !st.room_bus.begin(&gid, &agent.id) {
                 return;
             }

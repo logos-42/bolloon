@@ -1472,8 +1472,12 @@ $('roomStartBtn').onclick=async()=>{
   catch(e){alert(e.message);}
 };
 $('roomStopBtn').onclick=async()=>{
-  try{await api('/api/room/stop',{method:'POST',body:JSON.stringify({group_id:activeRoomGroup})});await loadRoom();}
-  catch(e){alert(e.message);}
+  toast('正在中断本群所有回合…');
+  try{
+    const r=await api('/api/room/stop',{method:'POST',body:JSON.stringify({group_id:activeRoomGroup})});
+    toast('已立刻停止 '+(r.stopped_all||0)+' 个智能体回合');
+    await loadRoom();
+  }catch(e){alert(e.message);}
 };
 function sendRoomGuide(){
   const ta=$('roomInput');
@@ -3442,12 +3446,38 @@ async function publishGapAsset() {
   toast('已把 '+r.count+' 条 gap 记录做成资产卡片');
   await loadWorld();
 }
+// 求助意图卡片 (善意优先: 零分也分发) / 贡献记录
+async function publishHelpCard(){
+  const text=await askText('你需要什么帮助？','','写清需求; 会作为公开意图卡片按去中心化协议分发给好友');
+  if(!text||!text.trim())return;
+  const r=await api('/api/world/cards/help',{method:'POST',body:JSON.stringify({text:text.trim()})}).catch(e=>({error:e.message}));
+  if(r.error||r.ok===false){toast('发出失败: '+(r.error||'未知'));return;}
+  toast('已发出求助'+(r.delivery?(' · '+r.delivery):'')+' · 善意分 '+r.credit);
+  await loadWorld();
+}
+async function showContributionLedger(){
+  const r=await api('/api/contribution/ledger').catch(e=>({error:e.message}));
+  if(r.error){toast('读取失败: '+r.error);return;}
+  alert('贡献记录 '+r.count+' 条 · 声誉分 '+r.credit+'\n\n'+r.records.slice(0,8).map(x=>'· '+x.kind+'：'+x.summary).join('\n')
+    +'\n\n'+r.policy.note);
+}
+async function recordContribution(){
+  const kind=await askText('贡献类型','share_card','例如 share_card / publish_skill / group_answer');
+  if(!kind||!kind.trim())return;
+  const summary=await askText('做了什么','','一句话说明为集体做的贡献');
+  if(!summary||!summary.trim())return;
+  const r=await api('/api/contribution/record',{method:'POST',body:JSON.stringify({kind:kind.trim(),summary:summary.trim()})}).catch(e=>({error:e.message}));
+  if(r.error||r.ok===false){toast('记录失败: '+(r.error||'未知'));return;}
+  toast('已记录贡献 · 声誉分 '+r.credit+'（不可兑换/不可转账）');
+}
+
 function ensureWorldToolbar() {
   const box = document.getElementById('worldOpportunities');
   if (!box || document.getElementById('worldToolbar')) return;
   const bar = document.createElement('div'); bar.id = 'worldToolbar';
   bar.className = 'row'; bar.style.cssText = 'margin:0 0 10px;gap:6px';
-  bar.innerHTML = '<button onclick="publishMediaCard()">＋ 音乐/视频卡片</button><button onclick="publishGapAsset()">＋ gap 资产卡片</button>';
+  bar.innerHTML = '<button onclick="publishMediaCard()">＋ 音乐/视频卡片</button><button onclick="publishGapAsset()">＋ gap 资产卡片</button>'
+    + '<button onclick="publishHelpCard()">＋ 求助意图</button><button onclick="showContributionLedger()">贡献/善意分</button>';
   box.parentNode.insertBefore(bar, box);
 }
 
