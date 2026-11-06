@@ -158,6 +158,13 @@ enum Commands {
         #[command(subcommand)]
         action: PackAction,
     },
+    /// 完全访问总闸: status(默认) / on / off —— 与 Web、App 同一开关
+    Permission {
+        /// on = 打开, off = 关闭, 留空 = 查看
+        action: Option<String>,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
     /// 定时任务与心跳运行状态 (tick 数 / 到期 / 门户维护 / 活跃数)
     Cron {
         #[arg(long, default_value_t = 54188)]
@@ -364,6 +371,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Pack { action }) => run_pack(action),
         Some(Commands::Ollama { key, model, activate, port }) => run_ollama(key.as_deref(), &model, activate, port),
         Some(Commands::Cron { port }) => run_cron(port),
+        Some(Commands::Permission { action, port }) => run_permission(action.as_deref(), port),
         Some(Commands::Sql { query, db, limit, port }) => run_sql(&query, &db, limit, port),
         Some(Commands::SelfInfo { json, agent }) => run_self(json, &agent),
         Some(Commands::Pay { action }) => run_pay(action),
@@ -1127,6 +1135,35 @@ fn run_pack(action: PackAction) -> anyhow::Result<()> {
             )?;
             println!("{}", serde_json::to_string_pretty(&r)?);
         }
+    }
+    Ok(())
+}
+
+fn run_permission(action: Option<&str>, port: u16) -> anyhow::Result<()> {
+    let base = format!("http://127.0.0.1:{port}");
+    match action.unwrap_or("status") {
+        "on" | "off" => {
+            let on = action == Some("on");
+            let r = http_json(
+                "POST",
+                &format!("{base}/api/permission"),
+                Some(serde_json::json!({ "full_access": on })),
+            )?;
+            println!("完全访问已{} (Web/App 同一开关)", if on { "打开" } else { "关闭" });
+            let _ = r;
+        }
+        "status" => {
+            let r = http_json("GET", &format!("{base}/api/permission"), None)?;
+            let n = r["gated_prefixes"].as_array().map(|a| a.len()).unwrap_or(0)
+                + r["gated_suffixes"].as_array().map(|a| a.len()).unwrap_or(0);
+            println!(
+                "完全访问: {} | 受管能力 {} 组 | {}",
+                if r["full_access"].as_bool().unwrap_or(false) { "开" } else { "关" },
+                n,
+                r["note"].as_str().unwrap_or("")
+            );
+        }
+        other => anyhow::bail!("只接受 on / off / status, 收到: {other}"),
     }
     Ok(())
 }
@@ -2429,7 +2466,7 @@ async fn cli_memory_recall_text(query: Option<&str>) -> String {
             .collect(),
     );
     let hits = store.recall(None, 6, chrono::Utc::now());
-    let mut local_lines: Vec<String> = hits
+    let local_lines: Vec<String> = hits
         .iter()
         .map(|e| format!("• {}", e.content))
         .collect();

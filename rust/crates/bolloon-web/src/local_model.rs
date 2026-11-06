@@ -35,7 +35,7 @@ fn probe(base_url: &str) -> Result<(bool, Vec<String>), String> {
 
 /// GET /api/models/local → 本地小模型接口状态 (是否登记 / 是否可达 / 已装模型)
 pub async fn local_status(
-    State(st): State<crate::AppState>,
+    State(_st): State<crate::AppState>,
 ) -> Json<serde_json::Value> {
     let cfg = bolloon_llm::config_store::load();
     let entry = cfg.custom_providers.get(LOCAL_PROVIDER_ID);

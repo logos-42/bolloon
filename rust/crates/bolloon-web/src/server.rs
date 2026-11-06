@@ -211,11 +211,23 @@ impl AppState {
             updating: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             forge: Arc::new(Mutex::new(crate::native::NativeState::load(&dir))),
             deliberation: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            skills: Arc::new(Mutex::new(
-                // 启动就载入磁盘注册表: 以前 new() 起空表, 重启后做梦/提炼来的技能全丢,
-                // 索引也跟着空 —— "学过的技能下次还能用"必须跨进程。
-                bolloon_agent::skills_runtime::SkillEvolver::load_json(&dir.join("skills.json")),
-            )),
+            skills: {
+                // 启动就载入磁盘注册表 (学过的技能跨进程复用)
+                // + 内置「Shell 直接操作」速查: 播种进运行时库, read_skill 随时可读全文。
+                let path = dir.join("skills.json");
+                let mut ev = bolloon_agent::skills_runtime::SkillEvolver::load_json(&path);
+                use bolloon_agent::skills_runtime::{SHELL_DIRECT_BODY, SHELL_DIRECT_DESC, SHELL_DIRECT_NAME};
+                if ev.registry.read_skill(SHELL_DIRECT_NAME).is_none() {
+                    let now = chrono::Utc::now().timestamp_millis() as u64;
+                    if ev.registry
+                        .register(SHELL_DIRECT_NAME, SHELL_DIRECT_DESC, SHELL_DIRECT_BODY, now)
+                        .is_ok()
+                    {
+                        let _ = ev.save_json(&path);
+                    }
+                }
+                Arc::new(Mutex::new(ev))
+            },
             // 启动时刻 ≠ 0: `initiative::decide` 把 0 当"没记录过用户活动 ⇒ 不动",
             // 初值给 0 会让空闲主动性在进程启动后**永远**不触发 (功能等于死)。
             // 按启动时刻起算: 静默满 idle_after_ms 才出手, 无人值守场景才真的跑得起来。
@@ -795,7 +807,14 @@ pub fn app(state: AppState) -> Router {
                 .route("/api/quic/peers", post(crate::native::quic_peer_add)),
         );
     }
-    router.with_state(state)
+    // 总闸: 完全访问关掉时, 所有受管写能力统一 403 (一处登记, 三端生效)
+    let guard_state = state.clone();
+    router
+        .with_state(state)
+        .layer(axum::middleware::from_fn_with_state(
+            guard_state,
+            full_access_guard,
+        ))
 }
 
 pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
@@ -3323,10 +3342,65 @@ async fn update_install() -> Json<serde_json::Value> {
     }
 }
 
+/// 2026-11-06: **完全访问是总闸** —— 所有写类/授权类能力统一由它掌管。
+/// 今天新增的模型登记、媒体/资产/求助卡片、贡献记录与锚定、特化包、付费卡、
+/// 路由开关、好友与智能体授权都在这里登记; 关掉开关后这些写操作一律 403,
+/// 只读端点 (ledger/peers/matrix/context/receipts/status) 不受影响。
+pub const FULL_ACCESS_GATED_PREFIXES: &[&str] = &[
+    "/api/models/ollama", "/api/models/local", "/api/models/activate",
+    "/api/world/cards/media", "/api/world/cards/from-gap", "/api/world/cards/help",
+    "/api/world/cards/share", "/api/world/pay", "/api/world/fulfill",
+    "/api/contribution/record", "/api/contribution/anchor",
+    "/api/contribution/announce", "/api/contribution/inbox",
+    "/api/specialize/packs", "/api/specialize/eval", "/api/specialize/run",
+    "/api/specialize/share", "/api/router/enforce", "/api/router/prices",
+    "/api/friends/", "/api/x402/buy/", "/api/x402/info",
+];
+pub const FULL_ACCESS_GATED_SUFFIXES: &[&str] = &[
+    "/cards/paid", "/grants", "/grants/revoke", "/command", "/invite-agent",
+];
+
+pub fn is_full_access_gated(method: &str, path: &str) -> bool {
+    let write = method != "GET" && method != "HEAD" && method != "OPTIONS";
+    if !write {
+        return false;
+    }
+    FULL_ACCESS_GATED_PREFIXES.iter().any(|p| path.starts_with(p))
+        || FULL_ACCESS_GATED_SUFFIXES.iter().any(|s| path.ends_with(s))
+}
+
+/// 路由守卫: 总闸关闭时拦下受管写操作, 并给出人话提示 (不静默放行/不假装成功)
+async fn full_access_guard(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let method = req.method().as_str().to_string();
+    let path = req.uri().path().to_string();
+    if is_full_access_gated(&method, &path)
+        && !st.full_access.load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "完全访问已关闭：该能力受总开关管辖",
+                "path": path,
+                "hint": "在 App/Web 的「Clarity 完全访问」开关打开，或 CLI: bolloon permission on",
+            })),
+        ).into_response();
+    }
+    next.run(req).await
+}
+
 /// 完全访问权限: 读
 async fn get_permission(State(st): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "full_access": st.full_access.load(std::sync::atomic::Ordering::SeqCst),
+        "gated_prefixes": FULL_ACCESS_GATED_PREFIXES,
+        "gated_suffixes": FULL_ACCESS_GATED_SUFFIXES,
+        "note": "总闸管所有写类/授权类能力; 只读端点不受影响。Web/App 同一开关, CLI 用 bolloon permission",
     }))
 }
 

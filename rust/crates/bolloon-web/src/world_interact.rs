@@ -173,7 +173,7 @@ pub fn context_for_prompt(in_conversation: bool) -> String {
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
-    let mut picked: Vec<serde_json::Value> = if in_conversation {
+    let picked: Vec<serde_json::Value> = if in_conversation {
         let mut seen = std::collections::HashSet::new();
         let mut out = vec![];
         for r in arr.iter().rev() {

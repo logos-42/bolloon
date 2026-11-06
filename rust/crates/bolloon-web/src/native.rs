@@ -1630,6 +1630,8 @@ fn capability_block(st: &AppState, agent: Option<&AgentView>) -> String {
     format!(
         "\n## 能力与接口权限（本机已授予，直接用，不用先问能不能）\n\
          - 文件/命令：`read_file` `write_file` `edit_file` `mkdir` `move_file` `shell` `git_add` `git_commit` `run_scratch_script`\n\
+         - **直接用终端（自觉）**：写一行/追加日志用 `echo` + `>` `>>`；组合命令用 `|`；失败处理用 `&&` `||` `$?`；条件用 `[ -f ]`；变量 `$var` `${{var:-默认}}` `$(...)`；单引号不解析、双引号解析\n\
+         完整速查用技能 `shell-direct`（`read_skill` 传 shell-direct 按需加载全文）。一条命令能做完就别绕脚本；shell 仍受完全访问开关/预算/审计约束\n\
          - 付费卡片 (x402)：`POST /api/agents/<aid>/cards/paid`(参数 title/summary/content/price_atomic) — 用你钱包本里的地址收款，生成带支付按钮的卡片入世界流；买家付款验链通过才交付内容\n\
          - **世界媒体卡片 (AI 可自己生成并分发)**：`POST /api/world/cards/media`(参数 kind=music/video, title, url, lyrics, poster, distribute, friends) —
          音乐卡片有唱片动效与歌词跟随、视频卡片有封面与全屏/半全屏；distribute=true 按 bolloon-world-card 协议签名投递给好友
