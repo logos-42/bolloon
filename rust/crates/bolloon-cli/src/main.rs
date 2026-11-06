@@ -130,6 +130,22 @@ enum Commands {
         #[arg(long, default_value_t = 54188)]
         port: u16,
     },
+    /// 本地小模型接口: 查看/登记本机 Ollama 等 (免 key, 真探测)
+    Local {
+        #[arg(long, default_value = "http://127.0.0.1:11434")]
+        url: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        activate: bool,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
+    /// 特化包: 列出 / 跑评测 / 外溢分享
+    Pack {
+        #[command(subcommand)]
+        action: PackAction,
+    },
     /// 定时任务与心跳运行状态 (tick 数 / 到期 / 门户维护 / 活跃数)
     Cron {
         #[arg(long, default_value_t = 54188)]
@@ -332,6 +348,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Group { action }) => run_group(action),
         Some(Commands::Grants { action }) => run_grants(action),
         Some(Commands::Friend { action }) => run_friend(action),
+        Some(Commands::Local { url, model, activate, port }) => run_local(&url, model.as_deref(), activate, port),
+        Some(Commands::Pack { action }) => run_pack(action),
         Some(Commands::Cron { port }) => run_cron(port),
         Some(Commands::Sql { query, db, limit, port }) => run_sql(&query, &db, limit, port),
         Some(Commands::SelfInfo { json, agent }) => run_self(json, &agent),
@@ -366,6 +384,32 @@ enum GrantsAction {
         agent: String,
         #[arg(long)]
         did: String,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
+}
+
+#[derive(Subcommand)]
+enum PackAction {
+    /// 列出本机特化包
+    List {
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
+    /// 同一评测集上跑 baseline vs 特化包 (真实调用, 写路由账本)
+    Eval {
+        #[arg(long)]
+        id: String,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
+    /// 外溢: 免费签名分享, 或 --price 发 x402 付费卡片
+    Share {
+        #[arg(long)]
+        id: String,
+        /// x402 价格 (原子单位); 不给 = 免费分享
+        #[arg(long)]
+        price: Option<u64>,
         #[arg(long, default_value_t = 54188)]
         port: u16,
     },
@@ -945,6 +989,83 @@ fn run_sql(query: &str, db: &str, limit: usize, port: u16) -> anyhow::Result<()>
         anyhow::bail!("查询被拒: {}", r["error"].as_str().unwrap_or("未知原因"));
     }
     print!("{}", r["text"].as_str().unwrap_or(""));
+    Ok(())
+}
+
+fn http_json(method: &str, url: &str, body: Option<serde_json::Value>) -> anyhow::Result<serde_json::Value> {
+    let req = match method {
+        "POST" => ureq::post(url),
+        _ => ureq::get(url),
+    };
+    let resp = match body {
+        Some(b) => req.send_json(b),
+        None => req.call(),
+    }
+    .map_err(|e| anyhow::anyhow!("节点没在跑或请求失败: {e}"))?;
+    Ok(resp.into_json()?)
+}
+
+fn run_local(url: &str, model: Option<&str>, activate: bool, port: u16) -> anyhow::Result<()> {
+    let base = format!("http://127.0.0.1:{port}");
+    // 没给 model 且没要求激活 = 只看状态
+    let r = if model.is_none() && !activate {
+        http_json("GET", &format!("{base}/api/models/local"), None)?
+    } else {
+        http_json(
+            "POST",
+            &format!("{base}/api/models/local"),
+            Some(serde_json::json!({ "url": url, "model": model, "activate": activate })),
+        )?
+    };
+    println!("{}", serde_json::to_string_pretty(&r)?);
+    Ok(())
+}
+
+fn run_pack(action: PackAction) -> anyhow::Result<()> {
+    match action {
+        PackAction::List { port } => {
+            let r = http_json("GET", &format!("http://127.0.0.1:{port}/api/specialize/packs"), None)?;
+            let packs = r["packs"].as_array().cloned().unwrap_or_default();
+            if packs.is_empty() {
+                println!("（还没有特化包）");
+            }
+            for p in packs {
+                println!(
+                    "{}  task={}  评测 {} 条  工具白名单 {} 项",
+                    p["id"].as_str().unwrap_or(""),
+                    p["task"].as_str().unwrap_or(""),
+                    p["eval_cases"].as_array().map(|a| a.len()).unwrap_or(0),
+                    p["tool_allowlist"].as_array().map(|a| a.len()).unwrap_or(0),
+                );
+            }
+        }
+        PackAction::Eval { id, port } => {
+            let r = http_json(
+                "POST",
+                &format!("http://127.0.0.1:{port}/api/specialize/eval"),
+                Some(serde_json::json!({ "id": id })),
+            )?;
+            if r["ok"] == serde_json::json!(false) {
+                anyhow::bail!("评测失败: {}", r["error"].as_str().unwrap_or("未知"));
+            }
+            println!("包 {} · provider {}\n", r["id"].as_str().unwrap_or(""), r["provider"].as_str().unwrap_or(""));
+            println!("baseline: 命中 {}/{}  平均 {}ms", r["baseline"]["hit"], r["baseline"]["cases"], r["baseline"]["avg_latency_ms"]);
+            println!("特化包 : 命中 {}/{}  平均 {}ms", r["pack"]["hit"], r["pack"]["cases"], r["pack"]["avg_latency_ms"]);
+            println!("结论: {}", r["verdict"].as_str().unwrap_or(""));
+        }
+        PackAction::Share { id, price, port } => {
+            let mut body = serde_json::json!({ "id": id });
+            if let Some(p) = price {
+                body["price_atomic"] = serde_json::json!(p);
+            }
+            let r = http_json(
+                "POST",
+                &format!("http://127.0.0.1:{port}/api/specialize/share"),
+                Some(body),
+            )?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+        }
+    }
     Ok(())
 }
 

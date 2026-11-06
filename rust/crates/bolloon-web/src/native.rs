@@ -2508,9 +2508,20 @@ pub async fn reply_with_agent_cfg(
         h.set_config(st.config.view());
         harness
     };
+    // 阶段1: 把可用 provider 与默认模型交给策略, 让它能真切换(并回退)
+    let mut strategy_models: std::collections::HashMap<String, String> = Default::default();
+    for pid in llm.provider_ids() {
+        if let Some(slot) = llm.provider(&pid) {
+            strategy_models.insert(pid, slot.default_model.clone());
+        }
+    }
+    let strategy_available: Vec<String> = strategy_models.keys().cloned().collect();
     let strategy = Arc::new(WebStrategy {
         llm: llm.clone(),
         task: opts.surface.to_string(),
+        router: st.router.clone(),
+        available: strategy_available,
+        models: strategy_models,
         cancel: cancel.clone(),
         sink: sink.clone(),
     });
@@ -2671,6 +2682,10 @@ struct WebStrategy {
     llm: Arc<LlmRuntime>,
     /// 任务类型 (路由账本用: chat/group/world/friend-command...)
     task: String,
+    /// 路由开关 + 可用 provider/默认模型 (阶段1: 工具循环也能真切换并回退)
+    router: Arc<crate::router::RouterSwitch>,
+    available: Vec<String>,
+    models: std::collections::HashMap<String, String>,
     /// 用户中止标志: 置位后**不再发起下一次**模型调用 (在途那次不打断, 不丢并发槽)
     cancel: Arc<std::sync::atomic::AtomicBool>,
     /// 真实增量出口 (想法/正文): None = 非流式调用方, 不推
@@ -2679,15 +2694,13 @@ struct WebStrategy {
 
 impl WebStrategy {
     /// 模型一次调用: 有出口就走真流式(想法+正文实时推), 没有就一次性拿全
-    async fn one_call(
+    /// 真正发一次模型请求 (流式/非流式两条出口共用)
+    async fn raw_call(
         &self,
         provider_id: &str,
         params: &GenerateParams,
     ) -> Result<GenerateResult, bolloon_llm::LlmError> {
-        // 2026-11-06 (阶段0): 工具循环也走真实调用 —— 这里记一笔,
-        // 否则账本只有非流式入口有数据, 任务×成本矩阵会骗人。
-        let started = std::time::Instant::now();
-        let out = match &self.sink {
+        match &self.sink {
             Some(tx) => {
                 let t = tx.clone();
                 let d = tx.clone();
@@ -2705,17 +2718,57 @@ impl WebStrategy {
                     .await
             }
             None => self.llm.generate(provider_id, params.clone()).await,
-        };
-        // 每次真实调用一行账本 (成功/失败都记; token/成本由计量层另算, 这里只记可观测事实)
+        }
+    }
+
+    /// 模型一次调用: 真路由(可切换/回退) + 每笔真实调用记账
+    async fn one_call(
+        &self,
+        provider_id: &str,
+        params: &GenerateParams,
+    ) -> Result<GenerateResult, bolloon_llm::LlmError> {
+        let shadow_pick = crate::router::pick_provider(&self.task, &self.available);
+        let original = provider_id.to_string();
+        let mut pid = provider_id.to_string();
+        let mut p = params.clone();
+        let mut switched = false;
+        if self.router.is_enforce() {
+            if let Some(pick) = shadow_pick.clone() {
+                if pick != pid && self.models.get(&pick).map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                    p.model = self.models[&pick].clone();
+                    pid = pick;
+                    switched = true;
+                }
+            }
+        }
+        let started = std::time::Instant::now();
+        let mut out = self.raw_call(&pid, &p).await;
+        let mut latency_ms = started.elapsed().as_millis() as u64;
+        let mut fallback = false;
+        if out.is_err() && switched {
+            crate::router::record(serde_json::json!({
+                "ts": chrono::Utc::now().timestamp_millis(), "task": self.task,
+                "provider": pid, "model": p.model, "ok": false,
+                "latency_ms": latency_ms, "switched": true, "fallback": false,
+                "shadow_pick": shadow_pick,
+            }));
+            fallback = true;
+            pid = original;
+            p = params.clone();
+            let t2 = std::time::Instant::now();
+            out = self.raw_call(&pid, &p).await;
+            latency_ms = t2.elapsed().as_millis() as u64;
+        }
         crate::router::record(serde_json::json!({
             "ts": chrono::Utc::now().timestamp_millis(),
             "task": self.task,
-            "provider": provider_id,
-            "model": params.model,
+            "provider": pid,
+            "model": p.model,
             "ok": out.is_ok(),
-            "latency_ms": started.elapsed().as_millis() as u64,
-            "switched": false,
-            "fallback": false,
+            "latency_ms": latency_ms,
+            "switched": switched,
+            "fallback": fallback,
+            "shadow_pick": shadow_pick,
         }));
         out
     }

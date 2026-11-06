@@ -16,6 +16,8 @@ pub mod agent_wallet;
 pub mod qr_login;
 pub mod reco;
 pub mod room_bus;
+pub mod local_model;
+pub mod specialize;
 pub mod router;
 pub mod server;
 pub mod x402_buy;
