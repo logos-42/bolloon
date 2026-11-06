@@ -22,6 +22,7 @@ pub mod provider_catalog;
 pub mod provider_registry;
 pub mod runtime;
 pub mod secret_store;
+pub mod secret_file;
 
 pub use config_store::{
     active_resolved, resolve, LlmConfig, ProviderSettings, Resolved,

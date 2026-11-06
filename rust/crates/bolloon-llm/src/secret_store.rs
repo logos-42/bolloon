@@ -285,14 +285,36 @@ impl SecretBackend for SecretServiceBackend {
 // ───────────────────────── 选择与命名 ─────────────────────────
 
 /// 进程默认后端（按平台选；三个实现都参与编译，坏代码在任何平台 check 时都会暴露）
+#[cfg(target_os = "macos")]
+type DefaultChain = crate::secret_file::ChainBackend<KeychainBackend>;
+#[cfg(target_os = "windows")]
+type DefaultChain = crate::secret_file::ChainBackend<DpapiBackend>;
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+type DefaultChain = crate::secret_file::ChainBackend<SecretServiceBackend>;
+
+#[cfg(target_os = "macos")]
+fn new_chain() -> DefaultChain {
+    crate::secret_file::ChainBackend::new(KeychainBackend, crate::secret_file::FileEncryptedBackend::new())
+}
+#[cfg(target_os = "windows")]
+fn new_chain() -> DefaultChain {
+    crate::secret_file::ChainBackend::new(DpapiBackend, crate::secret_file::FileEncryptedBackend::new())
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn new_chain() -> DefaultChain {
+    crate::secret_file::ChainBackend::new(SecretServiceBackend, crate::secret_file::FileEncryptedBackend::new())
+}
+
+/// 2026-11-06: 系统凭据库 + 加密文件兜底。App 里钥匙串被拒时 key 仍会持久化,
+/// 重启直接可用; 用户 key 永不以明文落盘, 前端只拿 has_key 布尔。
 pub fn default_backend() -> &'static dyn SecretBackend {
-    #[cfg(target_os = "macos")]
-    static B: KeychainBackend = KeychainBackend;
-    #[cfg(target_os = "windows")]
-    static B: DpapiBackend = DpapiBackend;
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    static B: SecretServiceBackend = SecretServiceBackend;
-    &B
+    static B: std::sync::OnceLock<DefaultChain> = std::sync::OnceLock::new();
+    B.get_or_init(new_chain)
+}
+
+/// 给 UI/排错看的**实际**存储位置 (不回 key): 由链式后端记录, 不是按可用性猜的
+pub fn storage_kind() -> &'static str {
+    crate::secret_file::last_kind()
 }
 
 /// 本机是否真的能存 key（macOS 钥匙串 / Windows DPAPI / Linux secret-tool）

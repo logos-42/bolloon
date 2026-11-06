@@ -143,7 +143,8 @@ pub async fn ollama_status() -> Json<serde_json::Value> {
         "model": e.map(|x| x.model.clone()).unwrap_or_default(),
         "active": cfg.active_provider == CLOUD_PROVIDER_ID,
         "has_key": e.map(|x| !x.api_key.trim().is_empty()).unwrap_or(false),
-        "note": "key 只存在 0600 配置里, 端点不回显"
+        "key_storage": bolloon_llm::secret_store::storage_kind(),
+        "note": "key 只存本机凭据库或加密文件(AES-256-GCM), 端点只回布尔, 永不回显"
     }))
 }
 
