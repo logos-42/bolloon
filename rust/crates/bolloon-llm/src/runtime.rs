@@ -867,7 +867,12 @@ fn ollama_request(
             "num_predict": params.max_tokens,
         },
     });
-    (url, vec![], body)
+    // Ollama Cloud (2026-11-06): 带 api_key 时加 Bearer; 本机 Ollama 无 key ⇒ headers 仍为空
+    let mut headers: Vec<(String, String)> = Vec::new();
+    if let Some(k) = cfg.api_key.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        headers.push(("Authorization".into(), format!("Bearer {k}")));
+    }
+    (url, headers, body)
 }
 
 /**

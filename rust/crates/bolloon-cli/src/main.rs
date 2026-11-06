@@ -141,6 +141,18 @@ enum Commands {
         #[arg(long, default_value_t = 54188)]
         port: u16,
     },
+    /// 登记 Ollama Cloud 模型 (key 建议走环境变量 BOLLOON_OLLAMA_KEY)
+    Ollama {
+        /// 也可不填, 从 BOLLOON_OLLAMA_KEY 读
+        #[arg(long)]
+        key: Option<String>,
+        #[arg(long, default_value = "deepseek-v4.1-flash")]
+        model: String,
+        #[arg(long)]
+        activate: bool,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
     /// 特化包: 列出 / 跑评测 / 外溢分享
     Pack {
         #[command(subcommand)]
@@ -350,6 +362,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Friend { action }) => run_friend(action),
         Some(Commands::Local { url, model, activate, port }) => run_local(&url, model.as_deref(), activate, port),
         Some(Commands::Pack { action }) => run_pack(action),
+        Some(Commands::Ollama { key, model, activate, port }) => run_ollama(key.as_deref(), &model, activate, port),
         Some(Commands::Cron { port }) => run_cron(port),
         Some(Commands::Sql { query, db, limit, port }) => run_sql(&query, &db, limit, port),
         Some(Commands::SelfInfo { json, agent }) => run_self(json, &agent),
@@ -409,6 +422,11 @@ enum PackAction {
         id: String,
         #[arg(long)]
         text: String,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
+    /// 外溢验收: 已发出分享 / 已验链订单 (只报可观测事实)
+    Receipts {
         #[arg(long, default_value_t = 54188)]
         port: u16,
     },
@@ -1030,6 +1048,24 @@ fn run_local(url: &str, model: Option<&str>, activate: bool, port: u16) -> anyho
     Ok(())
 }
 
+fn run_ollama(key: Option<&str>, model: &str, activate: bool, port: u16) -> anyhow::Result<()> {
+    let key = key
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("BOLLOON_OLLAMA_KEY").ok())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("缺 key: 用 --key 或环境变量 BOLLOON_OLLAMA_KEY"))?;
+    let r = http_json(
+        "POST",
+        &format!("http://127.0.0.1:{port}/api/models/ollama"),
+        Some(serde_json::json!({ "api_key": key, "model": model, "activate": activate })),
+    )?;
+    if r["ok"] == serde_json::json!(false) {
+        anyhow::bail!("登记失败: {}", r["error"].as_str().unwrap_or("未知"));
+    }
+    println!("已登记 {} · model={} · active={}", r["provider_id"].as_str().unwrap_or(""), r["model"].as_str().unwrap_or(""), r["active"]);
+    Ok(())
+}
+
 fn run_pack(action: PackAction) -> anyhow::Result<()> {
     match action {
         PackAction::List { port } => {
@@ -1070,6 +1106,14 @@ fn run_pack(action: PackAction) -> anyhow::Result<()> {
             )?;
             println!("{}", r["reply"].as_str().unwrap_or(""));
             println!("\n[白名单 {}]", r["tool_allowlist"].as_array().map(|a| a.len()).unwrap_or(0));
+        }
+        PackAction::Receipts { port } => {
+            let r = http_json("GET", &format!("http://127.0.0.1:{port}/api/specialize/receipts"), None)?;
+            println!("发出 {} 条 · 已验链订单 {} 条", r["shared_count"], r["paid_count"]);
+            println!("{}", r["note"].as_str().unwrap_or(""));
+            for x in r["shared"].as_array().cloned().unwrap_or_default().iter().take(10) {
+                println!("  {} {} {}", x["at_ms"], x["mode"].as_str().unwrap_or(""), x["pack_id"].as_str().unwrap_or(""));
+            }
         }
         PackAction::Share { id, price, port } => {
             let mut body = serde_json::json!({ "id": id });

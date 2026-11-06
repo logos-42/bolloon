@@ -112,6 +112,11 @@ pub async fn local_register(
     let activate = req["activate"].as_bool().unwrap_or(false);
     if activate {
         bolloon_llm::config_store::set_active(&mut cfg, LOCAL_PROVIDER_ID);
+        // UI 设置优先于 config.active_provider; 不同步就等于没激活
+        let mut fs = st.forge.lock().await;
+        fs.settings.provider = LOCAL_PROVIDER_ID.to_string();
+        fs.settings.model = model.clone();
+        fs.save(&crate::server::data_dir());
     }
     if let Err(e) = bolloon_llm::config_store::save(&cfg) {
         return Json(serde_json::json!({ "ok": false, "error": format!("配置落盘失败: {e}") }));
@@ -123,6 +128,123 @@ pub async fn local_register(
         "active": activate,
         "note": "已登记进模型通路; 路由账本会把它当作一个可对比的 provider"
     }))
+}
+
+pub const CLOUD_PROVIDER_ID: &str = "ollama-cloud";
+pub const CLOUD_URL: &str = "https://ollama.com";
+
+/// GET /api/models/ollama → 云模型登记状态 (绝不回显 key)
+pub async fn ollama_status() -> Json<serde_json::Value> {
+    let cfg = bolloon_llm::config_store::load();
+    let e = cfg.custom_providers.get(CLOUD_PROVIDER_ID);
+    Json(serde_json::json!({
+        "provider_id": CLOUD_PROVIDER_ID,
+        "registered": e.is_some(),
+        "model": e.map(|x| x.model.clone()).unwrap_or_default(),
+        "active": cfg.active_provider == CLOUD_PROVIDER_ID,
+        "has_key": e.map(|x| !x.api_key.trim().is_empty()).unwrap_or(false),
+        "note": "key 只存在 0600 配置里, 端点不回显"
+    }))
+}
+
+/// POST /api/models/ollama {api_key, model?, activate?} → 登记 Ollama Cloud 模型
+///
+/// 只用官方 https://ollama.com; 登记前用 Bearer 真探测 `/api/tags`, 失败如实报不假装可用。
+pub async fn ollama_register(
+    State(st): State<crate::AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let key = req["api_key"].as_str().unwrap_or_default().trim().to_string();
+    if key.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 api_key" }));
+    }
+    let url = req["url"]
+        .as_str()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| CLOUD_URL.to_string());
+    if url != CLOUD_URL {
+        return Json(serde_json::json!({ "ok": false, "error": "只允许官方 https://ollama.com" }));
+    }
+    // 真探测 (不把 key 打进任何日志/响应)
+    let probe = ureq::get(&format!("{url}/api/tags"))
+        .set("Authorization", &format!("Bearer {key}"))
+        .timeout(std::time::Duration::from_secs(8))
+        .call();
+    let models: Vec<String> = match probe {
+        Ok(resp) => {
+            let v: serde_json::Value = resp.into_json().unwrap_or(serde_json::Value::Null);
+            v["models"].as_array().map(|a| a.iter().filter_map(|m| m["name"].as_str().map(String::from)).collect()).unwrap_or_default()
+        }
+        Err(e) => return Json(serde_json::json!({
+            "ok": false, "error": format!("Ollama Cloud 探测失败: {e}"),
+            "note": "检查 key 是否有效 / 网络是否可达; 探测不通就不登记"
+        })),
+    };
+    let model = req["model"].as_str().map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| models.first().cloned().unwrap_or_default());
+    if model.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "没拿到模型名, 请显式指定 model" }));
+    }
+    let mut cfg = bolloon_llm::config_store::load();
+    bolloon_llm::config_store::upsert_custom(
+        &mut cfg,
+        CLOUD_PROVIDER_ID,
+        "Ollama Cloud",
+        &url,
+        Some(bolloon_llm::provider_registry::Protocol::Ollama),
+        Some(&key),
+        Some(&model),
+    );
+    let activate = req["activate"].as_bool().unwrap_or(false);
+    if activate {
+        bolloon_llm::config_store::set_active(&mut cfg, CLOUD_PROVIDER_ID);
+        // 同上: App 的 call_model_metered 先读 settings.provider
+        let mut fs = st.forge.lock().await;
+        fs.settings.provider = CLOUD_PROVIDER_ID.to_string();
+        fs.settings.model = model.clone();
+        fs.save(&crate::server::data_dir());
+    }
+    if let Err(e) = bolloon_llm::config_store::save(&cfg) {
+        return Json(serde_json::json!({ "ok": false, "error": format!("配置落盘失败: {e}") }));
+    }
+    st.reload_llm().await;
+    Json(serde_json::json!({
+        "ok": true, "provider_id": CLOUD_PROVIDER_ID, "model": model,
+        "active": activate, "models_seen": models.len(),
+        "note": "已登记; 路由账本会把它当可对比 provider, key 未回显"
+    }))
+}
+
+/// POST /api/models/activate {provider, model?} → 切换当前默认模型 (校验 provider 真的可用)
+pub async fn activate_model(
+    State(st): State<crate::AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let provider = req["provider"].as_str().unwrap_or_default().trim().to_string();
+    if provider.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 provider" }));
+    }
+    let llm = st.llm_snapshot();
+    let Some(slot) = llm.provider(&provider) else {
+        return Json(serde_json::json!({ "ok": false, "error": format!("模型通路里没有 {provider}") }));
+    };
+    let model = req["model"].as_str().map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| slot.default_model.clone());
+    let mut cfg = bolloon_llm::config_store::load();
+    bolloon_llm::config_store::set_active(&mut cfg, &provider);
+    if let Err(e) = bolloon_llm::config_store::save(&cfg) {
+        return Json(serde_json::json!({ "ok": false, "error": e.to_string() }));
+    }
+    {
+        let mut fs = st.forge.lock().await;
+        fs.settings.provider = provider.clone();
+        fs.settings.model = model.clone();
+        fs.save(&crate::server::data_dir());
+    }
+    Json(serde_json::json!({ "ok": true, "provider": provider, "model": model }))
 }
 
 #[cfg(test)]
@@ -147,5 +269,14 @@ mod tests {
         let r = probe("http://127.0.0.1:1");
         assert!(r.is_err(), "本机服务没起必须报错: {r:?}");
         assert!(r.unwrap_err().contains("没有响应"));
+    }
+
+    #[test]
+    fn cloud_registration_only_allows_official_host() {
+        assert_eq!(CLOUD_URL, "https://ollama.com");
+        let allowed = |u: &str| u == CLOUD_URL;
+        assert!(allowed(CLOUD_URL));
+        assert!(!allowed("https://evil.example"));
+        assert!(!allowed("http://ollama.com"));
     }
 }

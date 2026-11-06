@@ -249,6 +249,54 @@ pub async fn run_pack(
     }))
 }
 
+fn receipt_path() -> std::path::PathBuf {
+    crate::server::data_dir().join("specialize-receipts.jsonl")
+}
+
+fn append_receipt(rec: &serde_json::Value) {
+    use std::io::Write;
+    let p = receipt_path();
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{}", serde_json::to_string(rec).unwrap_or_default());
+    }
+}
+
+fn read_jsonl(p: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(p)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+/// GET /api/specialize/receipts → 外溢验收面 (只报可观测事实, 不编"有人用/付钱")
+///
+/// - shared: 本机确实发出过的分享/付费卡片 (一次一行)
+/// - paid: x402 订单里带 pack_id 或来自付费卡片的**已验链**行
+/// - 对端是否导入/使用, 本机看不到 ⇒ note 里如实说明, 不伪造
+pub async fn receipts() -> Json<serde_json::Value> {
+    let shared = read_jsonl(&receipt_path());
+    let orders = read_jsonl(&crate::server::data_dir().join("x402-orders.jsonl"));
+    let paid: Vec<serde_json::Value> = orders
+        .into_iter()
+        .filter(|o| {
+            o["source"].as_str() == Some("world_card")
+                || o["pack_id"].as_str().map(|s| !s.is_empty()).unwrap_or(false)
+        })
+        .collect();
+    Json(serde_json::json!({
+        "ok": true,
+        "shared_count": shared.len(),
+        "paid_count": paid.len(),
+        "shared": shared.iter().rev().take(50).cloned().collect::<Vec<_>>(),
+        "paid": paid.iter().rev().take(50).cloned().collect::<Vec<_>>(),
+        "note": "本机可观测: 发出 + 验链成功; 对端是否导入/使用需对端记录, 不伪造结果"
+    }))
+}
+
 /// POST /api/specialize/share {id, price_atomic?, agent_id?} → 外溢 (阶段3)
 ///
 /// 免费: 用 `bolloon-world-card` 协议把 pack 定义签名投给好友 (复用 world_cards_share)。
@@ -285,11 +333,16 @@ pub async fn share_pack(
                 "summary": format!("persona + skill + 工具白名单 + {} 条评测", pack.eval_cases.len()),
                 "content": content,
                 "price_atomic": price_atomic,
+                "pack_id": pack.id,
                 "tags": ["specialize", pack.task],
             })),
         )
         .await
         .0;
+        append_receipt(&serde_json::json!({
+            "at_ms": now_ms(), "pack_id": pack.id, "mode": "x402_paid",
+            "card_id": r["id"], "item_id": r["item_id"], "ok": r["ok"],
+        }));
         return Json(serde_json::json!({
             "ok": r["ok"] == serde_json::json!(true), "mode": "x402_paid",
             "card_id": r["id"], "item_id": r["item_id"], "error": r["error"],
@@ -314,6 +367,10 @@ pub async fn share_pack(
     let mut v = serde_json::to_value(&card).unwrap_or(serde_json::Value::Null);
     v["pack"] = serde_json::to_value(&pack).unwrap_or(serde_json::Value::Null);
     let r = crate::native::world_cards_share(State(st), Json(v)).await.0;
+    append_receipt(&serde_json::json!({
+        "at_ms": now_ms(), "pack_id": pack.id, "mode": "signed_card",
+        "delivery": r["delivery"], "ok": r["error"].is_null(),
+    }));
     Json(serde_json::json!({
         "ok": r["error"].is_null(), "mode": "signed_card", "delivery": r,
         "note": "按 bolloon-world-card 协议签名投递给好友; 有没有人真用看对方是否导入并跑评测"

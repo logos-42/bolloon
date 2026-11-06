@@ -520,8 +520,13 @@ pub fn list_price_micro(model: &str, tokens_in: u64, tokens_out: u64) -> Option<
         .find(|m| m["id"].as_str() == Some(model))?;
     let cin = e["usd_per_1k_in"].as_f64()?;
     let cout = e["usd_per_1k_out"].as_f64()?;
+    // 免费额度 (本地模型 / Ollama Cloud free credits) 单价 0 ⇒ 成本就该是 0,
+    // 不能套内置"至少 1 micro-USD"的计费规则 (那是防止付费调用被四舍五入成免费)。
+    if cin == 0.0 && cout == 0.0 {
+        return Some(0);
+    }
     let usd = (tokens_in as f64 / 1000.0) * cin + (tokens_out as f64 / 1000.0) * cout;
-    Some(((usd * 1_000_000.0).ceil().max(1.0)) as i64)
+    Some((usd * 1_000_000.0).ceil() as i64)
 }
 
 pub fn price_for(

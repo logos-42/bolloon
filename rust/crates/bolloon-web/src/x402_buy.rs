@@ -145,7 +145,7 @@ fn orders_path() -> std::path::PathBuf {
 }
 
 /// 订单落盘 (一行一条; 只记事实: tx/对方/item/内容哈希/金额/时间)
-fn append_order(rec: &serde_json::Value) {
+pub(crate) fn append_order(rec: &serde_json::Value) {
     use std::io::Write;
     let p = orders_path();
     if let Some(d) = p.parent() {

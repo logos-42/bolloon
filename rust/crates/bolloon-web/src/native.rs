@@ -5055,6 +5055,7 @@ pub async fn agent_card_paid(
         "id": oid, "kind": "card", "score": 1.5,
         "title": card.title, "summary": card.summary,
         "card": card_json, "source": "agent-paid-card",
+        "pack_id": req["pack_id"].as_str().unwrap_or_default(),
         "by": agent.did.as_str(), "ts": now,
     });
     fs.inbox.push(inbox_item);
@@ -5191,6 +5192,20 @@ pub async fn world_pay_confirm(
             bolloon_x402::PaymentVerdict::Verified | bolloon_x402::PaymentVerdict::SelfAttested => {
                 st.x402_used_txs.lock().await.insert(tx_hash.clone());
                 let content = st.paid_info.lock().await.get(&item_id).map(|(_, c)| c.clone()).unwrap_or_default();
+                // 2026-11-06 (外溢验收): 付费卡片确认成功必须落订单, 否则 /api/x402/orders
+                // 只覆盖 buy_pay 一条路径, 回答不了"有没有人真付钱"。
+                let pack_id = {
+                    let fs = st.forge.lock().await;
+                    fs.inbox.iter().find(|it| it["id"].as_str() == Some(card_id.as_str()))
+                        .and_then(|it| it["pack_id"].as_str().map(|x| x.to_string()))
+                        .unwrap_or_default()
+                };
+                crate::x402_buy::append_order(&serde_json::json!({
+                    "at_ms": now_ms(), "peer": "self", "item_id": item_id,
+                    "tx_hash": tx_hash, "pay_to": pay_to, "amount_atomic": amount.to_string(),
+                    "verdict": report.verdict, "source": "world_card",
+                    "card_id": card_id, "pack_id": pack_id,
+                }));
                 Json(serde_json::json!({ "ok": true, "verdict": report.verdict, "content": content,
                     "observations": observations.len(), "note": "验链通过, 内容已交付" }))
             }
@@ -5206,6 +5221,18 @@ pub async fn world_pay_confirm(
         match peer_json("POST", format!("{url}/api/x402/info/{item_id}/payment"), Some(body)).await {
             Ok(v) => {
                 if v["status"] == serde_json::json!("delivered") {
+                    let pack_id = {
+                        let fs = st.forge.lock().await;
+                        fs.inbox.iter().find(|it| it["id"].as_str() == Some(card_id.as_str()))
+                            .and_then(|it| it["pack_id"].as_str().map(|x| x.to_string()))
+                            .unwrap_or_default()
+                    };
+                    crate::x402_buy::append_order(&serde_json::json!({
+                        "at_ms": now_ms(), "peer": by, "item_id": item_id,
+                        "tx_hash": tx_hash, "pay_to": pay_to, "amount_atomic": amount.to_string(),
+                        "verdict": v["verdict"], "source": "world_card",
+                        "card_id": card_id, "pack_id": pack_id,
+                    }));
                     Json(serde_json::json!({ "ok": true, "verdict": v["verdict"], "content": v["content"],
                         "observations": observations.len(), "note": "对方节点验链通过, 内容已交付" }))
                 } else {
