@@ -81,9 +81,9 @@ pub fn award(st: &crate::AppState, kind: &str, summary: &str, ref_id: &str, evid
 
 /// 增值服务目录: 只列**真能兑现**的动作
 pub const SERVICES: &[(&str, &str, i64)] = &[
-    ("proof_export", "导出贡献签名证明（跨机可验）", 2),
-    ("help_boost", "求助卡片加权并再分发一次", 3),
-    ("card_boost", "世界卡片优先分发一次", 5),
+    ("proof_export", "导出贡献签名证明（跨机可验）", 1),
+    ("help_boost", "求助卡片加权并再分发一次", 1),
+    ("card_boost", "世界卡片优先分发一次", 2),
 ];
 
 fn spend_path() -> std::path::PathBuf {

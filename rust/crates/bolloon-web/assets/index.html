@@ -290,6 +290,11 @@
   .account .ava-wrap{position:relative;flex:none;display:none} /* 2026-10-28 (用户): 侧边栏展开后第二栏头像与第一栏 rail 重复, 隐藏第二栏头像(设置仍可经第一栏头像打开) */
   .account .ava{width:36px;height:36px;border-radius:50%;background:var(--panel2);display:grid;place-items:center;overflow:hidden}
   .account .ava img{width:100%;height:100%;object-fit:cover}
+  /* 2026-11-07: DID 太长会把额度按钮挤出去 → who 可缩, 积分单独一枚徽标 */
+  .account .who{min-width:0;overflow:hidden}
+  .account .who b,.account .who small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #sideCredit{flex:none;font-size:10px;line-height:1.5;color:var(--accent);border:1px solid var(--line);
+    border-radius:999px;padding:1px 6px;white-space:nowrap;cursor:pointer}
   .account .gear{position:absolute;right:-5px;bottom:-5px;width:19px;height:19px;border-radius:50%;padding:0;display:grid;place-items:center;font-size:11px;line-height:1;background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn-border)}
   .account .who{min-width:0;flex:1}
   .account .who b{display:block;font-weight:600}
@@ -920,6 +925,7 @@
       <div class="who"><b id="accountName">用户</b><small id="accountDid">did:…</small></div>
       <!-- 2026-10-30 (leo: 网页端没有订阅栏按钮): 额度/订阅入口 (桌面壳在 #topBar, 网页端在这里) -->
       <button id="payBtn" class="mini" title="额度 / 订阅（按量计费，先充值后使用）" style="margin-left:auto;padding:3px 8px;font-size:11px;white-space:nowrap">额度</button>
+      <span id="sideCredit" title="贡献积分：为别人提供服务获得；消耗很低，可换增值服务">🎖 --</span>
     </div>
   </aside>
   <main>
@@ -2109,8 +2115,9 @@ async function refreshContributionBalance(){
     contributionBalance=r;
     const cb=$('contribBalance'); if(cb)cb.textContent=contribFmt();
     const hint=$('contribHint');
-    if(hint)hint.textContent='累计 '+r.earned+' · 已消费 '+r.spent+' · 服务+5 / 共享skill+0.5 / 贡献卡片+0.3';
-    const pb=$('payBtn'); if(pb)pb.textContent='额度 · 🎖'+contribFmt();
+    if(hint)hint.textContent='累计 '+r.earned+' · 已消费 '+r.spent+' · 服务+5 / skill+0.5 / 卡片+0.3；消耗很低（1~2 分换增值服务）';
+    const sc=$('sideCredit'); if(sc)sc.textContent='🎖 '+contribFmt();
+    const pb=$('payBtn'); if(pb)pb.textContent='额度';
     const mb=$('mobBalance'); if(mb&&mb.textContent.indexOf('🎖')<0)mb.textContent=(mb.textContent||'余额')+contribSuffix();
   }catch(_){}
 }
@@ -2630,6 +2637,7 @@ $('payBannerClose').onclick=()=>{ payBannerDismissed=true; $('payBanner').classL
 $('dragonSubBtn').onclick=()=>openPayDialog();
 $('payClose').onclick=()=>$('payDlg').close();
 if($('payBtn'))$('payBtn').onclick=(e)=>{e.stopPropagation();openPayDialog();};
+if($('sideCredit'))$('sideCredit').onclick=(e)=>{e.stopPropagation();openPayDialog();};
 if($('subBtn'))$('subBtn').onclick=(e)=>{e.stopPropagation();openPayDialog();};
 // 2026-10-30: 「直连节点 · 添加」以前只有按钮没有处理函数 ⇒ 对端永远登记不进 directory_peers,
 // 结果意图广播一直 peers:0 (什么都发不出去)。这里接上 POST /api/directory/peers。
