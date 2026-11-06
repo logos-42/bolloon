@@ -34,6 +34,17 @@ fn ledger_path() -> std::path::PathBuf {
     crate::server::data_dir().join("router-ledger.jsonl")
 }
 
+/// 一次调用的资源标价成本 (USD, 是否已知单价)
+///
+/// 口径: `pay::list_price_micro` = standard tier 标价, **不是用户实际扣费**。
+/// 未知模型如实返回 (0,false), 不编数字 —— 矩阵里 `cost_known=false` 的格子不参与比价。
+pub fn cost_of(model: &str, tokens_in: u64, tokens_out: u64) -> (f64, bool) {
+    match crate::pay::list_price_micro(model, tokens_in, tokens_out) {
+        Some(micro) => (micro as f64 / 1_000_000.0, true),
+        None => (0.0, false),
+    }
+}
+
 /// 记一次真实调用
 pub fn record(rec: serde_json::Value) {
     let p = ledger_path();
@@ -172,6 +183,55 @@ pub async fn router_enforce(
         "ok": true, "enforce": on,
         "note": if on { "真路由已开启: 命中数据规律的会切换 provider, 失败自动回退" } else { "已回到影子模式: 只记账" }
     }))
+}
+
+fn prices_path() -> std::path::PathBuf {
+    crate::server::data_dir().join("router-prices.json")
+}
+
+fn read_prices() -> serde_json::Value {
+    std::fs::read(prices_path())
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| serde_json::json!({ "models": [] }))
+}
+
+/// GET /api/router/prices → 已登记的自定义单价
+pub async fn router_prices_get() -> axum::Json<serde_json::Value> {
+    axum::Json(read_prices())
+}
+
+/// POST /api/router/prices {id, usd_per_1k_in, usd_per_1k_out} → 登记/更新一个模型单价
+///
+/// 不认识的模型账本会写 cost_known=false; 这里登记后重跑评测就能拿到真实成本列。
+/// 内置定价表(含别名)优先, 自定义只补空缺 —— 不覆盖用户已定的售价口径。
+pub async fn router_prices_set(
+    axum::Json(req): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let id = req["id"].as_str().unwrap_or_default().trim().to_string();
+    let cin = req["usd_per_1k_in"].as_f64();
+    let cout = req["usd_per_1k_out"].as_f64();
+    if id.is_empty() || cin.is_none() || cout.is_none() {
+        return axum::Json(serde_json::json!({ "ok": false, "error": "缺 id / usd_per_1k_in / usd_per_1k_out" }));
+    }
+    let mut j = read_prices();
+    let count;
+    {
+        let arr = j["models"].as_array_mut().expect("默认数组");
+        arr.retain(|m| m["id"].as_str() != Some(id.as_str()));
+        arr.push(serde_json::json!({
+            "id": id, "usd_per_1k_in": cin, "usd_per_1k_out": cout,
+        }));
+        count = arr.len();
+    }
+    let p = prices_path();
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    match std::fs::write(&p, serde_json::to_string_pretty(&j).unwrap_or_default()) {
+        Ok(_) => axum::Json(serde_json::json!({ "ok": true, "id": id, "models": count })),
+        Err(e) => axum::Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
 }
 
 /// GET /api/router/matrix

@@ -493,6 +493,37 @@ fn model_price(cfg: &serde_json::Value, model: &str) -> Option<(f64, f64)> {
 
 /// 一次调用该扣多少 micro-USD: 单价 × token/1000 × 用户等级乘数, 向上取整到 1 micro-USD。
 /// **不认识的模型就报错**, 不按 0 处理 (否则漏算 = 免费送)。
+/// 供路由账本用的**标价口径**成本 (micro-USD): 按 standard tier 的资源标价,
+/// 与"用户实际被扣多少"无关 (免费档用户扣 0 但资源仍有标价)。未知模型 => None。
+pub fn list_price_micro(model: &str, tokens_in: u64, tokens_out: u64) -> Option<i64> {
+    let cfg = config();
+    if let Ok(v) = price_for(&cfg, "", model, tokens_in, tokens_out) {
+        return Some(v);
+    }
+    // 模型名别名 (运行时模型名 vs 定价表 id, 价格不变)
+    let alias = match model {
+        "deepseek-v4-flash" => "deepseek-flash",
+        "deepseek-v4-pro" => "deepseek-v4-pro",
+        _ => model,
+    };
+    if let Ok(v) = price_for(&cfg, "", alias, tokens_in, tokens_out) {
+        return Some(v);
+    }
+    // 用户自己登记的单价 (USD/1K tokens), 没登记就如实返回 None
+    let path = crate::server::data_dir().join("router-prices.json");
+    let j: serde_json::Value = std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())?;
+    let e = j["models"]
+        .as_array()?
+        .iter()
+        .find(|m| m["id"].as_str() == Some(model))?;
+    let cin = e["usd_per_1k_in"].as_f64()?;
+    let cout = e["usd_per_1k_out"].as_f64()?;
+    let usd = (tokens_in as f64 / 1000.0) * cin + (tokens_out as f64 / 1000.0) * cout;
+    Some(((usd * 1_000_000.0).ceil().max(1.0)) as i64)
+}
+
 pub fn price_for(
     cfg: &serde_json::Value,
     did: &str,

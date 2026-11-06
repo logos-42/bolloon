@@ -156,17 +156,20 @@ pub async fn eval_pack(
                 images: vec![],
                 reasoning_content: None,
             };
+            // 语义 task 标签直接走 EconCtx.surface: 同一行账本同时带标签与真实成本,
+            // 不再另写一行 marker (否则矩阵会双计调用次数)。
+            let econ = crate::native::EconCtx {
+                intent_id: format!("eval-{}", pack.id),
+                group_id: None,
+                agent_id: None,
+                surface: label.clone(),
+                bill_did: None,
+            };
             let t = std::time::Instant::now();
-            let r = crate::native::call_model(&st, &system, vec![msg]).await;
+            let r = crate::native::call_model_metered(&st, &system, vec![msg], Some(econ)).await;
             let latency = t.elapsed().as_millis() as u64;
             let ok = r.is_ok();
             let reply = r.unwrap_or_default();
-            // 每次真实调用一笔路由账本 (语义 task 标签, 不是 surface)
-            crate::router::record(serde_json::json!({
-                "ts": now_ms(), "task": label, "provider": provider,
-                "model": "eval", "ok": ok, "latency_ms": latency,
-                "switched": false, "fallback": false, "eval_pack": pack.id,
-            }));
             bucket.push(serde_json::json!({
                 "input": case.input.chars().take(80).collect::<String>(),
                 "ok": ok,
@@ -201,6 +204,48 @@ pub async fn eval_pack(
         "baseline": b, "pack": s, "cases_base": base, "cases_pack": spec,
         "verdict": verdict,
         "note": "命中=期望关键词任一出现; 成本见路由账本(免费档为0时不编数字); 换 provider 或本地小模型后重跑即可对比"
+    }))
+}
+
+/// POST /api/specialize/run {id, text} → 用特化包跑一次**带白名单的真实回合**
+///
+/// 与 eval 的区别: eval 只测 prompt 特化(不跑工具); run 走完整 KernelLoop,
+/// `allowlist_harness` 只注册/只发/只授白名单工具 —— 白名单在这里是真门。
+pub async fn run_pack(
+    State(st): State<crate::AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let id = req["id"].as_str().unwrap_or_default().trim().to_string();
+    let text = req["text"].as_str().unwrap_or_default().trim().to_string();
+    if text.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 text" }));
+    }
+    let pack = match load().into_iter().find(|p| p.id == id) {
+        Some(p) => p,
+        None => return Json(serde_json::json!({ "ok": false, "error": format!("没有这个特化包: {id}") })),
+    };
+    let sid = format!("pack-run-{}", now_ms());
+    let cancel = st.chat_runs.begin(&sid);
+    let opts = crate::native::TurnOptions {
+        session_id: sid.clone(),
+        extra_system: format!("{}\n\n{}", pack.persona, pack.skill_text),
+        tool_allowlist: Some(pack.tool_allowlist.clone()),
+        max_turns: 2,
+        tool_budget: 3,
+        surface: "specialize",
+        ..Default::default()
+    };
+    let allow = pack.tool_allowlist.clone();
+    let r = crate::native::reply_with_agent_cfg(&st, &text, None, opts, None, cancel).await;
+    st.chat_runs.finish(&sid, "Finished", "");
+    let (ok, reply) = match r {
+        Ok(t) => (true, t),
+        Err(e) => (false, e),
+    };
+    Json(serde_json::json!({
+        "ok": ok, "reply": reply, "id": pack.id, "task": pack.task,
+        "tool_allowlist": allow,
+        "note": "白名单在 harness 层生效: schema 里看不到白名单外工具, permission 也没授予"
     }))
 }
 

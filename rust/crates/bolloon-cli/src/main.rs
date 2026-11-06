@@ -403,6 +403,15 @@ enum PackAction {
         #[arg(long, default_value_t = 54188)]
         port: u16,
     },
+    /// 用特化包跑一次带工具白名单的真实回合
+    Run {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long, default_value_t = 54188)]
+        port: u16,
+    },
     /// 外溢: 免费签名分享, 或 --price 发 x402 付费卡片
     Share {
         #[arg(long)]
@@ -1052,6 +1061,15 @@ fn run_pack(action: PackAction) -> anyhow::Result<()> {
             println!("baseline: 命中 {}/{}  平均 {}ms", r["baseline"]["hit"], r["baseline"]["cases"], r["baseline"]["avg_latency_ms"]);
             println!("特化包 : 命中 {}/{}  平均 {}ms", r["pack"]["hit"], r["pack"]["cases"], r["pack"]["avg_latency_ms"]);
             println!("结论: {}", r["verdict"].as_str().unwrap_or(""));
+        }
+        PackAction::Run { id, text, port } => {
+            let r = http_json(
+                "POST",
+                &format!("http://127.0.0.1:{port}/api/specialize/run"),
+                Some(serde_json::json!({ "id": id, "text": text })),
+            )?;
+            println!("{}", r["reply"].as_str().unwrap_or(""));
+            println!("\n[白名单 {}]", r["tool_allowlist"].as_array().map(|a| a.len()).unwrap_or(0));
         }
         PackAction::Share { id, price, port } => {
             let mut body = serde_json::json!({ "id": id });

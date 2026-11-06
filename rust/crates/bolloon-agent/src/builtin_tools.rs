@@ -562,6 +562,36 @@ pub async fn harness_for_scope(
     }
 }
 
+/// **工具白名单 harness** (2026-11-06 特化包): 只注册/只发给模型/只授予白名单里的工具。
+///
+/// 双保险: schema 里看不到白名单外的工具, permission 门也没授予它们 —— 模型即使硬调也会被 DENY。
+/// 注意 `bypass` 仍按本机"完全访问"开关传入 (白名单是**缩小**, 不是提权)。
+pub async fn allowlist_harness(
+    names: &[String],
+    calls: u32,
+    budget_ms: u64,
+    cancel: Arc<AtomicBool>,
+    bypass: bool,
+) -> (Arc<Harness>, Vec<ToolSchema>) {
+    let budget = Budget::new(calls, budget_ms);
+    let reg = Arc::new(ToolRegistry::new());
+    register_builtin_tools(&reg).await;
+    let exec = Arc::new(BuiltinExecutor::new(
+        cancel,
+        bypass,
+        crate::scratch::ScriptRunPort::noop(),
+    ));
+    let h = Arc::new(Harness::new(reg.clone(), exec, budget));
+    let defs: Vec<bolloon_harness::ToolDef> = builtin_tool_defs()
+        .into_iter()
+        .filter(|d| names.iter().any(|n| n == &d.name))
+        .collect();
+    for d in &defs {
+        h.grant(&d.name).await;
+    }
+    (h, tool_defs_to_schemas(&defs))
+}
+
 /// 同 `builtin_harness`，但把经济层工具接上（principal 决定算谁的额度）。
 pub async fn builtin_harness_with_econ(
     calls: u32,
@@ -960,5 +990,18 @@ mod tests {
                 "只读子集里混进了 {forbidden}: {names:?}"
             );
         }
+    }
+
+    /// 特化包白名单: 只发白名单工具, 且不许出现白名单外的名字
+    #[tokio::test]
+    async fn allowlist_harness_only_exposes_allowed_tools() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let allow = vec!["read_file".to_string(), "grep_files".to_string()];
+        let (_h, schemas) = super::allowlist_harness(&allow, 5, 5_000, cancel, false).await;
+        let names: Vec<String> = schemas.into_iter().map(|s| s.function.name).collect();
+        assert_eq!(names.len(), 2, "只应有 2 个工具: {names:?}");
+        assert!(names.iter().any(|n| n == "read_file"));
+        assert!(names.iter().any(|n| n == "grep_files"));
+        assert!(!names.iter().any(|n| n == "shell" || n == "web_fetch"));
     }
 }

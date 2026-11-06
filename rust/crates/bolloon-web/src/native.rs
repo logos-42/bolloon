@@ -1946,11 +1946,18 @@ pub async fn call_model_metered(
         res = llm.generate(&provider_id, p2).await;
         elapsed_ms = t2.elapsed().as_millis() as u64;
     }
+    // 成本: 按标价口径算 (真实 token 来自 GenerateResult.usage; 失败/未知单价如实标 false)
+    let (tin, tout) = res.as_ref().ok()
+        .map(|g| (g.usage.prompt_tokens as u64, g.usage.completion_tokens as u64))
+        .unwrap_or((0, 0));
+    let (cost_usd, cost_known) = crate::router::cost_of(&model, tin, tout);
     crate::router::record(serde_json::json!({
         "ts": chrono::Utc::now().timestamp_millis(), "task": task_kind,
         "provider": provider_id, "model": model, "ok": res.is_ok(),
         "latency_ms": elapsed_ms, "switched": switched, "fallback": fallback,
         "shadow_pick": shadow_pick,
+        "tokens_in": tin, "tokens_out": tout,
+        "cost_usd": cost_usd, "cost_known": cost_known, "cost_basis": "list_price_standard",
     }));
 
     if let (Some(econ), Some((ctx, prov, mdl, est))) = (econ.as_ref(), econ_guard) {
@@ -2356,6 +2363,8 @@ pub struct TurnOptions {
     pub tool_scope: Option<bolloon_agent::builtin_tools::ToolScope>,
     /// 工具级审计落点 (好友只读指挥时非空; 每个工具调用一行事实, 由调用方落盘)
     pub audit_sink: Option<Arc<std::sync::Mutex<Vec<serde_json::Value>>>>,
+    /// 特化包工具白名单 (Some = 只注册/只发/只授这批工具; None = 常规工具面)
+    pub tool_allowlist: Option<Vec<String>>,
 }
 
 impl Default for TurnOptions {
@@ -2372,6 +2381,7 @@ impl Default for TurnOptions {
             surface: "web",
             tool_scope: None,
             audit_sink: None,
+            tool_allowlist: None,
         }
     }
 }
@@ -2486,6 +2496,15 @@ pub async fn reply_with_agent_cfg(
             cancel.clone(),
         )
         .await
+    } else if let Some(allow) = &opts.tool_allowlist {
+        // 特化包: 白名单缩小工具面 (schema + permission 双保险)
+        bolloon_agent::builtin_tools::allowlist_harness(
+            allow,
+            opts.tool_budget,
+            opts.max_secs.saturating_mul(1000),
+            cancel.clone(),
+            full_access,
+        ).await
     } else {
         bolloon_agent::builtin_tools::builtin_harness(
             opts.tool_budget,
@@ -2759,6 +2778,10 @@ impl WebStrategy {
             out = self.raw_call(&pid, &p).await;
             latency_ms = t2.elapsed().as_millis() as u64;
         }
+        let (tin, tout) = out.as_ref().ok()
+            .map(|g| (g.usage.prompt_tokens as u64, g.usage.completion_tokens as u64))
+            .unwrap_or((0, 0));
+        let (cost_usd, cost_known) = crate::router::cost_of(&p.model, tin, tout);
         crate::router::record(serde_json::json!({
             "ts": chrono::Utc::now().timestamp_millis(),
             "task": self.task,
@@ -2769,6 +2792,8 @@ impl WebStrategy {
             "switched": switched,
             "fallback": fallback,
             "shadow_pick": shadow_pick,
+            "tokens_in": tin, "tokens_out": tout,
+            "cost_usd": cost_usd, "cost_known": cost_known, "cost_basis": "list_price_standard",
         }));
         out
     }
@@ -4054,6 +4079,7 @@ pub async fn room_turn_exec(
         max_secs: rt.max_secs,
         tool_scope: None,
         audit_sink: None,
+        tool_allowlist: None,
         econ: Some(EconCtx {
             intent_id: intent_id.to_string(),
             group_id: Some(gid.to_string()),
