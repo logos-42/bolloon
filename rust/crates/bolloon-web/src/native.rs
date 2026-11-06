@@ -922,6 +922,17 @@ pub async fn models_test(
         Ok(r) => r,
         Err(e) => return Json(serde_json::json!({ "ok": false, "provider": id, "error": e })),
     };
+    // 2026-11-06 (App 配置 Ollama 云端 401): 没带出 key 就直接给人话,
+    // 不要让请求裸奔到对端再回一句看不懂的 Unauthorized。
+    if r.api_key.as_deref().unwrap_or("").trim().is_empty()
+        && r.protocol.as_str() == "ollama"
+        && r.base_url.contains("ollama.com")
+    {
+        return Json(serde_json::json!({
+            "ok": false, "provider": id,
+            "error": "缺少 API Key：Ollama Cloud 需要 Bearer。请在 API Key 栏重新填一次；若反复出现，说明本机凭据库（App 钥匙串）不可用，重启后需重填，或用 BOLLOON_API_KEY 环境变量"
+        }));
+    }
 
     let mut rt = LlmRuntime::new(vec![], 1);
     rt.add_resolved(&r);

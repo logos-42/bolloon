@@ -249,37 +249,51 @@ pub fn load_from_with(dir: &Path, backend: &dyn SecretBackend) -> LlmConfig {
     };
 
     // ① 旧明文 key → 凭据库；无论写没写成，内存与文件里都不再保留明文
-    let mut pending: Vec<(String, String)> = Vec::new();
+    // (account, key, is_custom, id)
+    let mut pending: Vec<(String, String, bool, String)> = Vec::new();
     for (id, p) in cfg.providers.iter() {
         if !p.api_key.trim().is_empty() {
-            pending.push((secret_store::account_for_provider(id), p.api_key.clone()));
+            pending.push((secret_store::account_for_provider(id), p.api_key.clone(), false, id.clone()));
         }
     }
     for (id, p) in cfg.custom_providers.iter() {
         if !p.api_key.trim().is_empty() {
-            pending.push((secret_store::account_for_custom(id), p.api_key.clone()));
+            pending.push((secret_store::account_for_custom(id), p.api_key.clone(), true, id.clone()));
         }
     }
     if !pending.is_empty() {
         let mut moved = 0usize;
-        for (acct, key) in &pending {
+        // 2026-11-06 (App 401 根因): 只清**迁移成功**的条目。
+        // 以前无论 put 成败都全清 ⇒ Tauri App 首次写钥匙串被拒时, key 当场丢失,
+        // 之后 resolve 拿不到 key ⇒ 请求不带 Bearer ⇒ Ollama Cloud 回 401 Unauthorized。
+        // 现在失败条目保留在内存 (绝不写回明文到磁盘), 本次进程仍可用, 并如实告警。
+        let mut cleared: Vec<(bool, String)> = Vec::new();
+        for (acct, key, is_custom, id) in &pending {
             match backend.put(acct, key) {
-                Ok(()) => moved += 1,
+                Ok(()) => {
+                    moved += 1;
+                    cleared.push((*is_custom, id.clone()));
+                }
                 Err(e) => tracing::warn!(
                     account = %acct,
                     error = %e,
-                    "明文 key 迁移失败 — 只留在内存, 不会写回文件"
+                    "明文 key 无法写入本机凭据库 — 保留在内存供本次使用, 绝不写回明文; 重启后需重新填 key 或修凭据库权限"
                 ),
             }
         }
-        for p in cfg.providers.values_mut() {
-            p.api_key.clear();
+        for (is_custom, id) in &cleared {
+            if *is_custom {
+                if let Some(p) = cfg.custom_providers.get_mut(id) { p.api_key.clear(); }
+            } else if let Some(p) = cfg.providers.get_mut(id) {
+                p.api_key.clear();
+            }
         }
-        for p in cfg.custom_providers.values_mut() {
-            p.api_key.clear();
-        }
-        if moved > 0 {
-            if let Err(e) = save_to_with(dir, &cfg, backend) {
+        if !pending.is_empty() {
+            // 落盘副本一律不带明文: 失败条目的 key 只活在本进程内存里
+            let mut on_disk_only = cfg.clone();
+            for p in on_disk_only.providers.values_mut() { p.api_key.clear(); }
+            for p in on_disk_only.custom_providers.values_mut() { p.api_key.clear(); }
+            if let Err(e) = save_to_with(dir, &on_disk_only, backend) {
                 tracing::warn!(error = %e, "迁移后重写配置失败");
             }
             // 旧 .bak 是明文快照 —— 迁移成功就删掉
@@ -1238,6 +1252,41 @@ mod tests {
         let bak = std::fs::read_to_string(dir.join(format!("{CONFIG_FILE}.bak"))).unwrap();
         assert!(bak.contains("\"a\""), "备份里应有上一次的 a: {bak}");
         assert!(!bak.contains("\"b\""), "备份不该含本次: {bak}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-11-06 (App 401 根因回归): 凭据库写不进去时, load **不许**把内存里的 key 抹掉。
+    /// 否则 resolve 拿不到 key ⇒ 请求无 Bearer ⇒ Ollama Cloud 回 401 Unauthorized。
+    #[test]
+    fn load_keeps_key_in_memory_when_secret_backend_fails() {
+        let dir = temp_dir("load_nobackend");
+        let mut cfg = LlmConfig::default();
+        cfg.custom_providers.insert(
+            "ollama-cloud".into(),
+            CustomProvider {
+                provider_id: "ollama-cloud".into(),
+                display_name: "Ollama Cloud".into(),
+                base_url: "https://ollama.com".into(),
+                protocol: Some(provider_registry::Protocol::Ollama),
+                api_key: "sk-test-not-real".into(),
+                model: "gpt-oss:20b".into(),
+                models: vec![],
+            },
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(CONFIG_FILE), serde_json::to_string(&cfg).unwrap()).unwrap();
+
+        let mem = MemBackend::failing();
+        let loaded = load_from_with(&dir, &mem);
+        assert_eq!(
+            loaded.custom_providers["ollama-cloud"].api_key,
+            "sk-test-not-real",
+            "凭据库失败时 key 必须还活在内存里"
+        );
+        let r = resolve(&loaded, "ollama-cloud").expect("应能解析");
+        assert_eq!(r.api_key.as_deref(), Some("sk-test-not-real"));
+        let disk = std::fs::read_to_string(dir.join(CONFIG_FILE)).unwrap_or_default();
+        assert!(!disk.contains("sk-test-not-real"), "磁盘绝不留明文");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
