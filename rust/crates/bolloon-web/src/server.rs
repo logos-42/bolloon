@@ -564,6 +564,12 @@ pub fn app(state: AppState) -> Router {
         .route("/api/contribution/ledger", get(crate::contribution::ledger))
         .route("/api/contribution/anchor", post(crate::contribution::anchor))
         .route("/api/world/cards/help", post(crate::contribution::help_card))
+        // 跨机可验证贡献: 签名信封 / 独立验签 / 对端收件箱 / 公告 / 已验列表
+        .route("/api/contribution/proof", get(crate::contribution::proof))
+        .route("/api/contribution/verify", post(crate::contribution::verify))
+        .route("/api/contribution/inbox", post(crate::contribution::inbox))
+        .route("/api/contribution/announce", post(crate::contribution::announce))
+        .route("/api/contribution/peers", get(crate::contribution::peers))
         .route("/api/world/cards/media", post(crate::world_interact::media_card))
         .route("/api/world/cards/from-gap", post(crate::world_interact::gap_asset_card))
         // 付费卡片: 智能体发布 (x402) + 报价 + 确认

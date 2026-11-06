@@ -273,3 +273,234 @@ mod tests {
         assert!(!looks_like_tx("0x123"));
     }
 }
+
+// ─────────────── 跨机可验证 (2026-11-06 leo) ───────────────
+//
+// DID 本身就是 Ed25519 公钥 (did:pi:<b58 pubkey>), 所以对端**不需要**信任发送方、
+// 也不需要中心目录: 拿到信封即可用 signer DID 反解公钥验签 + 重算内容哈希。
+// 与 world.card 共用同一套 canonical_json / KeyPair::verify, 不另造密码学。
+
+pub const CONTRIB_PROTOCOL: &str = "bolloon-contribution/v1";
+pub const CONTRIB_TOPIC: &str = "contribution.record";
+
+fn to_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+fn from_hex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
+fn canonical_record(rec: &serde_json::Value) -> String {
+    bolloon_p2p::envelope::canonical_json(rec)
+}
+
+fn record_digest(rec: &serde_json::Value) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        rec["did"].as_str().unwrap_or(""),
+        rec["at_ms"].as_u64().unwrap_or(0),
+        rec["kind"].as_str().unwrap_or(""),
+        rec["summary"].as_str().unwrap_or(""),
+        rec["ref_id"].as_str().unwrap_or(""),
+    )
+}
+
+/// 签名信封 (导出的 proof 不含任何私钥/口令)
+pub fn make_proof(
+    rec: &serde_json::Value,
+    kp: &bolloon_p2p::identity::KeyPair,
+) -> serde_json::Value {
+    let sig = kp.sign(canonical_record(rec).as_bytes());
+    serde_json::json!({
+        "protocol": CONTRIB_PROTOCOL,
+        "topic": CONTRIB_TOPIC,
+        "record": rec.clone(),
+        "signer": kp.did.as_str(),
+        "signature": to_hex(&sig),
+        "issued_at_ms": now_ms(),
+    })
+}
+
+/// 验跨机贡献信封: 协议 → DID 一致 → 公钥反解 → 签名 → 内容哈希。任一步不过即拒。
+pub fn verify_proof(proof: &serde_json::Value) -> Result<serde_json::Value, String> {
+    if proof["protocol"].as_str() != Some(CONTRIB_PROTOCOL) {
+        return Err("协议不对 (不是 bolloon-contribution/v1)".into());
+    }
+    if proof["topic"].as_str() != Some(CONTRIB_TOPIC) {
+        return Err("topic 不对".into());
+    }
+    let rec = &proof["record"];
+    let signer = proof["signer"].as_str().unwrap_or_default();
+    if signer.is_empty() || rec["did"].as_str() != Some(signer) {
+        return Err("记录里的 DID 与签名者不一致".into());
+    }
+    let pk = bolloon_p2p::identity::pubkey_of_did(signer)
+        .ok_or_else(|| "DID 解析不出公钥".to_string())?;
+    let raw = from_hex(proof["signature"].as_str().unwrap_or_default())
+        .ok_or_else(|| "签名不是合法 hex".to_string())?;
+    if raw.len() != 64 {
+        return Err("签名长度不对 (应 64B)".into());
+    }
+    let mut sig = [0u8; 64];
+    sig.copy_from_slice(&raw);
+    if !bolloon_p2p::identity::KeyPair::verify(&pk, canonical_record(rec).as_bytes(), &sig) {
+        return Err("签名无效 (内容可能被改过)".into());
+    }
+    let expected = bolloon_x402::paid_info::compute_content_hash(&record_digest(rec));
+    if rec["content_hash"].as_str() != Some(expected.as_str()) {
+        return Err("内容哈希对不上".into());
+    }
+    Ok(rec.clone())
+}
+
+fn peers_path() -> std::path::PathBuf {
+    crate::server::data_dir().join("peer-contributions.jsonl")
+}
+fn peer_records() -> Vec<serde_json::Value> {
+    std::fs::read_to_string(peers_path())
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+fn append_peer(rec: &serde_json::Value) {
+    use std::io::Write;
+    let p = peers_path();
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{}", serde_json::to_string(rec).unwrap_or_default());
+    }
+}
+
+/// GET /api/contribution/proof?id= → 导出可交给别人的签名信封
+pub async fn proof(
+    State(st): State<crate::AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let id = q.get("id").cloned().unwrap_or_default();
+    let Some(rec) = load().into_iter().find(|r| r["id"].as_str() == Some(id.as_str())) else {
+        return Json(serde_json::json!({ "ok": false, "error": "没有这条贡献记录" }));
+    };
+    Json(serde_json::json!({ "ok": true, "proof": make_proof(&rec, &st.identity) }))
+}
+
+/// POST /api/contribution/verify {proof} → 纯验签 (不入库; 变异自检用这个)
+pub async fn verify(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    match verify_proof(&req["proof"]) {
+        Ok(rec) => Json(serde_json::json!({ "ok": true, "verified": true, "record": rec,
+            "note": "用 signer DID 反解公钥验签 + 重算内容哈希, 不依赖中心目录" })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "verified": false, "error": e })),
+    }
+}
+
+/// POST /api/contribution/inbox {proof} → 对端投递入口: 验签通过才入库
+pub async fn inbox(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let rec = match verify_proof(&req["proof"]) {
+        Ok(r) => r,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "verified": false, "error": e })),
+    };
+    let hash = rec["content_hash"].as_str().unwrap_or_default().to_string();
+    if peer_records().iter().any(|r| r["content_hash"].as_str() == Some(hash.as_str())) {
+        return Json(serde_json::json!({ "ok": true, "verified": true, "duplicate": true,
+            "note": "同一贡献已验过, 不重复入库" }));
+    }
+    let mut stored = rec.clone();
+    stored["received_at_ms"] = serde_json::json!(now_ms());
+    append_peer(&stored);
+    Json(serde_json::json!({ "ok": true, "verified": true, "duplicate": false,
+        "id": rec["id"], "signer": rec["did"] }))
+}
+
+/// POST /api/contribution/announce {id, peer_url?|did?} → 把签名信封发给对端节点
+pub async fn announce(
+    State(st): State<crate::AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let id = req["id"].as_str().unwrap_or_default().to_string();
+    let Some(rec) = load().into_iter().find(|r| r["id"].as_str() == Some(id.as_str())) else {
+        return Json(serde_json::json!({ "ok": false, "error": "没有这条贡献记录" }));
+    };
+    let proof = make_proof(&rec, &st.identity);
+    let url = if let Some(u) = req["peer_url"].as_str().filter(|s| !s.is_empty()) {
+        u.trim_end_matches('/').to_string()
+    } else if let Some(did) = req["did"].as_str().filter(|s| !s.is_empty()) {
+        match crate::native::peer_url_for_did(&st, did).await {
+            Ok(u) => u,
+            Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
+        }
+    } else {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 peer_url 或 did" }));
+    };
+    match crate::native::peer_json(
+        "POST",
+        format!("{url}/api/contribution/inbox"),
+        Some(serde_json::json!({ "proof": proof })),
+    ).await {
+        Ok(v) => Json(serde_json::json!({ "ok": v["ok"] == serde_json::json!(true),
+            "peer": v, "note": "对端独立验签; 本机说了不算" })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
+/// GET /api/contribution/peers → 已通过验签的对端贡献
+pub async fn peers() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": true, "records": peer_records() }))
+}
+
+#[cfg(test)]
+mod proof_tests {
+    use super::*;
+
+    fn rec_for(kp: &bolloon_p2p::identity::KeyPair) -> serde_json::Value {
+        let did = kp.did.as_str().to_string();
+        let at = 1_700_000_000_000u64;
+        let (kind, summary, ref_id) = ("share_card", "分享资料给集体", "");
+        let hash = bolloon_x402::paid_info::compute_content_hash(
+            &format!("{did}|{at}|{kind}|{summary}|{ref_id}"),
+        );
+        serde_json::json!({
+            "id": "contrib-test", "did": did, "at_ms": at, "kind": kind,
+            "summary": summary, "ref_id": ref_id, "content_hash": hash,
+            "anchor": serde_json::Value::Null,
+        })
+    }
+
+    #[test]
+    fn proof_roundtrip_and_tamper_is_refused() {
+        let kp = bolloon_p2p::identity::KeyPair::generate();
+        let proof = make_proof(&rec_for(&kp), &kp);
+        assert!(verify_proof(&proof).is_ok(), "自己签的必须验得过");
+
+        let mut tampered = proof.clone();
+        tampered["record"]["summary"] = serde_json::json!("偷偷改成更大的贡献");
+        assert!(verify_proof(&tampered).is_err(), "改内容必须验不过");
+
+        let mut wrong_did = proof.clone();
+        wrong_did["signer"] = serde_json::json!("did:pi:someoneelse");
+        assert!(verify_proof(&wrong_did).is_err(), "换签名者必须验不过");
+
+        let mut bad_hash = proof.clone();
+        bad_hash["record"]["content_hash"] = serde_json::json!("deadbeef");
+        assert!(verify_proof(&bad_hash).is_err(), "哈希对不上必须验不过");
+    }
+
+    #[test]
+    fn proof_never_contains_private_material() {
+        let kp = bolloon_p2p::identity::KeyPair::generate();
+        let text = serde_json::to_string(&make_proof(&rec_for(&kp), &kp)).unwrap();
+        assert!(!text.contains("secret"));
+        assert!(text.len() < 4000);
+    }
+}
