@@ -788,6 +788,11 @@
     <div><small>已用</small><b id="payCharged">$0.00</b></div>
   </div>
   <div class="pay-today" id="payToday"></div>
+  <div class="pay-today" id="contribBox" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <b>🎖 贡献积分 <span id="contribBalance">--</span></b>
+    <small id="contribHint" style="color:var(--muted)">读取中…</small>
+    <button class="mini" onclick="buyContributionService()">购买增值服务</button>
+  </div>
   <div class="pay-channels" id="payChannels">
     <button data-ch="crypto" class="on">USDC 钱包</button>
     <button data-ch="alipay">支付宝</button>
@@ -2091,9 +2096,47 @@ let menuAgentId='';
 let payInfo=null, paySummary=null, payChannel='crypto';
 const PAY_LABEL={crypto:'USDC 钱包', alipay:'支付宝', wechat:'微信', paypal:'PayPal'};
 const PAY_CHAIN_LABEL={base:'BASE 链 (USDC)', 'base-sepolia':'BASE 测试网'};
+// ── 贡献积分: 放在余额里 (2026-11-06 leo) ──
+// 为别人提供服务才有大分; 日常共享 skill / 卡片只给小分; 没做坏事 earned 只增不减;
+// 唯一消耗 = 购买增值服务。求助与善意合作永远不需要积分。
+let contributionBalance=null;
+function contribFmt(){ return contributionBalance?Number(contributionBalance.balance||0).toFixed(1).replace(/\.0$/,''):'--'; }
+function contribSuffix(){ return contributionBalance?(' · 🎖'+contribFmt()):''; }
+async function refreshContributionBalance(){
+  try{
+    const r=await api('/api/contribution/balance');
+    if(!r||!r.ok)return;
+    contributionBalance=r;
+    const cb=$('contribBalance'); if(cb)cb.textContent=contribFmt();
+    const hint=$('contribHint');
+    if(hint)hint.textContent='累计 '+r.earned+' · 已消费 '+r.spent+' · 服务+5 / 共享skill+0.5 / 贡献卡片+0.3';
+    const pb=$('payBtn'); if(pb)pb.textContent='额度 · 🎖'+contribFmt();
+    const mb=$('mobBalance'); if(mb&&mb.textContent.indexOf('🎖')<0)mb.textContent=(mb.textContent||'余额')+contribSuffix();
+  }catch(_){}
+}
+async function buyContributionService(){
+  if(!contributionBalance)await refreshContributionBalance();
+  const list=(contributionBalance&&contributionBalance.services)||[];
+  if(!list.length){toast('读不到增值服务目录');return;}
+  const msg='可用贡献积分 '+contribFmt()+' 分\n\n'+list.map((x,i)=>(i+1)+'. '+x.name+' — '+x.price+' 分').join('\n')+'\n\n输入序号：';
+  const pick=prompt(msg);
+  const i=Number(pick)-1;
+  if(!Number.isInteger(i)||i<0||i>=list.length){if(pick!==null)toast('序号不对');return;}
+  const svc=list[i];
+  const ref=prompt('关联 id（卡片 id / 贡献记录 id；proof_export 与 boost 必填，可留空）','')||'';
+  const r=await api('/api/contribution/spend',{method:'POST',body:JSON.stringify({service:svc.id,ref_id:ref})}).catch(e=>({error:e.message}));
+  if(!r||r.ok!==true){toast('购买失败: '+((r&&(r.error||'未知'))||'未知'));return;}
+  toast('已购买「'+svc.name+'」· 花费 '+r.price+' 分 · 余额 '+r.balance);
+  contributionBalance.balance=r.balance;
+  await refreshContributionBalance();
+}
+setTimeout(refreshContributionBalance,2200);
+setInterval(refreshContributionBalance,60000);
+
 async function openPayDialog(){
   const d=$('payDlg'); if(!d) return;
   if(!d.open) d.showModal();
+  refreshContributionBalance();
   $('payTarget').innerHTML='<span class="hint">正在读取收款信息…</span>';
   try{ payInfo=await api('/api/pay/info'); }catch(e){ payInfo=null; }
   try{ paySummary=await api('/api/pay/summary'); }catch(e){ paySummary=null; }
@@ -4882,7 +4925,7 @@ boot().finally(()=>{
   bal.addEventListener('click',()=>{ if(typeof openPayDialog==='function') openPayDialog(); else if(typeof loadPay==='function') loadPay(); });
   document.body.appendChild(bal);
   const refreshBal=async()=>{
-    try{ const st=await api('/api/pay/summary'); bal.textContent='余额 $'+Number(st.balance_usd||0).toFixed(2); }
+    try{ const st=await api('/api/pay/summary'); bal.textContent='余额 $'+Number(st.balance_usd||0).toFixed(2)+contribSuffix(); }
     catch(_){ bal.textContent='余额 --'; }
   };
   setTimeout(refreshBal,1500); setInterval(refreshBal,60000);

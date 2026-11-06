@@ -366,7 +366,11 @@ pub async fn share_pack(
     };
     let mut v = serde_json::to_value(&card).unwrap_or(serde_json::Value::Null);
     v["pack"] = serde_json::to_value(&pack).unwrap_or(serde_json::Value::Null);
-    let r = crate::native::world_cards_share(State(st), Json(v)).await.0;
+    // 共享特化包/技能给好友 = 一点点积分 (按 pack.id 去重)
+    let pts = crate::contribution::award(
+        &st, "skill_share", &format!("共享特化包 {}", pack.task), &pack.id, "specialize/share");
+    let r = crate::native::world_cards_share(State(st.clone()), Json(v)).await.0;
+    let _ = pts;
     append_receipt(&serde_json::json!({
         "at_ms": now_ms(), "pack_id": pack.id, "mode": "signed_card",
         "delivery": r["delivery"], "ok": r["error"].is_null(),

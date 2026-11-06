@@ -582,6 +582,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/contribution/inbox", post(crate::contribution::inbox))
         .route("/api/contribution/announce", post(crate::contribution::announce))
         .route("/api/contribution/peers", get(crate::contribution::peers))
+        .route("/api/contribution/balance", get(crate::contribution::balance))
+        .route("/api/contribution/spend", post(crate::contribution::spend))
         .route("/api/world/cards/media", post(crate::world_interact::media_card))
         .route("/api/world/cards/from-gap", post(crate::world_interact::gap_asset_card))
         // 付费卡片: 智能体发布 (x402) + 报价 + 确认
@@ -3351,7 +3353,7 @@ pub const FULL_ACCESS_GATED_PREFIXES: &[&str] = &[
     "/api/world/cards/media", "/api/world/cards/from-gap", "/api/world/cards/help",
     "/api/world/cards/share", "/api/world/pay", "/api/world/fulfill",
     "/api/contribution/record", "/api/contribution/anchor",
-    "/api/contribution/announce", "/api/contribution/inbox",
+    "/api/contribution/announce", "/api/contribution/inbox", "/api/contribution/spend",
     "/api/specialize/packs", "/api/specialize/eval", "/api/specialize/run",
     "/api/specialize/share", "/api/router/enforce", "/api/router/prices",
     "/api/friends/", "/api/x402/buy/", "/api/x402/info",

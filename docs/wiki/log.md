@@ -17,3 +17,4 @@
 | 2026-11-06 | interaction | 每次点击 → 记忆/判断力/工作流记录/信念四件套；点击上下文按「未对话全量 / 对话中洞察过滤」注入；群中断广播全停（在途模型调用 120ms 可取消） |
 | 2026-11-06 | contribution | 贡献记录 + 声誉分（不可转账/兑换、零分求助也分发）+ 求助双通道；跨机可验证用 DID 自带公钥签名验签（`bolloon-contribution/v1`），篡改与换签名者均判红 |
 | 2026-11-06 | permission / shell | 完全访问成为总闸：今天所有写类/授权类能力一处登记，关→403、只读照常；Web/App/CLI（`bolloon permission`）三端同步；Shell 速查表（还原粘贴时丢失的美元符、管道符与反引号）播种进内置技能 `shell-direct` 并进每轮能力块；清 3 条编译警告，workspace 0 error / 0 warning |
+| 2026-11-06 | credit | 贡献积分进左下角余额：**为别人提供服务才有大分**（`service_paid`/`service_delivered` +5，只能由验链成功等真实交付回执自动记，端点拒绝自报）；日常共享 skill +0.5、贡献/分享卡片 +0.3，按证据去重防刷；`earned` 只增不减（做坏事才有 penalty，无自动判定），唯一消耗是购买增值服务（导出签名证明 2 / 求助加权 3 / 卡片优先分发 5，均真兑现）；余额弹窗与左下角「额度」入口显示 `🎖 N`，Web/App 同源、CLI 可查。验证 92/0、自报拒/重复不加/消费后 earned 不减。 | `rust/crates/bolloon-web/src/{contribution.rs,native.rs,specialize.rs,server.rs,assets/index.html}` |

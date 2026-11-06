@@ -29,10 +29,154 @@ fn load() -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// 声誉分: 对数压缩 + 封顶 (不可转账/不可兑换/不可购买)
+/// 积分权重 (2026-11-06 leo): **为别人提供服务才有大分**, 日常共享只给一点点。
+/// 服务类不允许自报 —— 只能由真实交付回执 (验链成功 / 对方确认) 自动记。
+pub const POINTS_BY_KIND: &[(&str, f64)] = &[
+    ("service_paid", 5.0),
+    ("service_delivered", 5.0),
+    ("skill_share", 0.5),
+    ("card_share", 0.3),
+    ("contribution_card", 0.3),
+    ("share_card", 0.3), // 旧台账里"贡献卡片"用的老 kind, 保留小分不归零
+];
+pub fn points_for(kind: &str) -> f64 {
+    POINTS_BY_KIND.iter().find(|(k, _)| *k == kind).map(|(_, p)| *p).unwrap_or(0.0)
+}
+pub fn is_self_reportable(kind: &str) -> bool {
+    matches!(kind, "skill_share" | "card_share" | "contribution_card" | "share_card")
+}
+
+/// 累计贡献分 earned: **只增不减**; 每条按权重求和, anchor/penalty 等元数据不算。
 pub fn credit_of(records: &[serde_json::Value]) -> f64 {
-    let n = records.len() as f64;
-    (2.0 * n.sqrt()).min(50.0)
+    records.iter().filter(|r| {
+        r["content_hash"].is_string() && r["at_ms"].is_u64()
+            && r["kind"].as_str() != Some("anchor") && r["kind"].as_str() != Some("penalty")
+    }).map(|r| {
+        r["points"].as_f64().unwrap_or_else(|| points_for(r["kind"].as_str().unwrap_or("")))
+    }).sum()
+}
+
+/// 内部加分入口: 只有代码里**真实交付点**才调用, 端点不直接暴露服务类。
+/// 按 (did|kind|ref_id|evidence) 去重 —— 同一笔服务/同一次分享不重复刷分。
+pub fn award(st: &crate::AppState, kind: &str, summary: &str, ref_id: &str, evidence: &str) -> f64 {
+    let points = points_for(kind);
+    if points <= 0.0 {
+        return 0.0;
+    }
+    let did = st.identity.did.as_str().to_string();
+    let key = format!("{did}|{kind}|{ref_id}|{evidence}");
+    let hash = bolloon_x402::paid_info::compute_content_hash(&key);
+    if load().iter().any(|r| r["content_hash"].as_str() == Some(hash.as_str())) {
+        return 0.0;
+    }
+    let at = now_ms();
+    append(&serde_json::json!({
+        "id": format!("contrib-{at}"), "did": did, "at_ms": at,
+        "kind": kind, "summary": summary.chars().take(300).collect::<String>(),
+        "ref_id": ref_id, "evidence": evidence, "points": points,
+        "content_hash": hash, "anchor": serde_json::Value::Null,
+    }));
+    points
+}
+
+/// 增值服务目录: 只列**真能兑现**的动作
+pub const SERVICES: &[(&str, &str, i64)] = &[
+    ("proof_export", "导出贡献签名证明（跨机可验）", 2),
+    ("help_boost", "求助卡片加权并再分发一次", 3),
+    ("card_boost", "世界卡片优先分发一次", 5),
+];
+
+fn spend_path() -> std::path::PathBuf {
+    crate::server::data_dir().join("contribution-spend.jsonl")
+}
+fn spend_records() -> Vec<serde_json::Value> {
+    std::fs::read_to_string(spend_path()).unwrap_or_default().lines()
+        .filter_map(|l| serde_json::from_str(l).ok()).collect()
+}
+fn append_spend(rec: &serde_json::Value) {
+    use std::io::Write;
+    let p = spend_path();
+    if let Some(d) = p.parent() { let _ = std::fs::create_dir_all(d); }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{}", serde_json::to_string(rec).unwrap_or_default());
+    }
+}
+
+/// (累计获得, 已消费, 惩罚扣减, 可用余额); 做坏事才有 penalty, 无自动判定默认 0
+pub fn balance_state() -> (f64, f64, f64, f64) {
+    let earned = credit_of(&load());
+    let (mut spent, mut penalty) = (0.0f64, 0.0f64);
+    for r in spend_records() {
+        let v = r["points"].as_f64().unwrap_or(0.0);
+        match r["kind"].as_str() {
+            Some("spend") => spent += v, Some("penalty") => penalty += v, _ => {}
+        }
+    }
+    (earned, spent, penalty, (earned - spent - penalty).max(0.0))
+}
+
+/// GET /api/contribution/balance → 左下角余额
+pub async fn balance() -> Json<serde_json::Value> {
+    let (earned, spent, penalty, available) = balance_state();
+    Json(serde_json::json!({ "ok": true, "earned": earned, "spent": spent,
+        "penalty": penalty, "balance": available,
+        "services": SERVICES.iter().map(|(id,name,price)|
+            serde_json::json!({"id":id,"name":name,"price":price})).collect::<Vec<_>>(),
+        "note": "没做坏事只增不减；唯一消耗 = 购买增值服务；求助永不需要积分" }))
+}
+
+/// POST /api/contribution/spend {service, ref_id?} → 扣积分并**真兑现**
+pub async fn spend(State(st): State<crate::AppState>, Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let service = req["service"].as_str().unwrap_or_default().trim().to_string();
+    let Some((_, name, price)) = SERVICES.iter().find(|(id,_,_)| *id == service) else {
+        return Json(serde_json::json!({"ok":false,"error":"没有这个增值服务",
+            "services":SERVICES.iter().map(|(id,n,p)|serde_json::json!({"id":id,"name":n,"price":p})).collect::<Vec<_>>()}));
+    };
+    let before = balance_state().3;
+    if before < *price as f64 {
+        return Json(serde_json::json!({"ok":false,"error":"贡献积分不足","balance":before,"price":price}));
+    }
+    let ref_id = req["ref_id"].as_str().unwrap_or_default().to_string();
+    let mut delivered = serde_json::json!({"service":service,"name":name});
+    match service.as_str() {
+        "proof_export" => {
+            let Some(rec) = load().into_iter().find(|r| r["id"].as_str() == Some(ref_id.as_str())) else {
+                return Json(serde_json::json!({"ok":false,"error":"proof_export 需要 ref_id = 贡献记录 id"}));
+            };
+            delivered["proof"] = make_proof(&rec, &st.identity);
+        }
+        "card_boost" | "help_boost" => {
+            if ref_id.is_empty() {
+                return Json(serde_json::json!({"ok":false,"error":"需要 ref_id = 卡片 id"}));
+            }
+            let found = {
+                let mut fs = st.forge.lock().await;
+                let hit = match fs.inbox.iter_mut().find(|x| x["id"].as_str() == Some(ref_id.as_str())) {
+                    Some(it) => {
+                        let cur = it["score"].as_f64().unwrap_or(0.0);
+                        it["score"] = serde_json::json!(cur + 2.0);
+                        Some(it["card"].clone())
+                    }
+                    None => None,
+                };
+                if hit.is_some() { fs.save(&crate::server::data_dir()); }
+                hit
+            };
+            let Some(card) = found else {
+                return Json(serde_json::json!({"ok":false,"error":"没有这张卡片"}));
+            };
+            delivered["score_bonus"] = serde_json::json!(2.0);
+            if service == "help_boost" && card.is_object() {
+                delivered["redelivery"] = crate::native::world_cards_share(State(st.clone()), Json(card)).await.0["delivery"].clone();
+            }
+        }
+        _ => {}
+    }
+    append_spend(&serde_json::json!({"kind":"spend","service":service,"points":price,
+        "ref_id":ref_id,"at_ms":now_ms()}));
+    Json(serde_json::json!({"ok":true,"service":service,"price":price,
+        "before":before,"balance":balance_state().3,"delivered":delivered,
+        "note":"积分只在购买增值服务时消耗；earned 累计不减"}))
 }
 
 fn append(rec: &serde_json::Value) {
@@ -56,27 +200,25 @@ pub async fn record(
     if kind.is_empty() || summary.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 kind / summary" }));
     }
-    let did = st.identity.did.as_str().to_string();
-    let at = now_ms();
+    // 服务类不允许自报: 必须由验链/交付回执自动记, 防止刷大分
+    if !is_self_reportable(&kind) {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "为别人提供服务的积分由真实交付回执自动记，不能自报",
+            "self_reportable": ["skill_share", "card_share", "contribution_card"],
+        }));
+    }
     let ref_id = req["ref_id"].as_str().unwrap_or_default().to_string();
-    let canonical = format!("{did}|{at}|{kind}|{summary}|{ref_id}");
-    let hash = bolloon_x402::paid_info::compute_content_hash(&canonical);
-    let rec = serde_json::json!({
-        "id": format!("contrib-{at}"),
-        "did": did, "at_ms": at, "kind": kind,
-        "summary": summary.chars().take(300).collect::<String>(),
-        "ref_id": ref_id,
-        "content_hash": hash,
-        "anchor": serde_json::Value::Null,
-    });
-    append(&rec);
-    let all = load();
+    let key = if ref_id.is_empty() { summary.chars().take(40).collect::<String>() } else { ref_id.clone() };
+    let points = award(&st, &kind, &summary, &key, "self_report");
     Json(serde_json::json!({
-        "ok": true, "id": rec["id"], "content_hash": hash,
-        "credit": credit_of(&all), "records": all.len(),
-        "note": "声誉分不可转账/不可兑换/不可购买; 求助永远不需要积分门槛"
+        "ok": points > 0.0, "kind": kind, "points": points,
+        "balance": balance_state().3, "records": load().len(),
+        "note": if points > 0.0 { "日常共享记一小笔；重复分享同一内容不重复加分" }
+                else { "这条已记过，不重复加分" }
     }))
 }
+
 
 /// GET /api/contribution/ledger → 贡献记录与声誉分
 pub async fn ledger() -> Json<serde_json::Value> {
@@ -85,12 +227,15 @@ pub async fn ledger() -> Json<serde_json::Value> {
         "ok": true,
         "records": all.iter().rev().take(50).cloned().collect::<Vec<_>>(),
         "count": all.len(),
-        "credit": credit_of(&all),
+        "credit": balance_state().3,
+        "earned": balance_state().0, "spent": balance_state().1,
+        "balance": balance_state().3,
         "policy": {
             "kind": "reputation_not_currency",
             "transferable": false, "redeemable": false, "purchasable": false,
+            "monotonic_earned": true, "spend_only_on_value_added_services": true,
             "help_requires_credit": false,
-            "note": "与货币系统只在可选 x402 结算处相接; 合作默认不需要金钱"
+            "note": "累计贡献只增不减(做坏事才有惩罚); 唯一消耗是购买增值服务; 求助与合作默认不需要金钱"
         }
     }))
 }
@@ -181,7 +326,7 @@ pub async fn help_card(
     if text.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 text（说清你需要什么帮助）" }));
     }
-    let credit = credit_of(&load());
+    let credit = balance_state().3;
     let at = now_ms();
     // 本机候选响应者: 名字/标签与求助文本有交集的智能体 (不编造跨机响应)
     let responders: Vec<serde_json::Value> = {
@@ -257,12 +402,40 @@ pub async fn help_card(
 mod tests {
     use super::*;
 
+    fn rec(kind: &str, n: u64) -> serde_json::Value {
+        serde_json::json!({ "id": n, "at_ms": n, "kind": kind,
+            "summary": "贡献", "content_hash": format!("h{n}") })
+    }
+
     #[test]
-    fn credit_is_compressed_and_capped() {
-        let many: Vec<serde_json::Value> = (0..1000).map(|_| serde_json::json!({})).collect();
-        assert!(credit_of(&many) <= 50.0);
+    fn service_is_big_and_sharing_is_small() {
+        assert_eq!(points_for("service_paid"), 5.0);
+        assert_eq!(points_for("skill_share"), 0.5);
+        assert_eq!(points_for("card_share"), 0.3);
+        assert!(points_for("service_paid") > points_for("skill_share"));
+        assert!(!is_self_reportable("service_paid"), "服务大分不能自报");
+        assert!(!is_self_reportable("service_delivered"));
+        assert!(is_self_reportable("skill_share"));
+        assert!(is_self_reportable("card_share"));
+    }
+
+    #[test]
+    fn earned_only_increases_and_ignores_metadata_events() {
         assert_eq!(credit_of(&[]), 0.0);
-        assert!(credit_of(&many[..4]) < credit_of(&many[..16]));
+        let a = vec![rec("service_paid", 1), rec("skill_share", 2), rec("card_share", 3)];
+        assert!((credit_of(&a) - 5.8).abs() < 1e-9);
+        let mut b = a.clone();
+        b.push(serde_json::json!({ "kind": "anchor", "at_ms": 4, "anchors": [] }));
+        b.push(serde_json::json!({ "kind": "penalty", "at_ms": 5, "points": 1 }));
+        assert!((credit_of(&b) - 5.8).abs() < 1e-9, "元数据不许虚增积分");
+        b.push(rec("service_delivered", 6));
+        assert!((credit_of(&b) - 10.8).abs() < 1e-9, "新服务只增不减");
+    }
+
+    #[test]
+    fn service_catalog_is_priced() {
+        assert_eq!(SERVICES.len(), 3);
+        assert!(SERVICES.iter().all(|(_, _, p)| *p > 0));
     }
 
     #[test]

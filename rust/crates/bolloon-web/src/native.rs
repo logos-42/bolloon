@@ -5281,6 +5281,11 @@ pub async fn world_pay_confirm(
                     "verdict": report.verdict, "source": "world_card",
                     "card_id": card_id, "pack_id": pack_id,
                 }));
+                // 为别人提供付费内容且验链通过 ⇒ 服务积分 (按 tx_hash 去重)
+                let pts = crate::contribution::award(
+                    &st, "service_paid", &format!("交付付费内容 {}", item_id),
+                    &tx_hash, "x402-verified");
+                let _ = pts;
                 Json(serde_json::json!({ "ok": true, "verdict": report.verdict, "content": content,
                     "observations": observations.len(), "note": "验链通过, 内容已交付" }))
             }
@@ -5308,6 +5313,11 @@ pub async fn world_pay_confirm(
                         "verdict": v["verdict"], "source": "world_card",
                         "card_id": card_id, "pack_id": pack_id,
                     }));
+                    // 为别人提供付费内容且验链通过 ⇒ 服务积分 (按 tx_hash 去重)
+                    let pts = crate::contribution::award(
+                        &st, "service_paid", &format!("交付付费内容 {}", item_id),
+                        &tx_hash, "x402-verified");
+                    let _ = pts;
                     Json(serde_json::json!({ "ok": true, "verdict": v["verdict"], "content": v["content"],
                         "observations": observations.len(), "note": "对方节点验链通过, 内容已交付" }))
                 } else {
@@ -6244,6 +6254,11 @@ pub async fn world_cards_share(
         let fs = st.forge.lock().await;
         fs.friends.friends().to_vec() // 好友模式的目标集 (公开模式用不到)
     };
+    // 2026-11-06: 贡献卡片给好友 = 一点点积分 (按卡片身份去重, 双通道分享只算一次)
+    let contrib_key = bolloon_x402::paid_info::compute_content_hash(
+        &format!("{}|{}", card.title, card.issued_at_ms));
+    let contrib_points = crate::contribution::award(
+        &st, "card_share", &format!("分享卡片 {}", card.title), &contrib_key, "world.card");
     let (env, delivery) =
         bolloon_agent::world::share_card(&st.identity, card, &friends, now_ms());
     // QUIC 直连出站: 对**已登记 socket 地址**的好友, 经 QUIC 直发信封 (与 HTTP 跨机互补, best-effort)
@@ -6266,6 +6281,7 @@ pub async fn world_cards_share(
     let is_broadcast = delivery.mode() == "broadcast";
     Json(serde_json::json!({
         "ok": true,
+        "contribution_points": contrib_points,
         "mode": delivery.mode(),
         "targets": delivery.targets(),
         "target_count": delivery.targets().len(),
