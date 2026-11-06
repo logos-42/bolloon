@@ -1797,7 +1797,7 @@ pub async fn call_model_metered(
         st.reload_llm().await;
         llm = st.llm_snapshot();
     }
-    let provider_id = if wanted.is_empty() {
+    let mut provider_id = if wanted.is_empty() {
         llm.provider_ids().into_iter().next().ok_or_else(|| {
             "还没有可用的模型供应商 — 点右上角模型/「选择模型」选一家并填 API Key \
              （内置 13 家 + 目录 200+ 家）; 也可以用 BOLLOON_API_KEY 环境变量"
@@ -1811,7 +1811,7 @@ pub async fn call_model_metered(
             .err()
             .unwrap_or_else(|| format!("{provider_id} 没装进模型通路 — 检查 provider 名称")));
     }
-    let model = if !ui_model.is_empty() {
+    let mut model = if !ui_model.is_empty() {
         ui_model
     } else {
         llm.provider(&provider_id)
@@ -1849,7 +1849,7 @@ pub async fn call_model_metered(
         }
     }
 
-    let mut params = GenerateParams::new(model.clone(), full);
+    let mut params = GenerateParams::new(model.clone(), full.clone());
     params.temperature = 0.7;
     params.max_tokens = 4096;
 
@@ -1898,9 +1898,60 @@ pub async fn call_model_metered(
         econ_guard = Some((ctx, provider_id.clone(), model.clone(), est));
     }
 
+    // ── 路由 (2026-11-06 阶段0/1): 用真实调用账本决定要不要换 provider ──
+    // 默认影子: 只记录"本会选谁"; enforce 打开后命中的会真切换, 失败自动回退。
+    let task_kind = econ_ctx.as_ref().map(|e| e.surface.clone()).filter(|x| !x.is_empty())
+        .unwrap_or_else(|| "chat".to_string());
+    let available = llm.provider_ids();
+    let shadow_pick = crate::router::pick_provider(&task_kind, &available);
+    let original_provider = provider_id.clone();
+    let original_model = model.clone();
+    let mut switched = false;
+    if st.router.is_enforce() {
+        if let Some(p) = shadow_pick.clone() {
+            if p != provider_id {
+                if let Some(spec) = llm.provider(&p) {
+                    let next_model = spec.default_model.clone();
+                    if !next_model.trim().is_empty() {
+                        provider_id = p;
+                        model = next_model;
+                        switched = true;
+                        params = GenerateParams::new(model.clone(), full.clone());
+                        params.temperature = 0.7;
+                        params.max_tokens = 4096;
+                    }
+                }
+            }
+        }
+    }
     let started = std::time::Instant::now();
-    let res = llm.generate(&provider_id, params).await;
-    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let mut res = llm.generate(&provider_id, params).await;
+    let mut elapsed_ms = started.elapsed().as_millis() as u64;
+    let mut fallback = false;
+    if res.is_err() && switched {
+        // 真回退: 用用户原来的 provider 再试一次 (回退本身也记账)
+        crate::router::record(serde_json::json!({
+            "ts": chrono::Utc::now().timestamp_millis(), "task": task_kind,
+            "provider": provider_id, "model": model, "ok": false,
+            "latency_ms": elapsed_ms, "switched": true, "fallback": false,
+            "shadow_pick": shadow_pick,
+        }));
+        fallback = true;
+        provider_id = original_provider.clone();
+        model = original_model.clone();
+        let mut p2 = GenerateParams::new(model.clone(), full.clone());
+        p2.temperature = 0.7;
+        p2.max_tokens = 4096;
+        let t2 = std::time::Instant::now();
+        res = llm.generate(&provider_id, p2).await;
+        elapsed_ms = t2.elapsed().as_millis() as u64;
+    }
+    crate::router::record(serde_json::json!({
+        "ts": chrono::Utc::now().timestamp_millis(), "task": task_kind,
+        "provider": provider_id, "model": model, "ok": res.is_ok(),
+        "latency_ms": elapsed_ms, "switched": switched, "fallback": fallback,
+        "shadow_pick": shadow_pick,
+    }));
 
     if let (Some(econ), Some((ctx, prov, mdl, est))) = (econ.as_ref(), econ_guard) {
         let (tin, tout, status) = match &res {
@@ -2459,6 +2510,7 @@ pub async fn reply_with_agent_cfg(
     };
     let strategy = Arc::new(WebStrategy {
         llm: llm.clone(),
+        task: opts.surface.to_string(),
         cancel: cancel.clone(),
         sink: sink.clone(),
     });
@@ -2617,6 +2669,8 @@ pub async fn reply_with_agent_cfg(
 /// 网页对话策略: 复用 AppState 的 llm, 正确区分 provider 与 model
 struct WebStrategy {
     llm: Arc<LlmRuntime>,
+    /// 任务类型 (路由账本用: chat/group/world/friend-command...)
+    task: String,
     /// 用户中止标志: 置位后**不再发起下一次**模型调用 (在途那次不打断, 不丢并发槽)
     cancel: Arc<std::sync::atomic::AtomicBool>,
     /// 真实增量出口 (想法/正文): None = 非流式调用方, 不推
@@ -2630,7 +2684,10 @@ impl WebStrategy {
         provider_id: &str,
         params: &GenerateParams,
     ) -> Result<GenerateResult, bolloon_llm::LlmError> {
-        match &self.sink {
+        // 2026-11-06 (阶段0): 工具循环也走真实调用 —— 这里记一笔,
+        // 否则账本只有非流式入口有数据, 任务×成本矩阵会骗人。
+        let started = std::time::Instant::now();
+        let out = match &self.sink {
             Some(tx) => {
                 let t = tx.clone();
                 let d = tx.clone();
@@ -2648,7 +2705,19 @@ impl WebStrategy {
                     .await
             }
             None => self.llm.generate(provider_id, params.clone()).await,
-        }
+        };
+        // 每次真实调用一行账本 (成功/失败都记; token/成本由计量层另算, 这里只记可观测事实)
+        crate::router::record(serde_json::json!({
+            "ts": chrono::Utc::now().timestamp_millis(),
+            "task": self.task,
+            "provider": provider_id,
+            "model": params.model,
+            "ok": out.is_ok(),
+            "latency_ms": started.elapsed().as_millis() as u64,
+            "switched": false,
+            "fallback": false,
+        }));
+        out
     }
 }
 

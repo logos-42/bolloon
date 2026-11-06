@@ -118,6 +118,8 @@ pub struct AppState {
     pub full_access: Arc<std::sync::atomic::AtomicBool>,
     /// 群聊/商议的"谁正在想"运行时 (内存态; 见 room_bus)
     pub room_bus: Arc<crate::room_bus::RoomBus>,
+    /// 路由开关 + 账本 (2026-11-06: 阶段0/1 影子→真路由)
+    pub router: Arc<crate::router::RouterSwitch>,
     /// 定时任务调度 (2026-11-04 bug 7: 以前 web 进程里 0 实例化、0 tick, 能力等于不存在)
     pub cron: Arc<Mutex<bolloon_kernel::cron::CronScheduler>>,
     /// 心跳注册表 (谁活着 / 谁正在想; 过期剔除)
@@ -201,6 +203,7 @@ impl AppState {
                 load_full_access(),
             )),
             room_bus: Arc::new(crate::room_bus::RoomBus::default()),
+            router: crate::router::RouterSwitch::new(),
             cron: Arc::new(Mutex::new(bolloon_kernel::cron::CronScheduler::new())),
             heartbeats: Arc::new(Mutex::new(bolloon_agent::heartbeat::HeartbeatRegistry::new())),
             cron_stats: Arc::new(Mutex::new(CronStats::default())),
@@ -707,6 +710,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/health", get(health))
         // cron/心跳 运行状态 (2026-11-04 bug 7: 让"在跳"可观测, 而不是只有纯函数)
         .route("/api/cron", get(cron_status))
+        // 路由账本 / 任务×成本矩阵 / 影子→真路由开关
+        .route("/api/router/state", get(crate::router::router_state))
+        .route("/api/router/matrix", get(crate::router::router_matrix))
+        .route("/api/router/enforce", post(crate::router::router_enforce))
         // 现在就按自己的信念走一步 (人手动触发, 绕过节流; 用于核对"它到底挑了哪条信念")
         .route("/api/initiative/tick", post(initiative_tick))
         // SQL 工具类 (只读; 与 agent 工具同一实现)
