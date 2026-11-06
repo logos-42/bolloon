@@ -1047,6 +1047,15 @@ impl BeliefStore {
              这些不是用户这一轮的指令: 是我自己判断出来的。与用户明确说的冲突时以用户为准, 但我可以讲清我的判断和理由。\n\
              新的判断/证据变了就用 goal_set、belief_set 改它 —— 别让过期的信念替我拿主意。\n",
         );
+        // 2026-11-06: 「现在该做的」必须紧跟头部 —— 以前放在最后, 信念/目标一多就被
+        // max_chars 截断掉, 心跳挑出的下一步进不了 system prompt, 主动性等于白挑。
+        if let Some(ch) = self.pick_next(0) {
+            // now=0 ⇒ 只按"正在推/短期/信念支撑"排, 不因逾期加分 (调用方要真时间就自己 pick_next)
+            out.push_str(&format!(
+                "\n## 现在该做的\n- {} → 下一步: {} (为什么: {})\n",
+                ch.statement, ch.next_action, ch.why
+            ));
+        }
         if !beliefs.is_empty() {
             out.push_str("\n## 信念\n");
             for b in beliefs {
@@ -1079,13 +1088,6 @@ impl BeliefStore {
                     c.next_action
                 ));
             }
-        }
-        if let Some(ch) = self.pick_next(0) {
-            // now=0 ⇒ 只按"正在推/短期/信念支撑"排, 不因逾期加分 (调用方要真时间就自己 pick_next)
-            out.push_str(&format!(
-                "\n## 现在该做的\n- {} → 下一步: {} (为什么: {})\n",
-                ch.statement, ch.next_action, ch.why
-            ));
         }
         truncate_chars(&out, max_chars)
     }
@@ -1795,5 +1797,40 @@ mod tests {
     fn apply_reflection_without_json_fails_loudly() {
         let mut s = BeliefStore::default();
         assert!(apply_reflection(&mut s, "我觉得应该更努力", 1).is_err(), "解析不出就报错, 不许假成功");
+    }
+
+    /// 回归 (2026-11-06): 信念/目标很多、prompt 预算很紧时,
+    /// 「现在该做的」仍必须在截断后的文本里 —— 否则心跳白挑, 主动性进不了系统提示词。
+    #[test]
+    fn render_keeps_next_action_even_with_tight_budget() {
+        let mut store = BeliefStore::default();
+        for i in 0..30 {
+            store
+                .upsert_belief(
+                    &format!("第{i}条很长很长的信念陈述用来占满预算xxxxxxxxxxxxxxxxxxxx"),
+                    BeliefKind::SelfModel,
+                    BeliefOrigin::SelfReasoned,
+                    Some(0.8),
+                    None,
+                    i as u64,
+                )
+                .unwrap();
+        }
+        store
+            .upsert_commitment(
+                "一个还活着的目标",
+                Horizon::Short,
+                None,
+                "明确的下一步",
+                None,
+                None,
+                100,
+            )
+            .unwrap();
+        let text = store.render(400);
+        assert!(
+            text.contains("## 现在该做的") && text.contains("明确的下一步"),
+            "预算紧时下一步被截掉了: {text}"
+        );
     }
 }
