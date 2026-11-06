@@ -67,6 +67,8 @@ pub mod task_board;
 pub mod task_group;
 pub mod terminal;
 pub mod todo;
+#[cfg(test)]
+pub(crate) mod test_env;
 pub mod tool_contract;
 pub mod upgrade;
 pub mod updater;

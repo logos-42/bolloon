@@ -439,11 +439,14 @@ mod tests {
     use super::*;
     use bolloon_harness::ToolExecutor;
 
-    fn setup() -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("bolloon_dom_{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
-        unsafe { std::env::set_var("BOLLOON_AGENT_DIR", d.to_str().unwrap()) };
-        d
+    /// 进程级锁: `BOLLOON_AGENT_DIR` 是全局环境变量, 并行测试必须串行;
+    /// 每个测试再用独立目录, 避免 remember/todo/skill 互相覆盖 (2026-11-06 flaky 根因)。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// 与 belief_tools 共用 crate 级锁 (两把私锁仍会并行改 BOLLOON_AGENT_DIR)
+    fn setup() -> (std::sync::MutexGuard<'static, ()>, std::path::PathBuf) {
+        crate::test_env::isolate("dom")
     }
 
     fn call(name: &str, args: serde_json::Value) -> ToolCall {
@@ -452,7 +455,7 @@ mod tests {
 
     #[tokio::test]
     async fn todo_roundtrip_add_list_done() {
-        let _d = setup();
+        let (_guard, _d) = setup();
         let r = DomainExecutor.execute(call("todo_add", json!({ "content": "写迁移报告" }))).await;
         assert!(r.ok, "{}", r.output);
         let id = r.evidence.as_ref().unwrap()["id"].as_str().unwrap().to_string();
@@ -465,7 +468,7 @@ mod tests {
 
     #[tokio::test]
     async fn todo_add_requires_content() {
-        let _d = setup();
+        let (_guard, _d) = setup();
         let r = DomainExecutor.execute(call("todo_add", json!({}))).await;
         assert!(!r.ok);
         assert_eq!(r.evidence.as_ref().unwrap()["error"]["code"], "invalid_argument");
@@ -473,7 +476,7 @@ mod tests {
 
     #[tokio::test]
     async fn remember_and_recall() {
-        let _d = setup();
+        let (_guard, _d) = setup();
         let r = DomainExecutor
             .execute(call("remember", json!({ "content": "rust 用 ureq 而非 reqwest", "layer": "lesson" })))
             .await;
@@ -485,9 +488,9 @@ mod tests {
 
     #[tokio::test]
     async fn read_skill_missing_is_not_found() {
-        let _d = setup();
+        let (_guard, _d) = setup();
         // 空目录 ⇒ 无 skill
-        let _ = std::fs::remove_file(std::env::temp_dir().join(format!("bolloon_dom_{}", std::process::id())).join("skills.json"));
+        let _ = std::fs::remove_file(_d.join("skills.json"));
         let r = DomainExecutor.execute(call("read_skill", json!({ "name": "nope" }))).await;
         assert!(!r.ok);
         assert_eq!(r.evidence.as_ref().unwrap()["error"]["code"], "not_found");

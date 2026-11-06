@@ -529,14 +529,9 @@ mod tests {
     /// 每个测试**独占** BOLLOON_AGENT_DIR: 环境变量是进程级的, 并行测试共用同一目录会互相踩
     /// (2026-11-05 实测: 固定 tmp 名 + 共享目录 ⇒ `goal_update` 找不到刚写的目标)。
     /// 返回的 guard 必须活到测试结束 —— 它保证同一时刻只有一个测试在改这个环境变量。
+    /// 与 domain_tools 共用 crate 级锁 (2026-11-06: 两把私锁仍会并行改环境变量)
     fn setup() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let d = std::env::temp_dir().join(format!("bolloon_beltools_{}_{}", std::process::id(), n));
-        let _ = std::fs::create_dir_all(&d);
-        unsafe { std::env::set_var("BOLLOON_AGENT_DIR", d.to_str().unwrap()) };
+        let (guard, _d) = crate::test_env::isolate("beltools");
         guard
     }
 
