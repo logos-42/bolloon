@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- 2026-09-16: 取自品牌 master icon.png 四角采样值 (#EFFA08) — adaptive icon 背景层 -->
-    <color name="ic_launcher_background">#EFFA08</color>
-</resources>

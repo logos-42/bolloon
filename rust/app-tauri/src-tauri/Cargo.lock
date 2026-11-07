@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-agent"
-version = "0.7.8"
+version = "0.7.6"
 dependencies = [
  "async-trait",
  "bolloon-config",
@@ -300,7 +300,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-config"
-version = "0.7.8"
+version = "0.7.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-econ"
-version = "0.7.8"
+version = "0.7.6"
 dependencies = [
  "bolloon-config",
  "chrono",
@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-harness"
-version = "0.7.8"
+version = "0.7.6"
 dependencies = [
  "async-trait",
  "bolloon-config",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-kernel"
-version = "0.7.8"
+version = "0.7.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -363,13 +363,14 @@ dependencies = [
 
 [[package]]
 name = "bolloon-llm"
-version = "0.7.8"
+version = "0.7.6"
 dependencies = [
  "async-trait",
  "chrono",
  "futures",
  "hex",
  "reqwest 0.12.28",
+ "ring",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -380,7 +381,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-p2p"
-version = "0.7.8"
+version = "0.7.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -404,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-tauri"
-version = "0.7.8"
+version = "0.7.9"
 dependencies = [
  "bolloon-agent",
  "bolloon-llm",
@@ -423,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-web"
-version = "0.7.8"
+version = "0.7.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -456,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "bolloon-x402"
-version = "0.7.8"
+version = "0.7.6"
 dependencies = [
  "bolloon-p2p",
  "hex",

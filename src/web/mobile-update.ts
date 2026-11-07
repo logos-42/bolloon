@@ -107,7 +107,7 @@ export const WEB_LAYOUT = {
  * 在真机与验收里跑的是**同一份代码**。
  */
 export interface WebResourceStore {
-  /** 实现名 ('memory' / 'capacitor-fs' / 'http-dir'), 出现在报告里 —— 让人知道这次是在哪跑的 */
+  /** 实现名 ('memory' / 'tauri-fs' / 'http-dir'), 出现在报告里 —— 让人知道这次是在哪跑的 */
   readonly kind: string;
   /** 人能读的位置描述 (真机上写实际路径) */
   readonly rootLabel: string;
@@ -214,7 +214,7 @@ export function createCapacitorWebStore(plugin: CapacitorFilesystemLike, opts: {
     return Buffer.from(data).toString('base64');
   };
   return {
-    kind: 'capacitor-fs',
+    kind: 'tauri-fs',
     rootLabel: `${String(directory)}:${basePath}`,
     async list(rel) {
       try {
@@ -702,7 +702,7 @@ export { refused as isMobileRefusedStatus };
 
 /**
  * 原生壳接上了吗 —— 决定"装了会不会生效"。
- *   显式 true/false 优先; 没说的时候: 内存 store (单测/验收) 当"接上了", **真机 store (capacitor-fs)
+ *   显式 true/false 优先; 没说的时候: 内存 store (单测/验收) 当"接上了", **真机 store (tauri-fs)
  *   默认当"没接上"** —— 不知道就按不能生效算, 不拿用户的可用版本去赌。
  */
 export function nativeWired(deps: Pick<MobileUpdateDeps, 'nativeWritable' | 'store'>): boolean {
@@ -1604,10 +1604,10 @@ export async function reloadMobileWeb(): Promise<{ ok: boolean; how: string; det
   try {
     if (cap?.Plugins?.WebView?.reload) {
       await cap.Plugins.WebView.reload();
-      return { ok: true, how: 'capacitor-webview', detail: '已请求 WebView 重载 (新 web 资源生效)' };
+      return { ok: true, how: 'tauri-webview', detail: '已请求 WebView 重载 (新 web 资源生效)' };
     }
   } catch (e: any) {
-    return { ok: false, how: 'capacitor-webview', detail: `WebView 重载失败: ${String(e?.message || e)} — 请手动重启 App` };
+    return { ok: false, how: 'tauri-webview', detail: `WebView 重载失败: ${String(e?.message || e)} — 请手动重启 App` };
   }
   const loc: any = (globalThis as any).location;
   if (loc && typeof loc.reload === 'function') {
