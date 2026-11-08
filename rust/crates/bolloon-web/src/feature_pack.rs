@@ -94,6 +94,80 @@ pub async fn model_bindings() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true, "bindings": read_obj("model-bindings.json") }))
 }
 
+/// 会话/智能体绑定解析: 优先 session, 再 agent; 让下一次打开沿用上次的 provider
+pub fn resolve_binding(session_id: &str, agent_id: &str) -> Option<(String, String)> {
+    let b = read_obj("model-bindings.json");
+    for (scope, key) in [("session", session_id), ("agent", agent_id)] {
+        if key.is_empty() { continue; }
+        let e = &b[scope][key];
+        if e.is_object() {
+            return Some((e["provider"].as_str().unwrap_or("").to_string(),
+                         e["model"].as_str().unwrap_or("").to_string()));
+        }
+    }
+    None
+}
+
+/// 调用错误落到事件管道 (Kernel 执行核), 可回查
+pub fn record_error(scope: &str, error: &str) {
+    append_jsonl("route-errors.jsonl", &serde_json::json!({
+        "at_ms": now_ms(), "scope": scope, "error": error.chars().take(300).collect::<String>()
+    }));
+}
+pub fn route_usage_count() -> usize { read_jsonl("route-usage.jsonl").len() }
+
+/// POST /api/models/custom {name, path, format?} → 接入用户自己训练的小模型 (真校验路径)
+pub async fn register_custom_model(
+    State(st): State<crate::AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let name = req["name"].as_str().unwrap_or_default().trim().to_string();
+    let path_s = req["path"].as_str().unwrap_or_default().trim().to_string();
+    if name.is_empty() || path_s.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 name / path" }));
+    }
+    let fp = std::path::PathBuf::from(&path_s);
+    if !fp.exists() {
+        return Json(serde_json::json!({ "ok": false, "error": "路径不存在（GGUF 文件或模型目录）" }));
+    }
+    let fmt = req["format"].as_str().unwrap_or_else(|| {
+        if fp.is_dir() { "dir" } else { "gguf" }
+    }).to_string();
+    let mut m = read_obj("custom-models.json");
+    m[&name] = serde_json::json!({ "path": path_s, "format": fmt, "at_ms": now_ms(),
+        "provider": "local", "by": st.identity.did.as_str() });
+    write_obj("custom-models.json", &m);
+    kernel_log(&st, "agent", "route", &format!("接入自训模型 {name}"),
+        serde_json::json!({ "format": fmt })).await;
+    Json(serde_json::json!({ "ok": true, "name": name, "format": fmt,
+        "note": "已登记到模型池; 可用 /api/models/bind 绑到某个会话/智能体" }))
+}
+pub async fn list_custom_models() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": true, "models": read_obj("custom-models.json") }))
+}
+
+/// POST /api/models/share {name} → 按去中心化协议把模型登记做成可分享卡片
+pub async fn share_model(
+    State(st): State<crate::AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let name = req["name"].as_str().unwrap_or_default().trim().to_string();
+    if name.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "缺 name" })); }
+    let m = read_obj("custom-models.json");
+    let e = &m[&name];
+    if !e.is_object() { return Json(serde_json::json!({ "ok": false, "error": "模型池里没有这个模型" })); }
+    let card = serde_json::json!({
+        "title": format!("模型分享：{}", name),
+        "summary": format!("{} · {}（自配 API，不含密钥）", e["format"].as_str().unwrap_or(""), e["path"].as_str().unwrap_or("")),
+        "media": [], "cover": serde_json::Value::Null,
+        "provider_did": st.identity.did.as_str(), "scope": "public",
+        "issued_at_ms": now_ms(), "verification": "verified", "category": serde_json::Value::Null,
+        "tags": ["model", "share"], "actions": [], "reply_to": serde_json::Value::Null,
+    });
+    let r = crate::native::world_cards_share(State(st.clone()), Json(card)).await.0;
+    Json(serde_json::json!({ "ok": true, "name": name, "delivery": r["delivery"] }))
+}
+
 /// 幂等响应缓存 (参考 TS `idempotency cache hit`): 同 prompt+model 在 TTL 内直接复用
 pub const CACHE_TTL_MS: u64 = 10 * 60 * 1000;
 pub fn cache_key(model: &str, prompt: &str) -> String {
@@ -133,6 +207,7 @@ pub async fn route_fee() -> Json<serde_json::Value> {
     let n = read_jsonl("route-usage.jsonl").len() as f64;
     Json(serde_json::json!({
         "ok": true, "calls": n,
+        "errors": read_jsonl("route-errors.jsonl").len(),
         "cny_per_million_calls": ROUTE_FEE_CNY_PER_MILLION,
         "fee_cny": n / 1_000_000.0 * ROUTE_FEE_CNY_PER_MILLION,
         "model": "模型 API 用户自配; 付费的是个性化路由调度, 不是 token 也不是贡献积分",
@@ -147,6 +222,14 @@ mod tests {
         assert_eq!(cache_key("m", "p"), cache_key("m", "p"));
         assert_ne!(cache_key("m", "p"), cache_key("m2", "p"));
     }
+    #[test]
+    fn cache_roundtrip_really_hits() {
+        let model = "cache-test-model";
+        let prompt = format!("probe-{}", std::process::id());
+        cache_store(model, &prompt, "缓存命中内容");
+        assert_eq!(cache_lookup(model, &prompt).as_deref(), Some("缓存命中内容"));
+    }
+
     #[test]
     fn route_fee_is_per_call_not_per_token() {
         assert_eq!(ROUTE_FEE_CNY_PER_MILLION, 0.001);

@@ -804,6 +804,8 @@
     <div><small>已用</small><b id="payCharged">$0.00</b></div>
   </div>
   <div class="pay-today" id="payToday"></div>
+  <div class="pay-today" id="routeFeeBox"><b>路由使用费</b> <span id="routeFeeText">读取中…</span>
+    <small class="hint">模型 API 用户自配；付费的是个性化路由调度，按次数计费，不按 token、不动贡献积分。</small></div>
   <div class="pay-today" id="contribBox" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
     <b>🎖 贡献积分 <span id="contribBalance">--</span></b>
     <small id="contribHint" style="color:var(--muted)">读取中…</small>
@@ -822,7 +824,7 @@
     <button class="primary" id="paySubmit">我已转账，提交待核销</button>
   </div>
   <div class="pay-pricing" id="payPricing"></div>
-  <div class="hint pay-note">未核销的充值不计入余额；本机核对到账后才记账。不发代币、不做充值赠币，模型 API 用户自配；付费的是个性化路由调度（按次数），不按 token、不动贡献积分。</div>
+  <div class="hint pay-note">历史充值记录仅作参考；现在不按 token 计费，模型 API 用户自配；付费的是个性化路由调度（按次数），不按 token、不动贡献积分。</div>
 </dialog>
 <dialog id="friendPanel">
   <b>好友资料</b><div class="hint" id="fpDid" style="font-size:10px;word-break:break-all"></div>
@@ -1448,7 +1450,7 @@ function renderRoom(msgs,members){
     const cls=m.kind==='guide'?' room-msg-guide':'';
     return `<div class="room-msg${cls}"><div class="meta">${ava}<b>${escapeHTML(who)}</b><span>${kind}${title}</span><span style="margin-left:auto">${time}</span></div><div class="body">${mdToHTML(m.text||'')}</div><div class="row" style="gap:4px;margin-top:4px">
       <button class="mini" onclick="copyText(${JSON.stringify(String(m.text||''))})">复制</button>
-      <button class="mini" onclick="retryRoomMessage('${escapeHTML(String(m.id||''))}')">重试</button>
+      <button class="mini" onclick="retryRoomMessage(${JSON.stringify(String(m.text||''))})">重试</button>
       <button class="mini" onclick="shareText('${escapeHTML(String(m.id||''))}',${JSON.stringify(String(m.text||''))})">分享</button>
     </div></div>`;
   }).join('');
@@ -2152,12 +2154,15 @@ function openDocReader(id){
     <div class="docbody">${escapeHTML(body).replace(/\n/g,'<br>')}</div></article>`;
 }
 async function openModelPool(){
-  const [ms,bind,fee]=await Promise.all([
+  const [ms,bind,fee,custom,kernel]=await Promise.all([
     api('/api/models').catch(()=>({models:[]})),
     api('/api/models/bindings').catch(()=>({bindings:{}})),
     api('/api/pay/route-fee').catch(()=>({})),
+    api('/api/models/custom').catch(()=>({models:{}})),
+    api('/api/kernel/state').catch(()=>({})),
   ]);
-  const list=(ms.models||ms.providers||[]);
+  const customNames=Object.keys((custom.models||{}));
+  const list=(ms.models||ms.providers||[]).concat(customNames.map(x=>({id:x,custom:true})));
   let d=$('modelPoolDlg');
   if(!d){ d=document.createElement('dialog'); d.id='modelPoolDlg'; document.body.appendChild(d); }
   d.innerHTML=`<div class="pay-head"><div><b>模型池</b> <span class="pay-sub">每个会话/智能体可绑不同模型（含本地）</span></div>
@@ -2165,9 +2170,27 @@ async function openModelPool(){
     <div class="hint">路由使用费：按调度次数计费，100 万次 ${fee.cny_per_million_calls??0.001} 元；模型 API 自配，不按 token 收费。当前 ${fee.calls??0} 次。</div>
     <div style="max-height:52vh;overflow:auto;margin-top:8px">${list.length?list.map(m=>`<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--line);padding:6px 0">
       <span>${escapeHTML(String(m.id||m.model||m.name||m))}</span>
-      <button class="mini" onclick="shareModel(${JSON.stringify(String(m.id||m.model||m.name||m))})">分享</button></div>`).join(''):'<div class="hint">还没有登记模型（到设置里登记本地/云端 provider）</div>'}</div>
+      <button class="mini" onclick="shareModelEntry('${escapeHTML(String(m.id||m.model||m.name||m))}',${m.custom?true:false})">分享</button></div>`).join(''):'<div class="hint">还没有登记模型（到设置里登记本地/云端 provider）</div>'}</div>
+    <div class="row" style="margin-top:8px"><button class="mini" onclick="registerCustomModel()">＋ 接入我训练的小模型</button>
+      <span class="hint">Kernel A=${escapeHTML(String((kernel.cores&&kernel.cores.A&&kernel.cores.A.role)||'?'))} / B=${escapeHTML(String((kernel.cores&&kernel.cores.B&&kernel.cores.B.role)||'?'))} · 相位错开=${String((kernel.cores&&kernel.cores.A&&kernel.cores.A.phase_ok)||false)}</span></div>
     <div class="hint">绑定：<pre style="white-space:pre-wrap;font-size:11px">${escapeHTML(JSON.stringify(bind.bindings||{},null,2))}</pre></div>`;
   if(!d.open)d.showModal();
+}
+function shareModelEntry(name,isCustom){
+  if(isCustom)return shareModelCard(name);
+  return shareModel(name);
+}
+async function shareModelCard(name){
+  const r=await api('/api/models/share',{method:'POST',body:JSON.stringify({name})}).catch(e=>({error:e.message}));
+  if(r&&r.ok===true)toast('模型已按去中心化协议分享：'+(r.delivery||''));
+  else toast('分享失败: '+((r&&(r.error||'未知'))||'未知'));
+}
+async function registerCustomModel(){
+  const name=prompt('模型名（自己训练的小模型）',''); if(!name)return;
+  const path=prompt('GGUF 文件路径或模型目录（本机真实存在）',''); if(!path)return;
+  const r=await api('/api/models/custom',{method:'POST',body:JSON.stringify({name,path})}).catch(e=>({error:e.message}));
+  if(r&&r.ok===true){toast('已接入模型池：'+name);openModelPool();}
+  else toast('接入失败: '+((r&&(r.error||'未知'))||'未知'));
 }
 function shareModel(name){
   api('/api/kernel/record',{method:'POST',body:JSON.stringify({mode:'agent',kind:'button',label:'分享模型 '+name})}).catch(()=>{});
@@ -2188,6 +2211,12 @@ async function refreshContributionBalance(){
     const cb=$('contribBalance'); if(cb)cb.textContent=contribFmt();
     const hint=$('contribHint');
     if(hint)hint.textContent='累计 '+r.earned+' · 已消费 '+r.spent+' · 服务+5 / skill+0.5 / 卡片+0.3；消耗很低（1~2 分换增值服务）';
+    try{
+      const ps=await api('/api/pay/summary');
+      const rf=ps.route_fee||{};
+      const t=$('routeFeeText');
+      if(t)t.textContent='已调度 '+(rf.calls||0)+' 次 · 100 万次 '+(rf.cny_per_million_calls||0.001)+' 元 · 当前应付 ¥'+((rf.calls||0)/1e6*(rf.cny_per_million_calls||0.001)).toFixed(6);
+    }catch(_){}
     const sc=$('sideCredit'); if(sc)sc.textContent='🎖 '+contribFmt();
     const pb=$('payBtn'); if(pb)pb.textContent='额度';
     const mb=$('mobBalance'); if(mb&&mb.textContent.indexOf('🎖')<0)mb.textContent=(mb.textContent||'余额')+contribSuffix();
@@ -4229,30 +4258,12 @@ async function saveFriendPanel(){
   if(r.error){toast('保存失败: '+r.error);return;}
   $('friendPanel').close(); await loadContacts(); toast('已保存好友资料');
 }
-function retryRoomMessage(id){ toast('已请求重试 '+id); api('/api/kernel/record',{method:'POST',body:JSON.stringify({mode:'group',kind:'button',label:'重试消息 '+id})}).catch(()=>{}); }
-function shareText(id,text){ copyText(text); toast('已复制，可粘贴分享'); api('/api/kernel/record',{method:'POST',body:JSON.stringify({mode:'group',kind:'button',label:'分享消息 '+id})}).catch(()=>{}); }
-
-async function fmSearchChat(){
-  const did=friendMenuTarget; if(!did)return;
-  const kw=await askText('查找聊天记录','','输入关键词（会搜本机会话记录与跨机对话）');
-  if(!kw||!kw.trim())return;
-  const q=kw.trim().toLowerCase();
-  const hits=[];
-  for(const s of (state.sessions||[])){
-    for(const m of (s.messages||[])){
-      const t=String(m.text||'');
-      if(t.toLowerCase().includes(q))hits.push({where:'会话『'+(s.title||s.id)+'』',role:m.role,text:t.slice(0,80)});
-      if(hits.length>=10)break;
-    }
-    if(hits.length>=10)break;
-  }
-  for(const m of (relayState.log||[])){
-    const t=String(m.text||'');
-    if(t.toLowerCase().includes(q))hits.push({where:'与 '+shortDid(did)+' 的跨机对话',role:m.role==='me'?'我':'对方',text:t.slice(0,80)});
-    if(hits.length>=10)break;
-  }
-  if(!hits.length){toast('没有找到「'+kw.trim()+'」');return;}
-  alert(hits.map(h=>`[${h.where}] ${h.role}: ${h.text}`).join('\n'));
+async function retryRoomMessage(text){
+  const gid=(typeof activeRoomGroup!=='undefined'&&activeRoomGroup)||(typeof activeGroupId!=='undefined'&&activeGroupId)||'';
+  if(!gid||!text){toast('缺少群或消息正文');return;}
+  const r=await api('/api/room/retry',{method:'POST',body:JSON.stringify({group_id:gid,text})}).catch(e=>({error:e.message}));
+  if(r&&r.ok===true){toast('已重新发送');if(typeof loadRoom==='function')loadRoom();}
+  else toast('重试失败: '+((r&&(r.error||'未知'))||'未知'));
 }
 async function fmMute(){
   const did=friendMenuTarget; if(!did)return;

@@ -1584,7 +1584,7 @@ pub async fn build_web_system(
     };
     let click_context = crate::world_interact::context_for_prompt(in_conversation);
     let sys = format!(
-        "{}{}{}{}{}{}{}{}{}{}",
+        "{}{}{}{}{}{}{}{}{}{}{}",
         private_identity_block(agent),
         // 说话风格: 抓重点/说人话 (leo) —— 紧贴身份块, 优先级高于默认身份描述
         STYLE_PROMPT,
@@ -1598,7 +1598,8 @@ pub async fn build_web_system(
         intent_block(st),
         wallet_block,
         self_hint,
-        extra
+        extra,
+        crate::kernel_bus::prompt_block()
     );
     format!("{}{}", sys, click_context)
 }
@@ -2492,6 +2493,11 @@ pub async fn reply_with_agent_cfg(
         st.reload_llm().await;
         llm = st.llm_snapshot();
     }
+    // 2026-11-08: 每会话/每智能体模型绑定优先于全局设置 (下次打开沿用上次)
+    let (wanted, ui_model) = match crate::feature_pack::resolve_binding(&opts.session_id, "") {
+        Some((p, m)) if !m.is_empty() && !p.is_empty() => (p, m),
+        _ => (wanted, ui_model),
+    };
     let provider_id = if wanted.is_empty() {
         llm.provider_ids().into_iter().next().ok_or_else(|| {
             "还没有可用的模型供应商 — 点右上角模型/「选择模型」选一家并填 API Key \
@@ -2780,6 +2786,17 @@ impl WebStrategy {
     ) -> Result<GenerateResult, bolloon_llm::LlmError> {
         match &self.sink {
             Some(tx) => {
+                // 缓存命中也要把内容推给流式 UI, 否则前端看到空回复
+                let key_input = format!("{}|{}", provider_id,
+                    serde_json::to_string(params).unwrap_or_default());
+                if let Some(hit) = crate::feature_pack::cache_lookup(provider_id, &key_input) {
+                    let _ = tx.try_send(StreamChunk::Delta(hit.clone()));
+                    return Ok(GenerateResult {
+                        content: hit, tool_calls: vec![], finish_reason: "cache_hit".into(),
+                        usage: Default::default(), model: params.model.clone(),
+                        reasoning_content: None,
+                    });
+                }
                 let t = tx.clone();
                 let d = tx.clone();
                 let fut = self.llm
@@ -2793,11 +2810,30 @@ impl WebStrategy {
                             let _ = d.try_send(StreamChunk::Delta(piece.to_string()));
                         },
                     );
-            self.cancellable(fut).await
+            let r = self.cancellable(fut).await;
+            match &r {
+                Ok(g) => crate::feature_pack::cache_store(provider_id, &key_input, &g.content),
+                Err(e) => crate::feature_pack::record_error(provider_id, &e.to_string()),
+            }
+            r
             }
             None => {
+                let key_input = format!("{}|{}", provider_id,
+                    serde_json::to_string(params).unwrap_or_default());
+                if let Some(hit) = crate::feature_pack::cache_lookup(provider_id, &key_input) {
+                    return Ok(GenerateResult {
+                        content: hit, tool_calls: vec![], finish_reason: "cache_hit".into(),
+                        usage: Default::default(), model: params.model.clone(),
+                        reasoning_content: None,
+                    });
+                }
                 let fut = self.llm.generate(provider_id, params.clone());
-                self.cancellable(fut).await
+                let r = self.cancellable(fut).await;
+                match &r {
+                    Ok(g) => crate::feature_pack::cache_store(provider_id, &key_input, &g.content),
+                    Err(e) => crate::feature_pack::record_error(provider_id, &e.to_string()),
+                }
+                r
             }
         }
     }

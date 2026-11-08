@@ -813,7 +813,11 @@ pub fn app(state: AppState) -> Router {
         .route("/api/models/bind", post(crate::feature_pack::bind_model))
         .route("/api/models/bindings", get(crate::feature_pack::model_bindings))
         .route("/api/cache/stats", get(crate::feature_pack::cache_stats))
-        .route("/api/pay/route-fee", get(crate::feature_pack::route_fee));
+        .route("/api/pay/route-fee", get(crate::feature_pack::route_fee))
+        .route("/api/kernel/vfs", get(crate::kernel_bus::kernel_vfs))
+        .route("/api/models/custom", get(crate::feature_pack::list_custom_models).post(crate::feature_pack::register_custom_model))
+        .route("/api/models/share", post(crate::feature_pack::share_model))
+        .route("/api/room/retry", post(room_retry));
     // QUIC 直连对端管理接口 (feature 门控; 默认启用): 暴露本节点收件地址 + 登记对端 socket
     #[cfg(feature = "quic-transport")]
     {
@@ -2981,6 +2985,26 @@ async fn get_reply_limit(
         "default_when_large": crate::room_bus::DEFAULT_REPLIES_WHEN_LARGE,
         "max": crate::room_bus::MAX_ELECTED_AGENTS,
     }))
+}
+
+/// POST /api/room/retry {group_id, text} → 真把这条消息重新发进群 (不是只记日志)
+async fn room_retry(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let gid = req["group_id"].as_str().unwrap_or_default().to_string();
+    let text = req["text"].as_str().unwrap_or_default().trim().to_string();
+    if gid.is_empty() || text.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 group_id / text" }));
+    }
+    let r = group_say(
+        State(st),
+        axum::extract::Path(gid.clone()),
+        Json(GroupSayRequest { text, role: None }),
+    ).await;
+    // group_say 的返回值里 ok 可能缺省, 用 error 是否为空兜底; 群被关闭时如实回错
+    let ok = r.0["ok"].as_bool().unwrap_or_else(|| r.0["error"].is_null());
+    Json(serde_json::json!({ "ok": ok, "group_id": gid, "result": r.0 }))
 }
 
 async fn group_say(
