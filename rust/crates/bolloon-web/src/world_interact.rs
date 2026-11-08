@@ -115,6 +115,18 @@ pub async fn record_interaction(
         }
     }
 
+    // 所有开关都进意图与按钮记录 (Kernel 机制核), 帮助智能体理解用户
+    if event == "switch" {
+        let mut fs = st.forge.lock().await;
+        if !label.is_empty() && !fs.intents.iter().any(|i| i == label) {
+            fs.intents.push(label.to_string());
+            if fs.intents.len() > 200 { fs.intents.remove(0); }
+        }
+        fs.save(&crate::server::data_dir());
+        drop(fs);
+        st.kernel.lock().await.record("agent", "switch", label,
+            serde_json::json!({ "target": target, "tags": tags }));
+    }
     serde_json::json!({
         "logged": true, "event": event, "target": target,
         "judgment": judgment, "belief": belief,
@@ -168,6 +180,16 @@ fn push_context_slot(rec: &serde_json::Value) {
 /// 生成注入 system prompt 的「界面点击观察」段落
 /// - 用户还没说话: 全量最近 12 条 (点击就是最初的上下文)
 /// - 正在对话: 只留有洞察价值且去重的最近 5 条, 并明确要求别复述 (防 agent 分神)
+/// 工具/终端执行结果直接回灌上下文 (Kernel 执行核观察; 只允许的结果才到这里)
+pub fn push_tool_context(text: &str) {
+    let rec = serde_json::json!({
+        "at_ms": chrono::Utc::now().timestamp_millis() as u64,
+        "event": "tool_result", "target": "shell|tool",
+        "label": text.chars().take(2000).collect::<String>(),
+        "tags": [], "insightful": true,
+    });
+    push_context_slot(&rec);
+}
 pub fn context_for_prompt(in_conversation: bool) -> String {
     let arr: Vec<serde_json::Value> = std::fs::read(slots_path())
         .ok()

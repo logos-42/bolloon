@@ -116,6 +116,8 @@ pub struct AppState {
     pub memory_db: Arc<Mutex<MemoryDb>>,
     /// 完全访问权限开关 (UI 可随时开/取消; 默认关 = 走 permission 门)
     pub full_access: Arc<std::sync::atomic::AtomicBool>,
+    /// 统一调度层: 双核分工 + 三模式事件面 (Kernel 管机制, Harness 管实现)
+    pub kernel: crate::kernel_bus::SharedKernel,
     /// 群聊/商议的"谁正在想"运行时 (内存态; 见 room_bus)
     pub room_bus: Arc<crate::room_bus::RoomBus>,
     /// 路由开关 + 账本 (2026-11-06: 阶段0/1 影子→真路由)
@@ -208,6 +210,9 @@ impl AppState {
             heartbeats: Arc::new(Mutex::new(bolloon_agent::heartbeat::HeartbeatRegistry::new())),
             cron_stats: Arc::new(Mutex::new(CronStats::default())),
             chat_runs: Arc::new(crate::native::ChatRuns::default()),
+            kernel: Arc::new(tokio::sync::Mutex::new(
+                crate::kernel_bus::UnifiedKernel::default(),
+            )),
             updating: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             forge: Arc::new(Mutex::new(crate::native::NativeState::load(&dir))),
             deliberation: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -799,7 +804,16 @@ pub fn app(state: AppState) -> Router {
         .route("/api/update/check", get(update_check))
         .route("/api/update/install", post(update_install))
         // 完全访问权限开关 (可随时开/取消)
-        .route("/api/permission", get(get_permission).post(set_permission));
+        .route("/api/permission", get(get_permission).post(set_permission))
+        // 统一调度层 (Kernel 双核 / 三模式)
+        .route("/api/kernel/state", get(crate::kernel_bus::kernel_state))
+        .route("/api/kernel/tick", post(crate::kernel_bus::kernel_tick))
+        .route("/api/kernel/record", post(crate::kernel_bus::kernel_record))
+        .route("/api/world/cards/react", post(crate::feature_pack::react_card))
+        .route("/api/models/bind", post(crate::feature_pack::bind_model))
+        .route("/api/models/bindings", get(crate::feature_pack::model_bindings))
+        .route("/api/cache/stats", get(crate::feature_pack::cache_stats))
+        .route("/api/pay/route-fee", get(crate::feature_pack::route_fee));
     // QUIC 直连对端管理接口 (feature 门控; 默认启用): 暴露本节点收件地址 + 登记对端 socket
     #[cfg(feature = "quic-transport")]
     {

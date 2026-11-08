@@ -20,6 +20,8 @@ pub mod local_model;
 pub mod specialize;
 pub mod router;
 pub mod server;
+pub mod kernel_bus;
+pub mod feature_pack;
 pub mod contribution;
 pub mod world_interact;
 pub mod x402_buy;

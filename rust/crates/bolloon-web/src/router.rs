@@ -47,6 +47,7 @@ pub fn cost_of(model: &str, tokens_in: u64, tokens_out: u64) -> (f64, bool) {
 
 /// 记一次真实调用
 pub fn record(rec: serde_json::Value) {
+    crate::feature_pack::charge_route_call("route_dispatch");
     let p = ledger_path();
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);

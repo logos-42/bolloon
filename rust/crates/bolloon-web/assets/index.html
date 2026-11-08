@@ -225,6 +225,17 @@
   .moverlay .lyrics-full{text-align:center;font-size:20px;line-height:2;max-height:52vh;overflow:auto}
   .moverlay .lyrics-full .line{opacity:.35}.moverlay .lyrics-full .line.on{opacity:1;color:#7fe3b0;font-size:26px}
   .moverlay .mclose{position:absolute;top:12px;right:16px;background:none;border:0;color:#fff;font-size:26px;cursor:pointer}
+  .docreader{position:fixed;inset:0;z-index:9998;background:var(--panel);overflow:auto;
+    display:flex;justify-content:center;padding:48px 16px}
+  .docreader article{max-width:760px;width:100%;line-height:1.9;font-size:16px}
+  .docreader h1{font-size:26px;margin:0 0 8px}
+  .docreader .docmeta{color:var(--muted);font-size:12px;margin-bottom:26px}
+  .docreader .docbody{white-space:normal}
+  .docreader .mclose{position:fixed;top:14px;right:20px;background:none;border:0;color:var(--text);font-size:26px;cursor:pointer}
+  #friendPanel,#modelPoolDlg{border:1px solid var(--line);border-radius:12px;background:var(--panel2);color:var(--text);
+    padding:16px;min-width:min(420px,92vw)}
+  #friendPanel label{display:block;margin:10px 0 4px;font-size:12px;color:var(--muted)}
+  #friendPanel input[type=text]{width:100%}
   #worldOpportunities .opp-card{display:inline-block;width:100%;margin:0 0 10px;break-inside:avoid-page}
   #worldOpportunities .opp-card .cover{max-height:190px;overflow:hidden}
   #worldOpportunities .opp-card .cover img,#worldOpportunities .opp-card .cover video{width:100%;height:100%;object-fit:cover;display:block}
@@ -811,7 +822,16 @@
     <button class="primary" id="paySubmit">我已转账，提交待核销</button>
   </div>
   <div class="pay-pricing" id="payPricing"></div>
-  <div class="hint pay-note">未核销的充值不计入余额；本机核对到账后才记账。不发代币、不做充值赠币，余额只用于抵扣 Bolloon 自身的模型用量。</div>
+  <div class="hint pay-note">未核销的充值不计入余额；本机核对到账后才记账。不发代币、不做充值赠币，模型 API 用户自配；付费的是个性化路由调度（按次数），不按 token、不动贡献积分。</div>
+</dialog>
+<dialog id="friendPanel">
+  <b>好友资料</b><div class="hint" id="fpDid" style="font-size:10px;word-break:break-all"></div>
+  <label>昵称（显示名）</label><input type="text" id="fpName" placeholder="本地显示的名字" />
+  <label>备注（给自己看）</label><input type="text" id="fpNote" placeholder="例如：一起爬山的朋友" />
+  <label><input type="checkbox" id="fpAllow" checked /> 允许智能体访问</label>
+  <label><input type="checkbox" id="fpBlock" /> 黑名单（屏蔽此好友）</label>
+  <div class="row" style="margin-top:12px"><button class="primary" onclick="saveFriendPanel()">保存</button>
+  <button onclick="this.closest('dialog').close()">取消</button></div>
 </dialog>
 <div id="app">
   <!-- 2026-10-26 (用户): 桌面三栏 — 第一栏: 全局导航栏 (= 窗口外壳本身, 毛玻璃)。
@@ -852,6 +872,8 @@
       <button id="collapseBtn" title="折叠侧边栏" aria-label="折叠侧边栏">☰</button>
     </div>
     <div class="side-actions">
+      <button id="modelPoolBtn" class="mini" title="模型池：每个会话/智能体绑不同模型，可分享" style="margin:6px">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="12" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="M8 11l8-4M8 13l8 4"/></svg> 模型池</button>
       <button class="primary icon-btn" id="newAgentBtn" title="创建新智能体" aria-label="创建新智能体">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <rect x="4" y="8" width="16" height="12" rx="3"></rect>
@@ -1424,7 +1446,11 @@ function renderRoom(msgs,members){
     const time=m.created_at?new Date(m.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
     const title=m.title?` · ${escapeHTML(m.title)}`:'';
     const cls=m.kind==='guide'?' room-msg-guide':'';
-    return `<div class="room-msg${cls}"><div class="meta">${ava}<b>${escapeHTML(who)}</b><span>${kind}${title}</span><span style="margin-left:auto">${time}</span></div><div class="body">${mdToHTML(m.text||'')}</div></div>`;
+    return `<div class="room-msg${cls}"><div class="meta">${ava}<b>${escapeHTML(who)}</b><span>${kind}${title}</span><span style="margin-left:auto">${time}</span></div><div class="body">${mdToHTML(m.text||'')}</div><div class="row" style="gap:4px;margin-top:4px">
+      <button class="mini" onclick="copyText(${JSON.stringify(String(m.text||''))})">复制</button>
+      <button class="mini" onclick="retryRoomMessage('${escapeHTML(String(m.id||''))}')">重试</button>
+      <button class="mini" onclick="shareText('${escapeHTML(String(m.id||''))}',${JSON.stringify(String(m.text||''))})">分享</button>
+    </div></div>`;
   }).join('');
   if(think.length){
     const names=think.map(x=>escapeHTML(x.agent_name||x.agent_id||'')).join('、');
@@ -1782,7 +1808,7 @@ function renderChat(){
     // 完整的 40 条仍在后端 ChatRuns 里 (前端只取尾部 5 条渲染)。
     const stList=(m.role!=='user'&&Array.isArray(m.stages))?m.stages.slice(-STAGES_SHOWN):[];
     const stages=stList.length
-      ?`<div class="msg-stages${m.stagesFolded?' folded':''}"><span class="ms-hd" onclick="toggleStages(this)">阶段 ${m.stages.length}${m.stages.length>STAGES_SHOWN?'（最新 '+STAGES_SHOWN+'）':''} · 点击折叠/展开</span><ol>${stList.map(s=>`<li>${escapeHTML(String(s))}</li>`).join('')}</ol></div>`:'';
+      ?`<div class="msg-stages${m.stagesFolded?' folded':''}"><span class="ms-hd" onclick="toggleStages(this)">执行步骤 ${m.stages.length} · 工具/调用名 · 点击折叠</span><ol>${stList.map(s=>`<li>${escapeHTML(String(s))}</li>`).join('')}</ol></div>`:'';
     return `<div class="msg-row ${role}" data-index="${i}">
       <div class="msg ${role}${streaming}">${thinkBox}${stages}${body}
         ${(m.images||[]).map(im=>`<img src="${im}" alt="">`).join('')}
@@ -1854,7 +1880,7 @@ function paintStreamingBubble(index,text,think){
   if(nearBottom(chat))chat.scrollTop=chat.scrollHeight;
 }
 
-const STAGES_SHOWN=5; // 阶段列表只渲染最新 5 条 (后端仍留 40 条历史)
+const STAGES_SHOWN=20; // 阶段列表只渲染最新 5 条 (后端仍留 40 条历史)
 /* 2026-11-05 (用户: 流光卡片会突然消失): 阶段卡片 = 这轮的「过程」, 后端 ChatRuns.stages 是唯一事实来源。
    以前 ① SSE 里根本没有 stage 事件 (chat_stream 注释写了 stage, StreamChunk 只有 thought/delta/done);
         ② paintStreamingBubble 建 .stream-body 时把 .msg-stages 当旧节点一起删了 —— 卡片于是闪一下就没了。
@@ -1887,7 +1913,7 @@ function paintStages(index,stages){
     msg.insertBefore(box,msg.querySelector(':scope > .stream-body')||null);
   }
   const hd=box.querySelector('.ms-hd');
-  const title=`阶段 ${all.length}${all.length>STAGES_SHOWN?'（最新 '+STAGES_SHOWN+'）':''} · 点击折叠/展开`;
+  const title=`执行步骤 ${all.length} · 工具/调用名 · 点击折叠`;
   if(hd&&hd.textContent!==title)hd.textContent=title;
   const ol=box.querySelector('ol');
   const sig=list.join('\u0001');
@@ -2102,6 +2128,52 @@ let menuAgentId='';
 let payInfo=null, paySummary=null, payChannel='crypto';
 const PAY_LABEL={crypto:'USDC 钱包', alipay:'支付宝', wechat:'微信', paypal:'PayPal'};
 const PAY_CHAIN_LABEL={base:'BASE 链 (USDC)', 'base-sepolia':'BASE 测试网'};
+// ── 2026-11-08: 卡片互动 / 文档阅读 / 模型池 (Kernel 统一事件面) ──
+function isDocCard(o){
+  const t=((o&&o.card&&o.card.tags)||o.tags||[]).map(String).join(' ').toLowerCase();
+  return /doc|文档|article|文章|note|笔记|report|报告/.test(t)||String(o&&o.summary||'').length>180;
+}
+async function reactWorldCard(id,type){
+  let text='';
+  if(type==='comment'){ text=prompt('写一句评论',''); if(text===null)return; }
+  const r=await api('/api/world/cards/react',{method:'POST',body:JSON.stringify({id,type,text})}).catch(e=>({error:e.message}));
+  if(!r||r.ok!==true){toast('操作失败: '+((r&&r.error)||'未知'));return;}
+  toast(type==='comment'?'评论已保存':'已记录'); await loadWorld();
+}
+function openDocReader(id){
+  const o=worldCardsById[id]||{};
+  const c=o.card||{};
+  const body=String(c.asset&&c.asset.content||c.summary||o.summary||'');
+  let d=$('docReader');
+  if(!d){ d=document.createElement('div'); d.id='docReader'; d.className='docreader'; document.body.appendChild(d); }
+  d.innerHTML=`<button class="mclose" onclick="this.parentNode.remove()">✕</button>
+    <article><h1>${escapeHTML(o.title||'文档')}</h1>
+    <div class="docmeta">${escapeHTML(o.by||c.provider_did||'')} · ${(c.tags||[]).map(escapeHTML).join(' / ')}</div>
+    <div class="docbody">${escapeHTML(body).replace(/\n/g,'<br>')}</div></article>`;
+}
+async function openModelPool(){
+  const [ms,bind,fee]=await Promise.all([
+    api('/api/models').catch(()=>({models:[]})),
+    api('/api/models/bindings').catch(()=>({bindings:{}})),
+    api('/api/pay/route-fee').catch(()=>({})),
+  ]);
+  const list=(ms.models||ms.providers||[]);
+  let d=$('modelPoolDlg');
+  if(!d){ d=document.createElement('dialog'); d.id='modelPoolDlg'; document.body.appendChild(d); }
+  d.innerHTML=`<div class="pay-head"><div><b>模型池</b> <span class="pay-sub">每个会话/智能体可绑不同模型（含本地）</span></div>
+    <button class="pay-x" onclick="this.closest('dialog').close()">✕</button></div>
+    <div class="hint">路由使用费：按调度次数计费，100 万次 ${fee.cny_per_million_calls??0.001} 元；模型 API 自配，不按 token 收费。当前 ${fee.calls??0} 次。</div>
+    <div style="max-height:52vh;overflow:auto;margin-top:8px">${list.length?list.map(m=>`<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--line);padding:6px 0">
+      <span>${escapeHTML(String(m.id||m.model||m.name||m))}</span>
+      <button class="mini" onclick="shareModel(${JSON.stringify(String(m.id||m.model||m.name||m))})">分享</button></div>`).join(''):'<div class="hint">还没有登记模型（到设置里登记本地/云端 provider）</div>'}</div>
+    <div class="hint">绑定：<pre style="white-space:pre-wrap;font-size:11px">${escapeHTML(JSON.stringify(bind.bindings||{},null,2))}</pre></div>`;
+  if(!d.open)d.showModal();
+}
+function shareModel(name){
+  api('/api/kernel/record',{method:'POST',body:JSON.stringify({mode:'agent',kind:'button',label:'分享模型 '+name})}).catch(()=>{});
+  copyText(name); toast('模型名已复制，可分享');
+}
+
 // ── 贡献积分: 放在余额里 (2026-11-06 leo) ──
 // 为别人提供服务才有大分; 日常共享 skill / 卡片只给小分; 没做坏事 earned 只增不减;
 // 唯一消耗 = 购买增值服务。求助与善意合作永远不需要积分。
@@ -2637,6 +2709,7 @@ $('payBannerClose').onclick=()=>{ payBannerDismissed=true; $('payBanner').classL
 $('dragonSubBtn').onclick=()=>openPayDialog();
 $('payClose').onclick=()=>$('payDlg').close();
 if($('payBtn'))$('payBtn').onclick=(e)=>{e.stopPropagation();openPayDialog();};
+if($('modelPoolBtn'))$('modelPoolBtn').onclick=()=>openModelPool();
 if($('sideCredit'))$('sideCredit').onclick=(e)=>{e.stopPropagation();openPayDialog();};
 if($('subBtn'))$('subBtn').onclick=(e)=>{e.stopPropagation();openPayDialog();};
 // 2026-10-30: 「直连节点 · 添加」以前只有按钮没有处理函数 ⇒ 对端永远登记不进 directory_peers,
@@ -3083,7 +3156,7 @@ async function submitMessage(text,images){
       if(Array.isArray(q.stages)&&q.stages.length)assistant.stages=q.stages.slice(-STAGES_SHOWN);
     }catch(_){}
     if(!Array.isArray(assistant.stages)||!assistant.stages.length)assistant.stages=[];
-    else assistant.stagesFolded=true;
+    else assistant.stagesFolded=false;
     renderSidebar();renderChat();
   }
 }
@@ -3155,9 +3228,11 @@ function traceEvent(event, target, label, tags) {
   const t = Date.now();
   if (t - __traceLast < 350) return;
   __traceLast = t;
-  fetch('/api/trace', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({event, target:String(target||'').slice(0,80),
-      label:String(label||'').slice(0,80), tags:tags||[]})}).catch(()=>{});
+  const body={event,target:String(target||'').slice(0,80),label:String(label||'').slice(0,80),tags:tags||[]};
+  fetch('/api/trace',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>{});
+  const mode=inWorldMode?'world':(document.body.classList.contains('room-open')?'group':'agent');
+  fetch('/api/kernel/record',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({mode,kind:event==='switch'?'switch':'button',label:body.label,detail:{target:body.target}})}).catch(()=>{});
 }
 document.addEventListener('click', (e) => {
   const el = e.target && e.target.closest ? e.target.closest('button,a,.opp-card,.item') : null;
@@ -3176,7 +3251,8 @@ document.addEventListener('click', (e) => {
   else if (/踩|👎/.test(txt)) ev = 'vote_down';
   else if (/分享/.test(txt)) ev = 'share';
   else if (/播放|▶/.test(txt)) ev = 'play';
-  else if (/全屏/.test(txt)) ev = 'fullscreen';
+  else if(/全屏/.test(txt))ev='fullscreen';
+  else if(/开关|权限|允许|黑名单|档|设置|订阅/.test(txt))ev='switch';
   const raw = (card && worldCardsById[id]) || {};
   traceEvent(ev, id, txt, (raw.card && raw.card.tags) || []);
 }, true);
@@ -3571,6 +3647,11 @@ async function loadWorld() {
           ${(o.accepted || o.state === 'accepted') ? '<span class="opp-state accepted">✓ 已接受 · 已进推荐正反馈</span>' : `<button data-act="accept" data-id="${o.id}">接受</button>`}
           ${o.state === 'rejected' ? '<span class="opp-state rejected">⛔ 已拒绝 · 已降权</span>' : ''}
           <button data-act="ignore" data-id="${o.id}">忽略</button>
+          <button title="点赞" onclick="event.stopPropagation();reactWorldCard('${o.id}','like')">👍 ${(o.reactions&&o.reactions.like)||0}</button>
+          <button title="喜欢" onclick="event.stopPropagation();reactWorldCard('${o.id}','favorite')">❤️ ${(o.reactions&&o.reactions.favorite)||0}</button>
+          <button title="评论" onclick="event.stopPropagation();reactWorldCard('${o.id}','comment')">💬 ${(o.reactions&&o.reactions.comments&&o.reactions.comments.length)||0}</button>
+          <button title="分享" onclick="event.stopPropagation();shareWorldCard('${o.id}')">↗ 分享</button>
+          ${isDocCard(o)?`<button title="阅读" onclick="event.stopPropagation();openDocReader('${o.id}')">📖 阅读</button>`:''}
           ${(o.card&&o.card.actions||[]).some(a=>String(a.url||'').startsWith('x402:item/'))?`<button style="border-color:var(--accent);color:var(--accent)" onclick="event.stopPropagation();payWorldCard('${o.id}')">PAY x402</button>`:''}
           <span class="wcard-vote"><button class="up" onclick="voteWorldCard('${o.id}','up')">+${o.up||0}</button><button onclick="voteWorldCard('${o.id}','down')">-${o.down||0}</button></span>
           <button class="dots" title="卡片操作" onclick="event.stopPropagation();openWorldCardMenu(event,'${o.id}')">⋯</button>
@@ -4127,20 +4208,30 @@ function openFriendMenu(e,did){
   }
 }
 const fmPost=(path,body)=>api(path,{method:'POST',body:JSON.stringify(body)}).catch(e=>({error:e.message}));
-async function fmRename(){
+async function fmRename(){ openFriendPanel(); }
+function openFriendPanel(){
   const did=friendMenuTarget; if(!did)return;
-  const nm=contactNameMap()[did]||'';
-  const name=await askText('改昵称（显示名）',nm,'留空则不改；这是你本地显示的名字');
-  if(name===null)return;
-  const note=await askText('备注（给自己看的说明）','','例如：一起爬山的朋友 / 3 月介绍过客户');
-  if(note===null)return;
+  const d=$('friendPanel'); if(!d)return;
+  $('fpDid').textContent=did;
+  $('fpName').value=contactNameMap()[did]||'';
+  $('fpNote').value='';
+  $('fpAllow').checked=true; $('fpBlock').checked=false;
+  if(!d.open)d.showModal();
+}
+async function saveFriendPanel(){
+  const did=$('fpDid').textContent;
   const body={did};
-  if(name.trim())body.name=name.trim();
-  body.note=note;
+  const nm=$('fpName').value.trim(); if(nm)body.name=nm;
+  body.note=$('fpNote').value;
+  body.allow_agent=$('fpAllow').checked;
+  body.blocked=$('fpBlock').checked;
   const r=await fmPost('/api/friends/update',body);
   if(r.error){toast('保存失败: '+r.error);return;}
-  await loadContacts();toast('已保存昵称/备注');
+  $('friendPanel').close(); await loadContacts(); toast('已保存好友资料');
 }
+function retryRoomMessage(id){ toast('已请求重试 '+id); api('/api/kernel/record',{method:'POST',body:JSON.stringify({mode:'group',kind:'button',label:'重试消息 '+id})}).catch(()=>{}); }
+function shareText(id,text){ copyText(text); toast('已复制，可粘贴分享'); api('/api/kernel/record',{method:'POST',body:JSON.stringify({mode:'group',kind:'button',label:'分享消息 '+id})}).catch(()=>{}); }
+
 async function fmSearchChat(){
   const did=friendMenuTarget; if(!did)return;
   const kw=await askText('查找聊天记录','','输入关键词（会搜本机会话记录与跨机对话）');

@@ -2362,6 +2362,13 @@ impl bolloon_agent::kernel_loop::LoopObserver for StageObserver {
         call: &bolloon_agent::ToolCall,
         outcome: &bolloon_agent::GateOutcome,
     ) {
+        // 2026-11-08: 被允许执行的命令, 结果**直接回上下文** (shell 输出不再只停在工具面板)
+        if let Some(res) = &outcome.result {
+            if !res.output.trim().is_empty() {
+                crate::world_interact::push_tool_context(
+                    &format!("[{} 执行结果] {}", call.name, res.output.chars().take(2000).collect::<String>()));
+            }
+        }
         let label = if outcome.denied.is_some() {
             format!("{} · 被拒", call.name)
         } else if outcome.elapsed_ms >= 1000 {
@@ -8156,6 +8163,19 @@ pub async fn friend_update(
     let mut fs = st.forge.lock().await;
     if !fs.friends.friends().iter().any(|d| d == &did) {
         return Json(serde_json::json!({ "ok": false, "error": "不是本机好友" }));
+    }
+    // 2026-11-08: 好友面板的开关落独立文件 (不改 NativeState 结构, 老数据兼容)
+    if req["allow_agent"].is_boolean() || req["blocked"].is_boolean() {
+        let fp = crate::server::data_dir().join("friend-access.json");
+        let mut m: serde_json::Value = std::fs::read_to_string(&fp).ok()
+            .and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}));
+        m[&did]["allow_agent"] = serde_json::json!(req["allow_agent"].as_bool().unwrap_or(true));
+        m[&did]["blocked"] = serde_json::json!(req["blocked"].as_bool().unwrap_or(false));
+        m[&did]["at_ms"] = serde_json::json!(now_ms());
+        let tmp = fp.with_extension("tmp");
+        if std::fs::write(&tmp, serde_json::to_string_pretty(&m).unwrap_or_default()).is_ok() {
+            let _ = std::fs::rename(&tmp, &fp);
+        }
     }
     if let Some(name) = req["name"].as_str() {
         let name = name.trim();
