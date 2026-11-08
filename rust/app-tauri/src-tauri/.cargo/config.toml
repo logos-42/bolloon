@@ -1,0 +1,2 @@
+﻿[target.aarch64-linux-android]
+linker = "C:/tools/android-sdk/ndk/z_ndk_26.1.10909125/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android24-clang.exe"

@@ -1,104 +1,106 @@
 #!/usr/bin/env node
 /**
- * check-mobile-parity.mjs — 手机端与 PC 端**逻辑一致**门 (2026-10-02)
+ * check-mobile-parity.mjs — 手机端 (Tauri) 产物完整性门 (2026-11)
  *
- * leo 的口径: **手机端继续保持独立, 但逻辑要与 PC 端一条 (核是需要的)**。
+ * Tauri 模式下，Web 资源被嵌入到 Rust 二进制中 (frontendDist → tauri.conf.json build.frontendDist)。
+ * 与 Capacitor 不同：不再把 dist/web 复制到 ios/App/App/public 或 android/assets/public，
+ * 而是由 `cargo tauri build` 打包进 apk/ipa。
  *
- * 独立 = 自己的壳/包/入口 (Capacitor iOS/Android, dist/ios 用 mobile.html 当 index.html);
- * 一致 = 包里的 web 逻辑必须**逐字节**来自同一份源码产物 (src/web + src/kernel → dist/web → dist/ios),
- *        不许在原生壳里出现"只属于手机的分叉实现"。
- *
- * 为什么需要这道门: 机制上早就是同源 (capacitor.config.ts 的 webDir=dist/web; build-ios-web 从 dist/web 组装),
- * 但**没有任何东西拦住漂移** —— 2026-10-02 实测: 壳里的 client.js 与刚构建的产物 sha 不同 (旧一版),
- * 也就是说"修好的 bug 手机端还没拿到"而没人发现。
- *
- * 口径:
- *   · 源产物缺失 (dist/web 或 dist/ios) ⇒ **拒跑** (不静默跳过)
- *   · 壳目录缺失 ⇒ **拒跑** (手机端从未同步过 ⇒ 那本身就是要报的事实)
- *   · 共有文件 sha256 必须**逐字节相同**
- *   · 壳里**多出来**的文件: 只允许 Capacitor 自己注入的白名单 (capacitor.js / cordova.js / native-bridge.js);
- *     其余多出来的 = **分叉嫌疑**, 必须报出来 (手机端不许长出自己的逻辑)
+ * 这道门检查:
+ *   1. tauri.conf.json 存在，且 bundle.targets 包含 android/ios
+ *   2. dist/web 产物存在，mobile.html / mobile.css / mobile.js 三件套齐全
+ *   3. dist/web 内所有相对引用都在 dist/web 内 (与 build-web.assertSelfContained 同一套口径)
  */
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
 
 const ROOT = process.cwd();
+const DIST_WEB = join(ROOT, 'dist', 'web');
+const TAURI_CONF = join(ROOT, 'rust', 'app-tauri', 'src-tauri', 'tauri.conf.json');
 
-/** Capacitor 同步时自己塞进去的文件 (不含业务逻辑), 允许壳里多出来 */
-const CAP_ALLOWED_EXTRA = /^(capacitor\.js|cordova\.js|cordova_plugins\.js|native-bridge\.js|plugins\/)/;
-
-const PAIRS = [
-  { name: 'iOS', src: 'dist/ios', shell: 'ios/App/App/public' },
-  { name: 'Android', src: 'dist/web', shell: 'android/app/src/main/assets/public' },
-];
-
-const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
-
-function walk(dir, base = dir, out = []) {
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const p = join(dir, e.name);
-    if (e.isDirectory()) {
-      if (e.name === '.DS_Store') continue;
-      walk(p, base, out);
-    } else {
-      if (e.name === '.DS_Store') continue;
-      out.push(relative(base, p));
-    }
-  }
-  return out;
-}
+const REQUIRED_FILES = ['mobile.html', 'mobile.css', 'mobile.js', 'mobile-core.js'];
 
 let bad = 0;
 const ok = (m, d = '') => console.log(`  ✓ ${m}${d ? ' — ' + d : ''}`);
 const fail = (m, d = '') => { bad++; console.log(`  ✗ ${m}${d ? ' — ' + d : ''}`); };
-const skip = (m, d = '') => console.log(`  · ${m}${d ? ' — ' + d : ''}`);
 
-console.log('\n手机端 ⇄ PC 端 逻辑一致门 (逐字节)\n');
+console.log('\n手机端 (Tauri) 产物完整性门\n');
 
-for (const { name, src, shell } of PAIRS) {
-  const srcDir = join(ROOT, src);
-  const shellDir = join(ROOT, shell);
-  console.log(`${name}: ${src} ⇄ ${shell}`);
-
-  if (!existsSync(srcDir)) {          // 拒跑: 拿不到事实
-    fail(`${name}: 源产物不存在 ⇒ 拒跑`, `先跑 build:web (iOS 还要 build:ios-web)`);
-    continue;
+// 1. tauri.conf.json
+if (!existsSync(TAURI_CONF)) {
+  fail('tauri.conf.json 不存在', TAURI_CONF);
+} else {
+  const conf = JSON.parse(readFileSync(TAURI_CONF, 'utf8'));
+  const targets = conf.bundle?.targets || [];
+  const hasAndroid = targets.includes('android');
+  const hasIos = targets.includes('ios');
+  if (!hasAndroid || !hasIos) {
+    fail('tauri.conf.json bundle.targets 缺少 android/ios', JSON.stringify(targets));
+  } else {
+    ok('tauri.conf.json bundle.targets 包含 android + ios');
   }
-  if (!existsSync(shellDir)) {
-    fail(`${name}: 原生壳 web 目录不存在 ⇒ 拒跑 (从未同步过)`, `同步入口见 package.json 的 ios:sync / cap sync android`);
-    continue;
+  if (conf.build?.frontendDist !== '../../../dist/web') {
+    fail('frontendDist 应指向 ../ui', String(conf.build?.frontendDist));
+  } else {
+    ok('frontendDist = ../ui');
+  }
+}
+
+// 2. dist/web 三件套 + 自洽性
+if (!existsSync(DIST_WEB)) {
+  fail('dist/web 不存在 ⇒ 拒跑', `先跑 npm run build:web`);
+} else {
+  for (const f of REQUIRED_FILES) {
+    if (!existsSync(join(DIST_WEB, f))) fail(`dist/web 缺少 ${f}`);
+    else ok(`dist/web/${f} 存在`);
   }
 
-  const srcFiles = walk(srcDir);
-  const shellFiles = walk(shellDir);
-  const srcSet = new Set(srcFiles);
-  const shellSet = new Set(shellFiles);
-
-  const missing = srcFiles.filter((f) => !shellSet.has(f));
-  const extra = shellFiles.filter((f) => !srcSet.has(f) && !CAP_ALLOWED_EXTRA.test(f));
-  const drift = [];
-  for (const f of srcFiles) {
-    if (!shellSet.has(f)) continue;
-    const a = sha(join(srcDir, f));
-    const b = sha(join(shellDir, f));
-    if (a !== b) drift.push({ f, a: a.slice(0, 8), b: b.slice(0, 8), size: statSync(join(shellDir, f)).size });
+  // 3. 自检: dist/web 内所有相对引用都在 dist/web 内
+  const htmls = ['index.html', 'mobile.html', 'explorer.html', 'api-config.html'];
+  const queue = [];
+  const seen = new Set();
+  const missing = [];
+  for (const h of htmls) {
+    const p = join(DIST_WEB, h);
+    if (existsSync(p)) queue.push(p);
   }
-
-  if (missing.length) fail(`${name}: 壳里缺 ${missing.length} 个文件 (手机端拿不到这些逻辑)`, missing.slice(0, 5).join(', ') + (missing.length > 5 ? ' …' : ''));
-  if (extra.length) fail(`${name}: 壳里多出 ${extra.length} 个**非 Capacitor** 文件 (分叉嫌疑)`, extra.slice(0, 5).join(', '));
-  if (drift.length) {
-    fail(`${name}: ${drift.length} 个文件与源产物**不一致** (手机端是旧一版逻辑)`,
-      drift.slice(0, 4).map((d) => `${d.f} src=${d.a} shell=${d.b}`).join(' · '));
+  while (queue.length > 0) {
+    const abs = queue.shift();
+    if (!abs || seen.has(abs)) continue;
+    seen.add(abs);
+    const src = readFileSync(abs, 'utf8').catch(() => '');
+    const specs = [];
+    if (abs.endsWith('.html')) {
+      for (const m of src.matchAll(/<script[^>]*\ssrc="([^"]+)"/g)) specs.push(m[1]);
+      for (const m of src.matchAll(/<link[^>]*\shref="([^"]+)"/g)) specs.push(m[1]);
+    } else {
+      for (const m of src.matchAll(/(?:from|import)\s*\(?\s*["']([^"']+)["']/g)) specs.push(m[1]);
+    }
+    for (const spec of specs) {
+      if (!spec.startsWith('.')) continue;
+      const clean = spec.split('?')[0];
+      if (!abs.endsWith('.html') && !/\.(js|mjs|json|css)$/.test(clean)) continue;
+      const target = resolve(join(abs, '..'), clean);
+      if (!(target === DIST_WEB || target.startsWith(DIST_WEB + sep))) {
+        missing.push(`${relative(DIST_WEB, abs)} → ${spec}  ⚠ 逃出 dist/web`);
+        continue;
+      }
+      if (!existsSync(target)) { missing.push(`${relative(DIST_WEB, abs)} → ${spec}`); continue; }
+      if (/\.(js|mjs)$/.test(target)) queue.push(target);
+    }
   }
-  if (!missing.length && !extra.length && !drift.length) {
-    ok(`${name}: ${srcFiles.length} 个文件逐字节一致 (同一份逻辑)`);
+  if (missing.length > 0) {
+    fail(`dist/web 内有 ${missing.length} 处相对引用无法在 dist/web 内解析`);
+    for (const b of missing.slice(0, 5)) console.log(`    ${b}`);
+  } else {
+    ok(`dist/web 资源自洽 (${seen.size} 个文件, 0 处逃出引用)`);
   }
 }
 
 console.log('');
 if (bad) {
-  console.log(`结论: ✗ ${bad} 项不一致 —— 手机端与 PC 端**逻辑漂移** (修法: 重新构建并 cap sync, 不要改壳里的文件)\n`);
+  console.log(`结论: ✗ ${bad} 项不通过 ⇒ 手机端产物不完整`);
   process.exit(1);
 }
-console.log('结论: ✓ 手机端与 PC 端逻辑一致 (独立部署, 同一份产物)\n');
+console.log('结论: ✓ 手机端 (Tauri) 产物完整\n');

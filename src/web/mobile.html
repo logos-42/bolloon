@@ -5,17 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Bolloon 手机端</title>
 <script>
-/* 启动页即时主题: 内部已选主题 > 系统主题 > 默认暗色. 在 CSS/JS 加载前先渲染, 避免白闪 */
 (function () {
   var saved = null; try { saved = localStorage.getItem('bolloon_theme'); } catch (e) {}
   var sysLight = false; try { sysLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches; } catch (e) {}
-  // 主题偏好: light/dark 固定; 其它(含 auto/空) 跟随系统
   var light = saved === 'light' ? true : (saved === 'dark' ? false : sysLight);
   var root = document.documentElement;
   var t = light
-    ? { '--bg': '#f5f5f0', '--bg-card': '#ffffff', '--bg-hover': '#eeeeea', '--text': '#1a1a18', '--text-secondary': '#606058', '--text-muted': '#909088', '--accent': '#8a9430', '--border': '#d0d0c8', 'bg': '#f5f5f0', 'fg': '#1a1a18' }
-    : { '--bg': '#1a1a18', '--bg-card': '#222220', '--bg-hover': '#2a2a26', '--text': '#d8d8c8', '--text-secondary': '#909088', '--text-muted': '#606058', '--accent': '#c4d640', '--border': '#3a3a36', 'bg': '#1a1a18', 'fg': '#d8d8c8' };
-  Object.keys(t).forEach(function (k) { if (k === 'bg') root.style.background = t[k]; else if (k === 'fg') root.style.color = t[k]; else root.style.setProperty(k, t[k]); });
+    ? { '--bg': '#f5f5f0', '--bg-card': '#ffffff', '--bg-hover': '#eeeeea', '--text': '#1a1a18', '--text-secondary': '#606058', '--text-muted': '#909088', '--accent': '#8a9430', '--border': '#d0d0c8' }
+    : { '--bg': '#1a1a18', '--bg-card': '#222220', '--bg-hover': '#2a2a26', '--text': '#d8d8c8', '--text-secondary': '#909088', '--text-muted': '#606058', '--accent': '#c4d640', '--border': '#3a3a36' };
+  Object.keys(t).forEach(function (k) { root.style.setProperty(k, t[k]); });
   root.setAttribute('data-theme', light ? 'light' : 'dark');
   root.style.colorScheme = light ? 'light' : 'dark';
 })();
@@ -32,20 +30,19 @@
 </head>
 <body>
 <div id="app" class="app">
-  <!-- 顶部导航 -->
+  <!-- 顶部标题栏 -->
   <header class="topbar">
-    <button class="icon-btn" id="btn-index" title="索引"><svg class="ico" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    <button class="icon-btn" id="btn-menu" title="菜单"><svg class="ico" viewBox="0 0 24 24"><path d="M3 7h18M3 12h18M3 17h18"/></svg></button>
     <div class="topbar-title" id="topbar-title">首页</div>
-    <div class="topbar-actions" id="topbar-actions">
-      <button class="icon-btn" id="btn-search" title="搜索"><svg class="ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></button>
-      <button class="icon-btn" id="btn-add" title="添加会话"><svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
-    </div>
+    <div class="topbar-actions" id="topbar-actions"></div>
   </header>
 
-<!-- 主页面: 世界机会流双栏卡片 (2026-10-07: 首页 = 对应桌面世界模式, opportunity 双栏) -->
-    <main class="page-container" id="page-main" data-tab="main" hidden>
-      <!-- 世界机会流 — 双栏卡片, 自动流入 (与桌面世界模式同数据源) -->
-      <div class="world-feed" id="world-feed">
+  <!-- 页面容器：四个 tab 通过 hidden 切换 -->
+  <div class="pages" id="pages">
+
+    <!-- ===== 首页：智能体卡片 + 世界机会流 ===== -->
+    <section class="page" id="page-home" data-tab="home" hidden>
+      <div class="world-feed">
         <div class="world-feed-header">
           <span>✦ 世界送来</span>
           <span class="world-feed-sub">自动匹配 · 持续校准</span>
@@ -54,23 +51,20 @@
           <div class="world-feed-loading">世界正在观察…</div>
         </div>
       </div>
-      <!-- 2026-10-07: 首页底部输入框 — 告诉世界你在做什么 (对应桌面世界模式输入框, Bolloon 风格) -->
-      <div class="world-input-bar" id="world-input-bar">
+
+      <div class="card-track" id="card-track">
+        <div class="card-loading">加载智能体卡片…</div>
+      </div>
+      <div class="card-indicator" id="card-indicator"></div>
+
+      <div class="world-input-bar">
         <input type="text" id="world-input" placeholder="告诉世界你在做什么 / 需要什么… (Enter 自动匹配)" autocomplete="off" />
-        <button id="world-input-send" class="world-input-send">→ 世界</button>
+        <button class="world-input-send" id="world-input-send">→ 世界</button>
       </div>
-      <!-- 卡片详情浮层 (垂直展开) -->
-      <div class="card-detail" id="card-detail" hidden>
-        <div class="detail-header">
-          <button class="icon-btn" id="detail-back">←</button>
-          <h2 id="detail-name"></h2>
-        </div>
-        <div class="detail-body" id="detail-body"></div>
-      </div>
-    </main>
-  <!-- 好友 tab: 通讯录风格 (2026-10-07: 微信通讯录式布局 — 分组入口 + 字母索引联系人) -->
+    </section>
+
+    <!-- ===== 通讯录：联系人 + P2P 状态 ===== -->
     <section class="page" id="page-friends" data-tab="friends" hidden>
-      <!-- 分组快捷入口 (微信式: 新的朋友/群聊/标签/附近/扫码) -->
       <div class="list">
         <div class="list-item" id="item-add-friend"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.8-3 3-4.6 5.5-4.6S13.7 16 14.5 19"/><path d="M17 8v6M14 11h6"/></svg></span><span>新的朋友</span><span class="list-arrow">›</span></div>
         <div class="list-item" id="item-p2p"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.3 2.3 3.5 5.3 3.5 8.5s-1.2 6.2-3.5 8.5c-2.3-2.3-3.5-5.3-3.5-8.5S9.7 5.8 12 3.5z"/></svg></span><span>群聊</span><span class="list-arrow">›</span></div>
@@ -82,342 +76,109 @@
       <div class="section-label">网络连接</div>
       <div class="list" id="p2p-status"></div>
       <div class="section-label">联系人列表</div>
-      <!-- 通讯录式联系人列表: 按字母分组 + 右侧索引 (由 loadContacts 渲染) -->
       <div class="contacts-wrap" id="contacts-wrap">
         <div class="list" id="contacts-list"></div>
         <div class="contacts-index" id="contacts-index"></div>
       </div>
     </section>
 
-  </main>
-
-  <!-- 任务 tab (2026-10-07: 对话框模式 — 仪表盘 + 消息流 + 底部派活输入框; 网络收成工具) -->
+    <!-- ===== 任务：派活 + 对话 ===== -->
     <section class="page task-chat-page" id="page-tasks" data-tab="tasks" hidden>
-      <!-- 仪表盘栏: 工具入口 + 状态 -->
       <div class="task-dash">
         <button class="task-dash-btn" id="task-dash-network" title="网络工具"><span class="task-dash-ico">🌐</span><span>网络</span></button>
-        <button class="task-dash-btn" id="task-dash-sign" title="本机签名状态"><span class="task-dash-ico">🔏</span><span id="tasks-signing">签名…</span></button>
-        <button class="task-dash-btn" id="tasks-refresh" title="刷新任务数据"><span class="task-dash-ico">⟳</span><span>刷新</span></button>
+        <button class="task-dash-btn" id="task-dash-sign" title="签名状态"><span class="task-dash-ico">🔏</span><span id="tasks-signing">签名…</span></button>
+        <button class="task-dash-btn" id="tasks-refresh" title="刷新"><span class="task-dash-ico">⟳</span><span>刷新</span></button>
       </div>
-
-      <!-- 对话框消息流 -->
       <div class="task-chat" id="task-chat">
         <div class="task-chat-empty" id="task-chat-empty">给 Bolloon 派个活… 例：查一下我的身份 / 汇总钱包状态</div>
       </div>
-
-      <!-- 底部派活输入框 -->
       <div class="task-input-bar">
         <input type="text" id="task-input" placeholder="给 Bolloon 派个活… (Enter 发送)" autocomplete="off" />
         <button id="task-input-send">→ 派活</button>
       </div>
-
-      <!-- 网络工具面板 (覆盖层, 默认隐藏; 点仪表盘「网络」打开) -->
       <div class="task-network-panel" id="task-network-panel" hidden>
         <div class="task-network-head">
           <button id="task-network-back">←</button>
           <span style="flex:1;font-weight:600">网络工具</span>
         </div>
         <div class="task-network-body">
-          <div class="list">
-            <div class="list-item" id="item-join-global"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.7 2.6 2.7 14.4 0 17M12 3.5c-2.7 2.6-2.7 14.4 0 17"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/></svg></span><span>一键入网 · 全球智能体网络</span><span class="list-arrow">›</span></div>
-            <div class="list-item" id="item-join-net"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M3.5 9.5a13 13 0 0 1 17 0M6.5 13a8.5 8.5 0 0 1 11 0M9.6 16.3a4 4 0 0 1 4.8 0"/><circle cx="12" cy="19.5" r="1.1" fill="currentColor" stroke="none"/></svg></span><span>加入网络</span><span class="list-arrow">›</span></div>
-          </div>
-          <div class="section-label">Agent 网络</div>
           <div class="list" id="net-members"></div>
-          <div class="section-label">Agent 服务 (协议自动发现)</div>
           <div class="list" id="agent-services"></div>
-          <div class="list"><div class="list-item" id="item-trade"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/><path d="M17.5 14.5l2.5 2.5-2.5 2.5"/></svg></span><span style="flex:1">资源交易</span><span class="list-arrow">›</span></div></div>
-          <div class="section-label">微信息 (微支付)</div>
-          <div class="list" id="x402-info-list"></div>
-          <div class="section-label">智能体控制 (MCP / Skills)</div>
           <div class="list" id="agent-control"></div>
-          <div class="section-label">待人工审批支付</div>
           <div class="list" id="approval-list"></div>
-          <div class="section-label">A2UI 动态面板 (智能体生成)</div>
           <div id="a2ui-root"></div>
-          <div class="section-label">本机授权与签名</div>
-          <div class="sheet-text" id="tasks-hint" style="font-size:12px;color:var(--text-secondary);padding:0 14px 6px"></div>
-          <div class="section-label">群 (与 CLI task group 同一份记录)</div>
-          <div class="list" id="tasks-groups"><div class="sheet-text" style="padding:0 14px">加载中…</div></div>
-          <div style="padding:0 14px 8px">
-            <input id="tasks-group-link" placeholder="群邀请链接 (orbitdb://…?type=group&amp;name=…)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-            <button class="sheet-choice" id="tasks-group-join" style="width:100%;margin-top:8px">入群(需手机确认 + 签名)</button>
-            <input id="tasks-group-name" placeholder="新群名称" style="width:100%;margin-top:8px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-            <button class="sheet-choice" id="tasks-group-create" style="width:100%;margin-top:8px">建群(需手机确认 + 签名)</button>
-          </div>
-          <div class="section-label">公告板 (与 CLI task board 同一份事实)</div>
-          <div class="board-grid" id="tasks-board"><div class="sheet-text" style="padding:0 14px">加载中…</div></div>
-          <div class="section-label">飞轮进度 (只读, 与桌面同一状态)</div>
-          <div class="list" id="tasks-flywheel"><div class="sheet-text" style="padding:0 14px">加载中…</div></div>
-          <div class="section-label">群过程痕迹 (只读, 脱敏)</div>
-          <div class="list" id="tasks-trail-group-picker"></div>
-          <div class="list" id="tasks-trail"><div class="sheet-text" style="padding:0 14px">选一个群看这一期的痕迹</div></div>
-          <div style="padding:0 14px 8px"><button class="sheet-choice" id="tasks-trail-refresh" style="width:100%">读群痕迹</button></div>
         </div>
       </div>
     </section>
 
-  <!-- 我 tab -->
-  <section class="page" id="page-me" data-tab="me" hidden>
-    <div class="profile-card" id="profile-card">
-      <div class="avatar" id="me-avatar" title="点击修改头像">?</div>
-      <div class="profile-info" id="profile-info">
-        <div class="profile-name" id="me-name">未登录</div>
-        <div class="profile-did" id="me-did"></div>
-        <div class="profile-p2p" id="me-p2p"></div>
+    <!-- ===== 我：身份 / 钱包 / 设置 ===== -->
+    <section class="page" id="page-me" data-tab="me" hidden>
+      <div class="profile-card" id="profile-card">
+        <div class="avatar" id="me-avatar" title="点击修改头像">?</div>
+        <div class="profile-info" id="profile-info">
+          <div class="profile-name" id="me-name">未登录</div>
+          <div class="profile-did" id="me-did"></div>
+          <div class="profile-p2p" id="me-p2p"></div>
+        </div>
+        <span class="profile-chevron">›</span>
       </div>
-      <span class="profile-chevron">›</span>
-    </div>
-    <!-- 相册选图 + 裁剪 -->
-    <input type="file" id="avatar-input" accept="image/*" hidden>
-    <div class="list">
-      <div class="list-item" id="item-settings"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M4 7.5h6M14 7.5h6M4 16.5h9M17 16.5h3"/><circle cx="12" cy="7.5" r="2.2"/><circle cx="15" cy="16.5" r="2.2"/></svg></span><span>设置</span><span class="list-arrow">›</span></div>
-      <div class="list-item" id="item-wallet"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="6.5" width="18" height="12" rx="3"/><path d="M3 10.5h18"/><circle cx="16.8" cy="14.5" r="1.3" fill="currentColor" stroke="none"/></svg></span><span>钱包</span><span class="list-arrow">›</span></div>
-      <div class="list-item" id="item-judgments"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M11 3.5l1.8 4.7 4.7 1.8-4.7 1.8L11 16.5l-1.8-4.7L4.5 10l4.7-1.8z"/><path d="M18.5 16l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6z"/></svg></span><span>判断力 API</span><span class="list-arrow">›</span></div>
-      <div class="list-item" id="item-contacts"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="M3.5 9h17"/><circle cx="8.5" cy="14" r="1.6"/><path d="M12 13h5M12 15.5h3"/></svg></span><span>联系方式与授权</span><span class="list-arrow" id="contacts-arrow">›</span></div>
-      <div class="list-item" id="item-login"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="9.5" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg></span><span id="login-label">登录</span><span class="list-arrow">›</span></div>
-      <div class="list-item" id="item-logout"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M14.5 4.5h3.5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-3.5"/><path d="M10 8.5l-3.5 3.5L10 15.5M6.5 12h8"/></svg></span><span>注销</span></div>
-    </div>
-  </section>
-</main>
-
-<!-- 底部 tab -->
-<nav class="tabbar" id="tabbar">
-  <button class="tab active" data-tab="main"><span class="tab-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/></svg></span><span>首页</span></button>
-  <button class="tab" data-tab="friends"><span class="tab-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.8-3 3-4.6 5.5-4.6S13.7 16 14.5 19"/><path d="M17 8v6M14 11h6"/></svg></span><span>通讯录</span></button>
-  <!-- 2026-10-06: 网络+任务合一, 任务 tab 内页内子切换 -->
-  <button class="tab" data-tab="tasks"><span class="tab-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M4 7.5h10M4 12h7M4 16.5h12"/><path d="M18 5.5l1.6 1.6L22 4.5"/><path d="M18 14.5l1.6 1.6L22 13.5"/></svg></span><span>任务</span></button>
-  <button class="tab" data-tab="me"><span class="tab-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></svg></span><span>我</span></button>
-</nav>
-
-<!-- 首页: 创建新会话栏已移除 (2026-10-07: 首页改为世界机会流 + 底部输入框, 不再悬浮遮挡) -->
-
-<!-- 创建智能体: 底部滑入加载 sheet -->
-<!-- 2026-09-16: 首启隐私同意门 — 上架要求: 用户同意前不读取本机数据 / 不连网 / 不申请任何权限 -->
-<div class="sheet" id="privacy-gate" hidden>
-  <div class="sheet-inner">
-    <div class="sheet-title" id="privacy-gate-title">隐私政策与权限说明</div>
-    <div class="sheet-text" id="privacy-gate-body"></div>
-    <a class="privacy-link" href="#" id="privacy-gate-link">阅读完整隐私政策 ›</a>
-    <button class="sheet-choice" id="privacy-agree">同意并继续</button>
-    <button class="sheet-choice sheet-cancel" id="privacy-decline">不同意</button>
-  </div>
-</div>
-
-<!-- 2026-09-16: 应用内隐私政策 (全屏, 离线可用; 权威版 = bolloon.cn/privacy.html) -->
-<div class="chat-page" id="policy-page" hidden>
-  <div class="chat-topbar">
-    <button class="icon-btn" id="policy-back">←</button>
-    <div style="flex:1;font-weight:600">隐私政策</div>
-  </div>
-  <div class="policy-body" id="policy-body"></div>
-</div>
-
-<div class="sheet" id="create-sheet" hidden>
-  <div class="sheet-inner">
-    <div class="spinner"></div>
-    <div class="sheet-text">正在创建智能体...</div>
-  </div>
-</div>
-
-<!-- 添加好友: 底部滑出选择 sheet (点按式: 扫码 / 附近 / 待处理申请 / 手动) -->
-<div class="sheet" id="addfriend-sheet" hidden>
-  <div class="sheet-inner sheet-inner-choices">
-    <div class="sheet-title">连接好友</div>
-    <button class="sheet-choice" id="choice-phone"><svg class="ico" viewBox="0 0 24 24"><path d="M5 4h4l1.5 4.5L8 10a12 12 0 0 0 6 6l1.5-2.5L20 15v4a1.5 1.5 0 0 1-1.6 1.5A17 17 0 0 1 3.5 5.6 1.5 1.5 0 0 1 5 4z"/></svg> 手机号搜索添加</button>
-    <button class="sheet-choice" id="choice-nearby"><svg class="ico" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 16 0"/><path d="M7.5 12a4.5 4.5 0 0 1 9 0"/><circle cx="12" cy="12" r="1.4"/><path d="M12 13.6V19"/></svg> 附近的设备</button>
-    <button class="sheet-choice" id="choice-scan"><svg class="ico" viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M4 12h16"/></svg> 扫码添加</button>
-    <button class="sheet-choice" id="choice-requests"><svg class="ico" viewBox="0 0 24 24"><path d="M6 4h9l4 4v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M9 12h6M9 16h4"/></svg> 待处理申请</button>
-    <button class="sheet-choice sheet-cancel" id="choice-manual">⌨️ 手动输入地址 (兜底)</button>
-    <button class="sheet-choice sheet-cancel" id="choice-cancel">取消</button>
-  </div>
-</div>
-
-<!-- 手机号中心 (2026-10-17, leo: 放进设置, 不单独做独立网页)
-     三件事 = 终端快捷符号对应: =验证自己 · +按手机号加好友 · -列通讯录 -->
-<div class="sheet" id="phone-center-sheet" hidden>
-  <div class="sheet-inner">
-    <div class="sheet-title">手机号与通讯录</div>
-    <div class="sheet-text" id="phone-center-note" style="font-size:12px;color:var(--text-secondary)">手机号是"搜索别人的指针": 验证自己的手机号 → 别人可搜到你; 搜索加好友 → 需对方已发布目录。</div>
-
-    <div class="sheet-title" style="margin-top:10px">验证我的联系方式 (身份确认)</div>
-    <div style="display:flex;gap:8px;margin-bottom:8px">
-      <button class="sheet-choice" id="phone-me-tab-phone" style="flex:1">手机号</button>
-      <button class="sheet-choice" id="phone-me-tab-email" style="flex:1">邮箱 (与短信同层)</button>
-    </div>
-    <div id="phone-me-phone-block">
-      <input id="phone-me-input" type="tel" inputmode="numeric" placeholder="手机号 (如 13812345678)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <input id="phone-me-code" inputmode="numeric" placeholder="验证码" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" disabled />
-        <button class="sheet-choice" id="phone-me-send" style="flex:none;width:110px">发验证码</button>
+      <input type="file" id="avatar-input" accept="image/*" hidden>
+      <div class="list">
+        <div class="list-item" id="item-settings"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M4 7.5h6M14 7.5h6M4 16.5h9M17 16.5h3"/><circle cx="12" cy="7.5" r="2.2"/><circle cx="15" cy="16.5" r="2.2"/></svg></span><span>设置</span><span class="list-arrow">›</span></div>
+        <div class="list-item" id="item-wallet"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="6.5" width="18" height="12" rx="3"/><path d="M3 10.5h18"/><circle cx="16.8" cy="14.5" r="1.3" fill="currentColor" stroke="none"/></svg></span><span>钱包</span><span class="list-arrow">›</span></div>
+        <div class="list-item" id="item-judgments"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M11 3.5l1.8 4.7 4.7 1.8-4.7 1.8L11 16.5l-1.8-4.7L4.5 10l4.7-1.8z"/><path d="M18.5 16l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6z"/></svg></span><span>判断力 API</span><span class="list-arrow">›</span></div>
+        <div class="list-item" id="item-contacts"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="M3.5 9h17"/><circle cx="8.5" cy="14" r="1.6"/><path d="M12 13h5M12 15.5h3"/></svg></span><span>联系方式与授权</span><span class="list-arrow">›</span></div>
+        <div class="list-item" id="item-login"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="9.5" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg></span><span id="login-label">登录</span><span class="list-arrow">›</span></div>
+        <div class="list-item" id="item-logout"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M14.5 4.5h3.5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-3.5"/><path d="M10 8.5l-3.5 3.5L10 15.5M6.5 12h8"/></svg></span><span>注销</span></div>
       </div>
-      <button class="sheet-choice" id="phone-me-verify" style="margin-top:8px;width:100%">验证并绑定</button>
-    </div>
-    <div id="phone-me-email-block" style="display:none">
-      <input id="phone-email-input" type="email" placeholder="邮箱 (如 name@example.com)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <input id="phone-email-code" inputmode="numeric" placeholder="邮箱验证码" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" disabled />
-        <button class="sheet-choice" id="phone-email-send" style="flex:none;width:110px">发验证码</button>
-      </div>
-      <button class="sheet-choice" id="phone-email-verify" style="margin-top:8px;width:100%">验证并绑定</button>
-    </div>
+    </section>
 
-    <div class="sheet-title" style="margin-top:12px">手机号搜索加好友 (+)</div>
-    <input id="phone-find-input" type="tel" inputmode="numeric" placeholder="对方手机号 (如 13812345678)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-    <div id="phone-find-result" style="display:none;margin-top:8px"></div>
-    <button class="sheet-choice" id="phone-find-do" style="margin-top:8px;width:100%">搜索并加好友</button>
+  </div>
 
-    <div class="sheet-title" style="margin-top:12px">与电脑配对 (双向)</div>
-    <div class="sheet-text" style="font-size:12px;color:var(--text-secondary)">① 电脑 /pair 出码 → 手机输码; ② 手机出示验证码 → 电脑 /pair verify 输入。</div>
-    <div style="display:flex;gap:8px;margin-top:8px">
-      <input id="phone-pair-input" inputmode="numeric" placeholder="电脑显示的 6 位配对码" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-      <button class="sheet-choice" id="phone-pair-do" style="flex:none;width:110px">配对</button>
-    </div>
-    <div style="display:flex;gap:8px;margin-top:8px">
-      <button class="sheet-choice" id="phone-pair-scan" style="flex:1">扫电脑二维码</button>
-      <button class="sheet-choice" id="phone-pair-showcode" style="flex:1">出示验证码给电脑</button>
-    </div>
-    <div id="phone-pair-result" style="display:none;margin-top:8px"></div>
+  <!-- 底部 tab -->
+  <nav class="tabbar" id="tabbar">
+    <button class="tab active" data-tab="home"><span class="tab-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/></svg></span><span>首页</span></button>
+    <button class="tab" data-tab="friends"><span class="tab-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.8-3 3-4.6 5.5-4.6S13.7 16 14.5 19"/><path d="M17 8v6M14 11h6"/></svg></span><span>通讯录</span></button>
+    <button class="tab" data-tab="tasks"><span class="tab-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M4 7.5h10M4 12h7M4 16.5h12"/><path d="M18 5.5l1.6 1.6L22 4.5"/><path d="M18 14.5l1.6 1.6L22 13.5"/></svg></span><span>任务</span></button>
+    <button class="tab" data-tab="me"><span class="tab-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></svg></span><span>我</span></button>
+  </nav>
 
-    <div class="sheet-title" style="margin-top:12px">朋友互认 (第二选择)</div>
-    <div class="sheet-text" style="font-size:12px;color:var(--text-secondary)">让已加好友的朋友确认你的手机号 — 好友 DID 签名后成为身份证据 (优先级高于短信/邮箱)。</div>
-    <div style="display:flex;gap:8px;margin-top:8px">
-      <input id="phone-vouch-phone" type="tel" inputmode="numeric" placeholder="要确认的手机号" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-      <input id="phone-vouch-peer" placeholder="好友 P2P 标识 (通讯录)" style="flex:1.4;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-      <button class="sheet-choice" id="phone-vouch-request" style="flex:none;width:90px">请求确认</button>
-    </div>
-    <div id="phone-vouch-pending" style="margin-top:8px"></div>
-    <div id="phone-vouch-summary" style="margin-top:8px;font-size:12px;color:var(--text-secondary)"></div>
-    <button class="sheet-choice" id="phone-vouch-load" style="margin-top:8px;width:100%">刷新互认状态</button>
-
-    <div class="sheet-title" style="margin-top:12px">我的通讯录 (-)</div>
-    <div id="phone-roster"><div class="sheet-text" style="font-size:12px;color:var(--text-secondary)">加载中…</div></div>
-
-    <div style="display:flex;gap:8px;margin-top:12px">
-      <button class="sheet-choice sheet-cancel" id="phone-center-close" style="flex:1">关闭</button>
+  <!-- 隐私同意门 -->
+  <div class="sheet" id="privacy-gate" hidden>
+    <div class="sheet-inner">
+      <div class="sheet-title">隐私政策与权限说明</div>
+      <div class="sheet-text" id="privacy-gate-body"></div>
+      <a class="privacy-link" href="#" id="privacy-gate-link">阅读完整隐私政策 ›</a>
+      <button class="sheet-choice" id="privacy-agree">同意并继续</button>
+      <button class="sheet-choice sheet-cancel" id="privacy-decline">不同意</button>
     </div>
   </div>
-</div>
 
-<!-- 手机号搜索添加好友: 输入手机号 → 目录查账号 → 发好友申请 (2026-10-15) -->
-<div class="sheet" id="phone-search-sheet" hidden>
-  <div class="sheet-inner">
-    <div class="sheet-title">手机号搜索添加</div>
-    <input id="phone-search-input" type="tel" inputmode="numeric" placeholder="输入对方手机号 (如 13812345678)" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:15px;box-sizing:border-box">
-    <div id="phone-search-note" style="font-size:12px;color:var(--text-secondary);margin:8px 2px;line-height:1.6">通过手机号目录查对方账号: 对方需已在电脑端发布目录 (手机号 → DID 指针)。查不到 = 对方未公开, 与不存在同义。</div>
-    <div id="phone-search-result" style="display:none;margin-top:8px"></div>
-    <div style="display:flex;gap:8px;margin-top:12px">
-      <button class="sheet-choice" id="phone-search-do" style="flex:1">搜索</button>
-      <button class="sheet-choice sheet-cancel" id="phone-search-close" style="flex:1">关闭</button>
+  <!-- 创建智能体 sheet -->
+  <div class="sheet" id="create-sheet" hidden>
+    <div class="sheet-inner">
+      <div class="spinner"></div>
+      <div class="sheet-text">正在创建智能体...</div>
     </div>
   </div>
-</div>
 
-<!-- 加入网络: 点按式 sheet (扫一扫 / 附近设备 / 手动粘贴兜底) -->
-<div class="sheet" id="network-sheet" hidden>
-  <div class="sheet-inner sheet-inner-choices">
-    <div class="sheet-title">加入网络</div>
-    <button class="sheet-choice" id="choice-join-nearby"><svg class="ico" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 16 0"/><path d="M7.5 12a4.5 4.5 0 0 1 9 0"/><circle cx="12" cy="12" r="1.4"/><path d="M12 13.6V19"/></svg> 附近的电脑 / 设备</button>
-    <button class="sheet-choice" id="choice-join-scan"><svg class="ico" viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M4 12h16"/></svg> 扫电脑上的二维码</button>
-    <button class="sheet-choice sheet-cancel" id="choice-join-manual">🔗 粘贴入网链接 (兜底)</button>
-    <button class="sheet-choice sheet-cancel" id="choice-join-cancel">取消</button>
+  <!-- 加载中 toast -->
+  <div class="sheet" id="toast-sheet" hidden style="align-items:flex-end;justify-content:center;">
+    <div class="sheet-inner" style="max-width:260px;align-items:center;text-align:center;">
+      <div class="sheet-text" id="toast-text"></div>
+    </div>
   </div>
-</div>
 
-<!-- 附近设备: 点按列表 (点一条即连接 / 建立好友) -->
-<div class="sheet" id="nearby-sheet" hidden>
-  <div class="sheet-inner">
-    <div class="sheet-title" id="nearby-title">附近设备</div>
-    <div class="sheet-text" id="nearby-hint">正在查找...</div>
-    <div class="list" id="nearby-list" style="width:100%;max-height:46vh;overflow-y:auto"></div>
-    <button class="sheet-choice" id="nearby-refresh">↻ 刷新</button>
-    <button class="sheet-choice sheet-cancel" id="nearby-close">关闭</button>
-  </div>
-</div>
-<!-- 微信息 (x402 付费信息): 点一条看详情 → 购买并验真 / 只看元数据 -->
-<div class="sheet" id="x402-sheet" hidden>
-  <div class="sheet-inner">
-    <div class="sheet-title" id="x402-title">微信息</div>
-    <div class="sheet-text" id="x402-body" style="width:100%;max-height:46vh;overflow-y:auto;text-align:left;white-space:pre-wrap;word-break:break-word"></div>
-    <button class="sheet-choice" id="x402-buy">购买并验真</button>
-    <button class="sheet-choice" id="x402-verify">只看元数据 (离线验真)</button>
-    <button class="sheet-choice sheet-cancel" id="x402-close">关闭</button>
-  </div>
-</div>
-
-<!-- 微信息结果: 内容 + 验真分档 (verified / self-attested / content-only / unverified) -->
-<div class="sheet" id="x402-result-sheet" hidden>
-  <div class="sheet-inner">
-    <div class="sheet-title" id="x402-result-title">验真结果</div>
-    <div class="sheet-text" id="x402-result-body" style="width:100%;max-height:56vh;overflow-y:auto;text-align:left;white-space:pre-wrap;word-break:break-word"></div>
-    <button class="sheet-choice sheet-cancel" id="x402-result-close">关闭</button>
-  </div>
-</div>
-</div>
-
-<!-- 2026-08-14: 手机端内化内核 (IndexedDB 数据 + 本地身份 + 支付审批 + Agent). 必须最先加载 -->
-<script src="./mobile-core.js"></script>
-<script src="./mobile.js"></script>
-<!-- 2026-08-12: A2UI 渲染器 (智能体生成动态 UI, 挂载 #a2ui-root) -->
-<script src="./a2ui-client.js"></script>
-<script>
-/* 注册 Service Worker → iPhone "添加到主屏幕" 独立运行 (app-shell 缓存) */
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', function () {
-    navigator.serviceWorker.register('./sw.js').catch(function () {});
-  });
-}
-</script>
+  <!-- 脚本：Tauri 内嵌 axum 服务，前端通过标准 fetch /api/* 请求（同源 HTTP） -->
+  <script src="./mobile-core.js"></script>
+  <script src="./mobile.js"></script>
+  <script>
+    /* Service Worker：iPhone "添加到主屏幕" 独立运行 */
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('./sw.js').catch(function () {});
+      });
+    }
+  </script>
 </body>
 </html>
-
-<!-- 联系方式与持久授权 (2026-09-19): 手机确认一次, Agent 长期自动使用 -->
-<div class="sheet" id="contacts-sheet" hidden>
-  <div class="sheet-inner">
-    <div class="sheet-title">联系方式与授权</div>
-    <div class="sheet-text" id="contacts-effective">加载中...</div>
-    <div class="sheet-text" id="contacts-signing" style="font-size:12px;color:var(--text-secondary)"></div>
-
-    <div id="contacts-approvals"></div>
-
-    <div class="sheet-title" style="margin-top:10px">我的联系方式</div>
-    <div id="contacts-list"><div class="sheet-text">加载中...</div></div>
-
-    <div style="margin-top:10px">
-      <input id="contacts-value" placeholder="手机号 (+86...) 或 邮箱" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <button class="sheet-choice" id="contacts-bind" style="flex:1">绑定并发送验证码</button>
-      </div>
-      <input id="contacts-code" placeholder="收到的验证码" inputmode="numeric" style="width:100%;margin-top:8px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-      <button class="sheet-choice" id="contacts-verify" style="margin-top:8px;width:100%">验证</button>
-    </div>
-
-    <div class="sheet-title" style="margin-top:12px">让 Bolloon 代表你联系外部的人</div>
-    <div class="sheet-text" id="contacts-willnot" style="font-size:12px"></div>
-    <div class="sheet-inner-choices" id="contacts-choices" style="margin-top:8px"></div>
-    <div class="sheet-inner-choices">
-      <button class="sheet-choice" id="contacts-revoke-all">撤销全部授权</button>
-      <button class="sheet-choice sheet-cancel" id="contacts-close">关闭</button>
-    </div>
-  </div>
-</div>
-
-<!-- 任务动作确认页 (2026-09-25): 展示待发内容 → 手机确认 → 设备签名 → 桌面验签执行
-     高风险动作不许绕过这里: 入群 / 建群 / 发公告 / 发进群 / 过程留痕 都走这一个入口。 -->
-<div class="sheet" id="task-confirm-sheet" hidden>
-  <div class="sheet-inner">
-    <div class="sheet-title" id="task-confirm-title">确认这个动作</div>
-    <div class="sheet-text" id="task-confirm-lines" style="font-size:12px"></div>
-    <div class="sheet-text" id="task-confirm-what" style="font-size:12px;color:var(--text-secondary)"></div>
-    <div id="task-confirm-group-wrap" hidden style="margin-top:8px">
-      <div class="sheet-text" data-zh="发到哪个群" data-en="Which group" style="font-size:12px"></div>
-      <div class="list" id="task-confirm-group"></div>
-    </div>
-    <div id="task-confirm-fields" style="margin-top:8px"></div>
-    <button class="sheet-choice" id="task-confirm-preview" hidden data-zh="预览要发进群的那一行" data-en="Preview the exact line to be posted">预览要发进群的那一行</button>
-    <div class="sheet-title" id="task-confirm-content-title" style="margin-top:10px" hidden data-zh="要发进群的内容 (原文)" data-en="Content to be posted (verbatim)">要发进群的内容 (原文)</div>
-    <div class="sheet-text" id="task-confirm-content" style="font-size:12px;white-space:pre-wrap;word-break:break-word" hidden></div>
-    <button class="sheet-choice" id="task-confirm-yes">确认并签名</button>
-    <button class="sheet-choice sheet-cancel" id="task-confirm-no">取消</button>
-  </div>
-</div>
