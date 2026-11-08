@@ -792,10 +792,10 @@
   <div class="hint pay-note">绑定上限 20 个；自建不限，但建议低于 20 个便于管理。私钥只存在本机（0600），既不显示也不上传。</div>
 </dialog>
 
-<!-- 2026-11-08: 额度 = 路由调度使用费 (按次数)。旧充值/token 计费面保留在 DOM 但不再展示, 免得挂断旧事件绑定 -->
+<!-- 2026-11-08: 额度 = 连接公共 API 付费路由的使用费 (按次)。旧充值/token 计费面保留在 DOM 但不再展示, 免得挂断旧事件绑定 -->
 <dialog id="payDlg">
   <div class="pay-head">
-    <div><b>Bolloon 额度</b><span class="pay-sub">按路由调度次数计费 · 模型 API 自配</span></div>
+    <div><b>Bolloon 额度</b><span class="pay-sub">按连接的公共 API 付费路由计费 · 模型 API 自配</span></div>
     <button class="pay-x" id="payClose" aria-label="关闭">✕</button>
   </div>
   <div class="pay-stats">
@@ -804,14 +804,8 @@
     <div><small>当前应付</small><b id="routeFeeAmount">¥0.000000</b></div>
   </div>
   <div class="pay-today" id="payToday"></div>
-  <div class="pay-today" id="routeFeeBox"><b>路由使用费</b> <span id="routeFeeText">读取中…</span>
-    <small class="hint">模型 API 用户自配；付费的是个性化路由调度（与其他用户的模型之间），按次数计费；不按 token、不动贡献积分、不需要充值。</small></div>
-  <div class="pay-today" id="contribBox" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-    <b>🎖 贡献积分 <span id="contribBalance">--</span></b>
-    <small id="contribHint" style="color:var(--muted)">读取中…</small>
-    <button class="mini" onclick="buyContributionService()">用贡献分换增值服务</button>
-    <small class="hint">贡献分是声誉记录，不是付费货币</small>
-  </div>
+  <div class="pay-today" id="routeFeeBox"><b>付费路由使用费</b> <span id="routeFeeText">读取中…</span>
+    <small class="hint">模型 API 用户自配；付费的是「连接的公共 API 付费路由」——别人开放出来、可被调用的那条路由，按连接次数计费；不按 token 收费。</small></div>
   <div id="legacyPay" style="display:none">
   <div class="pay-stats">
     <div><small>历史余额</small><b id="payBalance">$0.00</b></div>
@@ -832,7 +826,7 @@
   </div>
   <div class="pay-pricing" id="payPricing"></div>
   </div>
-  <div class="hint pay-note">额度只按路由调度次数计费；模型 API 与密钥由用户自配，不按 token 收费，也不消耗贡献积分。</div>
+  <div class="hint pay-note">额度只按「连接的公共 API 付费路由」计费；模型 API 与密钥由用户自配，不按 token 收费。</div>
 </dialog>
 <dialog id="friendPanel">
   <b>好友资料</b><div class="hint" id="fpDid" style="font-size:10px;word-break:break-all"></div>
@@ -882,8 +876,6 @@
       <button id="collapseBtn" title="折叠侧边栏" aria-label="折叠侧边栏">☰</button>
     </div>
     <div class="side-actions">
-      <button id="modelPoolBtn" class="mini" title="模型池：每个会话/智能体绑不同模型，可分享" style="margin:6px">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="12" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="M8 11l8-4M8 13l8 4"/></svg> 模型池</button>
       <button class="primary icon-btn" id="newAgentBtn" title="创建新智能体" aria-label="创建新智能体">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <rect x="4" y="8" width="16" height="12" rx="3"></rect>
@@ -956,8 +948,7 @@
       </div>
       <div class="who"><b id="accountName">用户</b><small id="accountDid">did:…</small></div>
       <!-- 2026-10-30 (leo: 网页端没有订阅栏按钮): 额度/订阅入口 (桌面壳在 #topBar, 网页端在这里) -->
-      <button id="payBtn" class="mini" title="额度 / 订阅（按量计费，先充值后使用）" style="margin-left:auto;padding:3px 8px;font-size:11px;white-space:nowrap">额度</button>
-      <span id="sideCredit" title="贡献积分：为别人提供服务获得；消耗很低，可换增值服务">🎖 --</span>
+      <button id="payBtn" class="mini" title="额度 / 订阅（按连接的付费路由计费，先充值后使用）" style="margin-left:auto;padding:3px 8px;font-size:11px;white-space:nowrap">额度</button>
     </div>
   </aside>
   <main>
@@ -984,7 +975,7 @@
       <button id="contactsTabBtn" class="mini" style="display:none">通讯录</button>
       <button id="roomBtn" class="mini" style="display:none">内部商议</button>
       <!-- 2026-10-30 (leo: 订阅放在右上角) -->
-      <button id="subBtn" class="mini" title="帛龙订阅 / 额度（按量计费 · 先充值后使用）" aria-label="帛龙订阅" style="margin-left:auto;color:var(--accent);white-space:nowrap">帛龙订阅</button>
+      <button id="subBtn" class="mini" title="帛龙订阅 / 额度（按连接的付费路由计费 · 先充值后使用）" aria-label="帛龙订阅" style="margin-left:auto;color:var(--accent);white-space:nowrap">帛龙订阅</button>
     </header>
     <div id="chat"><div class="empty"><h1>我们要做什么？</h1></div></div>
     <div id="worldView">
@@ -2233,7 +2224,7 @@ async function openModelPool(){
   const A=(kernel.cores&&kernel.cores.A)||{}, B=(kernel.cores&&kernel.cores.B)||{};
   d.innerHTML=`<div class="pay-head"><div><b>模型池</b> <span class="pay-sub">每个会话/智能体可绑不同模型（含本地 / 自训）</span></div>
     <button class="pay-x" onclick="this.closest('dialog').close()">✕</button></div>
-    <div class="hint">路由使用费：按调度次数计费，100 万次 ${fee.cny_per_million_calls??0.001} 元；模型 API 自配。当前 ${fee.calls??0} 次 · 失败 ${fee.errors??0} 次。</div>
+    <div class="hint">付费路由使用费：按连接次数计费，100 万次 ${fee.cny_per_million_calls??0.001} 元；模型 API 自配。当前 ${fee.calls??0} 次 · 失败 ${fee.errors??0} 次。</div>
     <div style="max-height:46vh;overflow:auto;margin-top:8px">${rows.length?rows.map(m=>`<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--line);padding:6px 0;gap:4px;flex-wrap:wrap">
       <span>${esc(m.name)} <small class="hint">${esc(m.provider)} / ${esc(m.model||'（未填模型）')}${m.has_key?'':' · 无 key'}</small></span>
       <span class="row" style="gap:4px">
@@ -2360,7 +2351,7 @@ function renderPay(){
   if($('routeFeeText'))$('routeFeeText').textContent=`已调度 ${calls} 次 · 100 万次 ${per} 元 · 当前应付 ¥${fee.toFixed(6)}`;
   const td=$('payToday');
   if(td){
-    td.textContent='按「路由调度次数」计费；每一次真实模型调度记一次，缓存命中不计费。贡献积分与 token 都不作为付费依据。';
+    td.textContent='按「连接的公共 API 付费路由」计费；每连接一次记一次，缓存命中不计费。token 不作为付费依据。';
     td.classList.remove('low');
   }
   const c=cfg[payChannel]||{};
