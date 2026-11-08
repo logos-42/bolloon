@@ -161,6 +161,7 @@ pub async fn eval_pack(
             let econ = crate::native::EconCtx {
                 intent_id: format!("eval-{}", pack.id),
                 group_id: None,
+                session_id: None,
                 agent_id: None,
                 surface: label.clone(),
                 bill_did: None,

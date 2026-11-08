@@ -792,24 +792,31 @@
   <div class="hint pay-note">绑定上限 20 个；自建不限，但建议低于 20 个便于管理。私钥只存在本机（0600），既不显示也不上传。</div>
 </dialog>
 
-<!-- 2026-10-30 (用户): 订阅/充值弹窗 —— 按量计费, 先充值后扣费; 默认加密钱包, 也支持支付宝/微信/PayPal (人工核销) -->
+<!-- 2026-11-08: 额度 = 路由调度使用费 (按次数)。旧充值/token 计费面保留在 DOM 但不再展示, 免得挂断旧事件绑定 -->
 <dialog id="payDlg">
   <div class="pay-head">
-    <div><b>Bolloon 额度</b><span class="pay-sub">按量计费 · 先充值后使用</span></div>
+    <div><b>Bolloon 额度</b><span class="pay-sub">按路由调度次数计费 · 模型 API 自配</span></div>
     <button class="pay-x" id="payClose" aria-label="关闭">✕</button>
   </div>
   <div class="pay-stats">
-    <div><small>可用余额</small><b id="payBalance">$0.00</b></div>
-    <div><small>待核销</small><b id="payPending">$0.00</b></div>
-    <div><small>已用</small><b id="payCharged">$0.00</b></div>
+    <div><small>已调度</small><b id="routeCalls">0 次</b></div>
+    <div><small>单价</small><b>100 万次 ¥0.001</b></div>
+    <div><small>当前应付</small><b id="routeFeeAmount">¥0.000000</b></div>
   </div>
   <div class="pay-today" id="payToday"></div>
   <div class="pay-today" id="routeFeeBox"><b>路由使用费</b> <span id="routeFeeText">读取中…</span>
-    <small class="hint">模型 API 用户自配；付费的是个性化路由调度，按次数计费，不按 token、不动贡献积分。</small></div>
+    <small class="hint">模型 API 用户自配；付费的是个性化路由调度（与其他用户的模型之间），按次数计费；不按 token、不动贡献积分、不需要充值。</small></div>
   <div class="pay-today" id="contribBox" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
     <b>🎖 贡献积分 <span id="contribBalance">--</span></b>
     <small id="contribHint" style="color:var(--muted)">读取中…</small>
-    <button class="mini" onclick="buyContributionService()">购买增值服务</button>
+    <button class="mini" onclick="buyContributionService()">用贡献分换增值服务</button>
+    <small class="hint">贡献分是声誉记录，不是付费货币</small>
+  </div>
+  <div id="legacyPay" style="display:none">
+  <div class="pay-stats">
+    <div><small>历史余额</small><b id="payBalance">$0.00</b></div>
+    <div><small>待核销</small><b id="payPending">$0.00</b></div>
+    <div><small>已用</small><b id="payCharged">$0.00</b></div>
   </div>
   <div class="pay-channels" id="payChannels">
     <button data-ch="crypto" class="on">USDC 钱包</button>
@@ -824,7 +831,8 @@
     <button class="primary" id="paySubmit">我已转账，提交待核销</button>
   </div>
   <div class="pay-pricing" id="payPricing"></div>
-  <div class="hint pay-note">历史充值记录仅作参考；现在不按 token 计费，模型 API 用户自配；付费的是个性化路由调度（按次数），不按 token、不动贡献积分。</div>
+  </div>
+  <div class="hint pay-note">额度只按路由调度次数计费；模型 API 与密钥由用户自配，不按 token 收费，也不消耗贡献积分。</div>
 </dialog>
 <dialog id="friendPanel">
   <b>好友资料</b><div class="hint" id="fpDid" style="font-size:10px;word-break:break-all"></div>
@@ -1806,11 +1814,11 @@ function renderChat(){
     const streaming=m.streaming?' streaming':'';
     // 真实想法 (模型 reasonig 流) — 不是我们编的进度文案; 点一下可折叠
     const thinkBox=(m.role!=='user'&&m.think)?`<div class="msg-think" onclick="this.classList.toggle('folded')" title="点击折叠/展开">${escapeHTML(m.think)}</div>`:'';
-    // 阶段列表 (2026-11-04): 只显示**最新 5 条** —— 阶段一多, 折叠栏变很长, 最新那条反而看不到。
-    // 完整的 40 条仍在后端 ChatRuns 里 (前端只取尾部 5 条渲染)。
+    // 执行步骤 (2026-11-08): 显示**调用的工具名 + 允许执行的结果**, 默认展开不折叠。
+    // 只渲染最新 STAGES_SHOWN 条, 完整列表仍在后端 ChatRuns 里。
     const stList=(m.role!=='user'&&Array.isArray(m.stages))?m.stages.slice(-STAGES_SHOWN):[];
     const stages=stList.length
-      ?`<div class="msg-stages${m.stagesFolded?' folded':''}"><span class="ms-hd" onclick="toggleStages(this)">执行步骤 ${m.stages.length} · 工具/调用名 · 点击折叠</span><ol>${stList.map(s=>`<li>${escapeHTML(String(s))}</li>`).join('')}</ol></div>`:'';
+      ?`<div class="msg-stages${m.stagesFolded?' folded':''}"><span class="ms-hd" onclick="toggleStages(this)">执行步骤 ${m.stages.length} · 工具/结果与回上下文 · 点击折叠</span><ol>${stList.map(s=>`<li>${escapeHTML(String(s))}</li>`).join('')}</ol></div>`:'';
     return `<div class="msg-row ${role}" data-index="${i}">
       <div class="msg ${role}${streaming}">${thinkBox}${stages}${body}
         ${(m.images||[]).map(im=>`<img src="${im}" alt="">`).join('')}
@@ -1882,7 +1890,7 @@ function paintStreamingBubble(index,text,think){
   if(nearBottom(chat))chat.scrollTop=chat.scrollHeight;
 }
 
-const STAGES_SHOWN=20; // 阶段列表只渲染最新 5 条 (后端仍留 40 条历史)
+const STAGES_SHOWN=20; // 执行步骤只渲染最新 20 条 (后端 ChatRuns 仍留全量)
 /* 2026-11-05 (用户: 流光卡片会突然消失): 阶段卡片 = 这轮的「过程」, 后端 ChatRuns.stages 是唯一事实来源。
    以前 ① SSE 里根本没有 stage 事件 (chat_stream 注释写了 stage, StreamChunk 只有 thought/delta/done);
         ② paintStreamingBubble 建 .stream-body 时把 .msg-stages 当旧节点一起删了 —— 卡片于是闪一下就没了。
@@ -1915,7 +1923,7 @@ function paintStages(index,stages){
     msg.insertBefore(box,msg.querySelector(':scope > .stream-body')||null);
   }
   const hd=box.querySelector('.ms-hd');
-  const title=`执行步骤 ${all.length} · 工具/调用名 · 点击折叠`;
+  const title=`执行步骤 ${all.length} · 工具/结果与回上下文 · 点击折叠`;
   if(hd&&hd.textContent!==title)hd.textContent=title;
   const ol=box.querySelector('ol');
   const sig=list.join('\u0001');
@@ -1997,14 +2005,15 @@ async function pickAgent(id){
   state.active_session_id=s.id;
   // 把"用户选中谁"落盘 (不 await: 失败也不挡本地切换)
   api('/api/active',{method:'POST',body:JSON.stringify({agent_id:id,session_id:s.id})}).catch(()=>{});
-  renderSidebar();renderHeader();renderChat();flushQueue();renderSendState();resumeRunning();
+  renderSidebar();renderHeader();renderChat();flushQueue();renderSendState();resumeRunning();applySessionBindingLabel();
 }
 function pickSession(id){
   cancelEdit();
   state.active_session_id=id;
   const sess=state.sessions.find(x=>x.id===id);
+  if(sess&&sess.agent_id)state.active_agent_id=sess.agent_id;
   api('/api/active',{method:'POST',body:JSON.stringify({session_id:id,...(sess?{agent_id:sess.agent_id}:{})})}).catch(()=>{});
-  renderSidebar();renderChat();flushQueue();renderSendState();resumeRunning();
+  renderSidebar();renderChat();flushQueue();renderSendState();resumeRunning();applySessionBindingLabel();
 }
 
 async function copyText(text){
@@ -2132,52 +2141,120 @@ const PAY_LABEL={crypto:'USDC 钱包', alipay:'支付宝', wechat:'微信', payp
 const PAY_CHAIN_LABEL={base:'BASE 链 (USDC)', 'base-sepolia':'BASE 测试网'};
 // ── 2026-11-08: 卡片互动 / 文档阅读 / 模型池 (Kernel 统一事件面) ──
 function isDocCard(o){
-  const t=((o&&o.card&&o.card.tags)||o.tags||[]).map(String).join(' ').toLowerCase();
-  return /doc|文档|article|文章|note|笔记|report|报告/.test(t)||String(o&&o.summary||'').length>180;
+  if(!o)return false;
+  const c=o.card||{};
+  const t=[].concat(c.tags||[],o.tags||[],c.category||[]).map(String).join(' ').toLowerCase();
+  const hasBody=!!(c.asset&&(c.asset.content||c.asset.text))||!!c.content||String(o.summary||'').length>180;
+  const docish=/doc|文档|article|文章|note|笔记|report|报告|md|markdown|pdf|read|阅读/.test(t)
+    ||/文档|文章|笔记|报告/.test(String(o.title||''))
+    ||/\.(md|markdown|txt|pdf|docx?|epub)(\?|$)/i.test(String(o.url||''));
+  const kind=String(o.kind||c.kind||'').toLowerCase();
+  return docish||hasBody||kind==='doc'||kind==='article'||kind==='report';
 }
-async function reactWorldCard(id,type){
-  let text='';
-  if(type==='comment'){ text=prompt('写一句评论',''); if(text===null)return; }
-  const r=await api('/api/world/cards/react',{method:'POST',body:JSON.stringify({id,type,text})}).catch(e=>({error:e.message}));
+async function reactWorldCard(id,type,text){
+  // 分享先真投递成功再记一次互动, 取消/失败不伪造「已分享」
+  if(type==='share' && !(await shareWorldCard(id)))return;
+  const r=await api('/api/world/cards/react',{method:'POST',body:JSON.stringify({id,type,text:text||''})}).catch(e=>({error:e.message}));
   if(!r||r.ok!==true){toast('操作失败: '+((r&&r.error)||'未知'));return;}
-  toast(type==='comment'?'评论已保存':'已记录'); await loadWorld();
+  if(r.reactions&&worldCardsById[id])worldCardsById[id].reactions=r.reactions;
+  toast(type==='comment'?'评论已保存':(r.action==='off'?'已取消':(r.action==='duplicate'?'已经分享过':(type==='share'?'已分享':'已记录'))));
+  await loadWorld();
+}
+async function openCommentDialog(id){
+  let d=$('cardCommentDlg');
+  if(!d){d=document.createElement('dialog');d.id='cardCommentDlg';document.body.appendChild(d);}
+  d.innerHTML=`<div class="pay-head"><b>写一句评论</b><button class="pay-x" onclick="this.closest('dialog').close()">✕</button></div>
+    <textarea id="cardCommentText" rows="4" style="width:100%;box-sizing:border-box" placeholder="说点什么（最长 300 字）"></textarea>
+    <div class="row" style="margin-top:8px"><button class="primary" onclick="submitCardComment('${escapeHTML(id)}')">发表</button></div>`;
+  if(!d.open)d.showModal();
+}
+async function submitCardComment(id){
+  const t=(($('cardCommentText')&&$('cardCommentText').value)||'').trim();
+  if(!t){toast('评论不能为空');return;}
+  const d=$('cardCommentDlg'); if(d)d.close();
+  await reactWorldCard(id,'comment',t);
 }
 function openDocReader(id){
-  const o=worldCardsById[id]||{};
-  const c=o.card||{};
-  const body=String(c.asset&&c.asset.content||c.summary||o.summary||'');
+  const o=worldCardsById[id]||{}, c=o.card||{};
+  const body=String((c.asset&&(c.asset.content||c.asset.text))||c.content||c.summary||o.summary||'');
   let d=$('docReader');
-  if(!d){ d=document.createElement('div'); d.id='docReader'; d.className='docreader'; document.body.appendChild(d); }
-  d.innerHTML=`<button class="mclose" onclick="this.parentNode.remove()">✕</button>
+  if(!d){ d=document.createElement('div'); d.id='docReader'; d.className='docreader'; document.body.appendChild(d);
+    d.addEventListener('click',ev=>{ if(ev.target===d)d.remove(); }); }
+  const paras=escapeHTML(body).split(/\n{2,}/).map(p=>`<p>${p.replace(/\n/g,'<br>')}</p>`).join('');
+  d.innerHTML=`<button class="mclose" aria-label="关闭阅读" onclick="this.closest('.docreader').remove()">✕</button>
     <article><h1>${escapeHTML(o.title||'文档')}</h1>
-    <div class="docmeta">${escapeHTML(o.by||c.provider_did||'')} · ${(c.tags||[]).map(escapeHTML).join(' / ')}</div>
-    <div class="docbody">${escapeHTML(body).replace(/\n/g,'<br>')}</div></article>`;
+    <div class="docmeta">${escapeHTML(o.by||c.provider_did||'')} · ${[].concat(c.tags||[],o.tags||[]).map(escapeHTML).join(' / ')}</div>
+    <div class="docbody">${paras||'<p>（这张卡片没有正文）</p>'}</div></article>`;
+  d.scrollTop=0;
+}
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){const d=$('docReader'); if(d)d.remove();} });
+
+// ── 模型池: 每个会话/智能体可绑不同 provider (含本地与自训模型), 下次打开沿用 ──
+let modelBindingsCache={};
+async function loadModelBindings(){
+  try{ modelBindingsCache=(await api('/api/models/bindings')).bindings||{}; }catch(_){ modelBindingsCache={}; }
+  return modelBindingsCache;
+}
+function applySessionBindingLabel(){
+  const sid=state&&state.active_session_id, aid=state&&state.active_agent_id;
+  const e=(modelBindingsCache.session&&sid&&modelBindingsCache.session[sid])
+       ||(modelBindingsCache.agent&&aid&&modelBindingsCache.agent[aid]);
+  if(e&&e.provider&&e.model){
+    const label=e.provider+' / '+e.model+'（本会话）';
+    if($('modelLabel'))$('modelLabel').textContent=label;
+    if($('settingsModelLabel'))$('settingsModelLabel').textContent=label;
+  }
+}
+async function bindModelHere(provider,model,scope){
+  const id=scope==='session'?(state.active_session_id||''):(state.active_agent_id||'');
+  if(!id){toast('先选中一个'+(scope==='session'?'会话':'智能体'));return;}
+  if(!model){toast('这个 provider 没有可用模型名');return;}
+  const r=await api('/api/models/bind',{method:'POST',body:JSON.stringify({scope,id,provider,model})}).catch(e=>({error:e.message}));
+  if(!r||r.ok!==true){toast('绑定失败: '+((r&&r.error)||'未知'));return;}
+  await loadModelBindings(); applySessionBindingLabel();
+  toast((scope==='session'?'本会话':'本智能体')+'已绑定 '+provider+' / '+model);
+  openModelPool();
 }
 async function openModelPool(){
-  const [ms,bind,fee,custom,kernel]=await Promise.all([
-    api('/api/models').catch(()=>({models:[]})),
-    api('/api/models/bindings').catch(()=>({bindings:{}})),
+  const [ms,fee,custom,kernel,vfs]=await Promise.all([
+    api('/api/models').catch(()=>({providers:[]})),
     api('/api/pay/route-fee').catch(()=>({})),
     api('/api/models/custom').catch(()=>({models:{}})),
     api('/api/kernel/state').catch(()=>({})),
+    api('/api/kernel/vfs?path=/').catch(()=>({entries:[]})),
   ]);
-  const customNames=Object.keys((custom.models||{}));
-  const list=(ms.models||ms.providers||[]).concat(customNames.map(x=>({id:x,custom:true})));
+  await loadModelBindings();
+  const rows=(ms.providers||[]).map(p=>({provider:p.name,model:p.default||'',name:p.display||p.name,custom:false,has_key:p.has_key}));
+  Object.entries(custom.models||{}).forEach(([n,e])=>rows.push({
+    provider:e.provider||'',model:e.model||n,name:'自训 · '+n+(e.wired?'':'（仅登记）'),custom:true,has_key:!!e.wired}));
+  const esc=s=>escapeHTML(String(s||'')).replace(/'/g,'&#39;').replace(/"/g,'&quot;');
   let d=$('modelPoolDlg');
   if(!d){ d=document.createElement('dialog'); d.id='modelPoolDlg'; document.body.appendChild(d); }
-  d.innerHTML=`<div class="pay-head"><div><b>模型池</b> <span class="pay-sub">每个会话/智能体可绑不同模型（含本地）</span></div>
+  const A=(kernel.cores&&kernel.cores.A)||{}, B=(kernel.cores&&kernel.cores.B)||{};
+  d.innerHTML=`<div class="pay-head"><div><b>模型池</b> <span class="pay-sub">每个会话/智能体可绑不同模型（含本地 / 自训）</span></div>
     <button class="pay-x" onclick="this.closest('dialog').close()">✕</button></div>
-    <div class="hint">路由使用费：按调度次数计费，100 万次 ${fee.cny_per_million_calls??0.001} 元；模型 API 自配，不按 token 收费。当前 ${fee.calls??0} 次。</div>
-    <div style="max-height:52vh;overflow:auto;margin-top:8px">${list.length?list.map(m=>`<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--line);padding:6px 0">
-      <span>${escapeHTML(String(m.id||m.model||m.name||m))}</span>
-      <button class="mini" onclick="shareModelEntry('${escapeHTML(String(m.id||m.model||m.name||m))}',${m.custom?true:false})">分享</button></div>`).join(''):'<div class="hint">还没有登记模型（到设置里登记本地/云端 provider）</div>'}</div>
-    <div class="row" style="margin-top:8px"><button class="mini" onclick="registerCustomModel()">＋ 接入我训练的小模型</button>
-      <span class="hint">Kernel A=${escapeHTML(String((kernel.cores&&kernel.cores.A&&kernel.cores.A.role)||'?'))} / B=${escapeHTML(String((kernel.cores&&kernel.cores.B&&kernel.cores.B.role)||'?'))} · 相位错开=${String((kernel.cores&&kernel.cores.A&&kernel.cores.A.phase_ok)||false)}</span></div>
-    <div class="hint">绑定：<pre style="white-space:pre-wrap;font-size:11px">${escapeHTML(JSON.stringify(bind.bindings||{},null,2))}</pre></div>`;
+    <div class="hint">路由使用费：按调度次数计费，100 万次 ${fee.cny_per_million_calls??0.001} 元；模型 API 自配。当前 ${fee.calls??0} 次 · 失败 ${fee.errors??0} 次。</div>
+    <div style="max-height:46vh;overflow:auto;margin-top:8px">${rows.length?rows.map(m=>`<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--line);padding:6px 0;gap:4px;flex-wrap:wrap">
+      <span>${esc(m.name)} <small class="hint">${esc(m.provider)} / ${esc(m.model||'（未填模型）')}${m.has_key?'':' · 无 key'}</small></span>
+      <span class="row" style="gap:4px">
+        <button class="mini" onclick="bindModelHere('${esc(m.provider)}','${esc(m.model)}','session')">绑本会话</button>
+        <button class="mini" onclick="bindModelHere('${esc(m.provider)}','${esc(m.model)}','agent')">绑本智能体</button>
+        <button class="mini" onclick="shareModelEntry('${esc(m.custom?m.name:m.provider)}',${m.custom})">分享</button></div></div>`).join(''):'<div class="hint">还没有登记模型（到设置里登记本地/云端 provider）</div>'}</div>
+    <div class="row" style="margin-top:8px;flex-wrap:wrap"><button class="mini" onclick="registerCustomModel()">＋ 接入我训练的小模型</button>
+      <button class="mini" onclick="kernelTickNow()">立即互检双核</button>
+      <span class="hint">Kernel A=${esc(A.role||'?')} ${A.alive?'alive':'stale'} · B=${esc(B.role||'?')} ${B.alive?'alive':'stale'} · 相位差 ${esc(kernel.phase_diff_ms??'?')}ms · 相位正确=${String(!!kernel.phase_ok)} · 来源=${esc(kernel.ha_source||'?')} · tick ${esc(kernel.ticks??0)}</span></div>
+    <div class="hint">VFS：${(vfs.entries||[]).filter(x=>x.exists).map(x=>esc(x.path)).join(' ')||'（暂无可读文件）'} ·
+      三模式事件 ${(kernel.events_recent||[]).length} 条</div>
+    <div class="hint">当前绑定：<pre style="white-space:pre-wrap;font-size:11px">${escapeHTML(JSON.stringify(modelBindingsCache,null,2))}</pre></div>`;
   if(!d.open)d.showModal();
 }
+async function kernelTickNow(){
+  const r=await api('/api/kernel/tick',{method:'POST',body:'{}'}).catch(e=>({error:e.message}));
+  if(r&&r.ok===false)toast('互检失败: '+(r.error||'未知'));
+  openModelPool();
+}
 function shareModelEntry(name,isCustom){
-  if(isCustom)return shareModelCard(name);
+  if(isCustom)return shareModelCard(name.replace(/^自训 · /,'').replace(/（仅登记）$/,''));
   return shareModel(name);
 }
 async function shareModelCard(name){
@@ -2186,10 +2263,13 @@ async function shareModelCard(name){
   else toast('分享失败: '+((r&&(r.error||'未知'))||'未知'));
 }
 async function registerCustomModel(){
-  const name=prompt('模型名（自己训练的小模型）',''); if(!name)return;
-  const path=prompt('GGUF 文件路径或模型目录（本机真实存在）',''); if(!path)return;
-  const r=await api('/api/models/custom',{method:'POST',body:JSON.stringify({name,path})}).catch(e=>({error:e.message}));
-  if(r&&r.ok===true){toast('已接入模型池：'+name);openModelPool();}
+  const name=prompt('模型名（自己训练的小模型，只用字母数字 - _）',''); if(!name)return;
+  const path=prompt('GGUF 文件或模型目录（可留空，仅登记）','');
+  const base=prompt('本机推理端点 OpenAi 兼容 base_url（留空 = 只登记、不接进模型通路）','http://127.0.0.1:8080/v1');
+  const model=prompt('推理服务里的模型名（留空用模型名）','');
+  const body={name,path:path||'',base_url:base||'',model:model||''};
+  const r=await api('/api/models/custom',{method:'POST',body:JSON.stringify(body)}).catch(e=>({error:e.message}));
+  if(r&&r.ok===true){toast(r.wired?('已接进模型通路：'+(r.provider||name)):'已登记（要给本机推理端点才可调用）');openModelPool();}
   else toast('接入失败: '+((r&&(r.error||'未知'))||'未知'));
 }
 function shareModel(name){
@@ -2240,6 +2320,9 @@ async function buyContributionService(){
 }
 setTimeout(refreshContributionBalance,2200);
 setInterval(refreshContributionBalance,60000);
+// 下次打开沿用上一次的会话/智能体模型绑定 (网页与终端读同一份 model-bindings.json)
+setTimeout(async()=>{await loadModelBindings();applySessionBindingLabel();},1800);
+setInterval(loadModelBindings,60000);
 
 async function openPayDialog(){
   const d=$('payDlg'); if(!d) return;
@@ -2268,16 +2351,17 @@ function renderPay(){
     b.dataset.ready=ready?'1':'0';
     b.title=ready?'':'本机还没配置 '+PAY_LABEL[ch]+' 的收款信息 (pay/config.json)';
   });
-  // 今日用量 + 低余额提醒 (阈值来自 /api/pay/summary 的 low_balance)
-  const today=(paySummary&&paySummary.today)||null;
-  const low=(paySummary&&paySummary.low_balance)||null;
+  // 2026-11-08: 额度只回答「调度了几次 / 应付多少」, 不再展示 token 单价、余额与充值提醒。
+  const rf=(paySummary&&paySummary.route_fee)||{};
+  const calls=Number(rf.calls||0), per=Number(rf.cny_per_million_calls||0.001);
+  const fee=calls/1e6*per;
+  if($('routeCalls'))$('routeCalls').textContent=calls+' 次';
+  if($('routeFeeAmount'))$('routeFeeAmount').textContent='¥'+fee.toFixed(6);
+  if($('routeFeeText'))$('routeFeeText').textContent=`已调度 ${calls} 次 · 100 万次 ${per} 元 · 当前应付 ¥${fee.toFixed(6)}`;
   const td=$('payToday');
   if(td){
-    const parts=[];
-    if(today) parts.push(`今日 ${today.calls} 次 · 输入 ${today.tokens_in} / 输出 ${today.tokens_out} tokens · 花费 $${Number(today.cost_usd||0).toFixed(3)}`);
-    if(low&&low.hit) parts.push(`⚠ 余额低于 $${Number(low.threshold_usd||0).toFixed(2)}，建议充值`);
-    td.textContent=parts.join(' · ');
-    td.classList.toggle('low', !!(low&&low.hit));
+    td.textContent='按「路由调度次数」计费；每一次真实模型调度记一次，缓存命中不计费。贡献积分与 token 都不作为付费依据。';
+    td.classList.remove('low');
   }
   const c=cfg[payChannel]||{};
   // 选中通道没配收款信息时, 明说「没配」而不是留一片空白
@@ -2714,24 +2798,11 @@ async function pinSession(){
 
 // 2026-10-28 (用户): 最右上龙形订阅按钮 — 订阅 Bolloon 更新推送 (后端订阅端点待接, 先给诚实占位反馈)
 
-// ── 2026-10-30: 余额常驻提醒 —— 不打开充值弹窗也能看到; 关掉只在本次会话生效 ──
+// ── 2026-11-08: 付费改成「路由调度次数」后, 余额/充值提醒整套下线 (不再有欠费这回事) ──
 let payBannerDismissed=false, payBannerCooldownUntil=0;
 async function checkPayBanner(){
-  if(payBannerDismissed) return;
-  const el=$('payBanner'); if(!el) return;
-  let sum=null;
-  try{ sum=await api('/api/pay/summary'); }catch(_){ sum=null; }
-  const low=sum&&sum.low_balance;
-  // 2026-10-30 (用户): 有可用模型通路 (自带 key / 本地模型) 时**不提醒**充值 —— 那不是他缺钱, 是他不需要买。
-  if(!low||!low.hit||(sum&&sum.llm_ready)){ el.classList.add('hidden'); return; }
-  if(Date.now()<payBannerCooldownUntil) return;
-  const bal=Number(sum.balance_usd||0).toFixed(2), th=Number(low.threshold_usd||0).toFixed(2);
-  const today=sum.today||{};
-  $('payBannerText').textContent=`余额 $${bal} 低于提醒线 $${th} — 今日 ${today.calls||0} 次调用${today.cost_usd?` · 已花 $${Number(today.cost_usd).toFixed(3)}`:''}，充值后继续用云端模型`;
-  el.classList.remove('hidden');
-  // 默认只显示 20 秒, 之后收起来 30 分钟再看一眼 (不刷屏、也不彻底失联)
-  clearTimeout(el._hideTimer);
-  el._hideTimer=setTimeout(()=>{ el.classList.add('hidden'); payBannerCooldownUntil=Date.now()+30*60*1000; },20000);
+  const el=$('payBanner');
+  if(el) el.classList.add('hidden');
 }
 $('payBannerTopup').onclick=()=>openPayDialog();
 $('payBannerClose').onclick=()=>{ payBannerDismissed=true; $('payBanner').classList.add('hidden'); };
@@ -3251,24 +3322,46 @@ applyTheme(localStorage.getItem(THEME_KEY) || "");
 
 // ---------- 世界模式 (对齐 TS routes-world: 意图/机会流/校准环/信箱) ----------
 
-// ── 2026-11-06: 任何点击都优化 bolloon 本身 (记忆/判断力/工作流/信念) ──
-let __traceLast = 0;
-function traceEvent(event, target, label, tags) {
-  const t = Date.now();
-  if (t - __traceLast < 350) return;
-  __traceLast = t;
-  const body={event,target:String(target||'').slice(0,80),label:String(label||'').slice(0,80),tags:tags||[]};
-  fetch('/api/trace',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>{});
-  const mode=inWorldMode?'world':(document.body.classList.contains('room-open')?'group':'agent');
-  fetch('/api/kernel/record',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({mode,kind:event==='switch'?'switch':'button',label:body.label,detail:{target:body.target}})}).catch(()=>{});
+// ── 2026-11-06 / 2026-11-08: 任何点击与**所有开关**都进意图/按钮记录与 Kernel 事件面 ──
+const __traceAt=new Map();
+function kernelMode(){
+  // 2026-11-08 修复: room-open 加在 #app 上, 不是 document.body —— 以前群组永远被记成 agent
+  const app=$('app');
+  return typeof inWorldMode==='function'&&inWorldMode()?'world':((app&&app.classList.contains('room-open'))?'group':'agent');
 }
+function traceEvent(event, target, label, tags, opts) {
+  opts=opts||{};
+  const key=event+'|'+String(target||'')+'|'+String(label||'');
+  const t=Date.now();
+  if(!opts.force&&t-(__traceAt.get(key)||0)<350)return; // 节流按「事件+对象」, 不再吞掉别处点击
+  __traceAt.set(key,t);
+  const body={event,target:String(target||'').slice(0,80),label:(String(label||'').trim().slice(0,80)||event),tags:tags||[],mode:opts.mode||kernelMode()};
+  fetch('/api/trace',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>{});
+  // switch 由 /api/trace 的 record_interaction 统一写意图 + Kernel 按钮记录, 这里不重复上报
+  if(event!=='switch') fetch('/api/kernel/record',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({mode:opts.mode||kernelMode(),kind:'button',
+      label:body.label,detail:{target:body.target,event}})}).catch(()=>{});
+}
+// 所有 checkbox / radio / select 的 change 都上报 switch (不靠按钮文字猜)
+document.addEventListener('change',(e)=>{
+  const el=e.target;
+  if(!el||!el.matches||!el.matches('input[type=checkbox],input[type=radio],select'))return;
+  const id=el.name||el.id||'开关';
+  let label=(el.id&&document.querySelector('label[for="'+el.id+'"]')?.innerText)
+      ||(el.closest('label')?.innerText)||el.getAttribute('aria-label')||id;
+  label=String(label).trim().replace(/\s+/g,' ').slice(0,40);
+  const state=el.tagName==='SELECT'?('→ '+String(el.value).slice(0,20)):(el.checked?'开':'关');
+  traceEvent('switch',id,label+' '+state,[],{force:true});
+},true);
 document.addEventListener('click', (e) => {
-  const el = e.target && e.target.closest ? e.target.closest('button,a,.opp-card,.item') : null;
+  const t=e.target;
+  if(t&&t.matches&&t.matches('input,select'))return;   // 开关由 change 负责, 不记两遍
+  if(t&&t.closest&&t.closest('[data-no-trace]'))return; // 卡片互动有自己的落点
+  const el = t && t.closest ? t.closest('button,a,.opp-card,.item') : null;
   if (!el) return;
   const card = el.closest ? el.closest('.opp-card') : null;
   const id = (card && card.dataset.oid) || '';
-  const txt = String(el.innerText || el.getAttribute('title') || '').trim().slice(0,40);
+  const txt = String(el.innerText || el.getAttribute('title') || el.id || '按钮').trim().slice(0,40);
   let ev = 'click';
   if (/接受/.test(txt)) ev = 'accept';
   else if (/拒绝/.test(txt)) ev = 'reject';
@@ -3546,25 +3639,23 @@ async function publishPaidCard(id){
   setDesktopModule && setDesktopModule('world');
   await loadWorld();
 }async function shareWorldCard(id){
-  const o=worldCardsById[id]; if(!o){toast('卡片不存在');return;}
+  const o=worldCardsById[id]; if(!o){toast('卡片不存在');return false;}
   await loadContacts();
   const names=contactNameMap();
   const friends=(contacts&&contacts.friends)||[];
-  if(!friends.length){toast('还没有好友 — 先去通讯录加好友');return;}
+  if(!friends.length){toast('还没有好友 — 先去通讯录加好友');return false;}
   const r=await pickDialog({title:'分享卡片给好友',hint:'会按 bolloon-world-card 协议签名投递',items:friends.map(d=>({value:d,label:names[d]||shortDid(d),sub:shortDid(d)}))});
-  if(!r||!r.selected.length)return;
-  // 组装可跨机的 WorldCard (fulfill 卡有完整 card; 收件箱直放条目就地构造, 不编字段)
+  if(!r||!r.selected.length)return false;
+  // 组装可跨机的 WorldCard; `to` 是本机定向目标, 后端会逐个校验是好友 (不进签名载荷)
   const card=o.card||{
     title:o.title||'', summary:o.summary||'', media:o.media||[], cover:null,
-    provider_did:o.by||'', provider_name:null, scope:'public',
+    provider_did:o.by||'', provider_name:null, scope:'private',
     issued_at_ms:o.ts||Date.now(), category:null, tags:o.tags||[], actions:[], reply_to:o.intent_id||null,
   };
-  let ok=0;const fail=[];
-  for(const d of r.selected){
-    const x=await api('/api/world/cards/share',{method:'POST',body:JSON.stringify(card)}).catch(e=>({error:e.message}));
-    if(x&&x.error)fail.push((names[d]||shortDid(d))+': '+x.error);else ok++;
-  }
-  toast(fail.length?`已分享 ${ok} 位；失败 ${fail[0]}`:`已按协议分享给 ${ok} 位好友`);
+  const x=await api('/api/world/cards/share',{method:'POST',body:JSON.stringify({...card,to:r.selected})}).catch(e=>({error:e.message}));
+  if(!x||x.error||x.ok===false){toast('分享失败: '+((x&&(x.error||'未知'))||'未知'));return false;}
+  toast(`已按协议分享给 ${x.target_count||r.selected.length} 位好友（${x.delivery||'定向'}）`);
+  return true;
 }
 async function deleteWorldCard(){
   try{
@@ -3676,10 +3767,10 @@ async function loadWorld() {
           ${(o.accepted || o.state === 'accepted') ? '<span class="opp-state accepted">✓ 已接受 · 已进推荐正反馈</span>' : `<button data-act="accept" data-id="${o.id}">接受</button>`}
           ${o.state === 'rejected' ? '<span class="opp-state rejected">⛔ 已拒绝 · 已降权</span>' : ''}
           <button data-act="ignore" data-id="${o.id}">忽略</button>
-          <button title="点赞" onclick="event.stopPropagation();reactWorldCard('${o.id}','like')">👍 ${(o.reactions&&o.reactions.like)||0}</button>
-          <button title="喜欢" onclick="event.stopPropagation();reactWorldCard('${o.id}','favorite')">❤️ ${(o.reactions&&o.reactions.favorite)||0}</button>
-          <button title="评论" onclick="event.stopPropagation();reactWorldCard('${o.id}','comment')">💬 ${(o.reactions&&o.reactions.comments&&o.reactions.comments.length)||0}</button>
-          <button title="分享" onclick="event.stopPropagation();shareWorldCard('${o.id}')">↗ 分享</button>
+          <button data-no-trace title="点赞" onclick="event.stopPropagation();reactWorldCard('${o.id}','like')">👍 ${(o.reactions&&o.reactions.like)||0}</button>
+          <button data-no-trace title="喜欢" onclick="event.stopPropagation();reactWorldCard('${o.id}','favorite')">❤️ ${(o.reactions&&o.reactions.favorite)||0}</button>
+          <button data-no-trace title="评论" onclick="event.stopPropagation();openCommentDialog('${o.id}')">💬 ${(o.reactions&&(typeof o.reactions.comments==='number'?o.reactions.comments:(o.reactions.comments||[]).length))||0}</button>
+          <button data-no-trace title="分享" onclick="event.stopPropagation();reactWorldCard('${o.id}','share')">↗ 分享 ${(o.reactions&&o.reactions.share)||0}</button>
           ${isDocCard(o)?`<button title="阅读" onclick="event.stopPropagation();openDocReader('${o.id}')">📖 阅读</button>`:''}
           ${(o.card&&o.card.actions||[]).some(a=>String(a.url||'').startsWith('x402:item/'))?`<button style="border-color:var(--accent);color:var(--accent)" onclick="event.stopPropagation();payWorldCard('${o.id}')">PAY x402</button>`:''}
           <span class="wcard-vote"><button class="up" onclick="voteWorldCard('${o.id}','up')">+${o.up||0}</button><button onclick="voteWorldCard('${o.id}','down')">-${o.down||0}</button></span>
@@ -3742,6 +3833,12 @@ if ($("worldIntentInput")) $("worldIntentInput").addEventListener("keydown", e =
 const isDesktopShell = /[?&]app=desktop\b/.test(location.search);
 let desktopModule='chat';
 function setDesktopModule(mod) {
+  // 模式切换本身要进统一事件面 (kind=mode, 机制核 A), 光靠点击代理只有 button
+  if(desktopModule!==mod){
+    const km=mod==='world'?'world':(mod==='contacts'?'group':'agent');
+    fetch('/api/kernel/record',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({mode:km,kind:'mode',label:'切换到 '+mod+' 模式',detail:{module:mod}})}).catch(()=>{});
+  }
   desktopModule = mod;
   document.body.classList.remove('dmod-chat', 'dmod-world', 'dmod-contacts');
   document.body.classList.add('dmod-' + mod);
@@ -3934,7 +4031,7 @@ async function syncState(force){
     if(j&&j.update)update=j.update;
     if(keepAgent&&state.agents&&state.agents.some(x=>x.id===keepAgent))state.active_agent_id=keepAgent;
     if(keepFocus&&state.sessions&&state.sessions.some(x=>x.id===keepFocus))state.active_session_id=keepFocus;
-    renderSidebar();renderUpdate();
+    renderSidebar();renderUpdate();applySessionBindingLabel();
     if(!isBusy())renderChat();           // 正在生成时别抢气泡
     if(sideTab!=='agents')renderContacts();
     renderGroupChips();
@@ -4237,14 +4334,22 @@ function openFriendMenu(e,did){
   }
 }
 const fmPost=(path,body)=>api(path,{method:'POST',body:JSON.stringify(body)}).catch(e=>({error:e.message}));
-async function fmRename(){ openFriendPanel(); }
-function openFriendPanel(){
+async function fmRename(){ await openFriendPanel(); }
+async function openFriendPanel(){
   const did=friendMenuTarget; if(!did)return;
   const d=$('friendPanel'); if(!d)return;
   $('fpDid').textContent=did;
   $('fpName').value=contactNameMap()[did]||'';
+  // 2026-11-08 修复: 备注与两个开关以前每次打开都硬编码清空/复位, 看起来像没保存
   $('fpNote').value='';
   $('fpAllow').checked=true; $('fpBlock').checked=false;
+  const r=await api('/api/friends/access?did='+encodeURIComponent(did)).catch(()=>null);
+  if(r&&r.ok){
+    if(r.name)$('fpName').value=r.name;
+    $('fpNote').value=r.note||'';
+    $('fpAllow').checked=!!r.allow_agent;
+    $('fpBlock').checked=!!r.blocked;
+  }
   if(!d.open)d.showModal();
 }
 async function saveFriendPanel(){
@@ -4264,6 +4369,13 @@ async function retryRoomMessage(text){
   const r=await api('/api/room/retry',{method:'POST',body:JSON.stringify({group_id:gid,text})}).catch(e=>({error:e.message}));
   if(r&&r.ok===true){toast('已重新发送');if(typeof loadRoom==='function')loadRoom();}
   else toast('重试失败: '+((r&&(r.error||'未知'))||'未知'));
+}
+// 2026-11-08 修复: 群消息「分享」按钮以前调了从未定义的 shareText ⇒ 点击必然 ReferenceError
+async function shareText(id,text){
+  const ok=await copyText(String(text||''));
+  toast(ok?'群消息已复制，可粘贴分享':'复制失败，请手动选中正文');
+  api('/api/kernel/record',{method:'POST',body:JSON.stringify({mode:'group',kind:'button',label:'分享群消息',detail:{id}})}).catch(()=>{});
+  return ok;
 }
 async function fmMute(){
   const did=friendMenuTarget; if(!did)return;

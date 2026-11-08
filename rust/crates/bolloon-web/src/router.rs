@@ -45,9 +45,10 @@ pub fn cost_of(model: &str, tokens_in: u64, tokens_out: u64) -> (f64, bool) {
     }
 }
 
-/// 记一次真实调用
+/// 记一次真实调用到路由账本 (成本/成功率分析)。
+/// 2026-11-08 修复: **计费不在这里** —— `record` 会因回退/重试对同一次请求调多次,
+/// 缓存命中也会调; 路由使用费改由 `raw_call` / `call_model_metered` 在真发出模型请求后各记一次。
 pub fn record(rec: serde_json::Value) {
-    crate::feature_pack::charge_route_call("route_dispatch");
     let p = ledger_path();
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
@@ -191,10 +192,14 @@ fn prices_path() -> std::path::PathBuf {
 }
 
 fn read_prices() -> serde_json::Value {
-    std::fs::read(prices_path())
+    let mut v: serde_json::Value = std::fs::read(prices_path())
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_else(|| serde_json::json!({ "models": [] }))
+        .unwrap_or_else(|| serde_json::json!({ "models": [] }));
+    // 形状不合规 (旧版 / 手工编辑 / 写了一半) 时归一化, 不让 POST 直接 panic
+    if !v.is_object() { v = serde_json::json!({}); }
+    if !v["models"].is_array() { v["models"] = serde_json::json!([]); }
+    v
 }
 
 /// GET /api/router/prices → 已登记的自定义单价
@@ -218,7 +223,9 @@ pub async fn router_prices_set(
     let mut j = read_prices();
     let count;
     {
-        let arr = j["models"].as_array_mut().expect("默认数组");
+        let Some(arr) = j["models"].as_array_mut() else {
+            return axum::Json(serde_json::json!({ "ok": false, "error": "价目表形状损坏" }));
+        };
         arr.retain(|m| m["id"].as_str() != Some(id.as_str()));
         arr.push(serde_json::json!({
             "id": id, "usd_per_1k_in": cin, "usd_per_1k_out": cout,

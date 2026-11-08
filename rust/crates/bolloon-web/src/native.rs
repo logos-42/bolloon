@@ -952,15 +952,19 @@ pub async fn models_test(
     params.temperature = 0.0;
     let started = std::time::Instant::now();
     match rt.generate(&r.id, params).await {
-        Ok(g) => Json(serde_json::json!({
-            "ok": true,
-            "provider": r.id,
-            "model": r.model,
-            "protocol": r.protocol.as_str(),
-            "auth": r.auth_ref(),
-            "ms": started.elapsed().as_millis() as u64,
-            "sample": g.content.chars().take(60).collect::<String>(),
-        })),
+        Ok(g) => {
+            // 「测试连通性」也是一次真实调度, 按同一口径按次计费 (失败不算: 没用成不收费)
+            crate::feature_pack::charge_route_call(&format!("models_test|{}|{}", r.id, r.model));
+            Json(serde_json::json!({
+                "ok": true,
+                "provider": r.id,
+                "model": r.model,
+                "protocol": r.protocol.as_str(),
+                "auth": r.auth_ref(),
+                "ms": started.elapsed().as_millis() as u64,
+                "sample": g.content.chars().take(60).collect::<String>(),
+            }))
+        }
         Err(e) => Json(serde_json::json!({
             "ok": false,
             "provider": r.id,
@@ -1786,6 +1790,8 @@ pub async fn agent_by_id(st: &AppState, id: Option<&str>) -> Option<AgentView> {
 pub struct EconCtx {
     pub intent_id: String,
     pub group_id: Option<String>,
+    /// 会话 id —— 会话级模型绑定的键。**不能用 group_id 冒充**: 群 id 和会话 id 不是一回事。
+    pub session_id: Option<String>,
     pub agent_id: Option<String>,
     pub surface: String,
     /// 谁为这次调用付钱 (远端 DID)。None = 本机主人自己, 不扣付费账本。
@@ -1831,7 +1837,7 @@ pub async fn call_model_metered(
         st.reload_llm().await;
         llm = st.llm_snapshot();
     }
-    let mut provider_id = if wanted.is_empty() {
+    let provider_id = if wanted.is_empty() {
         llm.provider_ids().into_iter().next().ok_or_else(|| {
             "还没有可用的模型供应商 — 点右上角模型/「选择模型」选一家并填 API Key \
              （内置 13 家 + 目录 200+ 家）; 也可以用 BOLLOON_API_KEY 环境变量"
@@ -1845,13 +1851,22 @@ pub async fn call_model_metered(
             .err()
             .unwrap_or_else(|| format!("{provider_id} 没装进模型通路 — 检查 provider 名称")));
     }
-    let mut model = if !ui_model.is_empty() {
+    let model = if !ui_model.is_empty() {
         ui_model
     } else {
         llm.provider(&provider_id)
             .map(|p| p.default_model.clone())
             .unwrap_or_default()
     };
+    // 2026-11-08 修复: 群聊/视觉/特化等旁路也按 (真实会话, 智能体) 绑定选模型,
+    // 与主聊天同一份 `model-bindings.json`; 之前把 group_id 当会话键 ⇒ session 级绑定恒不命中。
+    let (session_key, agent_key) = econ_ctx
+        .as_ref()
+        .map(|e| (e.session_id.clone().unwrap_or_default(), e.agent_id.clone().unwrap_or_default()))
+        .unwrap_or_default();
+    let bound = crate::feature_pack::resolve_binding(&session_key, &agent_key).is_some();
+    let (mut provider_id, mut model) = crate::feature_pack::apply_binding(
+        &session_key, &agent_key, provider_id.clone(), model.clone());
     if model.trim().is_empty() {
         return Err(format!("{provider_id} 还没选模型 — 在「选择模型」里填一个模型名"));
     }
@@ -1868,21 +1883,9 @@ pub async fn call_model_metered(
 });
     full.extend(messages);
 
-    // ── 付费闸 (2026-10-30): 远端 DID 走付费账本 —— 需要付费且余额 ≤ 0 直接拒, 不发起调用。
-    //    免费档 (tier 乘数 0: 本人/自带 key) 不拦。
-    let bill_did = econ_ctx
-        .as_ref()
-        .and_then(|e| e.bill_did.clone())
-        .filter(|d| !d.trim().is_empty());
-    if let Some(did) = bill_did.as_ref() {
-        if crate::pay::needs_payment(did) && crate::pay::balance_for(st, did) <= 0 {
-            return Err(format!(
-                "余额不足：{} 的付费额度为 0 —— 请在「订阅/充值」里充值后再用平台模型",
-                short_did(did)
-            ));
-        }
-    }
-
+    // 2026-11-08: 旧「远端 DID 余额 ≤ 0 直接拒」的付费闸整体撤下。
+    // 现在付费对象是路由调度次数 (按次记账), 不再按 token 或余额决定能不能说话;
+    // `EconCtx.bill_did` 仍作为调用归属证据保留, 只是不再当支付闸用。
     let mut params = GenerateParams::new(model.clone(), full.clone());
     params.temperature = 0.7;
     params.max_tokens = 4096;
@@ -1941,7 +1944,8 @@ pub async fn call_model_metered(
     let original_provider = provider_id.clone();
     let original_model = model.clone();
     let mut switched = false;
-    if st.router.is_enforce() {
+    // 用户显式绑定的 provider/model 优先: enforce 的真路由不能把它换成别家默认模型。
+    if st.router.is_enforce() && !bound {
         if let Some(p) = shadow_pick.clone() {
             if p != provider_id {
                 if let Some(spec) = llm.provider(&p) {
@@ -1985,6 +1989,10 @@ pub async fn call_model_metered(
         .map(|g| (g.usage.prompt_tokens as u64, g.usage.completion_tokens as u64))
         .unwrap_or((0, 0));
     let (cost_usd, cost_known) = crate::router::cost_of(&model, tin, tout);
+    crate::kernel_bus::record_event("agent", "route",
+        &format!("旁路路由 {} → {}/{}", task_kind, provider_id, model),
+        serde_json::json!({ "task": task_kind, "provider": provider_id,
+                            "model": model, "switched": switched, "fallback": fallback }));
     crate::router::record(serde_json::json!({
         "ts": chrono::Utc::now().timestamp_millis(), "task": task_kind,
         "provider": provider_id, "model": model, "ok": res.is_ok(),
@@ -2024,19 +2032,15 @@ pub async fn call_model_metered(
         );
     }
 
-    // 按**真实 token** 扣费 (成功后): 模型/单价/等级在 pay 模块里算, 未配置模型会报错。
-    if let (Some(did), Ok(g)) = (bill_did.as_ref(), &res) {
-        let mdl = if g.model.trim().is_empty() { model.clone() } else { g.model.clone() };
-        match crate::pay::charge_model(
-            st,
-            did,
-            &mdl,
-            g.usage.prompt_tokens as u64,
-            g.usage.completion_tokens as u64,
-        ) {
-            Ok(bal) => tracing::info!("[pay] {did} 扣费 model={mdl} 余额={bal}"),
-            Err(e) => tracing::warn!("[pay] 扣费失败 did={did} model={mdl}: {e}"),
-        }
+    // 2026-11-08 (leo): 付费对象 = **路由调度次数**, 不是 token、不是贡献积分。
+    // 旧 `charge_model` 按 token 扣余额的路径已从主链撤下 (函数留作历史账本兼容, 不再被调用)。
+    // 一次成功模型调用只记一次; 回退/记账/缓存命中/调用失败都不计 (没用成不收费)。
+    if res.is_ok() {
+        crate::feature_pack::charge_route_call(&format!("metered|{task_kind}|{provider_id}"));
+    } else if let Err(e) = &res {
+        crate::feature_pack::record_error(&provider_id, &e.to_string(), serde_json::json!({
+            "task": task_kind, "group": session_key, "agent": agent_key, "model": model,
+        }));
     }
 
     res.map(|g| g.content)
@@ -2262,6 +2266,7 @@ pub async fn reply_with_model(
         Some(EconCtx {
             intent_id: format!("chat:{}", chrono::Utc::now().timestamp_millis()),
             group_id: None,
+            session_id: None,
             agent_id: agent.map(|a| a.id.clone()),
             bill_did: None,
             surface: "web-chat".to_string(),
@@ -2353,7 +2358,10 @@ impl bolloon_agent::kernel_loop::LoopObserver for StageObserver {
         self.emit(format!("第 {turn} 轮 · 想下一步"));
     }
 
-    async fn on_tool_begin(&self, _turn: u32, call: &bolloon_agent::ToolCall) {
+    async fn on_tool_begin(&self, turn: u32, call: &bolloon_agent::ToolCall) {
+        let label = format!("第 {turn} 轮 · 调用 {} ", call.name);
+        crate::kernel_bus::record_event("agent", "step", &label,
+            serde_json::json!({ "tool": call.name, "session": self.session_id }));
         self.emit(format!("{} · 开始", call.name));
     }
 
@@ -2363,19 +2371,35 @@ impl bolloon_agent::kernel_loop::LoopObserver for StageObserver {
         call: &bolloon_agent::ToolCall,
         outcome: &bolloon_agent::GateOutcome,
     ) {
-        // 2026-11-08: 被允许执行的命令, 结果**直接回上下文** (shell 输出不再只停在工具面板)
-        if let Some(res) = &outcome.result {
-            if !res.output.trim().is_empty() {
-                crate::world_interact::push_tool_context(
-                    &format!("[{} 执行结果] {}", call.name, res.output.chars().take(2000).collect::<String>()));
-            }
+        // 被允许执行的命令, 结果**直接回上下文** (shell 输出不再只停在工具面板)
+        // 2026-11-08 复核: 同时把结果原文显示在「执行步骤」里并进 Kernel 执行核事件管道,
+        // 网页与终端读的是同一份 kernel-events.jsonl / context-slots.json。
+        // 只有「Harness 放行且工具真的返回了输出」才回灌; 被拒的命令绝不伪装成执行结果。
+        let output = if outcome.denied.is_some() { "" } else {
+            outcome.result.as_ref()
+                .map(|r| r.output.trim()).filter(|s| !s.is_empty()).unwrap_or("")
+        };
+        if !output.is_empty() {
+            let clipped: String = output.chars().take(2000).collect();
+            let ok = outcome.result.as_ref().map(|r| r.ok).unwrap_or(false);
+            crate::world_interact::push_tool_context(&call.name,
+                &format!("[{} 执行结果] {}", call.name, clipped));
+            crate::kernel_bus::record_event("agent", "tool_result",
+                &format!("{} · 结果回上下文", call.name),
+                serde_json::json!({ "tool": call.name, "session": self.session_id, "ok": ok,
+                                    "output": clipped.chars().take(400).collect::<String>() }));
         }
+        let preview: String = if output.is_empty() { String::new() } else {
+            let one_line: String = output.chars().take(120)
+                .map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
+            format!(" → {one_line}")
+        };
         let label = if outcome.denied.is_some() {
             format!("{} · 被拒", call.name)
         } else if outcome.elapsed_ms >= 1000 {
-            format!("{} · 完成（{:.1}s）", call.name, outcome.elapsed_ms as f64 / 1000.0)
+            format!("{} · 完成（{:.1}s）{}", call.name, outcome.elapsed_ms as f64 / 1000.0, preview)
         } else {
-            format!("{} · 完成", call.name)
+            format!("{} · 完成{}", call.name, preview)
         };
         self.emit(label);
     }
@@ -2493,11 +2517,11 @@ pub async fn reply_with_agent_cfg(
         st.reload_llm().await;
         llm = st.llm_snapshot();
     }
-    // 2026-11-08: 每会话/每智能体模型绑定优先于全局设置 (下次打开沿用上次)
-    let (wanted, ui_model) = match crate::feature_pack::resolve_binding(&opts.session_id, "") {
-        Some((p, m)) if !m.is_empty() && !p.is_empty() => (p, m),
-        _ => (wanted, ui_model),
-    };
+    // 每会话/每智能体模型绑定优先于全局设置 (下次打开沿用上次)。
+    // 2026-11-08 修复: agent_id 之前恒传 "", 智能体级绑定永远不生效。
+    let agent_key = agent.map(|a| a.id.as_str()).unwrap_or("");
+    let (wanted, ui_model) = crate::feature_pack::apply_binding(
+        &opts.session_id, agent_key, wanted, ui_model);
     let provider_id = if wanted.is_empty() {
         llm.provider_ids().into_iter().next().ok_or_else(|| {
             "还没有可用的模型供应商 — 点右上角模型/「选择模型」选一家并填 API Key \
@@ -2589,6 +2613,9 @@ pub async fn reply_with_agent_cfg(
         models: strategy_models,
         cancel: cancel.clone(),
         sink: sink.clone(),
+        session_id: session_id.to_string(),
+        // 显式绑定优先于 enforce 路由, 不让账本把绑定的 provider/model 换掉
+        bound: crate::feature_pack::resolve_binding(&opts.session_id, agent_key).is_some(),
     });
     let reviewer = Arc::new(LlmGoalReviewer::new(llm.clone(), provider_id.clone(), model.clone()));
     let loop_ = KernelLoop::new(strategy, harness)
@@ -2755,6 +2782,10 @@ struct WebStrategy {
     cancel: Arc<std::sync::atomic::AtomicBool>,
     /// 真实增量出口 (想法/正文): None = 非流式调用方, 不推
     sink: Option<tokio::sync::mpsc::Sender<StreamChunk>>,
+    /// 会话隔离: 缓存 key 必须带它, 否则两个会话同 prompt 会串答案
+    session_id: String,
+    /// 用户显式绑定了会话/智能体模型 ⇒ enforce 路由不覆盖
+    bound: bool,
 }
 
 impl WebStrategy {
@@ -2784,58 +2815,64 @@ impl WebStrategy {
         provider_id: &str,
         params: &GenerateParams,
     ) -> Result<GenerateResult, bolloon_llm::LlmError> {
-        match &self.sink {
-            Some(tx) => {
-                // 缓存命中也要把内容推给流式 UI, 否则前端看到空回复
-                let key_input = format!("{}|{}", provider_id,
-                    serde_json::to_string(params).unwrap_or_default());
-                if let Some(hit) = crate::feature_pack::cache_lookup(provider_id, &key_input) {
+        // 参考 TS `kv-prefix-cache.md`: key 必须逐字节稳定 —— 递归排序对象键、
+        // 排序 tools schema、显式带 provider/model/session/schema 版本。
+        // 带 tool_calls 的回合**永不入缓存**, 所以不再查、也不再计 miss (单列 skipped)。
+        let key = if params.tools.is_empty() {
+            let params_json = serde_json::to_string(params).unwrap_or_default();
+            Some(crate::feature_pack::request_cache_key(
+                provider_id, &params.model, &self.session_id, &params_json))
+        } else {
+            crate::feature_pack::cache_skip();
+            None
+        };
+        if let Some(k) = key.as_deref() {
+            if let Some(hit) = crate::feature_pack::cache_lookup_by_key(k) {
+                if let Some(tx) = &self.sink {
                     let _ = tx.try_send(StreamChunk::Delta(hit.clone()));
-                    return Ok(GenerateResult {
-                        content: hit, tool_calls: vec![], finish_reason: "cache_hit".into(),
-                        usage: Default::default(), model: params.model.clone(),
-                        reasoning_content: None,
-                    });
                 }
-                let t = tx.clone();
-                let d = tx.clone();
-                let fut = self.llm
-                    .generate_streaming_full(
-                        provider_id,
-                        params.clone(),
-                        move |piece| {
-                            let _ = t.try_send(StreamChunk::Thought(piece.to_string()));
-                        },
-                        move |piece| {
-                            let _ = d.try_send(StreamChunk::Delta(piece.to_string()));
-                        },
-                    );
-            let r = self.cancellable(fut).await;
-            match &r {
-                Ok(g) => crate::feature_pack::cache_store(provider_id, &key_input, &g.content),
-                Err(e) => crate::feature_pack::record_error(provider_id, &e.to_string()),
-            }
-            r
-            }
-            None => {
-                let key_input = format!("{}|{}", provider_id,
-                    serde_json::to_string(params).unwrap_or_default());
-                if let Some(hit) = crate::feature_pack::cache_lookup(provider_id, &key_input) {
-                    return Ok(GenerateResult {
-                        content: hit, tool_calls: vec![], finish_reason: "cache_hit".into(),
-                        usage: Default::default(), model: params.model.clone(),
-                        reasoning_content: None,
-                    });
-                }
-                let fut = self.llm.generate(provider_id, params.clone());
-                let r = self.cancellable(fut).await;
-                match &r {
-                    Ok(g) => crate::feature_pack::cache_store(provider_id, &key_input, &g.content),
-                    Err(e) => crate::feature_pack::record_error(provider_id, &e.to_string()),
-                }
-                r
+                crate::kernel_bus::record_event("agent", "cache", "幂等响应命中",
+                    serde_json::json!({ "provider": provider_id, "model": params.model,
+                                        "session": self.session_id }));
+                return Ok(GenerateResult {
+                    content: hit, tool_calls: vec![], finish_reason: "cache_hit".into(),
+                    usage: Default::default(), model: params.model.clone(),
+                    reasoning_content: None,
+                });
             }
         }
+        let r = match &self.sink {
+            Some(tx) => {
+                let t = tx.clone();
+                let d = tx.clone();
+                let fut = self.llm.generate_streaming_full(
+                    provider_id,
+                    params.clone(),
+                    move |piece| { let _ = t.try_send(StreamChunk::Thought(piece.to_string())); },
+                    move |piece| { let _ = d.try_send(StreamChunk::Delta(piece.to_string())); },
+                );
+                self.cancellable(fut).await
+            }
+            None => self.cancellable(self.llm.generate(provider_id, params.clone())).await,
+        };
+        match &r {
+            Ok(g) => {
+                // 只有成功响应才计一次路由调度费 (缓存命中 / 失败都不计费)
+                crate::feature_pack::charge_route_call(
+                    &format!("{}|{}|{}", self.task, provider_id, params.model));
+                if let Some(k) = key.as_deref() {
+                    if crate::feature_pack::should_cache(
+                        &g.content, g.tool_calls.len(), &g.finish_reason) {
+                        crate::feature_pack::cache_store_by_key(k, &g.content);
+                    }
+                }
+            }
+            Err(e) => crate::feature_pack::record_error(
+                provider_id, &e.to_string(), serde_json::json!({
+                    "task": self.task, "session": self.session_id, "model": params.model,
+                })),
+        }
+        r
     }
 
     /// 模型一次调用: 真路由(可切换/回退) + 每笔真实调用记账
@@ -2849,7 +2886,7 @@ impl WebStrategy {
         let mut pid = provider_id.to_string();
         let mut p = params.clone();
         let mut switched = false;
-        if self.router.is_enforce() {
+        if self.router.is_enforce() && !self.bound {
             if let Some(pick) = shadow_pick.clone() {
                 if pick != pid && self.models.get(&pick).map(|m| !m.trim().is_empty()).unwrap_or(false) {
                     p.model = self.models[&pick].clone();
@@ -2880,6 +2917,11 @@ impl WebStrategy {
             .map(|g| (g.usage.prompt_tokens as u64, g.usage.completion_tokens as u64))
             .unwrap_or((0, 0));
         let (cost_usd, cost_known) = crate::router::cost_of(&p.model, tin, tout);
+        // 路由决策也进 Kernel 机制核 A 的事件面 (网页/终端读同一份); Kernel 只记, 不做选择
+        crate::kernel_bus::record_event("agent", "route",
+            &format!("路由决策 {} → {}/{}", self.task, pid, p.model),
+            serde_json::json!({ "task": self.task, "provider": pid, "model": p.model,
+                                "switched": switched, "fallback": fallback, "ok": out.is_ok() }));
         crate::router::record(serde_json::json!({
             "ts": chrono::Utc::now().timestamp_millis(),
             "task": self.task,
@@ -4196,6 +4238,7 @@ pub async fn room_turn_exec(
         econ: Some(EconCtx {
             intent_id: intent_id.to_string(),
             group_id: Some(gid.to_string()),
+            session_id: Some(sid.clone()),
             agent_id: Some(agent.id.clone()),
             bill_did: None,
             surface: "web-room".to_string(),
@@ -5481,6 +5524,11 @@ pub async fn list_opportunities(
             "down": down,
             "rank": rank,
             "why": why,
+            // 2026-11-08 修复: 卡片互动计数写在 inbox 条目顶层, 这里以前不透传,
+            // 前端刷新后永远显示 0 (点赞/喜欢/评论像没生效)。
+            "reactions": item.get("reactions").cloned().unwrap_or_else(|| serde_json::json!({
+                "like": 0, "favorite": 0, "share": 0, "comments": []
+            })),
         });
         if let Some(card) = item.get("card") {
             obj["card"] = card.clone(); // UI 据此渲染封面区 + 高度档位
@@ -6289,13 +6337,29 @@ pub async fn world_cards_share(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
+    // 2026-11-08 修复: 前端「分享给选中的好友」以前对每个好友重复 POST 同一张卡,
+    // 且选中的 DID 从没进请求体 ⇒ 实际目标集永远是**全部好友**。现在 `to` 真生效。
+    let selected: Option<Vec<String>> = req["to"].as_array().map(|a| a.iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string())).collect());
     let card: bolloon_agent::world::WorldCard = match serde_json::from_value(req) {
         Ok(c) => c,
         Err(e) => return Json(serde_json::json!({ "error": format!("卡片格式错误: {e}") })),
     };
-    let friends = {
+    let all_friends = {
         let fs = st.forge.lock().await;
         fs.friends.friends().to_vec() // 好友模式的目标集 (公开模式用不到)
+    };
+    let friends = match selected {
+        None => all_friends.clone(),
+        Some(v) => {
+            if v.is_empty() {
+                return Json(serde_json::json!({ "error": "没有选中任何好友" }));
+            }
+            if let Some(bad) = v.iter().find(|d| !all_friends.iter().any(|f| f == *d)) {
+                return Json(serde_json::json!({ "error": format!("目标不是本机好友: {bad}") }));
+            }
+            v
+        }
     };
     // 2026-11-06: 贡献卡片给好友 = 一点点积分 (按卡片身份去重, 双通道分享只算一次)
     let contrib_key = bolloon_x402::paid_info::compute_content_hash(
@@ -8200,18 +8264,11 @@ pub async fn friend_update(
     if !fs.friends.friends().iter().any(|d| d == &did) {
         return Json(serde_json::json!({ "ok": false, "error": "不是本机好友" }));
     }
-    // 2026-11-08: 好友面板的开关落独立文件 (不改 NativeState 结构, 老数据兼容)
+    // 2026-11-08: 好友面板的开关落独立文件 (不改 NativeState 结构, 老数据兼容)。
+    // 走 feature_pack 的唯一写入口: 与读取同一把锁, 且只改本次提交的开关。
     if req["allow_agent"].is_boolean() || req["blocked"].is_boolean() {
-        let fp = crate::server::data_dir().join("friend-access.json");
-        let mut m: serde_json::Value = std::fs::read_to_string(&fp).ok()
-            .and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}));
-        m[&did]["allow_agent"] = serde_json::json!(req["allow_agent"].as_bool().unwrap_or(true));
-        m[&did]["blocked"] = serde_json::json!(req["blocked"].as_bool().unwrap_or(false));
-        m[&did]["at_ms"] = serde_json::json!(now_ms());
-        let tmp = fp.with_extension("tmp");
-        if std::fs::write(&tmp, serde_json::to_string_pretty(&m).unwrap_or_default()).is_ok() {
-            let _ = std::fs::rename(&tmp, &fp);
-        }
+        crate::feature_pack::update_friend_access(
+            &did, req["allow_agent"].as_bool(), req["blocked"].as_bool());
     }
     if let Some(name) = req["name"].as_str() {
         let name = name.trim();
@@ -9342,6 +9399,7 @@ pub async fn agents_public_chat(
     let econ = EconCtx {
         intent_id: String::new(),
         group_id: None,
+        session_id: None,
         agent_id: Some(agent.id.clone()),
         surface: "friend-relay".into(),
         // 跨机来访 = **对方的 did 为这次推理付钱** (免费档不扣)

@@ -716,8 +716,10 @@ pub async fn pay_summary(
         "balance_usd": bal_usd,
         "pending_usd": pending as f64 / MICRO as f64,
         "today": today_summary(&events, &account),
-        // 2026-11-08: 付费对象改为路由调度次数; 模型 API 自配, 不再按 token 提醒充值
-        "low_balance": { "threshold_usd": threshold, "hit": false },
+        // 2026-11-08: 付费对象改为路由调度次数; 模型 API 自配。
+        // 余额/token 不再是付费依据 ⇒ hit 恒 false 是**口径结论**, 不是漏算的假值。
+        "low_balance": { "threshold_usd": threshold, "hit": false,
+                         "reason": "按路由调度次数计费, 余额与 token 不作为付费依据" },
         "route_fee": {
             "calls": crate::feature_pack::route_usage_count(),
             "cny_per_million_calls": crate::feature_pack::ROUTE_FEE_CNY_PER_MILLION,

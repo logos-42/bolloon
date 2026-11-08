@@ -883,6 +883,7 @@ async fn agent_turn(
         Some(crate::native::EconCtx {
             intent_id: intent_id.to_string(),
             group_id: Some(gid.to_string()),
+            session_id: Some(format!("room-{gid}")),
             agent_id: Some(agent.id.clone()),
             bill_did: None,
             surface: "web-room".to_string(),

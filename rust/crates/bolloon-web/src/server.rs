@@ -809,6 +809,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/kernel/state", get(crate::kernel_bus::kernel_state))
         .route("/api/kernel/tick", post(crate::kernel_bus::kernel_tick))
         .route("/api/kernel/record", post(crate::kernel_bus::kernel_record))
+        .route("/api/kernel/dispatch", post(crate::kernel_bus::kernel_dispatch))
         .route("/api/world/cards/react", post(crate::feature_pack::react_card))
         .route("/api/models/bind", post(crate::feature_pack::bind_model))
         .route("/api/models/bindings", get(crate::feature_pack::model_bindings))
@@ -817,6 +818,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/kernel/vfs", get(crate::kernel_bus::kernel_vfs))
         .route("/api/models/custom", get(crate::feature_pack::list_custom_models).post(crate::feature_pack::register_custom_model))
         .route("/api/models/share", post(crate::feature_pack::share_model))
+        .route("/api/friends/access", get(crate::feature_pack::friend_access))
         .route("/api/room/retry", post(room_retry));
     // QUIC 直连对端管理接口 (feature 门控; 默认启用): 暴露本节点收件地址 + 登记对端 socket
     #[cfg(feature = "quic-transport")]
@@ -865,6 +867,18 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
 
     // 启动即按本机配置装好模型通路 (200+ provider 里能解析的那些)
     state.reload_llm().await;
+
+    // 统一调度层: 恢复上次事件面 + 双核真打拍 + 每 5s 从心跳文件互检。
+    // 之前只有手动 POST /api/kernel/tick 才会打一次拍, 相位与 alive 都是常量自证。
+    {
+        let mut k = state.kernel.lock().await;
+        k.restore();
+    }
+    tokio::spawn(crate::kernel_bus::beat_loop(
+        state.clone(), "a", crate::kernel_bus::BEAT_INTERVAL_MS));
+    tokio::spawn(crate::kernel_bus::beat_loop(
+        state.clone(), "b", crate::kernel_bus::BEAT_INTERVAL_MS / 2));
+    tokio::spawn(crate::kernel_bus::watch_loop(state.clone()));
 
     // 2026-11-04 (bug 7): cron + 心跳 的 tick 循环**真跑起来**（每 30s）。
     // 以前这两个能力在 web 进程里 0 实例化、0 tick ⇒ 用户看到的就是"不支持"。
@@ -4038,6 +4052,180 @@ mod route_tests {
         )
     }
 
+    /// 2026-11-08 复核门: 双核互检读**真心跳文件**、三模式事件/端口派发、
+    /// 卡片互动幂等、模型绑定校验、缓存/路由费端点全部真跑一遍 (零真 LLM)。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn kernel_and_feature_pack_endpoints_are_really_wired() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-web-kernelgate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("kernel-ha")).unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+        unsafe { std::env::set_var("BOLLOON_HA_HOME", home.join("kernel-ha")) };
+
+        let state = AppState::new(offline_llm());
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let ha = crate::kernel_bus::ha_dir();
+        std::fs::write(ha.join("a.heartbeat.json"), serde_json::json!({
+            "core": "a", "lastBeat": now - 1_000, "phase_ms": 0, "pid": 0, "seq": 1 }).to_string()).unwrap();
+        std::fs::write(ha.join("b.heartbeat.json"), serde_json::json!({
+            "core": "b", "lastBeat": now - 1_000 - 15_000, "phase_ms": 15_000, "pid": 0, "seq": 1 }).to_string()).unwrap();
+
+        let s = crate::kernel_bus::kernel_tick(State(state.clone())).await.0;
+        assert_eq!(s["cores"]["A"]["alive"], true);
+        assert_eq!(s["cores"]["B"]["alive"], true);
+        assert_eq!(s["phase_ok"], true, "半拍相位必须从文件里的真实时间戳算出来");
+        assert_eq!(s["degraded"], false);
+        // 删掉 B 的心跳 ⇒ 必须如实判死, 不能双双 true
+        let _ = std::fs::remove_file(ha.join("b.heartbeat.json"));
+        let s = crate::kernel_bus::kernel_tick(State(state.clone())).await.0;
+        assert_eq!(s["cores"]["A"]["peer_alive"], false);
+        assert_eq!(s["degraded"], true);
+
+        // 三模式: 非法模式拒, group 事件真进事件面 (以前全被记成 agent)
+        let bad = crate::kernel_bus::kernel_record(State(state.clone()), Json(serde_json::json!({
+            "mode": "bogus", "kind": "button", "label": "x" }))).await.0;
+        assert_eq!(bad["ok"], false);
+        let ok = crate::kernel_bus::kernel_record(State(state.clone()), Json(serde_json::json!({
+            "mode": "group", "kind": "switch", "label": "允许智能体访问 开" }))).await.0;
+        assert_eq!(ok["ok"], true);
+        let s = crate::kernel_bus::kernel_state(State(state.clone())).await.0;
+        let evs = s["events_recent"].as_array().unwrap();
+        assert!(evs.iter().any(|e| e["mode"] == "group" && e["kind"] == "switch"));
+        assert_eq!(s["ports"].as_array().map(|a| a.len()), Some(8));
+
+        let port = crate::kernel_bus::kernel_dispatch(State(state.clone()), Json(serde_json::json!({
+            "port": "context", "op": "read" }))).await.0;
+        assert_eq!(port["ok"], true);
+        let no_port = crate::kernel_bus::kernel_dispatch(State(state.clone()), Json(serde_json::json!({
+            "port": "nope", "op": "read" }))).await.0;
+        assert_eq!(no_port["ok"], false);
+
+        // 老卡片只有 like 计数: 点赞切换不能 panic, 计数要真回显
+        {
+            let mut fs = state.forge.lock().await;
+            fs.inbox.push(serde_json::json!({ "id": "c1", "title": "文档卡", "reactions": { "like": 2 } }));
+        }
+        let r1 = crate::feature_pack::react_card(State(state.clone()), Json(serde_json::json!({
+            "id": "c1", "type": "like" }))).await.0;
+        assert_eq!(r1["ok"], true);
+        assert_eq!(r1["reactions"]["like"], 3);
+        let r2 = crate::feature_pack::react_card(State(state.clone()), Json(serde_json::json!({
+            "id": "c1", "type": "favorite" }))).await.0;
+        assert_eq!(r2["ok"], true, "旧卡缺 comments/by 字段时不能崩");
+        let r3 = crate::feature_pack::react_card(State(state.clone()), Json(serde_json::json!({
+            "id": "c1", "type": "like" }))).await.0;
+        assert_eq!(r3["reactions"]["like"], 2, "同一 DID 再点一次要取消, 不是无限加");
+
+        // 模型绑定: 不存在的 provider 拒; 真 provider 存下并可按 session/agent 解析
+        let bad_bind = crate::feature_pack::bind_model(State(state.clone()), Json(serde_json::json!({
+            "scope": "session", "id": "s1", "provider": "ghost", "model": "m" }))).await.0;
+        assert_eq!(bad_bind["ok"], false);
+        let good = crate::feature_pack::bind_model(State(state.clone()), Json(serde_json::json!({
+            "scope": "agent", "id": "a1", "provider": "test", "model": "test-model" }))).await.0;
+        assert_eq!(good["ok"], true);
+        assert_eq!(
+            crate::feature_pack::resolve_binding("s1", "a1"),
+            Some(("test".into(), "test-model".into())),
+            "智能体级绑定之前恒传空串, 必须真生效"
+        );
+
+        let fee = crate::feature_pack::route_fee().await.0;
+        assert_eq!(fee["ok"], true);
+        assert_eq!(fee["cny_per_million_calls"], 0.001);
+        let cache = crate::feature_pack::cache_stats().await.0;
+        assert_eq!(cache["ok"], true);
+        assert!(cache["hit_rate"].is_number());
+
+        unsafe { std::env::remove_var("BOLLOON_HA_HOME") };
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 2026-11-08 第二轮复核门: 坏磁盘数据不 panic / 开关只改提交项 /
+    /// 事件序号不倒退 / duplicate 不重复沉淀 / 缓存命中率分母干净。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rust_hardening_gates() {
+        use std::io::Write;
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-web-hardening-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let dd = home.join("rust");
+        std::fs::create_dir_all(dd.join("kernel-ha")).unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+        unsafe { std::env::set_var("BOLLOON_HA_HOME", home.join("kernel-ha")) };
+
+        // 全部关键 JSON 故意写成顶层数组 (旧版 / 写了一半), 任何一处链式 IndexMut 都不许 panic
+        for f in ["model-bindings.json", "response-cache.json", "cache-counters.json",
+                  "friend-access.json", "router-prices.json"] {
+            std::fs::write(dd.join(f), "[]").unwrap();
+        }
+        let state = AppState::new(offline_llm());
+        let bind = crate::feature_pack::bind_model(State(state.clone()), Json(serde_json::json!({
+            "scope": "session", "id": "s1", "provider": "test", "model": "test-model" }))).await.0;
+        assert_eq!(bind["ok"], true);
+        assert_eq!(crate::feature_pack::resolve_binding("s1", ""),
+                   Some(("test".into(), "test-model".into())));
+        crate::feature_pack::cache_store_by_key("k1", "hello");
+        assert_eq!(crate::feature_pack::cache_lookup_by_key("k1").as_deref(), Some("hello"));
+        crate::feature_pack::cache_skip();
+        let cs = crate::feature_pack::cache_stats().await.0;
+        assert_eq!(cs["hits"], 1);
+        assert_eq!(cs["skipped"], 1, "工具回合单列, 不灌进 misses 压低命中率");
+        let rp = crate::router::router_prices_set(Json(serde_json::json!({
+            "id": "m1", "usd_per_1k_in": 0.1, "usd_per_1k_out": 0.2 }))).await.0;
+        assert_eq!(rp["ok"], true, "价目表形状损坏时不能 panic");
+
+        // 好友开关: 只提交 allow_agent, blocked 必须保留
+        std::fs::write(dd.join("friend-access.json"), serde_json::json!({
+            "did:pi:x": { "allow_agent": false, "blocked": true } }).to_string()).unwrap();
+        crate::feature_pack::update_friend_access("did:pi:x", Some(true), None);
+        let mut q = std::collections::HashMap::new();
+        q.insert("did".to_string(), "did:pi:x".to_string());
+        let fa = crate::feature_pack::friend_access(State(state.clone()), axum::extract::Query(q)).await.0;
+        assert_eq!(fa["allow_agent"], true);
+        assert_eq!(fa["blocked"], true, "没提交的开关不能被重置成默认值");
+
+        // 旧卡 by[did] 是布尔: 不能再凭空 +1; 重复分享不能重复沉淀
+        let did = state.identity.did.as_str().to_string();
+        let mut by = serde_json::Map::new();
+        by.insert(did.clone(), serde_json::json!(true));
+        {
+            let mut fs = state.forge.lock().await;
+            fs.inbox.push(serde_json::json!({ "id": "c1", "reactions": {
+                "like": 1, "favorite": 0, "share": 0, "comments": [], "by": by } }));
+        }
+        let like = crate::feature_pack::react_card(State(state.clone()), Json(serde_json::json!({
+            "id": "c1", "type": "like" }))).await.0;
+        assert_eq!(like["reactions"]["like"], 0, "旧 by 布尔不能当没点过再 +1");
+        let sh1 = crate::feature_pack::react_card(State(state.clone()), Json(serde_json::json!({
+            "id": "c1", "type": "share" }))).await.0;
+        assert_eq!(sh1["action"], "share");
+        let evs_before = crate::kernel_bus::kernel_state(State(state.clone())).await.0["events_recent"]
+            .as_array().map(|a| a.len()).unwrap_or(0);
+        let sh2 = crate::feature_pack::react_card(State(state.clone()), Json(serde_json::json!({
+            "id": "c1", "type": "share" }))).await.0;
+        assert_eq!(sh2["action"], "duplicate");
+        let evs_after = crate::kernel_bus::kernel_state(State(state.clone())).await.0["events_recent"]
+            .as_array().map(|a| a.len()).unwrap_or(0);
+        assert_eq!(evs_before, evs_after, "duplicate 不该再写一条按钮事件/沉淀记忆");
+
+        // 事件序号: 外部(CLI)写了更大的 seq 后, 本机下一号必须接着走
+        crate::kernel_bus::record_event("agent", "step", "有序号", serde_json::json!({}));
+        let ep = dd.join("kernel-events.jsonl");
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&ep).unwrap();
+        writeln!(f, "{}", serde_json::json!({
+            "mode": "agent", "kind": "tool_result", "label": "cli", "seq": 9999 })).unwrap();
+        drop(f);
+        let mut k = crate::kernel_bus::UnifiedKernel::default();
+        k.restore();
+        assert!(k.record("agent", "button", "本机事件", serde_json::json!({})));
+        // events_recent 是「最新在前」; 刚写的那条是第 0 条
+        let newest = k.snapshot()["events_recent"].as_array().unwrap()[0].clone();
+        assert!(newest["seq"].as_u64().unwrap() > 9999, "重启/外部写入后 seq 不能倒退");
+
+        unsafe { std::env::remove_var("BOLLOON_HA_HOME") };
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// 2026-10-30 (leo): 「不同群组警长不同、没选中的智能体却进议程」。
     ///
@@ -5134,6 +5322,7 @@ mod route_tests {
                 Some(crate::native::EconCtx {
                     intent_id: intent.to_string(),
                     group_id: Some("g1".into()),
+                    session_id: Some("room-g1".into()),
                     agent_id: Some(agent.into()),
                     bill_did: None,
             surface: "web-room".into(),
@@ -5184,6 +5373,7 @@ mod route_tests {
             Some(crate::native::EconCtx {
                 intent_id: "group:g1:2".into(),
                 group_id: Some("g1".into()),
+                session_id: Some("room-g1".into()),
                 agent_id: Some("a".into()),
                 bill_did: None,
             surface: "web-room".into(),

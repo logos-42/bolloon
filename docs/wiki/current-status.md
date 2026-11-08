@@ -2,7 +2,7 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-11-06
+last_confirmed: 2026-11-08
 schema_version: 2
 audience: self
 stage: current
@@ -43,15 +43,15 @@ tags: [status, rust-workspace, app-0.7.8, release-gate, world-cards, contributio
 | 贡献与善意 | 贡献积分显示在左下角余额：服务交付 +5（不可自报）、共享 skill +0.5 / 卡片 +0.3；累计只增不减，仅购买增值服务消耗；求助零分也分发；**跨机可验证**用 DID 自带公钥验签 |
 | 路由与成本 | 真实调用账本 + 任务×成本矩阵 + 影子→真路由（带回退）+ 本地小模型 / Ollama Cloud 登记 + 特化包评测与外溢 |
 | 安全边界 | 好友永远拿不到「本地完全权限」；极度信任档开放 shell 但保留审计/预算/取消；只读指挥走显式工具白名单 |
-| Kernel / UI | 双核分工（A 机制 / B 执行）+ 三模式统一事件面 + VFS；执行步骤/工具名、文档全屏阅读、卡片四按钮、好友面板、模型池、路由使用费 |
+| Kernel / UI | 双核分工（A 机制 / B 执行）+ **真心跳文件互检/补拍** + 三模式统一事件面 + 8 端口 VFS/dispatch + 网页/终端同源（`bolloon kernel …`）；执行步骤显示工具名与 shell 结果、文档全屏阅读、卡片互动、好友面板、模型池绑定、路由使用费 |
 
 ## 当前已知边界（2026-11-08 复核）
 
 1. **链上**：ETH 只登记用户提供的 `tx_hash`，本机不代签；IPFS 锚定需本机 Kubo 或真实 CID；orbitdb / 跨机共识层未接。
 2. **跨机分发**：`world_cards_share` 反序列化成标准 `WorldCard`，媒体卡片 `presentation` 扩展字段对端看不到舞台；QUIC 直发需 feature 开启。
-3. **Kernel**：双核 HA 跨进程心跳未起时以进程内状态代替；事件面与 VFS 是本机机制面，跨机共识未接。
-4. **模型**：API 用户自配；幂等缓存 TTL 10 分钟、仅同 provider+prompt 命中；模型分享卡片能否导入取决于对端；旧 `charge_model` token 扣费函数仍在代码里但**不再作为付费依据**。
-5. **额度**：付费 = 路由调度次数（100 万次 0.001 元），不按 token、不动贡献积分；历史充值账本仅作参考，不再提示充值。
+3. **Kernel**：双核心跳是**本机文件互检**（`~/.bolloon/kernel-ha/{a,b}.unified.heartbeat.json`；可读回 `dual_core` 的 `{a,b}.heartbeat.json`，但不覆盖其 fence/seq），启动后前 15s 为相位预热（`phase_ok=false`）；事件序号网页/CLI 统一取 `max(seq)+1`，重启与外部写入都不倒退；跨进程 HA 仍需 `BOLLOON_HA`，外部进程的核只如实报 stale、不由本进程代打；事件面/VFS 是本机机制面，跨机共识未接。
+4. **模型**：API 用户自配；每会话/每智能体绑定在**主聊天与群聊旁路**都用真实 `session_id`（不再拿 `group_id` 冒充），`enforce` 路由不覆盖显式绑定；幂等缓存 key = 规范化后的 provider+model+session+完整请求（tools 排序），TTL 10 分钟 / 200 条上限 / 命中率可查，**工具回合单列 `skipped` 不计入命中率分母**；provider 端 KV prefix（`cache_prompt`/`cached_tokens`）仍未接；模型分享卡片能否导入取决于对端；旧 `charge_model` token 扣费函数保留但**零调用**。
+5. **额度**：付费 = 路由调度次数（100 万次 0.001 元），只有**成功响应**才记一次（缓存命中 / 调用失败 / 账本记账都不计，没用成不收费）；不按 token、不动贡献积分、不再有余额闸与充值提示；历史账本仅作参考。
 6. **求助响应**：候选响应者仅本机智能体，跨机响应要对端配合。
 7. **Ollama Cloud**：`deepseek-v4.1-flash` 不在免费额度（HTTP 402），可用 `gpt-oss:20b` 等；key 曾在对话里出现，建议轮换。
 8. **更新链**：`bolloon.cn` 主机未同步；jsDelivr 有缓存延迟。
@@ -65,7 +65,8 @@ tags: [status, rust-workspace, app-0.7.8, release-gate, world-cards, contributio
 | P1 | 跨机 `presentation` 字段保留（信封层带扩展字段）；真 Kubo / orbitdb 锚定与跨机贡献账本同步 |
 | P1 | 歌词逐字时间轴、自建 IPFS 网关配置 |
 | P2 | x402 真实小额链上交易走完 `world/pay/confirm`，让 `receipts.paid` 第一次为 1 |
-| P2 | 清理旧 `charge_model` token 扣费遗留（需先迁移历史账本） |
+| P2 | 清理旧 `charge_model` token 扣费遗留（需先迁移历史账本）；接 provider 端 KV prefix 命中指标（`cached_tokens`） |
+| P2 | 跨进程 HA 真两节点验收（`BOLLOON_HA=1` 各选 A/B + 孤儿接管），并消除启动 15s 相位预热窗口 |
 
-> 2026-11-08：11 项需求已全部落地（见 [`log.md`](./log.md)），本文件不再挂已完成的待办；挂起测试已清零。
+> 2026-11-08：11 项需求已实现并完成一次**代码复核 + 漏洞收口**（另一批次存在假接线：心跳恒真、group 模式误判、卡片计数永为 0、群分享函数未定义、缓存截断、路由费重复计等，见 [`log.md`](./log.md) 当日 `fix(kernel/ui)` 行）；挂起测试已清零。
 > 维护纪律：本文件只写「现在是什么 / 还差什么 / 下一步」；每批实现细节写 [`log.md`](./log.md) 一行，不再往这里堆流水。
