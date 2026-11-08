@@ -1540,8 +1540,9 @@ pub async fn build_web_system(
         bolloon_agent::skills_runtime::prompt_index(&ev, &project_root, SKILLS_INDEX_LIMIT)
     };
 
-    // 信念与目标 (2026-11-04): agent **自己写的**判断与长短期目标 —— 每轮现读 beliefs.json,
-    // 有内容才注入 (空表不注入空标题)。这是"按自己的信念做事"的输入面:
+    // 信念与目标 (2026-11-04, 存储 2026-11-06 已迁 SQLite): agent **自己写的**判断与长短期目标
+    // —— 每轮从 `agent_dir()/beliefs.db` 现读 (不再有逐轮重写的 JSON 文件), 有内容才注入 (空表不注入空标题)。
+    // 这是"按自己的信念做事"的输入面:
     // 心跳里挑出的目标、tool 里立的信念, 都要能进到这里, 否则写了等于没写。
     let commitments_block = {
         let store = bolloon_agent::belief_tools::load_store();

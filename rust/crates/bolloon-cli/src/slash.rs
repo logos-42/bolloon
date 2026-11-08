@@ -47,11 +47,15 @@ pub const C_CONTEXT: &str = "上下文";
 pub const C_AUTO: &str = "后台与自动化";
 pub const C_CONFIG: &str = "配置";
 pub const C_INFO: &str = "信息";
+/// 2026-11-08: 用户点名的领域命令单独成类, 不再藏在 130 行的「信息/工具」里翻不到
+pub const C_DATA: &str = "领域与数据";
 pub const C_TOOLS: &str = "工具与技能";
 pub const C_EXIT: &str = "退出";
 
 /// 分类显示顺序 (与用户给的命令面一致)
-pub const CATEGORIES: &[&str] = &[C_SESSION, C_CONTEXT, C_AUTO, C_CONFIG, C_INFO, C_TOOLS, C_EXIT];
+pub const CATEGORIES: &[&str] = &[
+    C_SESSION, C_CONTEXT, C_AUTO, C_CONFIG, C_INFO, C_DATA, C_TOOLS, C_EXIT,
+];
 
 pub struct Spec {
     pub name: &'static str,
@@ -192,6 +196,21 @@ const RAW: &[Spec] = &[
     a("/v", "/version", C_INFO, "显示版本"),
     s("/debug", C_INFO, "/debug [nous|local]", "上传调试报告换分享链接", Na("没有上报服务; 本地日志在 logs/")),
 
+    // ==== 领域与数据 (2026-11-08 用户点名的命令面) ====
+    // 全部接真实本地数据/已有模块; 没有本地只读源的如实说明, 不冒充成功。
+    s("/agent", C_DATA, "/agent [id|list]", "查看/切换当前智能体 (DID/钱包/IPFS 都跟着它)", Ready),
+    s("/channel", C_DATA, "/channel [name]", "切换/选择渠道 (一渠道一输入历史)", Ready),
+    s("/did", C_DATA, "/did [copy]", "显示**当前智能体**的 DID (copy = 写入系统剪贴板)", Ready),
+    s("/wallet", C_DATA, "/wallet [copy]", "当前智能体绑定的钱包地址 (copy = 复制第一个地址)", Ready),
+    s("/work", C_DATA, "/work", "当前 todo 进度与任务公告板", Ready),
+    s("/world", C_DATA, "/world", "最近的世界模式交互 (读 interaction-log.jsonl)", Ready),
+    s("/group", C_DATA, "/group", "本机群组索引 (没有则提示需 web 节点)", Ready),
+    s("/ipfs", C_DATA, "/ipfs [status|add <文本>|cat <CID>]", "本机 IPFS 内容寻址 (需 Kubo, 连不上如实报错)", Ready),
+    s("/ipns", C_DATA, "/ipns [status|resolve <name>]", "IPNS 解析 (需 Kubo, 连不上如实报错)", Ready),
+    s("/interrupt", C_DATA, "/interrupt", "暂停轮末自动调度 (等同 /busy interrupt)", Ready),
+    s("/web_fetch", C_DATA, "/web_fetch <http(s) URL> [max_chars]", "抓取一个 URL 的文本 (与 agent 的 web_fetch 工具同一实现)", Ready),
+    a("/fetch", "/web_fetch", C_DATA, "抓取 URL"),
+
     // ==== 工具与技能 ====
     s("/tools", C_TOOLS, "/tools [list|disable|enable] [name...]", "管理工具", Planned(R_SKILLS)),
     s("/toolsets", C_TOOLS, "/toolsets", "列出可用工具集", Planned(R_SKILLS)),
@@ -288,8 +307,15 @@ pub fn parse(line: &str) -> Option<(&'static Spec, String)> {
  * 始终写**原始条数**, 免得"过滤后计数变小"误导。
  */
 pub fn help_lines(filter: Option<&str>) -> Vec<String> {
-    let f = filter.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
+    let raw_f = filter.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
+    // 2026-11-08: 默认只列**可用**命令。以前 130+ 行全量输出, /queue /interrupt 这类
+    // 中段命令会被卷出屏幕, 用户以为"没有这个命令"; 要看全量用 `/help all`。
+    let show_all = raw_f.as_deref() == Some("all");
+    let f = if show_all { None } else { raw_f.clone() };
     let hit = |sp: &Spec| -> bool {
+        if !show_all && !sp.status.is_ready() {
+            return false;
+        }
         match &f {
             None => true,
             Some(q) => {
@@ -302,7 +328,8 @@ pub fn help_lines(filter: Option<&str>) -> Vec<String> {
 
     let mut out: Vec<String> = Vec::new();
     out.push(format!(
-        "Bolloon 命令 (共 {} 条 · 别名也算一条){}",
+        "Bolloon 命令 (可用 {} / 共 {} 条){}",
+        specs().iter().filter(|s| s.status.is_ready()).count(),
         specs().len(),
         match &f {
             Some(q) => format!(" · 过滤 “{q}”"),
@@ -333,6 +360,12 @@ pub fn help_lines(filter: Option<&str>) -> Vec<String> {
                 sp.status.mark()
             ));
         }
+    }
+    out.push(String::new());
+    out.push("常用: /queue 排队 · /interrupt 暂停轮末调度 · /steer 插话 · /goal 长期目标 · /loop 定时重复".to_string());
+    if !show_all {
+        let rest = specs().iter().filter(|s| !s.status.is_ready()).count();
+        out.push(format!("还有 {rest} 条未接线/不适用命令: /help all 看全部"));
     }
     out
 }
@@ -382,6 +415,9 @@ mod tests {
             "/cron", "/suggestions", "/suggest", "/blueprint", "/bp", "/curator", "/kanban",
             "/reload", "/reload-mcp", "/reload_mcp", "/reload-skills", "/reload_skills",
             "/browser", "/plugins", "/quit", "/exit",
+            // 2026-11-08 领域与数据 (用户点名的命令面)
+            "/agent", "/channel", "/did", "/wallet", "/work", "/world", "/group",
+            "/ipfs", "/ipns", "/interrupt", "/web_fetch", "/fetch",
         ];
         for name in required {
             assert!(find(name).is_some(), "命令面漏了 {name}");
@@ -440,7 +476,7 @@ mod tests {
     /// 帮助页: 分类齐全 + 待接/不适用带标记 + 过滤有效
     #[test]
     fn help_lists_every_category_and_marks_status() {
-        let all = help_lines(None).join("\n");
+        let all = help_lines(Some("all")).join("\n");
         for cat in CATEGORIES {
             assert!(all.contains(&format!("── {cat} ──")), "帮助页缺分类 {cat}");
         }
@@ -448,6 +484,13 @@ mod tests {
         assert!(all.contains("[不适用]"));
         assert!(all.contains("/new"));
         assert!(all.contains("/exit"));
+
+        // 默认视图: 只列可用命令, 但 queue/interrupt 必须看得见, 且给出 all 入口
+        let ready_only = help_lines(None).join("\n");
+        assert!(!ready_only.contains("[待接]"), "默认帮助不该被待接命令淹没");
+        assert!(ready_only.contains("/help all"));
+        assert!(ready_only.contains("/queue"), "queue 又没出现");
+        assert!(ready_only.contains("/interrupt"), "interrupt 又没出现");
 
         let only_save = help_lines(Some("save")).join("\n");
         assert!(only_save.contains("/save"));
@@ -468,6 +511,20 @@ mod tests {
     fn ready_count_is_what_we_claim() {
         let ready = specs().iter().filter(|s| s.status.is_ready()).count();
         // 含别名 (别名继承本体状态), 所以这个数 > "真命令数"
-        assert_eq!(ready, 53, "Ready 命令数变了: {ready} (改了就在这里同步口径)");
+        assert_eq!(ready, 65, "Ready 命令数变了: {ready} (改了就在这里同步口径)");
+    }
+
+    /// 2026-11-08: 用户点名的领域命令必须真的注册且可用。
+    /// `/channel` 以前在 `chat_command::exec` 里有实现却没进 SPECS, 永远调不到 —— 这类坑用门拦住。
+    #[test]
+    fn domain_commands_are_registered_and_ready() {
+        for name in [
+            "/agent", "/channel", "/did", "/wallet", "/work", "/world", "/group",
+            "/ipfs", "/ipns", "/interrupt", "/web_fetch", "/fetch",
+        ] {
+            let sp = find(name).unwrap_or_else(|| panic!("{name} 没注册"));
+            assert!(sp.status.is_ready(), "{name} 不是 Ready");
+            assert_eq!(sp.category, C_DATA, "{name} 分类不对");
+        }
     }
 }

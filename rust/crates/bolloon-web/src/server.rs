@@ -1516,7 +1516,7 @@ async fn cron_status(State(st): State<AppState>) -> Json<serde_json::Value> {
         "idle_verdict": idle_now.as_str(),
         "idle_verdict_last": stats.idle_verdict_last,
         "initiative_skills_last": stats.initiative_skills_last,
-        // 按自己信念挑出的下一步 (来自 ~/.bolloon/agent/beliefs.json); 空 = 没有活着的目标
+        // 按自己信念挑出的下一步 (来自 agent_dir()/beliefs.db, SQLite); 空 = 没有活着的目标
         "initiative_goal_last": stats.initiative_goal_last,
         // 自我设计最近一次结果 + 上一次失败原因 (没发生与失败要能分开看)
         "initiative_reflection_last": stats.initiative_reflection_last,
@@ -1854,7 +1854,8 @@ async fn delete_group(
     }))
 }
 
-/// GET /api/beliefs —— 看 agent **自己的**信念与长短期目标 (它就写在 beliefs.json 里)
+/// GET /api/beliefs —— 看 agent **自己的**信念与长短期目标
+/// (真源 `agent_dir()/beliefs.db`, SQLite; 2026-11-06 起不再是 JSON 文件)
 ///
 /// 只读。`render` 是注入 system prompt 的同一段文本 —— 前端/CLI 看到的就是模型看到的,
 /// 不另做一份"好看版", 否则两边口径会飘。

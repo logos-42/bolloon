@@ -1891,9 +1891,22 @@ async fn run_chat(channel: &str, resume: Option<&str>) -> anyhow::Result<()> {
 
     // 命令改出来的回填内容 (`/undo` `/retry`)
     let mut prefill = String::new();
+    // 忙时输入 (生成期间也能打字/排队): 由 send_one 的 100ms 重绘 ticker 写入
+    let busy = std::sync::Arc::new(std::sync::Mutex::new(BusyInput::default()));
 
     loop {
         chrome.refresh_size();
+        // 上一轮生成期间攒下的输入在这里兑现: 排队的进 steer, 未提交的草稿回填输入框。
+        // 放在 next_scheduled 之前, 排队消息才能被本轮的 steer 优先消费。
+        {
+            let (draft, queued) = busy.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if !queued.is_empty() {
+                sess.steer.extend(queued);
+            }
+            if prefill.is_empty() && !draft.is_empty() {
+                prefill = draft;
+            }
+        }
         refresh_status(&mut chrome, &sess);
         if matches!(chrome.activity, tui::Activity::Thinking { .. }) {
             chrome.activity = tui::Activity::Idle;
@@ -2050,7 +2063,7 @@ async fn run_chat(channel: &str, resume: Option<&str>) -> anyhow::Result<()> {
             history.push(prompt.clone());
         }
 
-        match send_one(&mut chrome, full, &mut sess, &mut learn, &llm, &prompt, &cancel, bypass).await {
+        match send_one(&mut chrome, full, &mut sess, &mut learn, &llm, &prompt, &cancel, bypass, &busy).await {
             Ok(()) => {}
             Err(e) => emit(&mut chrome, full, &[format!("✗ {e}")]),
         }
@@ -2072,7 +2085,7 @@ async fn run_chat(channel: &str, resume: Option<&str>) -> anyhow::Result<()> {
             let Some(sched) = sess.next_scheduled(now_ms()) else { break };
             let auto_text = format!("{} {}", sched.marker(), sched.text());
             let is_loop = matches!(sched, chat_command::Scheduled::Loop(_));
-            match send_one(&mut chrome, full, &mut sess, &mut learn, &llm, &auto_text, &cancel, bypass).await {
+            match send_one(&mut chrome, full, &mut sess, &mut learn, &llm, &auto_text, &cancel, bypass, &busy).await {
                 Ok(()) => {
                     if is_loop {
                         for l in sess.after_loop_turn(&ctx).await {
@@ -2116,6 +2129,84 @@ async fn run_chat(channel: &str, resume: Option<&str>) -> anyhow::Result<()> {
 /// **分工**: "怎么调模型"(要流式、要能中断、要边跑边画) 属于策略, 放在这里;
 /// "怎么推进轮次 / 走 Harness 门 / 应用受治理配置" 属于循环, 在 `KernelLoop`。
 /// 于是 CLI 与 Web 跑的是同一个循环 —— 配置语义不再分叉。
+/// AI 循环期间的「忙时输入」。以前生成期间输入的字节只被 watcher 攒进 PENDING,
+/// 既不显示也不反馈, 观感就是输入框冻结; 现在草稿上屏、Enter 排队、结束回填。
+#[derive(Default)]
+struct BusyInput {
+    /// 还没按 Enter 的草稿 (循环结束后回填成下一轮 prefill, 不丢字)
+    draft: String,
+    /// 按了 Enter 的整行 (轮末作为 steer 自动跑, 不覆盖正在生成的回答)
+    queued: Vec<String>,
+}
+
+impl BusyInput {
+    fn take(&mut self) -> (String, Vec<String>) {
+        (std::mem::take(&mut self.draft), std::mem::take(&mut self.queued))
+    }
+}
+
+fn utf8_char_len(first: u8) -> usize {
+    match first {
+        0x00..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf7 => 4,
+        _ => 1,
+    }
+}
+
+/// 把 watcher 攒下的原始按键字节解析成草稿/排队消息。
+/// raw 模式下 stdin 只能有一个读者 —— 这里**只读 PENDING, 绝不新开 read_key_raw**。
+fn drain_busy_input(bytes: &[u8], b: &mut BusyInput) {
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match c {
+            0x03 => {} // Ctrl+C 已由 watcher 当作中断处理
+            0x0d | 0x0a => {
+                let text = b.draft.trim().to_string();
+                if !text.is_empty() {
+                    b.queued.push(text);
+                }
+                b.draft.clear();
+            }
+            0x7f | 0x08 => {
+                b.draft.pop();
+            }
+            0x1b => {
+                // 方向键/功能键: 吞掉一个转义序列, 别把 '[' 'A' 当成正文
+                let start = i;
+                i += 1;
+                if i < bytes.len() && (bytes[i] == b'[' || bytes[i] == b'O') {
+                    i += 1;
+                }
+                while i < bytes.len()
+                    && i - start < 12
+                    && !bytes[i].is_ascii_alphabetic()
+                    && bytes[i] != b'~'
+                {
+                    i += 1;
+                }
+                if i < bytes.len() && i - start < 12 {
+                    i += 1;
+                }
+                continue;
+            }
+            0x00..=0x1f => {} // 其它控制字符
+            _ => {
+                let n = utf8_char_len(c);
+                let end = (i + n).min(bytes.len());
+                if let Ok(s) = std::str::from_utf8(&bytes[i..end]) {
+                    b.draft.push_str(s);
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
 struct CliUi<'a> {
     chrome: &'a mut tui::Chrome,
     full: bool,
@@ -2180,10 +2271,10 @@ impl<'a> bolloon_agent::kernel_loop::LoopStrategy for CliStrategy<'a> {
                     }
                     _ = tick.tick() => {
                         let mut ui = self.ui.lock().await;
-                        let full_now = ui.full;
                         ui.chrome.tick();
                         ui.chrome.refresh_size();
-                        flush_logs(ui.chrome, full_now, true);
+                        // 日志交给 send_one 的全周期 ticker 统一 flush: 这里调
+                        // flush_logs(.., true) 会用 note 覆盖掉 Thinking 秒表。
                         ui.chrome.draw();
                     }
                 }
@@ -2363,6 +2454,7 @@ async fn send_one(
     text: &str,
     cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     bypass: bool,
+    busy: &std::sync::Arc<std::sync::Mutex<BusyInput>>,
 ) -> Result<(), String> {
     let user_msg = match sess.build_user_message(text) {
         Ok(m) => m,
@@ -2455,7 +2547,7 @@ async fn send_one(
     let mut convo: Vec<bolloon_llm::ChatMessage> = vec![bolloon_llm::ChatMessage {
         role: "system".into(),
         content: {
-            let base = build_bolloon_system(&sess.channel, Some(&text)).await;
+            let base = build_bolloon_system(&sess.agent_id, &sess.channel, Some(&text)).await;
             let extra = learn.context_block(text, learning::DEFAULT_BUDGET);
             let kernel = kernel_context_block();
             let mut sys = if extra.trim().is_empty() {
@@ -2535,9 +2627,47 @@ async fn send_one(
             &obs as &dyn bolloon_agent::kernel_loop::LoopObserver,
         ]),
     };
-    let run = kernel
-        .run_observed(&chain, "env", &sess.model, convo, tool_schemas, None)
-        .await;
+    // 覆盖**整个** AI 循环的重绘 ticker。以前只有首轮流式分支有 100ms tick,
+    // 续轮 / 工具执行 / 重试 sleep / goal review 全程零重绘 ⇒ 秒表停住、底栏冻死。
+    // 用局部 select! 而不是 tokio::spawn: CliUi 借着 &mut Chrome, 生命周期不是 'static。
+    // 整块包起来, 让 pin!/future 的临时值在块尾全部 drop, 才能把 chrome 还回去。
+    let run = {
+        let mut paint = tokio::time::interval(std::time::Duration::from_millis(100));
+        paint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let fut = kernel.run_observed(&chain, "env", &sess.model, convo, tool_schemas, None);
+        let mut fut = std::pin::pin!(fut);
+        loop {
+            tokio::select! {
+                r = &mut fut => break r,
+                _ = paint.tick() => {
+                    let mut ui = ui.lock().await;
+                    let full_now = ui.full;
+                    ui.chrome.tick();
+                    ui.chrome.refresh_size();
+
+                    // 忙时预输入: 草稿上屏, Enter 的整行排队到下一轮自动执行。
+                    // watcher 已把字节攒进 PENDING —— 这里只取, 绝不新开 stdin 读者。
+                    let pending = tui::input::take_pending();
+                    if !pending.is_empty() {
+                        let mut b = busy.lock().unwrap_or_else(|e| e.into_inner());
+                        drain_busy_input(&pending, &mut b);
+                        ui.chrome.set_input(&b.draft);
+                    }
+
+                    // flush_logs(..., true) 会用 note 覆盖 Thinking; 恢复秒表, 否则计时又消失
+                    let thinking = match &ui.chrome.activity {
+                        tui::Activity::Thinking { started, chars } => Some((*started, *chars)),
+                        _ => None,
+                    };
+                    flush_logs(ui.chrome, full_now, true);
+                    if let Some((started, chars)) = thinking {
+                        ui.chrome.activity = tui::Activity::Thinking { started, chars };
+                    }
+                    ui.chrome.draw();
+                }
+            }
+        }
+    };
     let tools_used = obs.tool_count();
     let used_tool_names = obs.tool_names().await;
 
@@ -2781,11 +2911,12 @@ async fn cli_memory_recall_text(query: Option<&str>) -> String {
 /// 装配 bolloon 身份 system prompt: 单一真源 = `bolloon_agent::prompt::build_system_prompt`
 /// (与 web/App 完全一致). 按 `channel` 选全局(home)/项目内(project) 身份文件 (soul/agent/persona).
 /// 装配失败降级为最小 bolloon 文本, 绝不因此打断聊天.
-async fn build_bolloon_system(channel: &str, query: Option<&str>) -> String {
+async fn build_bolloon_system(agent: &str, channel: &str, query: Option<&str>) -> String {
     let home = bolloon_agent::home::BolloonHome::resolve();
     let project = std::env::current_dir().unwrap_or_default();
-    let docs = bolloon_agent::home::AgentDocs::freeze_with(&home, "bolloon", channel, &project)
-        .unwrap_or_else(|_| bolloon_agent::home::AgentDocs::freeze(&home, "bolloon").unwrap());
+    // 2026-11-08: 身份文件按**当前智能体**取 (/agent 切换后立即生效), 不再写死 "bolloon"
+    let docs = bolloon_agent::home::AgentDocs::freeze_with(&home, agent, channel, &project)
+        .unwrap_or_else(|_| bolloon_agent::home::AgentDocs::freeze(&home, agent).unwrap());
     let ctx = bolloon_agent::prompt::AssembleContext {
         channel,
         role: None,
@@ -2793,7 +2924,8 @@ async fn build_bolloon_system(channel: &str, query: Option<&str>) -> String {
     };
     // 记忆召回 (top-N) 接进 system prompt —— 之前这一项恒为空, 记忆从未进 prompt
     let memory_text = cli_memory_recall_text(query).await;
-    // 计划进度 + 自己的信念/目标: 与 web 同一份落盘 (todo.json / beliefs.json), 同一套排序
+    // 计划进度 + 自己的信念/目标: 与 web 同一份真源
+    // (agent_dir()/todo.json + agent_dir()/beliefs.db, SQLite; 2026-11-06 起不再有 JSON 落盘), 同一套排序
     let todo_progress = bolloon_agent::belief_tools::todo_progress_text();
     let mut text = bolloon_agent::prompt::build_system_prompt(
         &docs,
@@ -3631,4 +3763,89 @@ fn build_llm_from_env() -> bolloon_llm::LlmRuntime {
         if provider.api_key.is_some() { "有" } else { "无" }
     );
     bolloon_llm::LlmRuntime::new(vec![provider], 2)
+}
+
+#[cfg(test)]
+mod busy_input_tests {
+    use super::*;
+
+    #[test]
+    fn busy_input_draft_backspace_and_enter_queues_a_line() {
+        let mut b = BusyInput::default();
+        drain_busy_input(b"hello", &mut b);
+        assert_eq!(b.draft, "hello");
+        assert!(b.queued.is_empty());
+        drain_busy_input(b"\x7f", &mut b);
+        assert_eq!(b.draft, "hell", "退格要生效");
+        drain_busy_input(b"\r", &mut b);
+        assert_eq!(b.queued, vec!["hell".to_string()], "Enter 排队一整行");
+        assert_eq!(b.draft, "", "排队后草稿清空, 输入框不再显示旧文本");
+    }
+
+    #[test]
+    fn busy_input_keeps_utf8_and_ignores_escape_sequences() {
+        let mut b = BusyInput::default();
+        drain_busy_input("中文".as_bytes(), &mut b);
+        assert_eq!(b.draft, "中文", "多字节字符不能被打散");
+        drain_busy_input(b"\x1b[A", &mut b);
+        assert_eq!(b.draft, "中文", "方向上键不能变成正文 '[A'");
+        drain_busy_input(b"\x03", &mut b);
+        assert_eq!(b.draft, "中文", "Ctrl+C 由 watcher 处理, 不当正文");
+        drain_busy_input(b"\r", &mut b);
+        assert_eq!(b.queued, vec!["中文".to_string()]);
+    }
+
+    #[test]
+    fn busy_input_take_hands_over_once() {
+        let mut b = BusyInput::default();
+        drain_busy_input(b"abc", &mut b);
+        let (draft, queued) = b.take();
+        assert_eq!(draft, "abc", "未提交草稿交给下一轮 prefill");
+        assert!(queued.is_empty());
+        let (d2, q2) = b.take();
+        assert!(d2.is_empty() && q2.is_empty(), "取走后不能重复回放");
+    }
+}
+
+/// 存储真源的注释防回归门 (2026-11-08)
+///
+/// 用户排障时被注释骗去读一个 2026-11-06 就冻结的旧 JSON 快照, 得出「数据对不上」。
+/// 描述「当前状态」的这几个文件, 连那个旧文件名都不该再出现 —— 真源是
+/// `agent_dir()/beliefs.db` (SQLite)。迁移逻辑本身在 `belief.rs` 里可以合法提及旧文件。
+#[cfg(test)]
+mod storage_doc_gate {
+    // 刻意拼接: 避免本门测试自身的源码成为被自己检出的「误导性引用」
+    const FROZEN: &str = concat!("beliefs.", "json");
+
+    fn crates_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/ 目录")
+            .to_path_buf()
+    }
+
+    #[test]
+    fn current_state_comments_never_point_at_the_frozen_snapshot() {
+        for rel in [
+            "bolloon-cli/src/main.rs",
+            "bolloon-web/src/native.rs",
+            "bolloon-web/src/server.rs",
+        ] {
+            let text = std::fs::read_to_string(crates_dir().join(rel)).unwrap();
+            assert!(
+                !text.contains(FROZEN),
+                "{rel} 又把冻结快照写成当前存储; 真源是 agent_dir()/beliefs.db (SQLite)"
+            );
+        }
+    }
+
+    #[test]
+    fn migration_guard_still_asserts_json_is_not_written() {
+        let text = std::fs::read_to_string(
+            crates_dir().join("bolloon-agent/src/belief.rs"),
+        )
+        .unwrap();
+        assert!(text.contains("不该再写 json"), "迁移守卫不能丢");
+        assert!(text.contains("beliefs.db"), "真源必须写成 SQLite");
+    }
 }

@@ -766,12 +766,21 @@ impl Chrome {
                 let mut repaint = true;
                 match resolve_action(&key) {
                     EditAction::Submit => {
-                        if self.compl.is_some() {
-                            // 补全打开时 Enter = 接受候选, **不提交** (再按一次 Enter 才发)
+                        // 补全打开时 Enter 默认只"接受候选"; 但如果用户已经把完整命令名打全
+                        // 且候选唯一, 就直接提交 —— 否则 /help 按一次 Enter 像没反应。
+                        let buf_trim = self.compose.buf().trim().to_string();
+                        // 只要候选里**有**和当前输入逐字相同的命令就提交:
+                        // 否则 `/agent` 会被前缀候选 `/agents` 抢走 (输入被打断)。
+                        let exact_slash = matches!(&self.compl, Some((ComplKind::Slash, _, _)))
+                            && self.items.iter().any(|it| buf_trim == format!("/{}", it.value));
+                        if self.compl.is_some() && !exact_slash {
                             self.accept(source);
                             self.dismissed = true;
                         } else {
                             let text = self.compose.buf().to_string();
+                            // 提交后必须清空缓冲: AI 循环期间每一帧都会重画 composer_row(),
+                            // 不清就会把「已发送的那句」一直画回输入框, 看起来像输入被冻住。
+                            self.compose.set_buf("");
                             self.clear();
                             self.notes.clear();
                             return InputOutcome::Line(self.fold_long_paste(&text).unwrap_or(text));
@@ -1004,6 +1013,57 @@ fn paste_dir() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-11-08: 提交后输入缓冲必须清空。AI 循环期间每帧重画 composer,
+    /// 不清就会把「已发送的那句」一直画回输入框 —— 用户看到的就是输入框冻结。
+    #[test]
+    fn submitting_clears_the_compose_buffer() {
+        let _ = crate::input::take_pending(); // 隔离其它测试残留
+        crate::input::test_feed_pending(b"hello\r");
+        let mut c = Chrome::new(30, 100);
+        let src: &dyn Fn(ComplKind, &str) -> Vec<ComplItem> = &|_kind, _q| Vec::new();
+        let outcome = c.read_compose(&[], "", src);
+        assert!(matches!(&outcome, InputOutcome::Line(t) if t.as_str() == "hello"));
+        assert_eq!(c.input(), "", "提交后缓冲必须为空, 否则生成期会被反复画回输入框");
+        assert!(crate::input::take_pending().is_empty());
+    }
+
+    /// 2026-11-08: 输入完整命令名 + 候选唯一时, **第一次 Enter 就提交**。
+    /// 以前补全打开时 Enter 只接受候选, `/help` 看起来像"没反应"。
+    #[test]
+    fn unique_slash_candidate_submits_on_first_enter() {
+        let _ = crate::input::take_pending();
+        crate::input::test_feed_pending(b"/help\r");
+        let mut c = Chrome::new(30, 100);
+        let src: &dyn Fn(ComplKind, &str) -> Vec<ComplItem> = &|_k, _q| {
+            vec![ComplItem { label: "/help".into(), value: "help".into(), hint: None }]
+        };
+        let outcome = c.read_compose(&[], "", src);
+        assert!(
+            matches!(&outcome, InputOutcome::Line(t) if t == "/help"),
+            "完整命令名 + 唯一候选时, 第一次 Enter 应直接提交"
+        );
+    }
+
+    /// `/agent` 与 `/agents` 前缀冲突时, 打全 `/agent` + Enter 必须执行 `/agent`,
+    /// 不能被补全自动改写成 `/agents`。
+    #[test]
+    fn exact_command_wins_over_prefix_candidates() {
+        let _ = crate::input::take_pending();
+        crate::input::test_feed_pending(b"/agent\r");
+        let mut c = Chrome::new(30, 100);
+        let src: &dyn Fn(ComplKind, &str) -> Vec<ComplItem> = &|_k, _q| {
+            vec![
+                ComplItem { label: "/agent".into(), value: "agent".into(), hint: None },
+                ComplItem { label: "/agents".into(), value: "agents".into(), hint: None },
+            ]
+        };
+        let outcome = c.read_compose(&[], "", src);
+        assert!(
+            matches!(&outcome, InputOutcome::Line(t) if t == "/agent"),
+            "精确命令必须优先于前缀候选"
+        );
+    }
 
     #[test]
     fn block_is_always_five_lines() {

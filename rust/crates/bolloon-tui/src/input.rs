@@ -42,6 +42,12 @@ fn push_pending(bytes: &[u8]) {
     }
 }
 
+/// 测试用: 模拟「生成期间 watcher 读到的按键」, 让 app 层单测能喂预输入
+#[cfg(test)]
+pub(crate) fn test_feed_pending(bytes: &[u8]) {
+    push_pending(bytes);
+}
+
 /** 清到屏末 (重画输入块的起点) */
 const ERASE_DOWN: &str = "\x1b[J";
 

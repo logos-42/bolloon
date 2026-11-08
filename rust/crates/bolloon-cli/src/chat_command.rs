@@ -76,25 +76,43 @@ impl ChatSession {
         match kind {
             PickKind::Model => {
                 let cfg = bolloon_llm::config_store::load();
+                let active = cfg.active_provider.clone();
                 let mut rows: Vec<PickRow> = Vec::new();
-                for r in bolloon_llm::config_store::usable(&cfg) {
-                    let mark = if r.model == self.model { "●" } else { "○" };
+                // ① 当前模型 (选中 = 只改本会话模型名, 兼容旧行为)
+                rows.push(PickRow {
+                    value: self.model.clone(),
+                    label: format!("● 当前模型 {}", self.model),
+                    hint: Some("选中 = 只改本会话模型名".to_string()),
+                });
+                // ② 新增/配置入口 (用户说"没有新增")
+                rows.push(PickRow {
+                    value: "__configure__".to_string(),
+                    label: "＋ 新增/配置一家 provider".to_string(),
+                    hint: Some("目录外的自家服务: bolloon model <id> --base-url … --model …".to_string()),
+                });
+                // ③ 全量目录 (内置 13 + 目录 200+): 已配置的排前面, 不再只列 usable()
+                let mut all = bolloon_llm::list_with_catalog();
+                all.sort_by_key(|e| !cfg.providers.contains_key(&e.id));
+                for e in all {
+                    let configured = cfg.providers.contains_key(&e.id);
+                    let mark = if e.id == active { "●" } else { "○" };
+                    let state = if configured {
+                        "已配置"
+                    } else if e.requires_api_key {
+                        "待填 key"
+                    } else {
+                        "免 key"
+                    };
                     rows.push(PickRow {
-                        value: r.model.clone(),
-                        label: format!("{mark} {:<18} {}", r.model, r.id),
-                        hint: Some(format!("{} · 密钥 {}", r.base_url, r.auth_ref())),
+                        value: format!("provider:{}", e.id),
+                        label: format!("{mark} {:<22} {}", e.id, e.display_name),
+                        hint: Some(format!(
+                            "{} · {} · {}",
+                            e.protocol.as_str(),
+                            state,
+                            e.default_base_url
+                        )),
                     });
-                }
-                // 当前模型即使不在可用列表里也要能看见 (否则用户以为丢了)
-                if !rows.iter().any(|x| x.value == self.model) {
-                    rows.insert(
-                        0,
-                        PickRow {
-                            value: self.model.clone(),
-                            label: format!("● {:<18} (当前, 未在配置里)", self.model),
-                            hint: Some("这个模型名当前配置解析不到密钥/地址".to_string()),
-                        },
-                    );
                 }
                 rows
             }
@@ -146,9 +164,52 @@ impl ChatSession {
     pub fn apply_pick(&mut self, kind: PickKind, value: &str) -> Result<Vec<String>, String> {
         match kind {
             PickKind::Model => {
+                if value == "__configure__" {
+                    return Ok(vec![
+                        "在终端另开一个窗口运行 `bolloon model` 可全量选择并填 key;".to_string(),
+                        "目录外的自家服务: `bolloon model <id> --base-url https://… --model <模型>`".to_string(),
+                    ]);
+                }
+                if let Some(id) = value.strip_prefix("provider:") {
+                    let entry = bolloon_llm::list_with_catalog()
+                        .into_iter()
+                        .find(|e| e.id == id);
+                    let Some(e) = entry else { return Err(format!("目录里没有 {id}")) };
+                    let mut cfg = bolloon_llm::config_store::load();
+                    bolloon_llm::config_store::apply_provider(
+                        &mut cfg,
+                        id,
+                        None,
+                        if e.default_base_url.is_empty() { None } else { Some(e.default_base_url.as_str()) },
+                        if e.default_model.is_empty() { None } else { Some(e.default_model.as_str()) },
+                    );
+                    bolloon_llm::config_store::set_active(&mut cfg, id);
+                    bolloon_llm::config_store::save(&cfg)
+                        .map_err(|err| format!("保存配置失败: {err}"))?;
+                    if !e.default_model.is_empty() {
+                        self.model = e.default_model.clone();
+                    }
+                    let _ = self.save();
+                    let ready = bolloon_llm::config_store::resolve(&cfg, id).is_ok();
+                    return Ok(if ready {
+                        vec![
+                            format!("✓ 当前 provider 已设为 {id} · 模型 {}", self.model),
+                            "下次打开 bolloon chat 生效 (当前进程的模型运行时已固定)".to_string(),
+                        ]
+                    } else {
+                        vec![
+                            format!("已设为当前 provider {id}, 但还缺 API key"),
+                            format!("补配置: `bolloon model {id}` 或设置环境变量"),
+                            "补好后 /model 里会标「已配置」".to_string(),
+                        ]
+                    });
+                }
                 self.model = value.to_string();
                 let _ = self.save();
-                Ok(vec![format!("模型已切换到 {}", self.model)])
+                Ok(vec![format!(
+                    "本会话模型已切到 {} (provider 不变; 要换家选 provider:xxx 行)",
+                    self.model
+                )])
             }
             PickKind::Channel => {
                 if value == self.channel {
@@ -422,6 +483,9 @@ struct Persisted {
     #[serde(default)]
     title_custom: bool,
     model: String,
+    /// 当前智能体 id (2026-11-08: /did /wallet /ipfs 都按它取, 不再默认成本机用户)
+    #[serde(default)]
+    agent_id: String,
     channel: String,
     created_ms: u128,
     messages: Vec<ChatMessage>,
@@ -449,6 +513,8 @@ pub struct ChatSession {
     /// `title` 是否由用户 `/title` 指定 (false = 跟着首条用户消息自动改)
     pub title_custom: bool,
     pub model: String,
+    /// 当前智能体 (会话级, 跨会话沿用): /did /wallet /ipfs 的身份都取它
+    pub agent_id: String,
     pub channel: String,
     pub messages: Vec<ChatMessage>,
     /// 下一条消息要带上的附件路径 (`/image` `/paste`)
@@ -490,6 +556,7 @@ impl ChatSession {
             title: String::new(),
             title_custom: false,
             model: model.to_string(),
+            agent_id: default_agent_id(),
             channel: channel.to_string(),
             messages: Vec::new(),
             attachments: Vec::new(),
@@ -587,6 +654,7 @@ impl ChatSession {
             title: self.title.clone(),
             title_custom: self.title_custom,
             model: self.model.clone(),
+            agent_id: self.agent_id.clone(),
             channel: self.channel.clone(),
             created_ms: self.created_ms,
             messages: self.messages.clone(),
@@ -644,6 +712,11 @@ impl ChatSession {
             self.title = parsed.title;
             self.title_custom = parsed.title_custom;
             self.model = parsed.model;
+            self.agent_id = if parsed.agent_id.trim().is_empty() {
+                default_agent_id()
+            } else {
+                parsed.agent_id
+            };
             self.channel = parsed.channel;
             self.created_ms = parsed.created_ms;
             self.messages = parsed.messages;
@@ -1013,6 +1086,32 @@ impl ChatSession {
                 }
             }
             "/diff" => Cmd::Say(git_diff(args)),
+            // ── 领域与数据 (2026-11-08): 按**当前智能体**取, 只读本地真源 / 复用已有模块 ──
+            "/agent" => {
+                let a = args.trim();
+                if a.is_empty() || a == "list" {
+                    Cmd::Say(self.agent_list_lines())
+                } else if bolloon_agent::home::validate_agent_id(a).is_ok() {
+                    self.agent_id = a.to_string();
+                    let _ = self.save();
+                    Cmd::Say(vec![
+                        format!("✓ 当前智能体已切到 {a}"),
+                        format!("  DID: {}", did_of(a).unwrap_or_else(|| "(未生成)".into())),
+                        "后续 /did /wallet /ipfs /ipns 都按这个智能体取".to_string(),
+                    ])
+                } else {
+                    Cmd::Say(vec!["智能体 id 只许字母数字-_".to_string()])
+                }
+            }
+            "/did" => Cmd::Say(did_lines(&self.agent_id, args)),
+            "/wallet" => Cmd::Say(wallet_lines(&self.agent_id, args)),
+            "/work" => Cmd::Say(work_lines()),
+            "/world" => Cmd::Say(world_lines()),
+            "/group" => Cmd::Say(group_lines()),
+            "/ipfs" => Cmd::Say(ipfs_lines(&self.agent_id, args)),
+            "/ipns" => Cmd::Say(ipns_lines(&self.agent_id, args)),
+            "/interrupt" => Cmd::Say(self.busy_cmd("interrupt")),
+            "/web_fetch" => Cmd::Say(web_fetch_lines(args).await),
             "/profile" => Cmd::Say(self.profile_lines()),
             "/copy" => Cmd::Say(self.copy_cmd(args)),
             "/paste" => Cmd::Say(self.paste_cmd()),
@@ -1181,6 +1280,27 @@ impl ChatSession {
             }
             None => vec!["用法: /busy [queue|steer|interrupt|status]".to_string()],
         }
+    }
+
+    /// `/agent` —— 列出可选智能体与当前身份; 切换后 /did /wallet /ipfs 立即跟着变
+    fn agent_list_lines(&self) -> Vec<String> {
+        let known = agents_from_state();
+        let mut out = vec![format!(
+            "当前智能体: {} (DID: {})",
+            self.agent_id,
+            did_of(&self.agent_id).unwrap_or_else(|| "(未生成)".into())
+        )];
+        out.push("可选智能体 (native-state.json):".into());
+        if known.is_empty() {
+            out.push("  (还没有; 启动 bolloon web 或在 App 里创建)".into());
+        } else {
+            for (id, name, did) in &known {
+                let mark = if id == &self.agent_id { "●" } else { "○" };
+                out.push(format!("  {mark} {:<16} {:<10} {}", id, name, did));
+            }
+        }
+        out.push("用法: /agent <id> 切换 · /agent list".into());
+        out
     }
 
     fn bg_cmd(&self, ctx: &ChatCtx<'_>, args: &str) -> Vec<String> {
@@ -2300,6 +2420,278 @@ fn help_cmd(ctx: &ChatCtx<'_>, skills_path: &Path, args: &str) -> Vec<String> {
     slash::help_lines(Some(a))
 }
 
+// ── 领域与数据命令 (2026-11-08) ──────────────────────────────────────────
+// 纪律: 只读本机真实数据 / 复用已有模块; 没有数据源就如实说明, 不编造余额/群组/卡片。
+
+fn home_root() -> std::path::PathBuf {
+    bolloon_agent::home::BolloonHome::resolve().root().to_path_buf()
+}
+
+/// 当前智能体默认值: `BOLLOON_AGENT` 优先, 否则 `bolloon`
+/// (与 `build_bolloon_system` 历史默认一致, 老会话文件没有该字段时也回落到这里)
+fn default_agent_id() -> String {
+    std::env::var("BOLLOON_AGENT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "bolloon".to_string())
+}
+
+/// 从 web 的 native-state.json 里取智能体的 DID (TUI 与网页同一份真源)
+fn did_of(agent: &str) -> Option<String> {
+    let v = read_json(&home_root().join("native-state.json"));
+    v["agents"].as_array()?.iter()
+        .find(|a| a["id"].as_str() == Some(agent))
+        .and_then(|a| a["did"].as_str())
+        .map(String::from)
+}
+
+fn agents_from_state() -> Vec<(String, String, String)> {
+    let v = read_json(&home_root().join("native-state.json"));
+    v["agents"].as_array().map(|arr| {
+        arr.iter().filter_map(|a| {
+            let id = a["id"].as_str()?.to_string();
+            Some((id,
+                  a["name"].as_str().unwrap_or("").to_string(),
+                  a["did"].as_str().unwrap_or("").to_string()))
+        }).collect()
+    }).unwrap_or_default()
+}
+
+fn read_json(path: &std::path::Path) -> serde_json::Value {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// `/did` —— **当前智能体**的 DID (不是本机用户的), 值单独成行便于终端选中复制。
+fn did_lines(agent: &str, args: &str) -> Vec<String> {
+    let mut out = vec![format!("智能体: {agent}")];
+    match did_of(agent) {
+        Some(d) => {
+            if args.trim().eq_ignore_ascii_case("copy") {
+                match bolloon_tui::clipboard::copy_text(&d) {
+                    Ok(()) => out.push(format!("已复制 DID 到剪贴板: {d}")),
+                    Err(e) => out.push(format!("复制失败: {e}")),
+                }
+            } else {
+                out.push("DID (单独一行, 终端里双击即可选中):".into());
+                out.push(d);
+                out.push("提示: /did copy 一键复制".into());
+            }
+        }
+        None => {
+            out.push(format!(
+                "DID: (智能体 {agent} 还没有 DID — 启动一次 bolloon web / 在 App 里创建)"
+            ));
+            out.push("这里**不显示本机用户 DID**: 你要看的是智能体自己的身份".into());
+        }
+    }
+    out
+}
+
+/// `/wallet` —— **当前智能体绑定的钱包地址** (不是本机用户的余额页)
+fn wallet_lines(agent: &str, args: &str) -> Vec<String> {
+    let p = home_root().join("agents").join(agent).join("wallets.json");
+    let mut out = vec![format!("智能体: {agent}"), format!("钱包表 {}", p.display())];
+    let v = read_json(&p);
+    let rows: Vec<serde_json::Value> = if v.is_array() {
+        v.as_array().cloned().unwrap_or_default()
+    } else if v.is_object() {
+        v.as_object().map(|m| m.values().cloned().collect()).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if rows.is_empty() {
+        out.push("(该智能体还没有绑定钱包 — 绑定后地址会写在这里)".into());
+        return out;
+    }
+    let mut first = String::new();
+    for w in &rows {
+        let chain = w["chain"].as_str().or_else(|| w["network"].as_str()).unwrap_or("?");
+        let addr = w["address"].as_str().unwrap_or("?");
+        let bal = match &w["balance"] {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Number(x) => x.to_string(),
+            _ => "—".into(),
+        };
+        if first.is_empty() {
+            first = addr.to_string();
+        }
+        out.push(format!("{chain}"));
+        out.push(addr.to_string()); // 单独一行, 双击即可选中
+        out.push(format!("  余额 {bal}"));
+    }
+    if args.trim().eq_ignore_ascii_case("copy") {
+        match bolloon_tui::clipboard::copy_text(&first) {
+            Ok(()) => out.push(format!("已复制地址到剪贴板: {first}")),
+            Err(e) => out.push(format!("复制失败: {e}")),
+        }
+    } else {
+        out.push("提示: 双击地址即可复制; 或 /wallet copy 复制第一个地址".into());
+    }
+    out
+}
+
+fn work_lines() -> Vec<String> {
+    let mut out = Vec::new();
+    match bolloon_agent::belief_tools::todo_progress_text() {
+        Some(t) => out.push(format!("todo: {t}")),
+        None => out.push("todo: (还没有 agent_dir()/todo.json)".into()),
+    }
+    let p = home_root().join("task-board.json");
+    let v = read_json(&p);
+    let anns = v["announcements"].as_array().cloned().unwrap_or_default();
+    let claims = v["claims"].as_array().map(|a| a.len()).unwrap_or(0);
+    out.push(format!(
+        "任务公告板 {}: {} 条公告 / {} 条认领",
+        p.display(),
+        anns.len(),
+        claims
+    ));
+    for a in anns.iter().rev().take(3) {
+        let title = a["title"].as_str().or_else(|| a["text"].as_str())
+            .or_else(|| a["task"].as_str()).unwrap_or("(无标题)");
+        out.push(format!("  · {title}"));
+    }
+    out
+}
+
+fn world_lines() -> Vec<String> {
+    let p = home_root().join("interaction-log.jsonl");
+    let Ok(txt) = std::fs::read_to_string(&p) else {
+        return vec![
+            format!("世界交互日志 {} 还不存在", p.display()),
+            "卡片列表需 web 节点 /api/world/cards; 这里不编造卡片".into(),
+        ];
+    };
+    let mut out = vec![format!("最近世界交互 ({}):", p.display())];
+    let mut shown = 0;
+    for line in txt.lines().rev().take(8) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        out.push(format!(
+            "  [{}] {} {}",
+            v["event"].as_str().unwrap_or("?"),
+            v["label"].as_str().unwrap_or(""),
+            v["target"].as_str().unwrap_or("")
+        ));
+        shown += 1;
+    }
+    if shown == 0 {
+        out.push("  (日志为空)".into());
+    }
+    out.push("媒体卡片需 web 节点 (POST /api/world/cards/media), 此命令不冒充卡片库".into());
+    out
+}
+
+fn group_lines() -> Vec<String> {
+    let p = home_root().join("groups.json");
+    let v = read_json(&p);
+    let mut out = vec![format!("群组索引 {}", p.display())];
+    let ids: Vec<String> = if v.is_array() {
+        v.as_array().unwrap().iter()
+            .filter_map(|x| x["id"].as_str().map(String::from)).collect()
+    } else if v.is_object() {
+        v.as_object().unwrap().keys().cloned().collect()
+    } else {
+        Vec::new()
+    };
+    if ids.is_empty() {
+        out.push("(本机没有群组索引)".into());
+        out.push("群/子讨论/分享清单需 web 节点: bolloon group list".into());
+    } else {
+        for id in ids.iter().take(20) {
+            out.push(format!("  · {id}"));
+        }
+        if ids.len() > 20 {
+            out.push(format!("  … 还有 {} 个", ids.len() - 20));
+        }
+    }
+    out
+}
+
+const IPFS_HINT: &str = "本机 Kubo API: $BOLLOON_IPFS_API 或 http://127.0.0.1:5001";
+
+fn ipfs_lines(agent: &str, args: &str) -> Vec<String> {
+    let a = args.trim();
+    if a.is_empty() || a == "status" {
+        return vec![
+            format!("智能体: {agent} (IPNS key: bolloon-{agent})"),
+            "用法: /ipfs status | /ipfs add <文本> | /ipfs cat <CID>".into(),
+            IPFS_HINT.into(),
+            "status 不主动探测/拉起 daemon; add/cat 会真连, 连不上如实报错".into(),
+        ];
+    }
+    let (sub, rest) = a.split_once(char::is_whitespace).unwrap_or((a, ""));
+    let rest = rest.trim();
+    match sub {
+        "add" if !rest.is_empty() => match bolloon_agent::ipfs_tools::ensure_daemon(1500)
+            .and_then(|_| bolloon_agent::ipfs_tools::add_text(rest, "tui.txt"))
+        {
+            Ok(cid) => vec![format!("CID: {cid}")],
+            Err(e) => vec![format!("✗ add 失败: {e}"), IPFS_HINT.into()],
+        },
+        "cat" if !rest.is_empty() => match bolloon_agent::ipfs_tools::ensure_daemon(1500)
+            .and_then(|_| bolloon_agent::ipfs_tools::cat_text(rest))
+        {
+            Ok(t) => t.lines().take(30).map(String::from).collect(),
+            Err(e) => vec![format!("✗ cat 失败: {e}"), IPFS_HINT.into()],
+        },
+        _ => vec!["用法: /ipfs status | /ipfs add <文本> | /ipfs cat <CID>".into()],
+    }
+}
+
+fn ipns_lines(agent: &str, args: &str) -> Vec<String> {
+    let a = args.trim();
+    if a.is_empty() || a == "status" {
+        return vec![
+            format!("智能体: {agent} (建议 key: bolloon-{agent})"),
+            "用法: /ipns status | /ipns resolve <name>".into(),
+            IPFS_HINT.into(),
+            "发布 IPNS 走 agent 工具 ipns_publish; 此命令只做只读解析".into(),
+        ];
+    }
+    let (sub, rest) = a.split_once(char::is_whitespace).unwrap_or((a, ""));
+    match sub {
+        "resolve" if !rest.trim().is_empty() => {
+            match bolloon_agent::ipfs_tools::ensure_daemon(1500)
+                .and_then(|_| bolloon_agent::ipfs_tools::resolve_ipns(rest.trim()))
+            {
+                Ok(v) => vec![format!("解析结果: {v}")],
+                Err(e) => vec![format!("✗ resolve 失败: {e}"), IPFS_HINT.into()],
+            }
+        }
+        _ => vec!["用法: /ipns status | /ipns resolve <name>".into()],
+    }
+}
+
+async fn web_fetch_lines(args: &str) -> Vec<String> {
+    use bolloon_harness::ToolExecutor;
+    let mut it = args.split_whitespace();
+    let Some(url) = it.next() else {
+        return vec![
+            "用法: /web_fetch <http(s) URL> [max_chars]".into(),
+            "与 agent 的 web_fetch 工具同一实现 (含 SSRF 防护/截断/真实错误)".into(),
+            "抓本机服务需设 BOLLOON_WEB_FETCH_ALLOW_PRIVATE=1".into(),
+        ];
+    };
+    let mut j = serde_json::json!({ "url": url });
+    if let Some(n) = it.next().and_then(|s| s.parse::<u64>().ok()) {
+        j["max_chars"] = serde_json::json!(n);
+    }
+    let call = bolloon_harness::ToolCall {
+        id: "tui-web-fetch".into(),
+        name: "web_fetch".into(),
+        arguments: j,
+    };
+    let r = bolloon_agent::net_tools::NetExecutor.execute(call).await;
+    if !r.ok {
+        return vec![format!("✗ {}", r.output)];
+    }
+    r.output.lines().take(40).map(String::from).collect()
+}
+
 /// 技能库清单 (`/skills` 与 `/help skills` 共用; 读 `SkillEvolver` 的 skills.json)
 fn skills_lines(path: &Path) -> Vec<String> {
     if !path.exists() {
@@ -2491,6 +2883,7 @@ fn clone_of(s: &ChatSession) -> ChatSession {
         title: s.title.clone(),
         title_custom: s.title_custom,
         model: s.model.clone(),
+        agent_id: s.agent_id.clone(),
         channel: s.channel.clone(),
         messages: s.messages.clone(),
         attachments: vec![],
@@ -3108,6 +3501,30 @@ mod tests {
         assert!(body.contains("后台跑一件事"));
         assert_eq!(jobs.stop_all(), 0, "已经结束的任务不算停");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-11-08: 用户嫌 "/model 没有更多选择" —— 选择器必须来自全量目录 (≥200),
+    /// 且有「新增/配置」入口与可写的 `provider:<id>` 行。
+    #[test]
+    fn model_picker_lists_full_catalog_and_configure_entry() {
+        let s = sess();
+        let rows = s.pick_rows(PickKind::Model);
+        assert!(rows.len() >= 200, "模型选择只有 {} 行 (应含全量目录 200+)", rows.len());
+        assert!(rows.iter().any(|r| r.value == "__configure__"), "缺「新增/配置」入口");
+        assert!(
+            rows.iter().filter(|r| r.value.starts_with("provider:")).count() >= 190,
+            "provider 行太少"
+        );
+        assert!(rows.iter().any(|r| r.value == s.model), "当前模型行不能丢");
+        cleanup(&s);
+    }
+
+    #[tokio::test]
+    async fn model_configure_entry_points_at_bolloon_model() {
+        let mut s = sess();
+        let out = s.apply_pick(PickKind::Model, "__configure__").unwrap();
+        assert!(out.join(" ").contains("bolloon model"), "{out:?}");
+        cleanup(&s);
     }
 
     /// 标了 Ready 就必须有实现 —— 真跑一遍全部 Ready 命令, 不许出现"没接实现"
