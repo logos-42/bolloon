@@ -96,3 +96,23 @@ __pycache__/
 # 发布产物 (npm 包里带, 不进 git)
 bin/bolloon-native-*-*
 *.tgz
+
+# 手机端旧 Capacitor 工程的本地残留 (2026-11-08; 已迁 rust/app-tauri, 保留磁盘不进版本控制)
+# 这些是构建产物 / 本机配置 / WebView 资源副本, 共 393 个未跟踪文件
+android/.gradle/
+android/app/build/
+android/app/src/main/assets/public/
+android/local.properties
+android/capacitor.settings.gradle
+android/capacitor-cordova-android-plugins/
+android/app/capacitor.build.gradle
+ios/App/App/public/
+ios/App/App/capacitor.config.json
+ios/App/App/config.xml
+ios/App/App.xcodeproj/xcuserdata/
+ios/App/App.xcodeproj/project.xcworkspace/xcuserdata/
+ios/capacitor-cordova-ios-plugins/
+.DS_Store
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
+android/app/src/main/res/xml/config.xml
