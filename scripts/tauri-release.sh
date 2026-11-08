@@ -87,11 +87,11 @@ if [[ "${SKIP_BUILD:-0}" == "1" ]]; then
   yellow "⊘ SKIP_BUILD=1：跳过构建，直接收集已有产物"
   BUNDLE_READY=1
 fi
-TAURI_BIN="${TAURI_BIN:-/tmp/tauri-cli/node_modules/.bin/tauri}"
-[[ -x "$TAURI_BIN" ]] || TAURI_BIN="$(command -v tauri || true)"
-[[ -n "$TAURI_BIN" && -x "$TAURI_BIN" ]] || die "找不到 tauri CLI（装到 /tmp/tauri-cli 或设 TAURI_BIN）"
-
+# 只在真要构建时才需要 tauri CLI —— SKIP_BUILD/BUNDLE_READY 收集已有产物不该被这步挡住
 if [[ "${BUNDLE_READY:-0}" != "1" ]]; then
+  TAURI_BIN="${TAURI_BIN:-/tmp/tauri-cli/node_modules/.bin/tauri}"
+  [[ -x "$TAURI_BIN" ]] || TAURI_BIN="$(command -v tauri || command -v cargo-tauri || true)"
+  [[ -n "$TAURI_BIN" && -x "$TAURI_BIN" ]] || die "找不到 tauri CLI（cargo tauri / npx @tauri-apps/cli，或设 TAURI_BIN）"
   export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")"
   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$PASSFILE")"
   ( cd "$SRC" && "$TAURI_BIN" build )
