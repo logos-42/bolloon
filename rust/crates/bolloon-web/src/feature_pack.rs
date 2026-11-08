@@ -223,11 +223,13 @@ mod tests {
         assert_ne!(cache_key("m", "p"), cache_key("m2", "p"));
     }
     #[test]
-    fn cache_roundtrip_really_hits() {
-        let model = "cache-test-model";
-        let prompt = format!("probe-{}", std::process::id());
-        cache_store(model, &prompt, "缓存命中内容");
-        assert_eq!(cache_lookup(model, &prompt).as_deref(), Some("缓存命中内容"));
+    fn cache_key_is_deterministic_and_scoped() {
+        // 纯函数测试: 不写真实运行目录 (以前 store/lookup 往返每次跑测试都污染 ~/.bolloon)
+        let a = cache_key("ollama/gpt-oss:20b", "同样的 prompt");
+        let b = cache_key("ollama/gpt-oss:20b", "同样的 prompt");
+        assert_eq!(a, b);
+        assert_ne!(a, cache_key("ollama/gpt-oss:20b", "不同的 prompt"));
+        assert!(CACHE_TTL_MS > 0);
     }
 
     #[test]
