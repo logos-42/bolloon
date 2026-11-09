@@ -6534,23 +6534,38 @@ pub async fn directory_publish(
     let did = req["did"].as_str().unwrap_or_else(|| st.identity.did.as_str()).to_string();
     let name = req["display_name"].as_str();
     let pk = req["public_key_hex"].as_str();
+    match publish_contact_entry(&st, &contact, &did, name, pk).await {
+        Ok(v) => Json(v),
+        Err(e) => Json(serde_json::json!({ "error": e })),
+    }
+}
+
+/// 发布联系方式的**盲化索引** (HMAC, 明文不落盘), 由本机 DID 私钥签字。
+/// `/api/directory/publish` 与 `/api/phone/bind` 共用这一条真源, 不各写一份。
+async fn publish_contact_entry(
+    st: &AppState,
+    contact: &str,
+    did: &str,
+    name: Option<&str>,
+    pk: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    if contact.trim().is_empty() {
+        return Err("缺 contact (手机号/邮箱)".to_string());
+    }
     let pepper = load_pepper();
     let mut fs = st.forge.lock().await;
     let mut d = dir_view(&fs);
-    // 「这个联系方式归我」这件事必须由**本机 DID 私钥**签字 —— 声明别人的 DID 会被拒
-    let published = d.publish_signed(&contact, &did, &pepper, name, pk, &st.identity, now_ms());
-    match published {
-        Ok(e) => {
-            let verified = bolloon_agent::directory::verify_entry(&e);
-            fs.directory = d.entries.clone();
-            fs.save(&data_dir());
-            Json(serde_json::json!({
-                "published": true, "blind": e.blind, "kind": e.kind.as_str(), "did": e.did,
-                "verified": verified,
-            }))
-        }
-        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
-    }
+    // 「这个联系方式归我」必须由本机 DID 私钥签字 —— 声明别人的 DID 会被拒
+    let e = d
+        .publish_signed(contact, did, &pepper, name, pk, &st.identity, now_ms())
+        .map_err(|err| err.to_string())?;
+    let verified = bolloon_agent::directory::verify_entry(&e);
+    fs.directory = d.entries.clone();
+    fs.save(&data_dir());
+    Ok(serde_json::json!({
+        "published": true, "blind": e.blind, "kind": e.kind.as_str(),
+        "did": e.did, "verified": verified,
+    }))
 }
 
 /// GET /api/directory/lookup?contact=... → 本机目录查 (形状不对 → found:false 不猜)
@@ -6858,21 +6873,23 @@ pub async fn node_connect(
         fs.save(&data_dir());
         return Json(serde_json::json!({ "ok": true, "added_friend": remote_did, "mutual": true }));
     }
-    // 发起分支
-    let url = req.url.clone().unwrap_or_default().trim().trim_end_matches('/').to_string();
+    // 发起分支 (抽成 core, 供 /api/contacts/connect 复用)
+    Json(connect_node_core(&st, &req.url.clone().unwrap_or_default(), req.name.as_deref()).await)
+}
+
+/// 建立跨机连接的**唯一实现**: 登记 URL → 拉对端 DID → 互加好友 → 回调对端互加。
+/// 2026-11-09: 从 `node_connect` 抽出, 让「手机号查到 DID 后一键连上」走同一条真链路。
+async fn connect_node_core(st: &AppState, raw_url: &str, name: Option<&str>) -> serde_json::Value {
+    let url = raw_url.trim().trim_end_matches('/').to_string();
     if url.is_empty() {
-        return Json(serde_json::json!({
-            "error": "缺 url (对端节点基址, 例 http://192.168.1.9:54188)"
-        }));
+        return serde_json::json!({ "error": "缺 url (对端节点基址, 例 http://192.168.1.9:54188)" });
     }
     // 1) 登记对端基址 + 自动 QUIC 直连
-    register_peer_url(&st, &url).await;
+    register_peer_url(st, &url).await;
     // 2) 拉对端 did
     let remote_did = match fetch_remote_did(&url).await {
         Some(d) => d,
-        None => {
-            return Json(serde_json::json!({ "error": "拉不到对端 did (QUIC 地址接口不可达)" }))
-        }
+        None => return serde_json::json!({ "error": "拉不到对端 did (QUIC 地址接口不可达)" }),
     };
     // 3) 加为本地好友 (自动同意)
     {
@@ -6892,7 +6909,7 @@ pub async fn node_connect(
         let body = serde_json::json!({
             "did": our_did,
             "url": self_url,
-            "name": req.name.clone().unwrap_or_default(),
+            "name": name.unwrap_or_default(),
         });
         let handle = tokio::task::spawn_blocking(move || {
             ureq::post(&cb)
@@ -6905,12 +6922,9 @@ pub async fn node_connect(
             mutual = true;
         }
     }
-    Json(serde_json::json!({
-        "ok": true,
-        "added_friend": remote_did,
-        "direct": true,
-        "mutual": mutual,
-    }))
+    serde_json::json!({
+        "ok": true, "added_friend": remote_did, "direct": true, "mutual": mutual,
+    })
 }
 
 // ────────────────────────── scratch 子系统 (内部 tmp 跑脚本 + 孤儿 catch) ──────────────────────────
@@ -8065,6 +8079,160 @@ pub async fn contact_search(
         "notes": notes,
         "cross_machine_tried": plausible,
     }))
+}
+
+/// POST /api/contacts/connect {query, kind?} | {did}
+///
+/// 手机号/邮箱 → 目录查 DID → **复用 node_connect** 建立双向好友 + 登记 QUIC 直连。
+/// 2026-11-09: 以前「查到 DID」和「连上对方」是断开的两截, 用户以为绑定手机号就能直连;
+/// 现在一次调用把两截接起来。目录查询本身只遍历已登记对端, 所以命中即意味着 URL 已知。
+pub async fn contact_connect(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let query = req["query"].as_str().unwrap_or_default().trim().to_string();
+    let explicit = req["did"].as_str().unwrap_or_default().trim().to_string();
+    let (did, via) = if !explicit.is_empty() {
+        (explicit, "显式 DID")
+    } else {
+        if query.is_empty() {
+            return Json(serde_json::json!({ "ok": false, "error": "缺 query (手机号/邮箱) 或 did" }));
+        }
+        let kind = req["kind"].as_str().and_then(|k| match k {
+            "email" => Some(bolloon_agent::directory::ContactKind::Email),
+            "phone" => Some(bolloon_agent::directory::ContactKind::Phone),
+            _ => None,
+        });
+        let local_hit = {
+            let fs = st.forge.lock().await;
+            let d = dir_view(&fs);
+            d.lookup(&query, &load_pepper())
+        };
+        if local_hit.found {
+            (local_hit.did.unwrap_or_default(), "本机目录")
+        } else {
+            let (hit, notes) = peers_lookup(&st, &query, kind).await;
+            if !hit.found {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": "目录里没有这个联系方式 (对方未发布, 或没登记对端节点)",
+                    "notes": notes,
+                }));
+            }
+            (hit.did.unwrap_or_default(), "跨机目录")
+        }
+    };
+    if did.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "目录命中但没有 DID" }));
+    }
+    let url = match peer_url_for_did(&st, &did).await {
+        Ok(u) => u,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "did": did, "error": e })),
+    };
+    let mut out = connect_node_core(&st, &url, req["name"].as_str()).await;
+    out["did"] = serde_json::json!(did);
+    out["url"] = serde_json::json!(url);
+    out["via"] = serde_json::json!(via);
+    Json(out)
+}
+
+/// POST /api/agents/{id}/reach-out {to_did, remote_agent_id?, intent?}
+///
+/// 2026-11-09: 以前跨机对话只能由人写好 `text` 再点发送 (friend_chat)。这里让**本机智能体
+/// 自己生成开场白**, 再走同一条 DID 签名 → 对端验签 → 好友/授权门 → 回复的链路。
+/// 生成失败就如实报错, 绝不编一句假消息发出去。
+pub async fn agent_reach_out(
+    axum::extract::Path(agent_id): axum::extract::Path<String>,
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let to_did = req["to_did"].as_str().unwrap_or_default().trim().to_string();
+    if to_did.is_empty() {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "缺 to_did (可先 POST /api/contacts/connect 按手机号连上对方)"
+        }));
+    }
+    let remote_agent_id = req["remote_agent_id"].as_str().unwrap_or(&agent_id).trim().to_string();
+    let intent = req["intent"].as_str()
+        .unwrap_or("向对方问好并说明来意, 提出一个具体可回答的问题")
+        .to_string();
+    Json(agent_reach_out_core(&st, &agent_id, &to_did, &remote_agent_id, &intent).await)
+}
+
+/// 主动跨机会话的唯一实现 (API 与 cron 共用), 不另造一条执行路径。
+pub(crate) async fn agent_reach_out_core(
+    st: &AppState,
+    agent_id: &str,
+    to_did: &str,
+    remote_agent_id: &str,
+    intent: &str,
+) -> serde_json::Value {
+    if !is_local_friend(st, to_did).await {
+        return serde_json::json!({ "ok": false, "error": "对方不是本机好友" });
+    }
+    let url = match peer_url_for_did(st, to_did).await {
+        Ok(u) => u,
+        Err(e) => return serde_json::json!({ "ok": false, "error": e }),
+    };
+    let agent = match agent_by_id(st, Some(agent_id)).await {
+        Some(a) => a,
+        None => return serde_json::json!({ "ok": false, "error": format!("本机没有智能体 {agent_id}") }),
+    };
+    // ① 本机模型生成要说的话 —— 不编造, 失败/空串都不发
+    let system = build_web_system(st, intent, Some(&agent), "").await;
+    let ask = format!(
+        "你要主动向另一台机器的好友智能体发起一次对话。请直接写出要发出去的第一句话（不超过 80 字），不要解释、不要加引号。意图：{intent}"
+    );
+    let messages = vec![ChatMessage {
+        role: "user".into(),
+        content: ask,
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+        images: vec![],
+        reasoning_content: None,
+    }];
+    let opening = match call_model_metered(st, &system, messages, None).await {
+        Ok(s) if !s.trim().is_empty() => s.trim().chars().take(200).collect::<String>(),
+        Ok(_) => return serde_json::json!({ "ok": false, "error": "本机模型返回空开场白 (不伪造消息)" }),
+        Err(e) => return serde_json::json!({ "ok": false, "error": format!("本机模型调用失败: {e}") }),
+    };
+    // ② 复用 friend_chat 的签名链路 (签名覆盖 收件人 did + agent + 文本 + 时间戳)
+    let our_did = st.identity.did.as_str().to_string();
+    let ts = now_ms();
+    let sig = relay_signature(st, &our_did, to_did, remote_agent_id, &opening, ts);
+    let body = serde_json::json!({
+        "from_did": our_did, "agent_id": remote_agent_id,
+        "text": opening, "ts_ms": ts, "sig": sig,
+    });
+    match peer_json("POST", format!("{url}/api/agents/public/chat"), Some(body)).await {
+        Ok(v) => serde_json::json!({
+            "ok": v["ok"] == serde_json::json!(true),
+            "generated_opening": opening, "to_did": to_did,
+            "agent_id": agent_id, "remote": v,
+        }),
+        Err(e) => serde_json::json!({
+            "ok": false, "generated_opening": opening, "error": format!("对端不可达: {e}"),
+        }),
+    }
+}
+
+/// cron 侧的无人工触发入口: 必须同时显式打开开关并给出目标, 否则什么都不做。
+/// 默认静默, 避免未经配置就自动给好友发消息 / 消耗模型额度。
+pub(crate) async fn agent_reach_out_cron(st: &AppState) -> Option<serde_json::Value> {
+    let target = std::env::var("BOLLOON_REACH_OUT_TARGET").ok()?.trim().to_string();
+    if target.is_empty() {
+        return None;
+    }
+    let agent_id = {
+        let fs = st.forge.lock().await;
+        fs.agents.first().map(|a| a.id.clone())?
+    };
+    let remote_agent = std::env::var("BOLLOON_REACH_OUT_AGENT").unwrap_or_else(|_| agent_id.clone());
+    let intent = std::env::var("BOLLOON_REACH_OUT_INTENT")
+        .unwrap_or_else(|_| "定期向好友智能体同步一次进展并询问是否需要协作".to_string());
+    Some(agent_reach_out_core(st, &agent_id, &target, &remote_agent, &intent).await)
 }
 
 // ────────────────────────── 做梦机制 (整理记忆/经验 → 升级 skills) ──────────────────────────
@@ -9820,6 +9988,22 @@ pub async fn bind_phone(
     let mut out = proof;
     out["ok"] = serde_json::json!(verified);
     if let Some(p) = env_path { out["env_path"] = serde_json::json!(p); }
+    // 2026-11-09: 绑定即发布盲化索引。以前只写本机 phone_binding.json ⇒ 对端查不到,
+    // 「靠手机号连到对方」是假的。现在绑定完立刻能被已登记对端检索到 DID。
+    // 只发布 HMAC 盲索引 (明文不落盘); `publish:false` 可显式关闭, 不替用户擅自公开。
+    if req["publish"].as_bool().unwrap_or(true) {
+        match publish_contact_entry(&st, &phone, &did, None, None).await {
+            Ok(v) => out["discoverable"] = serde_json::json!({
+                "ok": true, "blind": v["blind"], "verified": v["verified"],
+                "note": "已发布盲索引; 对端凭手机号能查到本机 DID, 连接仍需对方主动发起"
+            }),
+            Err(e) => out["discoverable"] = serde_json::json!({ "ok": false, "error": e }),
+        }
+    } else {
+        out["discoverable"] = serde_json::json!({
+            "ok": false, "skipped": true, "reason": "publish=false (仅本地绑定)"
+        });
+    }
     Json(out)
 }
 

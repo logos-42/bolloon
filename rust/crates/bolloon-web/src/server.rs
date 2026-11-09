@@ -730,6 +730,7 @@ pub fn app(state: AppState) -> Router {
         // 好友只读指挥 (command_readonly 授权; 只读工具子集 + 5 次/20s 死预算 + 审计)
         .route("/api/agents/public/command", post(crate::native::agents_public_command))
         .route("/api/friends/{did}/command", post(crate::native::friend_command))
+        .route("/api/agents/{id}/reach-out", post(crate::native::agent_reach_out))
         .route("/api/groups/{id}/invite-agent", post(crate::native::group_invite_agent))
         // 好友侧代理 (需对端授权; 没授权就如实把对端的拒绝原样带回)
         .route("/api/friends/{did}/wallet", get(crate::native::friend_wallet))
@@ -738,6 +739,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/contacts", get(crate::native::contact_list))
         .route("/api/contacts/set", post(crate::native::contact_set))
         .route("/api/contacts/search", post(crate::native::contact_search))
+        .route("/api/contacts/connect", post(crate::native::contact_connect))
         // 做梦机制 (整理记忆与经验 → 升级项目 skills)
         .route("/api/dream", post(crate::native::dream_run))
         .route("/api/dream/last", get(crate::native::dream_last))
@@ -924,12 +926,24 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                     enabled: true,
                     dnd_window: None,
                 });
+                // 2026-11-09: 智能体主动跨机发起对话。**默认关闭** —— 必须显式设
+                // BOLLOON_AGENT_REACH_OUT=1 且给出 BOLLOON_REACH_OUT_TARGET, 才会在无人
+                // 工触发时发消息 (避免擅自联系好友 / 消耗模型额度)。
+                c.register(bolloon_kernel::cron::CronTask {
+                    id: "agent-reach-out".into(),
+                    name: "智能体主动跨机发起对话".into(),
+                    interval_ms: 30 * 60 * 1000,
+                    enabled: std::env::var("BOLLOON_AGENT_REACH_OUT")
+                        .map(|v| v.trim() == "1")
+                        .unwrap_or(false),
+                    dnd_window: None,
+                });
             }
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 let minute = ((now / 60_000) % 1440) as u16;
-                let (due, swept, portal_due, world_due, world_watch_due, idle_due) = {
+                let (due, swept, portal_due, world_due, world_watch_due, idle_due, reach_due) = {
                     let mut c = st.cron.lock().await;
                     let due = c.due_tasks(now, minute);
                     // 这里只走"拿锁→放锁"记账, 真正执行在锁外 (见下面的各 due 分支),
@@ -938,6 +952,7 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                     let mut world_due = false;
                     let mut world_watch_due = false;
                     let mut idle_due = false;
+                    let mut reach_due = false;
                     for id in &due {
                         if c.begin(id, now) {
                             match id.as_str() {
@@ -945,14 +960,23 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                                 "world-proactive" => world_due = true,
                                 "world-watch" => world_watch_due = true,
                                 "idle-initiative" => idle_due = true,
+                                "agent-reach-out" => reach_due = true,
                                 _ => {}
                             }
                             c.finish(id);
                         }
                     }
                     let swept = st.heartbeats.lock().await.sweep(now, 90_000);
-                    (due.len(), swept, portal_due, world_due, world_watch_due, idle_due)
+                    (due.len(), swept, portal_due, world_due, world_watch_due, idle_due, reach_due)
                 };
+                if reach_due {
+                    if let Some(r) = crate::native::agent_reach_out_cron(&st).await {
+                        tracing::info!(
+                            ok = r["ok"].as_bool().unwrap_or(false),
+                            "智能体主动跨机会话 (cron, 显式开关驱动)"
+                        );
+                    }
+                }
                 let mut portal_ok = 0usize;
                 if portal_due {
                     let ids: Vec<String> = {
@@ -4225,6 +4249,57 @@ mod route_tests {
         assert!(newest["seq"].as_u64().unwrap() > 9999, "重启/外部写入后 seq 不能倒退");
 
         unsafe { std::env::remove_var("BOLLOON_HA_HOME") };
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 2026-11-09 跨机互联修复门: 新端点缺参数要如实拒, cron 默认绝不自作主张发消息。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cross_node_new_endpoints_fail_closed() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-web-crossgate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+        let state = AppState::new(offline_llm());
+
+        let c = crate::native::contact_connect(State(state.clone()), Json(serde_json::json!({}))).await.0;
+        assert_eq!(c["ok"], false, "没 query/did 不能假装连上");
+
+        let r = crate::native::agent_reach_out(
+            axum::extract::Path("agent-001".to_string()),
+            State(state.clone()),
+            Json(serde_json::json!({})),
+        )
+        .await
+        .0;
+        assert_eq!(r["ok"], false, "没 to_did 不能主动发起会话");
+
+        unsafe { std::env::remove_var("BOLLOON_REACH_OUT_TARGET") };
+        assert!(
+            crate::native::agent_reach_out_cron(&state).await.is_none(),
+            "没显式配置目标时, cron 必须完全静默 (不擅自联系好友)"
+        );
+        // 显式打开后必须真的走同一条 core, 且对非好友 fail-closed
+        {
+            let mut fs = state.forge.lock().await;
+            fs.agents.push(crate::native::AgentView {
+                owner_did: String::new(),
+                owner_signature: String::new(),
+                id: "agent-001".into(),
+                name: "测试".into(),
+                did: "did:pi:test".into(),
+                avatar: String::new(),
+                persona: String::new(),
+                workspace: String::new(),
+                global_dir: String::new(),
+                created_at_ms: 0,
+            });
+        }
+        unsafe { std::env::set_var("BOLLOON_REACH_OUT_TARGET", "did:pi:not-a-friend") };
+        let cron_run = crate::native::agent_reach_out_cron(&state).await;
+        assert!(cron_run.is_some(), "显式配置目标后 cron 应真的发起一次");
+        assert_eq!(cron_run.unwrap()["ok"], false, "目标不是好友必须如实拒");
+        unsafe { std::env::remove_var("BOLLOON_REACH_OUT_TARGET") };
         let _ = std::fs::remove_dir_all(&home);
     }
 
