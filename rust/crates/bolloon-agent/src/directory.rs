@@ -17,7 +17,7 @@
 
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
 use bolloon_p2p::attestation::{
     OwnershipAttestation, SubjectKind, VerifyOpts, canonical_statement, contact_statement,
@@ -113,6 +113,36 @@ pub fn blind_hash_normalized(normalized: &str, salt: &str, pepper: &str) -> Stri
         .expect("HMAC 接受任意长度 key");
     mac.update(format!("{salt}||{normalized}").as_bytes());
     hex::encode(mac.finalize().into_bytes())
+}
+
+// ─────────────── 去中心化发现键: 手机号 → 32 字节 topic (2026-11-11) ───────────────
+//
+// 为什么单独一套: 目录盲化用**本机 pepper**, 两台机器 pepper 不同 ⇒ 同一个手机号推出
+// 两个不同的哈希, 跨机永远互相发现不了。去中心化发现 (iroh 的 pkarr key / hyperswarm 的
+// 32B topic) 必须是**双方一致的确定性派生**, 所以这里用协议内固定盐。
+//
+//     topic = SHA256("bolloon/phone-topic/v1" || "||" || normalized_phone)
+//
+// 诚实边界: topic 不可逆, 但手机号空间只有 ~10^10 ⇒ 有算力的人能穷举出某个号的 topic。
+// 因此 topic **只用于「找到人」, 绝不当身份证明**; 找到之后仍必须验 DID 签名 +
+// 手机号绑定签名 (phone_binding.json), 验不过不许加好友 —— 这条不能省。
+
+/// 协议内固定盐。**改它等于换一套发现网络**, 只在新旧版本需要隔离时才改。
+pub const DISCOVERY_SALT: &str = "bolloon/phone-topic/v1";
+
+/// 手机号 → 32 字节发现键 (iroh pkarr key / hyperswarm topic 都是这个形状)
+pub fn discovery_topic(phone: &str) -> [u8; 32] {
+    let normalized = normalize_phone(phone);
+    let mut h = Sha256::new();
+    h.update(DISCOVERY_SALT.as_bytes());
+    h.update(b"||");
+    h.update(normalized.as_bytes());
+    h.finalize().into()
+}
+
+/// 同 `discovery_topic`, 给只需要字符串的调用方
+pub fn discovery_topic_hex(phone: &str) -> String {
+    hex::encode(discovery_topic(phone))
 }
 
 // ────────────────────────── 目录条目与存储 ──────────────────────────
@@ -544,6 +574,30 @@ mod tests {
     use super::*;
 
     const PEPPER: &str = "pepper-abc-32-bytes-0000000000000000";
+
+    /// 去中心化发现键: 确定性 + 归一化 + 固定向量 (换盐/换派生必须同时改这条)
+    #[test]
+    fn discovery_topic_is_deterministic_and_normalized() {
+        assert_eq!(discovery_topic("13115718038").len(), 32);
+        assert_eq!(
+            discovery_topic_hex("13115718038"),
+            "bfebc13bffe70c01486443e7a91a7394831c8c4f5cefe5cfcc9be2d80ea31cd1"
+        );
+        // 分隔符/空格不同 ⇒ 归一化后同一个 topic
+        assert_eq!(
+            discovery_topic_hex("131-1571-8038"),
+            discovery_topic_hex("131 1571 8038")
+        );
+        // 不同号 ⇒ 不同 topic (联调时两端要拿到同一个值)
+        assert_ne!(
+            discovery_topic_hex("13115718038"),
+            discovery_topic_hex("17681953616")
+        );
+        assert_eq!(
+            discovery_topic_hex("17681953616"),
+            "ccb034a68673ae1f096a2089b6ea86c98dbda97afe6ffef310fa4c5957fbd2e7"
+        );
+    }
 
     fn dir_with_phone() -> HumanDirectory {
         let mut d = HumanDirectory::new();

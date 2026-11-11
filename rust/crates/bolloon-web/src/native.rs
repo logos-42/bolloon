@@ -8146,6 +8146,184 @@ pub async fn contact_connect(
     Json(out)
 }
 
+// ─────────────── 去中心化发现键 + 手机号连接码 (2026-11-11) ───────────────
+
+/// GET /api/contacts/topic?phone=… → 手机号 → 32 字节发现键
+///
+/// iroh 的 pkarr key 与 hyperswarm 的 topic 都是 32 字节, 这里给**同一个确定性派生**:
+/// 以后换传输 (quinn → iroh / hyperswarm) 不用换发现键。不回显手机号明文。
+/// 诚实边界: 只负责"找到人", 身份仍必须 DID + 手机号绑定签名双重验签。
+pub async fn contact_topic(
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let phone = q.get("phone").cloned().unwrap_or_default();
+    if !bolloon_agent::directory::is_plausible_contact(
+        &phone,
+        bolloon_agent::directory::ContactKind::Phone,
+    ) {
+        return Json(serde_json::json!({ "ok": false, "error": "手机号形状不对 (8–15 位数字)" }));
+    }
+    let topic = bolloon_agent::directory::discovery_topic(&phone);
+    Json(serde_json::json!({
+        "ok": true,
+        "normalized": bolloon_agent::directory::normalize_phone(&phone),
+        "topic_hex": hex_of(&topic),
+        "topic_b58": bolloon_p2p::b58_encode(&topic),
+        "bytes": topic.len(),
+        "salt": bolloon_agent::directory::DISCOVERY_SALT,
+        "note": "iroh: 当 pkarr key 发布/解析; hyperswarm: 当 32B topic",
+        "honest": "手机号空间小 ⇒ topic 可被穷举, 不能当身份证明",
+    }))
+}
+
+const CONNECT_CODE_PREFIX: &str = "bolloon-connect:v1:";
+
+/// 连接码里被签名的正文 (字段顺序/分隔符固定, 两端必须逐字一致)
+fn connect_code_message(phone: &str, did: &str, url: &str, ts: u64) -> String {
+    format!("bolloon-connect|1|{phone}|{did}|{url}|{ts}")
+}
+
+/// 本机对外可达基址: 优先 `BOLLOON_PUBLIC_URL`, 否则 UDP 探出口 IP
+fn self_reachable_base() -> (String, String) {
+    if let Ok(u) = std::env::var("BOLLOON_PUBLIC_URL") {
+        let u = u.trim().trim_end_matches('/').to_string();
+        if !u.is_empty() {
+            return (u, "public_url".into());
+        }
+    }
+    let port = std::env::var("BOLLOON_LOCAL_API")
+        .ok()
+        .and_then(|u| u.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()))
+        .unwrap_or(54188);
+    let ip = std::net::UdpSocket::bind("0.0.0.0:0").ok().and_then(|s| {
+        s.connect("8.8.8.8:80").ok()?;
+        s.local_addr().ok().map(|a| a.ip())
+    });
+    match ip {
+        Some(ip) if !ip.is_loopback() => (format!("http://{ip}:{port}"), "lan".into()),
+        _ => (format!("http://127.0.0.1:{port}"), "loopback".into()),
+    }
+}
+
+fn encode_connect_code(phone: &str, did: &str, url: &str, ts: u64, sig_hex: &str) -> String {
+    let body = serde_json::json!({
+        "v": 1,
+        "phone": phone,
+        "did": did,
+        "url": url,
+        "ts": ts,
+        "sig": sig_hex,
+        "topic": bolloon_agent::directory::discovery_topic_hex(phone),
+    });
+    format!(
+        "{CONNECT_CODE_PREFIX}{}",
+        bolloon_p2p::b58_encode(body.to_string().as_bytes())
+    )
+}
+
+fn decode_connect_code(code: &str) -> Result<serde_json::Value, String> {
+    let raw = code.trim();
+    let body = raw.strip_prefix(CONNECT_CODE_PREFIX).unwrap_or(raw);
+    let bytes = bolloon_p2p::b58_decode(body).ok_or("连接码不是合法 base58 (复制不完整?)")?;
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .map_err(|e| format!("连接码内容解析失败: {e}"))
+}
+
+/// GET /api/contacts/invite → 生成「我的连接码」(DID 私钥签名的名片)
+pub async fn contact_invite(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let phone = read_binding(&data_dir())
+        .and_then(|v| v["phone"].as_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+    let did = st.identity.did.as_str().to_string();
+    let (url, source) = self_reachable_base();
+    let ts = now_ms();
+    let sig = hex_of(&st.identity.sign(connect_code_message(&phone, &did, &url, ts).as_bytes()));
+    let code = encode_connect_code(&phone, &did, &url, ts, &sig);
+    Json(serde_json::json!({
+        "ok": true,
+        "code": code,
+        "phone": phone,
+        "did": did,
+        "url": url,
+        "url_source": source,
+        "topic_hex": bolloon_agent::directory::discovery_topic_hex(&phone),
+        "note": if phone.is_empty() {
+            "本机还没绑定手机号: 连接码里没有手机号, 对方只能用 DID 找到你"
+        } else {
+            "把这段码发给对方; 对方粘贴后即可用你的手机号直连"
+        },
+        "honest": "码里带本机可达地址(可能是内网 IP), 只发给信任的人; 不在同一网络且没打洞时连不上",
+    }))
+}
+
+/// POST /api/contacts/accept-invite { code } → 验签 → 登记地址 → 加好友
+///
+/// 这道验签不能省: 连接码里写着"这个手机号属于这个 DID", 只有该 DID 私钥能签得出来;
+/// 改一个字节 (换号码/换地址) 就验不过 ⇒ 不能拿别人的手机号冒充。
+pub async fn contact_accept_invite(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let code = req["code"].as_str().unwrap_or_default().to_string();
+    let v = match decode_connect_code(&code) {
+        Ok(v) => v,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
+    };
+    let phone = v["phone"].as_str().unwrap_or_default().to_string();
+    let did = v["did"].as_str().unwrap_or_default().trim().to_string();
+    let url = v["url"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let ts = v["ts"].as_u64().unwrap_or(0);
+    let sig_hex = v["sig"].as_str().unwrap_or_default().to_string();
+    if did.is_empty() || url.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "连接码缺 did 或 url" }));
+    }
+    if did == st.identity.did.as_str() {
+        return Json(serde_json::json!({ "ok": false, "error": "这是本机自己的连接码" }));
+    }
+    let Some(pk) = bolloon_p2p::pubkey_of_did(&did) else {
+        return Json(serde_json::json!({ "ok": false, "error": "连接码里的 DID 解析不出公钥" }));
+    };
+    let Ok(sig_bytes) = hex::decode(&sig_hex) else {
+        return Json(serde_json::json!({ "ok": false, "error": "连接码签名不是合法 hex" }));
+    };
+    let Ok(sig) = <[u8; 64]>::try_from(sig_bytes) else {
+        return Json(serde_json::json!({ "ok": false, "error": "连接码签名长度不对" }));
+    };
+    let msg = connect_code_message(&phone, &did, &url, ts);
+    if !bolloon_p2p::KeyPair::verify(&pk, msg.as_bytes(), &sig) {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "连接码验签失败 (被改过, 或不是对方 DID 私钥签的)"
+        }));
+    }
+    if ts > now_ms() + 3600_000 {
+        return Json(serde_json::json!({ "ok": false, "error": "连接码时间戳在未来 (两端时钟差太大?)" }));
+    }
+    register_peer_url(&st, &url).await;
+    let mut fs = st.forge.lock().await;
+    let fr = fs.friends.inbound(&did, &did, now_ms());
+    let accepted = fs.friends.accept(&fr.request_id, now_ms()).is_ok();
+    let display = if phone.is_empty() { short_did(&did) } else { phone.clone() };
+    let named = fs.contacts.upsert(&did, &display, "invite", now_ms()).is_ok();
+    fs.save(&data_dir());
+    Json(serde_json::json!({
+        "ok": true,
+        "did": did,
+        "phone": phone,
+        "url": url,
+        "friend_added": accepted,
+        "named": named,
+        "topic_hex": bolloon_agent::directory::discovery_topic_hex(&phone),
+        "note": "已登记对方地址并加为好友; 现在可以用手机号搜到/连到对方",
+        "next": "把你的「我的连接码」发给对方也粘贴一次 ⇒ 双向完成",
+    }))
+}
+
 /// POST /api/agents/{id}/reach-out {to_did, remote_agent_id?, intent?}
 ///
 /// 2026-11-09: 以前跨机对话只能由人写好 `text` 再点发送 (friend_chat)。这里让**本机智能体

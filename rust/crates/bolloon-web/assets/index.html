@@ -1024,6 +1024,15 @@
         <button class="mini" id="nodeAddBtn">添加</button>
         <button class="mini" id="nodeFriendBtn">互加好友+直连</button>
       </div>
+      <!-- 2026-11-11: 去中心化连接。手机号能推出一个稳定的 32B 发现键 (iroh/hyperswarm 用同一个),
+           但两端从没交换过地址时还得先换一次「连接码」(含手机号 + DID + 可达基址 + 签名)。 -->
+      <div class="ct-head" style="margin-top:14px">连接码 — 首次连一个人时用: 交换一次「手机号 + 地址」的签名名片, 之后手机号就能直接连</div>
+      <div class="ct-search">
+        <input id="inviteIn" type="search" placeholder="粘贴对方的连接码 (bolloon-connect:v1:…)" autocomplete="off" />
+        <button class="mini" id="inviteAcceptBtn">用连接码连接</button>
+        <button class="mini" id="inviteMineBtn">我的连接码</button>
+      </div>
+      <div class="ct-head" id="inviteStatus"></div>
       <div class="ct-head" id="nodeStatus"></div>
       <!-- 2026-10-30 (用户): 群组区 —— 创建群组 / 加群 (粘贴 orbit 邀请链接), 与好友搜索同一页 -->
       <div class="ct-head" style="margin-top:14px">群组 — 创建群组，或用邀请链接加入（内容寻址，开出与邀请方同一个 store）</div>
@@ -2815,6 +2824,32 @@ if($('nodeAddBtn'))$('nodeAddBtn').onclick=async()=>{
     if($('nodeStatus'))$('nodeStatus').textContent='已登记对端 '+((j.peers||[]).length)+' 个 · 意图广播现在有对象了';
     if(typeof renderContacts==='function')renderContacts();
   }catch(e){ if($('nodeStatus'))$('nodeStatus').textContent='登记失败：'+e; }
+};
+// 2026-11-11: 连接码 —— 首次连人时交换「手机号 + DID + 可达地址」的签名名片
+if($('inviteMineBtn'))$('inviteMineBtn').onclick=async()=>{
+  const st=$('inviteStatus');
+  try{
+    const r=await api('/api/contacts/invite');
+    if(r.ok===false||r.error) throw new Error(r.error||'生成失败');
+    if($('inviteIn'))$('inviteIn').value=r.code;
+    const copied=await copyText(r.code).catch(()=>false);
+    if(st)st.textContent=(copied?'连接码已复制，发给对方即可':'复制失败，请手动复制输入框里的码')
+      +' · 号码 '+(r.phone||'(未绑定)')+' · 地址 '+r.url+' ('+r.url_source+')';
+  }catch(e){ if(st)st.textContent='生成连接码失败：'+e.message; }
+};
+if($('inviteAcceptBtn'))$('inviteAcceptBtn').onclick=async()=>{
+  const st=$('inviteStatus');
+  const code=(($('inviteIn')&&$('inviteIn').value)||'').trim();
+  if(!code){ if(st)st.textContent='先把对方的连接码粘贴进来'; return; }
+  if(st)st.textContent='正在验签并连接…';
+  try{
+    const r=await api('/api/contacts/accept-invite',{method:'POST',body:JSON.stringify({code})});
+    if(r.ok===false||r.error) throw new Error(r.error||'连接失败');
+    if(st)st.textContent='已连上 '+(r.phone||r.did)+' · '+(r.friend_added?'已加为好友':'好友已存在')
+      +' · 现在可用手机号搜索/对话；把你的连接码也发给对方一次即双向完成';
+    toast('已连上 '+(r.phone||String(r.did).slice(0,14))+'…');
+    if(typeof renderContacts==='function')renderContacts();
+  }catch(e){ if(st)st.textContent='连接失败：'+e.message; }
 };
 $('paySubmit').onclick=async()=>{
   const amount=parseFloat($('payAmount').value||'0');

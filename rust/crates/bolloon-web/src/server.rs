@@ -740,6 +740,11 @@ pub fn app(state: AppState) -> Router {
         .route("/api/contacts/set", post(crate::native::contact_set))
         .route("/api/contacts/search", post(crate::native::contact_search))
         .route("/api/contacts/connect", post(crate::native::contact_connect))
+        // 2026-11-11 去中心化发现: 手机号 → 32B 发现键 (iroh pkarr key / hyperswarm topic)
+        .route("/api/contacts/topic", get(crate::native::contact_topic))
+        // 首次地址交换: 两端从没连过时, 用签名连接码换「手机号 + DID + 可达基址」
+        .route("/api/contacts/invite", get(crate::native::contact_invite))
+        .route("/api/contacts/accept-invite", post(crate::native::contact_accept_invite))
         // 做梦机制 (整理记忆与经验 → 升级项目 skills)
         .route("/api/dream", post(crate::native::dream_run))
         .route("/api/dream/last", get(crate::native::dream_last))
