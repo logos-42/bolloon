@@ -34,9 +34,15 @@ hex.workspace = true
 hashavatar.workspace = true
 base64.workspace = true
 qrcode = { version = "0.14.1", features = ["svg"] }
+# DIAP 跨 NAT 隧道 (可选): 让 web 的跨机链路走 iroh, 不再要求对端 HTTP 可达
+diap-rs-sdk = { version = "0.3.7", optional = true }
+# 与 quinn 同一个 TLS 后端; DIAP 的 iroh 会同时拉 aws-lc-rs, 必须显式装 ring
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 # QUIC 端对端直连传输 (默认启用): 好友对话的直连底座, 不经 HTTP 中继。
 # 关掉即退回纯 HTTP 跨机 (directory_peers 那套), 不影响其它功能。
 [features]
 default = ["quic-transport"]
 quic-transport = ["bolloon-p2p/quic-transport"]
+# 跨 NAT: peer_json 自动优先走 DIAP 隧道 (未启用时行为不变)
+diap-backend = ["bolloon-p2p/diap-backend", "dep:diap-rs-sdk"]

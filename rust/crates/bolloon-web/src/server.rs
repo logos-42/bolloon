@@ -812,6 +812,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/kernel/tick", post(crate::kernel_bus::kernel_tick))
         .route("/api/kernel/record", post(crate::kernel_bus::kernel_record))
         .route("/api/kernel/dispatch", post(crate::kernel_bus::kernel_dispatch))
+        .route("/api/diap/addr", get(diap_addr_route))
         .route("/api/world/cards/react", post(crate::feature_pack::react_card))
         .route("/api/models/bind", post(crate::feature_pack::bind_model))
         .route("/api/models/bindings", get(crate::feature_pack::model_bindings))
@@ -858,7 +859,25 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
 }
 
 /// 在已绑定的监听器上服务 (测试: 端口 0 → 用 OS 分配的端口, 不抢固定端口)
+/// GET /api/diap/addr：DIAP 未编译时也返回明确原因，不假装 enabled。
+#[cfg(feature = "diap-backend")]
+async fn diap_addr_route() -> Json<serde_json::Value> {
+    crate::diap_hub::diap_addr().await
+}
+
+#[cfg(not(feature = "diap-backend"))]
+async fn diap_addr_route() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false, "enabled": false,
+        "error": "未编译 diap-backend feature"
+    }))
+}
+
 pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
+    // 2026-11-11: reqwest/quinn/iroh 三个依赖会把 rustls 的 ring + aws-lc-rs 都拉进来，
+    // rustls 无法自动选 provider ⇒ 首次 HTTPS/QUIC 直接 panic。显式装 ring（quinn 用的同一个）。
+    // 无条件安装：默认 feature 下 reqwest 也会踩到同一问题。
+    let _ = rustls::crypto::ring::default_provider().install_default();
     // 让 agent 侧工具（group_invite / group_join / econ_*）知道本机 API 基址。
     // 只在未设置时注入，避免覆盖部署方显式配置。
     if std::env::var("BOLLOON_LOCAL_API").is_err() {
@@ -878,6 +897,25 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
 
     // 启动即按本机配置装好模型通路 (200+ provider 里能解析的那些)
     state.reload_llm().await;
+
+    // 2026-11-11: DIAP 跨 NAT 隧道（默认关）。启用后 `peer_json` 自动优先走 iroh，
+    // 不需要对端 HTTP 可达；未启用时行为完全不变。
+    #[cfg(feature = "diap-backend")]
+    if std::env::var("BOLLOON_DIAP")
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false)
+    {
+        let port = listener.local_addr().map(|a| a.port()).unwrap_or(54188);
+        let did = state.identity.did.as_str().to_string();
+        match crate::diap_hub::DiapHub::start(&did, port).await {
+            Ok(hub) => {
+                hub.spawn();
+                tracing::info!(node_id = %hub.node_id(), "DIAP 跨 NAT 隧道已启用");
+                crate::diap_hub::set_global(hub);
+            }
+            Err(e) => tracing::warn!("DIAP 启动失败 (回落 HTTP): {e}"),
+        }
+    }
 
     // 统一调度层: 恢复上次事件面 + 双核真打拍 + 每 5s 从心跳文件互检。
     // 之前只有手动 POST /api/kernel/tick 才会打一次拍, 相位与 alive 都是常量自证。

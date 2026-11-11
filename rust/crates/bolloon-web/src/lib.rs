@@ -21,6 +21,9 @@ pub mod specialize;
 pub mod router;
 pub mod server;
 pub mod kernel_bus;
+/// DIAP 跨 NAT HTTP 隧道 (可选 feature)
+#[cfg(feature = "diap-backend")]
+pub mod diap_hub;
 pub mod feature_pack;
 pub mod contribution;
 pub mod world_interact;

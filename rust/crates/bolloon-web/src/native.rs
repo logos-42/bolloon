@@ -6633,6 +6633,22 @@ async fn post_lookup_replies(
             continue;
         };
         let url = format!("{base}/api/directory/rpc");
+        // 2026-11-11: 该 peer 登记过 DIAP 地址就走 iroh 隧道（跨 NAT 时 HTTP 不可达）。
+        #[cfg(feature = "diap-backend")]
+        if let Some(hub) = crate::diap_hub::global() {
+            if let Some(r) = hub.request_url(&url, "POST", Some(body.clone())).await {
+                match r {
+                    Ok(v) => {
+                        match serde_json::from_value::<bolloon_agent::directory::LookupReply>(v) {
+                            Ok(reply) => replies.push(reply),
+                            Err(e) => notes.push(format!("{base}: DIAP reply 解析失败: {e}")),
+                        }
+                    }
+                    Err(e) => notes.push(format!("{base}: DIAP {e}")),
+                }
+                continue;
+            }
+        }
         // 2026-10-30: 每个对端用统一退避轮询重试 (poll 模块的同一套节奏),
         // 一次瞬时超时不再直接判「不可达」; 重试完仍失败才把原因写进 notes。
         let mut last_err = String::new();
@@ -6759,6 +6775,13 @@ pub async fn directory_peers_add(
             "error": "缺 url (对端节点基址, 例 http://192.168.1.9:54188)"
         }));
     }
+    // 可选 DIAP 地址：登记后，这个 url 的跨机请求优先走 iroh 隧道（不再要求 HTTP 可达）
+    #[cfg(feature = "diap-backend")]
+    if !req["diap"].is_null() {
+        if let Some(hub) = crate::diap_hub::global() {
+            hub.register(&url, req["diap"].clone()).await;
+        }
+    }
     let peers = {
         let mut fs = st.forge.lock().await;
         if !fs.directory_peers.iter().any(|p| p == &url) {
@@ -6827,17 +6850,9 @@ async fn register_peer_url(st: &AppState, url: &str) {
 
 /// 拉对端的 did (经它的 `/api/quic/addr`); 不可达 / 解析不了 ⇒ None
 async fn fetch_remote_did(url: &str) -> Option<String> {
+    // 走 peer_json ⇒ 对端登记了 DIAP 地址时自动走隧道，不必 HTTP 可达。
     let u = format!("{}/api/quic/addr", url.trim_end_matches('/'));
-    let handle = tokio::task::spawn_blocking(move || {
-        let resp = ureq::get(&u)
-            .timeout(std::time::Duration::from_millis(4000))
-            .call()
-            .map_err(|e| format!("不可达: {e}"))?;
-        resp.into_json::<serde_json::Value>()
-            .map_err(|e| format!("解析: {e}"))
-    });
-    let Ok(v) = handle.await else { return None };
-    let Ok(v) = v else { return None };
+    let v = peer_json("GET", u, None).await.ok()?;
     if v["ok"].as_bool().unwrap_or(false) {
         v["did"].as_str().map(|s| s.to_string())
     } else {
@@ -6911,14 +6926,9 @@ async fn connect_node_core(st: &AppState, raw_url: &str, name: Option<&str>) -> 
             "url": self_url,
             "name": name.unwrap_or_default(),
         });
-        let handle = tokio::task::spawn_blocking(move || {
-            ureq::post(&cb)
-                .timeout(std::time::Duration::from_millis(4000))
-                .send_json(body)
-                .map(|_| ())
-                .map_err(|e| format!("{e}"))
-        });
-        if let Ok(Ok(())) = handle.await {
+        // 2026-11-11: 回调也走 peer_json ⇒ 对端登记了 DIAP 地址时经隧道互加，
+        // 不再要求本机有对外可达的 HTTP 基址（跨 NAT 时 mutual 也能为 true）。
+        if peer_json("POST", cb, Some(body)).await.is_ok() {
             mutual = true;
         }
     }
@@ -9613,6 +9623,14 @@ pub(crate) async fn peer_json(
     url: String,
     body: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
+    // 2026-11-11: 该 url 登记过 DIAP 地址就走 iroh 隧道；没登记则回落 HTTP。
+    // 这样 friend_chat / friend_command / 目录查询等 17 个调用点不用改。
+    #[cfg(feature = "diap-backend")]
+    if let Some(hub) = crate::diap_hub::global() {
+        if let Some(r) = hub.request_url(&url, method, body.clone()).await {
+            return r;
+        }
+    }
     let handle = tokio::task::spawn_blocking(move || {
         let req = if method == "POST" {
             ureq::post(&url)
