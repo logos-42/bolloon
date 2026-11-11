@@ -37,7 +37,8 @@ futures = "0.3"
 ed25519-dalek = "2"
 sha2 = "0.10"
 bs58 = "0.5"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+# reqwest 0.13: rustls-tls 更名为 rustls; 与 DIAP SDK (iroh/libp2p 的 wasm 生态) 对齐
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["fs", "cors"] }
 dashmap = "6"

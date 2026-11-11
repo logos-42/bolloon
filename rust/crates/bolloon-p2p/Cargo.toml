@@ -35,12 +35,13 @@ quinn = { version = "0.11", optional = true, default-features = false, features 
 # 必须 default-features=false 且只开 ring, 否则默认 aws-lc-rs 与 quinn 的 ring 冲突。
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
-# 可选 DIAP 后端：通过 feature 注入, 不在 workspace 成员里直接 path 依赖
-# （DIAP 的 cid 0.10 → yanked core2 会拖垮整个 workspace 解析; 单独仓库维护）
+# 可选 DIAP 后端 (Rust 版跨 NAT 传输): iroh 1.4 + relay/discovery 由 DIAP Rust SDK 提供。
+# crates.io 只到 0.2.17, 0.3.x 未发布 ⇒ 用 git rev 锁定（对方 cargo 会自己拉）。
+diap-rs-sdk = { version = "0.3.7", optional = true }
+
 [features]
 default = []
 # 启用 QUIC 直连传输 (端对端好友对话的传输底座)
 quic-transport = ["dep:quinn"]
-# 未来接 DIAP 时: 在 Cargo.toml 加
-#   diap-rs-sdk = { path = "../DIAP_Rust_SDK", optional = true }
-#   diap-backend = ["dep:diap-rs-sdk"]
+# 跨 NAT 的 DIAP 传输 (iroh 1.4)。不默认开: 依赖树很大 (iroh+libp2p+noir)
+diap-backend = ["dep:diap-rs-sdk"]

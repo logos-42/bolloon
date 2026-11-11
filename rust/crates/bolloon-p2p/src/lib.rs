@@ -13,6 +13,9 @@ pub mod group_orbit;
 pub mod attestation;
 #[cfg(feature = "quic-transport")]
 pub mod quic_transport;
+/// 跨 NAT 的 DIAP 传输（iroh 1.4，由 diap-rs-sdk 提供）
+#[cfg(feature = "diap-backend")]
+pub mod diap_transport;
 pub use identity::*;
 pub use envelope::*;
 pub use gossip::*;

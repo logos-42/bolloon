@@ -44,7 +44,7 @@ tags: [status, rust-workspace, app-0.7.8, release-gate, world-cards, contributio
 | 路由与成本 | 真实调用账本 + 任务×成本矩阵 + 影子→真路由（带回退）+ 本地小模型 / Ollama Cloud 登记 + 特化包评测与外溢 |
 | 安全边界 | 好友永远拿不到「本地完全权限」；极度信任档开放 shell 但保留审计/预算/取消；只读指挥走显式工具白名单 |
 | 终端 TUI | AI 循环期间 100ms 全周期重绘（秒表连续）、忙时输入草稿实时上屏 + Enter 排队、提交后输入框立即清空；`/agent` 切换当前智能体，`/did /wallet /ipfs /ipns` 全按它读取且可 copy；`/model` 接全量 200+ 家目录；`/help` 默认只列可用命令 |
-| 跨机互联 | 手工登记对端 URL 后：双向好友 + DID 验签消息 + 远程 shell 执行（授权分级 / 逐工具审计）；手机号绑定自动发布盲索引，`/api/contacts/connect` 按手机号一步连上；`/api/agents/{id}/reach-out` 让智能体主动跨机开口（cron 默认关闭）。仍无 SMS / 中心目录 / DHT / NAT 穿透 |
+| 跨机互联 | 手工登记对端 URL 后：双向好友 + DID 验签消息 + 远程 shell 执行（授权分级 / 逐工具审计）；手机号绑定自动发布盲索引，`/api/contacts/connect` 按手机号一步连上；`/api/agents/{id}/reach-out` 让智能体主动跨机开口（cron 默认关闭）。**跨网走 DIAP（Rust 原生，crates.io `diap-rs-sdk 0.3.7`，`diap-backend` feature）**：交换 NodeId + 完整 `EndpointAddr` 即可收发，双节点回环已实测；n0 relay 本机不可达时需自建 relay 或双方可达。仍无 SMS / 中心目录 / DHT |
 | Kernel / UI | 双核分工（A 机制 / B 执行）+ **真心跳文件互检/补拍** + 三模式统一事件面 + 8 端口 VFS/dispatch + 网页/终端同源（`bolloon kernel …`）；执行步骤显示工具名与 shell 结果、文档全屏阅读、卡片互动、好友面板、模型池绑定、路由使用费 |
 
 ## 当前已知边界（2026-11-08 复核）
