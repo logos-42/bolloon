@@ -863,7 +863,16 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
     // 只在未设置时注入，避免覆盖部署方显式配置。
     if std::env::var("BOLLOON_LOCAL_API").is_err() {
         if let Ok(addr) = listener.local_addr() {
-            unsafe { std::env::set_var("BOLLOON_LOCAL_API", format!("http://{addr}")) };
+            // 绑 0.0.0.0/:: 时不能把未指定地址写进本机自调用基址 (0.0.0.0 拨不通),
+            // 内部工具/回调一律走回环; 对外地址由 BOLLOON_PUBLIC_URL 单独通告。
+            let host = if addr.ip().is_unspecified() {
+                "127.0.0.1".to_string()
+            } else {
+                addr.ip().to_string()
+            };
+            unsafe {
+                std::env::set_var("BOLLOON_LOCAL_API", format!("http://{host}:{}", addr.port()))
+            };
         }
     }
 

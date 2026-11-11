@@ -1441,18 +1441,36 @@ async fn run_web(port: u16) -> anyhow::Result<()> {
         );
     }
 
+    // 2026-11-11 跨机互联修复: 以前这里硬编码 127.0.0.1, `BOLLOON_BIND` 只在
+    // 未被 CLI 使用的 `bolloon_web::serve()` 里生效 ⇒ 另一台机器永远连不上。
+    // 现在真正按 BOLLOON_BIND 绑定 (默认仍只绑回环, 不擅自对外暴露)。
+    let bind_host = std::env::var("BOLLOON_BIND")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
     // 2026-10-30: 先自己 bind (端口此刻已在 listen), 再交给 serve_on;
     // 然后用 poll 模块的同一套退避节奏确认「真能连上」才报 ready —— 不再靠 sleep 猜。
-    let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
+    let listener = std::net::TcpListener::bind((bind_host.as_str(), port))?;
     listener.set_nonblocking(true)?;
     let listener = tokio::net::TcpListener::from_std(listener)?;
-    let addr = format!("127.0.0.1:{port}");
-    match bolloon_agent::poll::wait_tcp(&addr, bolloon_agent::poll::PollConfig::default().max_retries(8)).await {
+    // 0.0.0.0 / :: 不能作为探测目标; 本机自检走回环
+    let probe = if bind_host == "0.0.0.0" || bind_host == "::" {
+        format!("127.0.0.1:{port}")
+    } else {
+        format!("{bind_host}:{port}")
+    };
+    let shown = std::env::var("BOLLOON_PUBLIC_URL")
+        .ok()
+        .map(|u| u.trim().trim_end_matches('/').to_string())
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| format!("http://{probe}"));
+    match bolloon_agent::poll::wait_tcp(&probe, bolloon_agent::poll::PollConfig::default().max_retries(8)).await {
         bolloon_agent::poll::PollResult::Success => {
-            eprintln!("[bolloon] web ready · http://{addr}");
+            eprintln!("[bolloon] web ready · {shown} (bind {bind_host}:{port})");
         }
         bolloon_agent::poll::PollResult::MaxRetriesExceeded => {
-            eprintln!("[bolloon] web 端口 {addr} 起不来 (退避轮询已放弃)");
+            eprintln!("[bolloon] web 端口 {probe} 起不来 (退避轮询已放弃)");
         }
         bolloon_agent::poll::PollResult::Interrupted => {}
     }
