@@ -26,6 +26,9 @@ pub mod kernel_bus;
 pub mod diap_hub;
 pub mod feature_pack;
 pub mod discovery;
+/// 路径 B: libp2p Kademlia DHT 发现 (可选 feature)
+#[cfg(feature = "dht-backend")]
+pub mod dht;
 pub mod contribution;
 pub mod world_interact;
 pub mod x402_buy;

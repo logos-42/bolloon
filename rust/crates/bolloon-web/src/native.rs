@@ -8125,7 +8125,23 @@ pub async fn contact_connect(
             if !hit.found {
                 // 2026-11-11 去中心化发现: 只凭手机号从 gossip 缓存拿到对方 DIAP 地址,
                 // 自动登记后让 peer_url_for_did 走 DIAP 隧道（对端 HTTP 不必可达）。
-                if let Some(rec) = crate::discovery::lookup(&query) {
+                let mut rec = crate::discovery::lookup(&query);
+                let mut via_name = "去中心化发现";
+                #[cfg(feature = "dht-backend")]
+                if rec.is_none() {
+                    if let Some(dht) = crate::dht::global() {
+                        let key = bolloon_agent::directory::discovery_topic(&query).to_vec();
+                        if let Some(bytes) = dht.get(key).await {
+                            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                if crate::discovery::verify_record(&v) {
+                                    rec = Some(v);
+                                    via_name = "Kademlia DHT";
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(rec) = rec {
                     let did = rec["did"].as_str().unwrap_or_default().to_string();
                     if !did.is_empty() {
                         #[cfg(feature = "diap-backend")]
@@ -8141,7 +8157,7 @@ pub async fn contact_connect(
                                 }
                             }
                         }
-                        (did, "去中心化发现")
+                        (did, via_name)
                     } else {
                         return Json(serde_json::json!({ "ok": false, "error": "发现记录缺 DID" }));
                     }
@@ -10228,6 +10244,19 @@ pub async fn bind_phone(
     // 2026-11-11: 去中心化发现 —— 绑定后把带签名的「手机号 topic → DIAP 地址」记录
     // gossip 给已登记的 DIAP 对端；陌生人只输手机号就能从网络里查到。
     out["discovery"] = crate::discovery::announce_self(&st, &phone).await;
+    // 2026-11-11 路径 B: 同一条签名记录也 PUT 进 Kademlia DHT。
+    // 陌生人不必和本机在同一 gossip 网络，只要能访问 DHT 就能查到。
+    #[cfg(feature = "dht-backend")]
+    if let Some(dht) = crate::dht::global() {
+        let rec = crate::discovery::signed_record(&st, &phone);
+        let key = bolloon_agent::directory::discovery_topic(&phone).to_vec();
+        match dht.put(key, rec.to_string().into_bytes()).await {
+            Ok(()) => out["dht"] = serde_json::json!({
+                "ok": true, "topic": rec["topic"], "note": "已写入 Kademlia DHT"
+            }),
+            Err(e) => out["dht"] = serde_json::json!({ "ok": false, "error": e }),
+        }
+    }
     Json(out)
 }
 

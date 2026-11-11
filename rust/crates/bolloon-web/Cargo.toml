@@ -38,6 +38,10 @@ qrcode = { version = "0.14.1", features = ["svg"] }
 diap-rs-sdk = { version = "0.3.7", optional = true }
 # 与 quinn 同一个 TLS 后端; DIAP 的 iroh 会同时拉 aws-lc-rs, 必须显式装 ring
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# 路径 B: libp2p Kademlia DHT (与 DIAP SDK 同版本, cargo 会统一成一份)
+libp2p = { version = "0.57", optional = true, features = [
+    "tcp", "noise", "yamux", "identify", "ping", "kad", "mdns", "tokio", "macros"
+] }
 
 # QUIC 端对端直连传输 (默认启用): 好友对话的直连底座, 不经 HTTP 中继。
 # 关掉即退回纯 HTTP 跨机 (directory_peers 那套), 不影响其它功能。
@@ -46,3 +50,5 @@ default = ["quic-transport"]
 quic-transport = ["bolloon-p2p/quic-transport"]
 # 跨 NAT: peer_json 自动优先走 DIAP 隧道 (未启用时行为不变)
 diap-backend = ["bolloon-p2p/diap-backend", "dep:diap-rs-sdk"]
+# 公共 DHT 发现 (路径 B): 只凭手机号从 Kademlia 取对方 DIAP 地址
+dht-backend = ["dep:libp2p"]

@@ -742,6 +742,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/contacts/connect", post(crate::native::contact_connect))
         .route("/api/discovery/announce", post(crate::discovery::announce))
         .route("/api/discovery/find", get(crate::discovery::find))
+        .route("/api/dht/status", get(dht_status_route))
         // 2026-11-11 去中心化发现: 手机号 → 32B 发现键 (iroh pkarr key / hyperswarm topic)
         .route("/api/contacts/topic", get(crate::native::contact_topic))
         // 首次地址交换: 两端从没连过时, 用签名连接码换「手机号 + DID + 可达基址」
@@ -866,6 +867,17 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
 }
 
 /// 在已绑定的监听器上服务 (测试: 端口 0 → 用 OS 分配的端口, 不抢固定端口)
+/// GET /api/dht/status：未编译 feature 时如实说明。
+#[cfg(feature = "dht-backend")]
+async fn dht_status_route() -> Json<serde_json::Value> {
+    crate::dht::dht_status().await
+}
+
+#[cfg(not(feature = "dht-backend"))]
+async fn dht_status_route() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": false, "enabled": false, "error": "未编译 dht-backend feature" }))
+}
+
 /// GET /api/diap/addr：DIAP 未编译时也返回明确原因，不假装 enabled。
 #[cfg(feature = "diap-backend")]
 async fn diap_addr_route() -> Json<serde_json::Value> {
@@ -904,6 +916,23 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
 
     // 启动即按本机配置装好模型通路 (200+ provider 里能解析的那些)
     state.reload_llm().await;
+
+    // 2026-11-11 路径 B: Kademlia DHT（默认关）。BOLLOON_DHT=1 启用,
+    // BOLLOON_DHT_PORT 固定监听端口, BOLLOON_DHT_BOOTSTRAP 逗号分隔的多地址(带 /p2p/<id>)。
+    #[cfg(feature = "dht-backend")]
+    if std::env::var("BOLLOON_DHT").map(|v| v.trim() == "1").unwrap_or(false) {
+        let port = std::env::var("BOLLOON_DHT_PORT")
+            .ok().and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
+        let boots = std::env::var("BOLLOON_DHT_BOOTSTRAP").unwrap_or_default()
+            .split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+        match crate::dht::Dht::start(port, boots).await {
+            Ok(d) => {
+                tracing::info!(peer_id = %d.peer_id(), listen = ?d.listen_addrs(), "Kademlia DHT 已启用");
+                crate::dht::set_global(d);
+            }
+            Err(e) => tracing::warn!("DHT 启动失败: {e}"),
+        }
+    }
 
     // 2026-11-11: DIAP 跨 NAT 隧道（默认关）。启用后 `peer_json` 自动优先走 iroh，
     // 不需要对端 HTTP 可达；未启用时行为完全不变。

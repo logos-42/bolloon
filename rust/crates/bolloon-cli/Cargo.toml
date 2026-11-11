@@ -43,4 +43,5 @@ default = ["quic-transport"]
 quic-transport = ["bolloon-p2p/quic-transport"]
 # 跨 NAT: 转发到 web/p2p 的 DIAP 后端
 diap-backend = ["bolloon-web/diap-backend", "bolloon-p2p/diap-backend"]
+dht-backend = ["bolloon-web/dht-backend"]
 

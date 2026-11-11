@@ -53,7 +53,7 @@ fn signed_message(topic: &str, did: &str, ts: u64) -> String {
 }
 
 /// 验签：DID 里内嵌 Ed25519 公钥，记录不能被别人伪造或改地址。
-fn verify_record(v: &Value) -> bool {
+pub fn verify_record(v: &Value) -> bool {
     let did = v["did"].as_str().unwrap_or_default();
     let topic = v["topic"].as_str().unwrap_or_default();
     let ts = v["ts_ms"].as_u64().unwrap_or(0);
@@ -90,7 +90,8 @@ fn put(v: &Value) -> bool {
 }
 
 /// 本机手机号 → gossip 记录；绑定成功后调用（自动带 DIAP 地址）。
-pub async fn announce_self(st: &AppState, phone: &str) -> Value {
+/// 构造一条 DID 私钥签名的发现记录（gossip 与 DHT 共用同一格式/同一套验签）。
+pub fn signed_record(st: &AppState, phone: &str) -> Value {
     let topic = discovery_topic_hex(phone);
     let did = st.identity.did.as_str().to_string();
     let ts = now_ms();
@@ -107,10 +108,15 @@ pub async fn announce_self(st: &AppState, phone: &str) -> Value {
             Value::Null
         }
     };
-    let rec = serde_json::json!({
+    serde_json::json!({
         "topic": topic, "did": did, "diap": diap,
         "ts_ms": ts, "sig": sig, "hops": 0,
-    });
+    })
+}
+
+pub async fn announce_self(st: &AppState, phone: &str) -> Value {
+    let rec = signed_record(st, phone);
+    let topic = rec["topic"].as_str().unwrap_or_default().to_string();
     let fresh = put(&rec);
     let sent = broadcast(st, &rec).await;
     serde_json::json!({ "ok": true, "topic": topic, "fresh": fresh, "broadcast": sent })
