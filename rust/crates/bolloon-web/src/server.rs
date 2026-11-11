@@ -740,6 +740,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/contacts/set", post(crate::native::contact_set))
         .route("/api/contacts/search", post(crate::native::contact_search))
         .route("/api/contacts/connect", post(crate::native::contact_connect))
+        .route("/api/discovery/announce", post(crate::discovery::announce))
+        .route("/api/discovery/find", get(crate::discovery::find))
         // 2026-11-11 去中心化发现: 手机号 → 32B 发现键 (iroh pkarr key / hyperswarm topic)
         .route("/api/contacts/topic", get(crate::native::contact_topic))
         // 首次地址交换: 两端从没连过时, 用签名连接码换「手机号 + DID + 可达基址」

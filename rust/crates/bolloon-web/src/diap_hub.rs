@@ -99,6 +99,11 @@ impl DiapHub {
         }
     }
 
+    /// 已登记对端的 HTTP 基址列表（gossip 广播目标）
+    pub async fn peer_urls(&self) -> Vec<String> {
+        self.peers.lock().await.keys().cloned().collect()
+    }
+
     pub async fn peers_snapshot(&self) -> Vec<serde_json::Value> {
         self.peers
             .lock()

@@ -25,6 +25,7 @@ pub mod kernel_bus;
 #[cfg(feature = "diap-backend")]
 pub mod diap_hub;
 pub mod feature_pack;
+pub mod discovery;
 pub mod contribution;
 pub mod world_interact;
 pub mod x402_buy;

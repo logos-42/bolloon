@@ -8123,13 +8123,38 @@ pub async fn contact_connect(
         } else {
             let (hit, notes) = peers_lookup(&st, &query, kind).await;
             if !hit.found {
-                return Json(serde_json::json!({
-                    "ok": false,
-                    "error": "目录里没有这个联系方式 (对方未发布, 或没登记对端节点)",
-                    "notes": notes,
-                }));
+                // 2026-11-11 去中心化发现: 只凭手机号从 gossip 缓存拿到对方 DIAP 地址,
+                // 自动登记后让 peer_url_for_did 走 DIAP 隧道（对端 HTTP 不必可达）。
+                if let Some(rec) = crate::discovery::lookup(&query) {
+                    let did = rec["did"].as_str().unwrap_or_default().to_string();
+                    if !did.is_empty() {
+                        #[cfg(feature = "diap-backend")]
+                        if !rec["diap"].is_null() {
+                            if let Some(hub) = crate::diap_hub::global() {
+                                let tag = crate::discovery::topic_short(&query);
+                                let url = format!("http://diap-{tag}:54188");
+                                hub.register(&url, rec["diap"].clone()).await;
+                                let mut fs = st.forge.lock().await;
+                                if !fs.directory_peers.iter().any(|p| p == &url) {
+                                    fs.directory_peers.push(url.clone());
+                                    fs.save(&data_dir());
+                                }
+                            }
+                        }
+                        (did, "去中心化发现")
+                    } else {
+                        return Json(serde_json::json!({ "ok": false, "error": "发现记录缺 DID" }));
+                    }
+                } else {
+                    return Json(serde_json::json!({
+                        "ok": false,
+                        "error": "目录里没有这个联系方式 (对方未发布/未广播, 或没登记对端节点)",
+                        "notes": notes,
+                    }));
+                }
+            } else {
+                (hit.did.unwrap_or_default(), "跨机目录")
             }
-            (hit.did.unwrap_or_default(), "跨机目录")
         }
     };
     if did.is_empty() {
@@ -10200,6 +10225,9 @@ pub async fn bind_phone(
             "ok": false, "skipped": true, "reason": "publish=false (仅本地绑定)"
         });
     }
+    // 2026-11-11: 去中心化发现 —— 绑定后把带签名的「手机号 topic → DIAP 地址」记录
+    // gossip 给已登记的 DIAP 对端；陌生人只输手机号就能从网络里查到。
+    out["discovery"] = crate::discovery::announce_self(&st, &phone).await;
     Json(out)
 }
 
