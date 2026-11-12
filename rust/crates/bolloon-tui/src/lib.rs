@@ -68,6 +68,96 @@ pub mod theme;
 pub mod trace;
 pub mod width;
 
+/// 终端底层调用的跨平台兼容层。
+///
+/// Unix：`termios` / `poll` / `SIGWINCH` 都是 POSIX 专用，原样转发给 `libc`。
+/// Windows：这些 API 根本不存在（本机编译 42 个报错都来自这里），所以给出
+/// 「永远拿不到 raw 终端」的降级实现 —— `tcgetattr` / `isatty` 恒失败，
+/// 上层会自动落进原本就有的「非 TTY ⇒ 一次读一行」分支，不会卡死。
+///
+/// 诚实边界：Windows 下没有 raw 模式、没有按键级 Ctrl+C 监听、没有窗口缩放重绘；
+/// `bolloon web` 这类不进 TUI 的命令完全不受影响。
+pub mod term_compat {
+    #[cfg(unix)]
+    pub use libc::{
+        cfmakeraw, c_int, c_void, isatty, poll, pollfd, read, signal, sighandler_t,
+        tcgetattr, tcsetattr, termios, ONLCR, OPOST, POLLIN, SIGWINCH, STDIN_FILENO,
+        STDOUT_FILENO, TCSANOW,
+    };
+
+    #[cfg(windows)]
+    pub use std::ffi::c_void;
+
+    // 名字要跟 Unix 侧 libc 的别名逐字一致，调用方才能零改动；故保留 C 风格命名。
+    #[cfg(windows)]
+    #[allow(non_camel_case_types)]
+    pub type c_int = i32;
+    #[cfg(windows)]
+    #[allow(non_camel_case_types)]
+    pub type sighandler_t = usize;
+
+    /// Windows 上只需要让 `t.c_oflag |= OPOST | ONLCR` 这段能编过；字段不参与任何真实终端控制。
+    #[cfg(windows)]
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    pub struct termios {
+        pub c_oflag: u32,
+    }
+
+    #[cfg(windows)]
+    #[repr(C)]
+    pub struct pollfd {
+        pub fd: i32,
+        pub events: i16,
+        pub revents: i16,
+    }
+
+    #[cfg(windows)]
+    pub const STDIN_FILENO: c_int = 0;
+    #[cfg(windows)]
+    pub const STDOUT_FILENO: c_int = 1;
+    #[cfg(windows)]
+    pub const TCSANOW: c_int = 0;
+    #[cfg(windows)]
+    pub const OPOST: u32 = 0;
+    #[cfg(windows)]
+    pub const ONLCR: u32 = 0;
+    #[cfg(windows)]
+    pub const POLLIN: i16 = 0;
+    #[cfg(windows)]
+    pub const SIGWINCH: c_int = 0;
+
+    #[cfg(windows)]
+    pub unsafe fn cfmakeraw(_t: *mut termios) {}
+    #[cfg(windows)]
+    pub unsafe fn tcgetattr(_fd: c_int, _t: *mut termios) -> c_int {
+        -1
+    }
+    #[cfg(windows)]
+    pub unsafe fn tcsetattr(_fd: c_int, _act: c_int, _t: *const termios) -> c_int {
+        -1
+    }
+    #[cfg(windows)]
+    pub unsafe fn isatty(_fd: c_int) -> c_int {
+        0
+    }
+    /// 轮询在 Windows 一律「没数据」，但必须先睡一会儿，否则中断监听线程会空转吃满 CPU。
+    #[cfg(windows)]
+    pub unsafe fn poll(_fds: *mut pollfd, _nfds: u64, timeout_ms: c_int) -> c_int {
+        let ms = if timeout_ms > 0 { (timeout_ms as u64).min(100) } else { 10 };
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        -1
+    }
+    #[cfg(windows)]
+    pub unsafe fn read(_fd: c_int, _buf: *mut c_void, _count: usize) -> isize {
+        -1
+    }
+    #[cfg(windows)]
+    pub unsafe fn signal(_sig: c_int, _handler: sighandler_t) -> sighandler_t {
+        0
+    }
+}
+
 pub use app::{
     Activity, Chrome, ComplSource, InputOutcome, StatusBar, TurnStats, RESERVED_LINES,
 };

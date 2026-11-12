@@ -115,7 +115,7 @@ pub fn color_enabled_env(is_tty: bool, no_color: Option<&str>, term: Option<&str
 
 /** 真机版: 直接读进程环境 + stdout 是否 TTY */
 pub fn color_enabled() -> bool {
-    let is_tty = unsafe { libc::isatty(libc::STDOUT_FILENO) == 1 };
+    let is_tty = unsafe { crate::term_compat::isatty(crate::term_compat::STDOUT_FILENO) == 1 };
     color_enabled_env(
         is_tty,
         std::env::var("NO_COLOR").ok().as_deref(),

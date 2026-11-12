@@ -514,21 +514,21 @@ pub fn parse_keys(bytes: &[u8]) -> Vec<Key> {
 }
 
 struct RawGuard {
-    orig: Option<libc::termios>,
+    orig: Option<crate::term_compat::termios>,
 }
 
 impl RawGuard {
     fn enable() -> Self {
         unsafe {
-            let mut t: libc::termios = std::mem::zeroed();
-            if libc::tcgetattr(libc::STDIN_FILENO, &mut t) != 0 {
+            let mut t: crate::term_compat::termios = std::mem::zeroed();
+            if crate::term_compat::tcgetattr(crate::term_compat::STDIN_FILENO, &mut t) != 0 {
                 return Self { orig: None };
             }
             let orig = t;
-            libc::cfmakeraw(&mut t);
+            crate::term_compat::cfmakeraw(&mut t);
             // 同 input.rs: 保留输出的 OPOST|ONLCR, 否则 `\n` 不回列首 (阶梯状)
-            t.c_oflag |= libc::OPOST | libc::ONLCR;
-            if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t) != 0 {
+            t.c_oflag |= crate::term_compat::OPOST | crate::term_compat::ONLCR;
+            if crate::term_compat::tcsetattr(crate::term_compat::STDIN_FILENO, crate::term_compat::TCSANOW, &t) != 0 {
                 return Self { orig: None };
             }
             Self { orig: Some(orig) }
@@ -543,7 +543,7 @@ impl Drop for RawGuard {
     fn drop(&mut self) {
         if let Some(orig) = self.orig.as_ref() {
             unsafe {
-                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, orig);
+                crate::term_compat::tcsetattr(crate::term_compat::STDIN_FILENO, crate::term_compat::TCSANOW, orig);
             }
         }
         print!("{SHOW_CURSOR}");
@@ -564,7 +564,7 @@ pub fn tui_capable() -> bool {
         return false;
     }
     unsafe {
-        if libc::isatty(libc::STDIN_FILENO) != 1 || libc::isatty(libc::STDOUT_FILENO) != 1 {
+        if crate::term_compat::isatty(crate::term_compat::STDIN_FILENO) != 1 || crate::term_compat::isatty(crate::term_compat::STDOUT_FILENO) != 1 {
             return false;
         }
     }
@@ -856,26 +856,26 @@ pub const ESC_GRACE_MS: i32 = 40;
 /**
  * 等一个字节, 最多等 `timeout_ms` (负数 = 一直等); 超时/出错/EOF ⇒ None。
  *
- * **必须用 `libc::read`, 不能用 `std::io::stdin()`**: `Stdin` 带 8KB 用户态缓冲, 一次
+ * **必须用 `crate::term_compat::read`, 不能用 `std::io::stdin()`**: `Stdin` 带 8KB 用户态缓冲, 一次
  * `read(1)` 会把整段输入吸进它的缓冲区 (内核缓冲变空) ⇒ 随后 `poll` 认为"没数据" ⇒
  * 超时 ⇒ 中文的续字节/紧跟的按键全被当成"孤独的 Esc"丢掉。2026-10-26 真机 pty 实测:
  * `第一行` 只剩 `行`。改用裸 `read` 后 poll 与读的是同一个缓冲, 一个字节都不许丢。
  */
 fn poll_read(timeout_ms: i32) -> Option<u8> {
-    let mut pfd = libc::pollfd {
-        fd: libc::STDIN_FILENO,
-        events: libc::POLLIN,
+    let mut pfd = crate::term_compat::pollfd {
+        fd: crate::term_compat::STDIN_FILENO,
+        events: crate::term_compat::POLLIN,
         revents: 0,
     };
-    let n = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+    let n = unsafe { crate::term_compat::poll(&mut pfd, 1, timeout_ms) };
     if n <= 0 {
         return None;
     }
     let mut b = [0u8; 1];
     let got = unsafe {
-        libc::read(
-            libc::STDIN_FILENO,
-            b.as_mut_ptr() as *mut libc::c_void,
+        crate::term_compat::read(
+            crate::term_compat::STDIN_FILENO,
+            b.as_mut_ptr() as *mut crate::term_compat::c_void,
             1,
         )
     };
@@ -895,7 +895,7 @@ fn poll_read(timeout_ms: i32) -> Option<u8> {
 static RESIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static WINCH_INSTALLED: std::sync::Once = std::sync::Once::new();
 
-extern "C" fn on_winch(_sig: libc::c_int) {
+extern "C" fn on_winch(_sig: crate::term_compat::c_int) {
     RESIZED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -904,7 +904,7 @@ extern "C" fn on_winch(_sig: libc::c_int) {
 pub fn install_resize_watch() {
     WINCH_INSTALLED.call_once(|| unsafe {
         // 函数项不能直接 cast 成整数: 先转裸指针再转 sighandler_t
-        libc::signal(libc::SIGWINCH, on_winch as *const () as libc::sighandler_t);
+        crate::term_compat::signal(crate::term_compat::SIGWINCH, on_winch as *const () as crate::term_compat::sighandler_t);
     });
 }
 

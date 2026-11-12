@@ -73,7 +73,7 @@ pub struct LineResult {
 /// (`hold_raw_mode`), `ask_line` 在里面再进一层, 谁都不提前还原。
 struct RawState {
     depth: usize,
-    orig: Option<libc::termios>,
+    orig: Option<crate::term_compat::termios>,
 }
 
 static RAW: std::sync::Mutex<RawState> = std::sync::Mutex::new(RawState { depth: 0, orig: None });
@@ -82,21 +82,21 @@ fn lock_raw() -> std::sync::MutexGuard<'static, RawState> {
     RAW.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn apply_raw(on: bool, orig: &Option<libc::termios>) -> bool {
+fn apply_raw(on: bool, orig: &Option<crate::term_compat::termios>) -> bool {
     unsafe {
         match (on, orig.as_ref()) {
             (true, Some(base)) => {
                 let mut t = *base;
-                libc::cfmakeraw(&mut t);
+                crate::term_compat::cfmakeraw(&mut t);
                 // **输出 post-processing 必须留回来**: cfmakeraw 把 OPOST|ONLCR 也清了,
                 // 于是 `\n` 只下移不回第 0 列 ⇒ 所有 println! 打出来是阶梯状
                 // (真机: 用户消息框 `╭─ ✓ 已发送 ─╮` 的边框和正文一路右移)。
                 // 这是 eprintln 与「绝对行号绘制」都依赖的前提, 拆掉它就全歪。
-                t.c_oflag |= libc::OPOST | libc::ONLCR;
-                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t) == 0
+                t.c_oflag |= crate::term_compat::OPOST | crate::term_compat::ONLCR;
+                crate::term_compat::tcsetattr(crate::term_compat::STDIN_FILENO, crate::term_compat::TCSANOW, &t) == 0
             }
             (false, Some(base)) => {
-                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, base) == 0
+                crate::term_compat::tcsetattr(crate::term_compat::STDIN_FILENO, crate::term_compat::TCSANOW, base) == 0
             }
             _ => false,
         }
@@ -113,8 +113,8 @@ impl RawGuard {
         let mut st = lock_raw();
         if st.depth == 0 {
             unsafe {
-                let mut t: libc::termios = std::mem::zeroed();
-                if libc::tcgetattr(libc::STDIN_FILENO, &mut t) != 0 {
+                let mut t: crate::term_compat::termios = std::mem::zeroed();
+                if crate::term_compat::tcgetattr(crate::term_compat::STDIN_FILENO, &mut t) != 0 {
                     return Self { entered: false };
                 }
                 st.orig = Some(t);
@@ -239,20 +239,20 @@ pub fn watch_interrupts(cancel: Arc<AtomicBool>) -> InterruptWatch {
     let stop_thread = Arc::clone(&stop);
     let handle = std::thread::spawn(move || {
         while !stop_thread.load(Ordering::Relaxed) {
-            let mut pfd = libc::pollfd {
-                fd: libc::STDIN_FILENO,
-                events: libc::POLLIN,
+            let mut pfd = crate::term_compat::pollfd {
+                fd: crate::term_compat::STDIN_FILENO,
+                events: crate::term_compat::POLLIN,
                 revents: 0,
             };
-            let ready = unsafe { libc::poll(&mut pfd, 1, 100) };
+            let ready = unsafe { crate::term_compat::poll(&mut pfd, 1, 100) };
             if ready <= 0 {
                 continue; // 超时/被信号打断: 回去看 stop 标志
             }
             let mut buf = [0u8; 32];
             let n = unsafe {
-                libc::read(
-                    libc::STDIN_FILENO,
-                    buf.as_mut_ptr() as *mut libc::c_void,
+                crate::term_compat::read(
+                    crate::term_compat::STDIN_FILENO,
+                    buf.as_mut_ptr() as *mut crate::term_compat::c_void,
                     buf.len(),
                 )
             };
