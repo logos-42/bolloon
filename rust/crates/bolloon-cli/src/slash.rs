@@ -211,6 +211,7 @@ const RAW: &[Spec] = &[
     s("/web_fetch", C_DATA, "/web_fetch <http(s) URL> [max_chars]", "抓取一个 URL 的文本 (与 agent 的 web_fetch 工具同一实现)", Ready),
     s("/mail", C_DATA, "/mail [accounts|sync|search [关键词]|read <id>|send <收件人> <主题> <正文>]", "邮件管理: 列账号/同步/搜本地索引/读正文/发一封 (直连 crate, 不走 HTTP)", Ready),
     s("/contacts", C_DATA, "/contacts [import <file.vcf|file.csv>|list [关键词]]", "通讯录导入(vCard/CSV)与查询 (本地文件, 不联网)", Ready),
+    s("/call", C_DATA, "/call [status|dial <+E164> <原因>]", "AI 外呼: 状态机/合规门/Mock 服务商 (未连运营商, 无真实音频)", Ready),
     a("/fetch", "/web_fetch", C_DATA, "抓取 URL"),
 
     // ==== 工具与技能 ====
@@ -421,7 +422,7 @@ mod tests {
             "/agent", "/channel", "/did", "/wallet", "/work", "/world", "/group",
             "/ipfs", "/ipns", "/interrupt", "/web_fetch", "/fetch",
             // 2026-11-13 邮件管理 + 通讯录导入 (桌面/TUI 也要能管)
-            "/mail", "/contacts",
+            "/mail", "/contacts", "/call",
         ];
         for name in required {
             assert!(find(name).is_some(), "命令面漏了 {name}");
@@ -515,7 +516,7 @@ mod tests {
     fn ready_count_is_what_we_claim() {
         let ready = specs().iter().filter(|s| s.status.is_ready()).count();
         // 含别名 (别名继承本体状态), 所以这个数 > "真命令数"
-        assert_eq!(ready, 67, "Ready 命令数变了: {ready} (改了就在这里同步口径)");
+        assert_eq!(ready, 68, "Ready 命令数变了: {ready} (改了就在这里同步口径)");
     }
 
     /// 2026-11-08: 用户点名的领域命令必须真的注册且可用。
@@ -524,7 +525,7 @@ mod tests {
     fn domain_commands_are_registered_and_ready() {
         for name in [
             "/agent", "/channel", "/did", "/wallet", "/work", "/world", "/group",
-            "/ipfs", "/ipns", "/interrupt", "/web_fetch", "/fetch", "/mail", "/contacts",
+            "/ipfs", "/ipns", "/interrupt", "/web_fetch", "/fetch", "/mail", "/contacts", "/call",
         ] {
             let sp = find(name).unwrap_or_else(|| panic!("{name} 没注册"));
             assert!(sp.status.is_ready(), "{name} 不是 Ready");

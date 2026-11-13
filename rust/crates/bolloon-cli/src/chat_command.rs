@@ -1114,6 +1114,7 @@ impl ChatSession {
             "/web_fetch" => Cmd::Say(web_fetch_lines(args).await),
             "/mail" => Cmd::Say(mail_lines(args).await),
             "/contacts" => Cmd::Say(contacts_lines(args).await),
+            "/call" => Cmd::Say(call_lines(args).await),
             "/profile" => Cmd::Say(self.profile_lines()),
             "/copy" => Cmd::Say(self.copy_cmd(args)),
             "/paste" => Cmd::Say(self.paste_cmd()),
@@ -2831,6 +2832,68 @@ async fn contacts_lines(args: &str) -> Vec<String> {
             Err(e) => vec![format!("✗ {e}")],
         },
         other => vec![format!("未知子命令: {other}"), usage.into()],
+    }
+}
+
+/// `/call` — AI 外呼（当前只有 Mock 服务商，不连运营商）。
+async fn call_lines(args: &str) -> Vec<String> {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use bolloon_agent::call::service::{CallService, MockCallPort, calls_dir};
+    use bolloon_agent::call::{CallEvent, CallTarget};
+
+    let home = bolloon_agent::home::BolloonHome::resolve();
+    let usage = "用法: /call [status|dial <+E164> <原因>]";
+    let parts: Vec<&str> = args.split_whitespace().collect();
+
+    match parts.first().copied().unwrap_or("status") {
+        "dial" => {
+            if parts.len() < 3 {
+                return vec![usage.into()];
+            }
+            let port = Arc::new(MockCallPort::new(vec![
+                CallEvent::Ringing,
+                CallEvent::Answered,
+                CallEvent::Hangup { by: "peer".into() },
+            ]));
+            let svc = CallService::new(calls_dir(home.root()), port.clone());
+            let target = CallTarget {
+                e164: parts[1].to_string(),
+                contact_id: None,
+                reason: parts[2..].join(" "),
+            };
+            match svc.dial(&target).await {
+                Ok(id) => {
+                    let (state, _) = svc.run(&id, &target, Duration::from_secs(2)).await;
+                    let mut out = vec![
+                        format!("Mock 外呼 {id} → {state:?}"),
+                        "注意: Mock 服务商, 未连接运营商、无真实音频".into(),
+                    ];
+                    for (_, t) in port.spoken() {
+                        out.push(format!("  播报: {t}"));
+                    }
+                    out
+                }
+                Err(e) => vec![format!("✗ {}: {}", e.kind(), e.message())],
+            }
+        }
+        _ => {
+            let dir = calls_dir(home.root());
+            if !dir.join("records.jsonl").exists() {
+                return vec!["（还没有通话记录）".into(), usage.into()];
+            }
+            let svc = CallService::new(&dir, Arc::new(MockCallPort::new(vec![])));
+            let recs = svc.records();
+            if recs.is_empty() {
+                return vec!["（还没有通话记录）".into(), usage.into()];
+            }
+            let mut out = vec![format!("通话记录 {} 条:", recs.len())];
+            for r in recs.iter().rev().take(20) {
+                out.push(format!("  {}  {}  {:?}", r.target_e164, r.reason, r.state));
+            }
+            out
+        }
     }
 }
 

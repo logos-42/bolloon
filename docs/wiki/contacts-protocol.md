@@ -388,3 +388,42 @@ leo 决定: 通讯录导入、短信读写、邮件读写从「永久禁止」�
 - **未实现**: 真 IMAP/SMTP Adapter、Android `ContactsContract` / `content://sms` Adapter、iOS `CNContactStore` Adapter、
   Tauri 手机原生工程(`gen/`)、三端 UI 面板、`scripts/verify-mail-chain.ts`。
 - 因此当前 `local_sink` 账号只做本地落盘并**明确标 `really_sent: false`**, 不谎称已外发。
+
+## 2026-11-13 电话能力(AI 外呼 · 首期)
+
+| 项 | 现状 |
+|---|---|
+| 端口 | `CallPort`(`dial` / `next_event` / `speak` / `hangup`) · `rust/crates/bolloon-agent/src/call/mod.rs` |
+| 状态机 | 纯函数 `reduce`(Idle → Dialing → Ringing → InProgress → Completed/Failed) · `call/state.rs` |
+| 合规门 | AI 身份声明必填 · E.164 · 单目标 · 拒接后不重拨 · 勿扰 |
+| 服务商 | **只有 Mock**；Twilio Media Streams 仅 JSON 编解码(`call/twilio.rs`)，**无 WebSocket 客户端** |
+| 真音频 | **未接**：ASR / TTS / 回声消除 / 打断(barge-in) 全未验证 |
+| 落盘 | `<home>/calls/records.jsonl`(只追加；脱敏：不存对方原话) |
+| 入口 | `/api/call/{records,dial}` · CLI `/call [status\|dial <+E164> <原因>]` |
+
+### 两条不可绕过
+
+1. 接通后第一条播报**必须是 AI 身份声明**；声明为空 ⇒ `Failed` + 立即挂断。
+2. **不批量外呼**：一次一个号码，无名单轮呼；对方拒接(`declined`/`do_not_call`)后不再重拨。
+
+### 平台硬边界(不是设计选择)
+
+- **iOS**: 不能自动拨号、不能录音、拿不到通话音频(`CallKit` 只服务自家 VoIP)。
+- **Android**: `CALL_PHONE` 可拨号，但 Android 10+ 禁止第三方 App 录通话(`CAPTURE_AUDIO_OUTPUT` 是系统权限)。
+- **桌面 / TUI**: 无蜂窝通话，只能经服务商 / SIP 中继。
+- **结论**: AI 多轮实时对话只能走服务商音频中继，手机/桌面只做发起与控制。
+
+### 已实现 / 未实现(如实)
+
+- **已实现并跑绿**:
+  - 状态机 / 合规门 / Mock 端到端 / Twilio Media Streams JSON 编解码（`call/twilio.rs`，无 WebSocket 客户端）
+  - 真实音频层（`call/audio.rs` + `call/voice.rs`）：WAV 编解码、线性重采样、能量 VAD 分段、半双工门、打断(barge-in)检测
+  - **真实 ASR / TTS 已本机跑通**：`WhisperAsr`(whisper.cpp) + `MacSayTts`(macOS say)；测试 `real_say_then_whisper_roundtrip`（识别「你好，這是語音識別測試」）与 `real_voice_loop_turn_latency`（实测 asr/tts/total 耗时均 >0）通过
+  - 手机原生拨号**意图生成**（`call/native.rs`：Android `ACTION_CALL` / iOS `tel:` 纯函数 + 单测；运行时自检 `can_dial_natively()` 如实返回 false）
+  - `/api/call/*` 与 CLI `/call`
+  验收: `cargo test -p bolloon-agent call` **37/37** · web **118/0** · cli **45/45**。
+- **未实现（如实）**:
+  - 真实 Twilio / 阿里云 / SIP **连接**（需服务商账号 + 公网回调，你暂不提供，保留 Mock）
+  - 真回声消除（AEC）：目前用**半双工**替代（播放时不采集），非神经网络 AEC
+  - 通话录音（需双方同意 + 手机 OS 限制）
+  - 手机原生拨号**真拨**：`gen/` 不存在、无手机壳可编译验证；`native.rs` 只生成意图，不执行

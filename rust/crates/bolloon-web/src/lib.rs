@@ -13,6 +13,8 @@ pub mod avatar;
 pub mod native;
 /// 邮件能力 HTTP 面 (`/api/mail/*`); CLI 直连 crate, 不走这里
 pub mod mail_api;
+/// AI 外呼 HTTP 面 (`/api/call/*`); 目前只有 Mock 服务商
+pub mod call_api;
 pub mod pay;
 pub mod agent_wallet;
 pub mod qr_login;

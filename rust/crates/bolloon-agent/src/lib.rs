@@ -8,6 +8,8 @@ pub mod econ_shadow;
 pub use bolloon_harness::{GateOutcome, ToolCall, ToolExecutor};
 pub mod bootstrap;
 pub mod belief;
+/// AI 外呼: 端口 / 状态机 / 合规门 / Mock 服务商 (真音频与 Twilio 未接)
+pub mod call;
 pub mod belief_tools;
 /// 一次性授权（工具/命令/二进制/路径）—— 三平台同一套，落盘记住（2026-11-04）
 pub mod grants;

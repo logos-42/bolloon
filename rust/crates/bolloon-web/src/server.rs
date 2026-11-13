@@ -767,6 +767,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/mail/delete", post(crate::mail_api::delete))
         .route("/api/contacts/import", post(crate::mail_api::contacts_import))
         .route("/api/contacts/imported", post(crate::mail_api::contacts_imported))
+        // AI 外呼: 目前只有 Mock 服务商(不连运营商)
+        .route("/api/call/records", get(crate::call_api::records))
+        .route("/api/call/dial", post(crate::call_api::dial))
         .route("/api/contacts/invite", get(crate::native::contact_invite))
         .route("/api/contacts/accept-invite", post(crate::native::contact_accept_invite))
         // 做梦机制 (整理记忆与经验 → 升级项目 skills)
@@ -3552,6 +3555,8 @@ pub const FULL_ACCESS_GATED_PREFIXES: &[&str] = &[
     "/api/mail/send", "/api/mail/sync", "/api/mail/delete",
     // 通讯录导入是写操作
     "/api/contacts/import",
+    // 外呼(即使当前是 Mock)也按写操作管
+    "/api/call/dial",
 ];
 pub const FULL_ACCESS_GATED_SUFFIXES: &[&str] = &[
     "/cards/paid", "/grants", "/grants/revoke", "/command", "/invite-agent",
