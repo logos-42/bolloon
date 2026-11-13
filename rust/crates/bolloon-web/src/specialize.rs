@@ -364,6 +364,11 @@ pub async fn share_pack(
         tags: vec!["specialize".into(), pack.task.clone()],
         actions: vec![],
         reply_to: None,
+    
+    
+        
+    
+    content_rating: None,
     };
     let mut v = serde_json::to_value(&card).unwrap_or(serde_json::Value::Null);
     v["pack"] = serde_json::to_value(&pack).unwrap_or(serde_json::Value::Null);

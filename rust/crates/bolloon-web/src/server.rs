@@ -4958,7 +4958,12 @@ mod route_tests {
                 tags: vec![],
                 actions: vec![],
                 reply_to: None,
-            };
+            
+            
+        
+    
+    content_rating: None,
+    };
             let env = bolloon_agent::world::pack_world_card(&kp, &card, 1);
             let pushed = post_json("/api/world/cards/push", serde_json::to_value(&env).unwrap());
             assert_eq!(pushed["ok"], serde_json::json!(true), "{pushed}");
@@ -4972,7 +4977,10 @@ mod route_tests {
             forged.payload = serde_json::to_value(bolloon_agent::world::WorldCard {
                 title: "伪卡".into(),
                 ..card.clone()
-            })
+            
+            
+        
+    })
             .unwrap();
             let rejected = post_json("/api/world/cards/push", serde_json::to_value(&forged).unwrap());
             assert!(rejected["error"].as_str().unwrap().contains("拒收"), "{rejected}");

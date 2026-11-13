@@ -47,10 +47,16 @@ tags: [status, rust-workspace, app-0.7.8, release-gate, world-cards, contributio
 | 跨机互联 | 手工登记对端 URL 后：双向好友 + DID 验签消息 + 远程 shell 执行（授权分级 / 逐工具审计）；手机号绑定自动发布盲索引，`/api/contacts/connect` 按手机号一步连上；`/api/agents/{id}/reach-out` 让智能体主动跨机开口（cron 默认关闭）。**整链走 DIAP（Rust 原生，crates.io `diap-rs-sdk 0.3.7`）**：`BOLLOON_DIAP=1` 后 `peer_json`/目录查询/互加回调自动优先走 iroh 隧道；两条去中心化发现路径：**gossip**（DID 签名记录每节点都存都转发）+ **Kademlia DHT**（libp2p 0.57，`PUT/GET_RECORD` 按手机号派生 key 分散存取），**陌生人只输手机号即可互联**（分别实测 `via:"去中心化发现"` / `via:"Kademlia DHT"`）。**多轮交流**：session_id 由双方 DID 确定性派生，消息双向落盘，对端用最近 12 轮上下文回答；`/chat/history` 回看、`/chat/auto` 智能体自动接力（轮数预算）。**发现与连接**：手机号 / **邮箱** / **DID** 三种都能直连（`/api/contacts/connect {query,kind}` 或 `{did}`）；Kademlia DHT 默认启用（`BOLLOON_DHT=0` 才关），顺序固定在 gossip → Kademlia DHT → **边缘目录兜底**（`bolloon.cn` / Workers，`BOLLOON_RENDEZVOUS=off` 可完全禁用）。**QUIC 交流留痕且可读**：`/api/quic/history` 每条带 `kind`（chat/command/connect/api）与指令摘要；跨机指令同时进会话历史。**多设备共享通道**：`/api/cross-chat/{export,import,sessions}` 幂等合并会话历史（重复导入不翻倍）；**自动同步**：`/api/devices/register` 登记后后台每 30s 互拉增量（`BOLLOON_DEVICE_SYNC_SECS` 可调、`=0` 关闭），设备列表自动扩散。DHT/gossip 仍需至少一个 bootstrap peer；公共 pkarr/Mainline relay 本机不可达；无 SMS，隧道只走 JSON API |
 | Kernel / UI | 双核分工（A 机制 / B 执行）+ **真心跳文件互检/补拍** + 三模式统一事件面 + 8 端口 VFS/dispatch + 网页/终端同源（`bolloon kernel …`）；执行步骤显示工具名与 shell 结果、文档全屏阅读、卡片互动、好友面板、模型池绑定、路由使用费 |
 
+## 2026-11-13 新增能力（支付隧道 / 世界分享 QUIC / 青少年模式）
+
+- **支付走 QUIC / 去中心化通道**：跨机充值申报 `pay_claim` 原裸 `ureq::post` 改为 `crate::native::peer_json`（DIAP 隧道优先、回落 HTTP）；x402 购买与世界付费本就走 `peer_json`（`x402_buy.rs` / `world_interact.rs`）。加密钱包为真实 EVM 钱包，结算走 `bolloon-econ` 内部信用；付费链路整体与聊天/指令同一条去中心化路径。
+- **世界分享自动走 QUIC + 回退**：`world_cards_share` QUIC 直发优先，未走通的好友经 `peer_json` 投递（DIAP 优先、回落 HTTP）；接收端按信封签名去重。`media` 卡片 `distribute=true` 与 `world_fulfill`（gap→fulfill）产出的卡片本就是 **AI 自动生成并自动定向投递给好友**，不进公域。
+- **青少年模式（默认成人）**：`world.rs` 新增 `ContentRating{General(默认)/Mature}` 枚举 + 服务端关键词兜底打标 `auto_rate`；`WorldCard.content_rating` 字段（不进签名载荷，旧帧兼容）。`native.rs`：`UiSettings.youth_mode` 开关、`set_settings` 可设；入站 `deliver_world_card` 在 youth_mode 开启时拒收成人级卡；展示 `world_cards` 过滤成人卡；`media_card` 本机生成处自动分级。正常使用者是成人，`youth_mode=false` 默认。
+
 ## 当前已知边界（2026-11-08 复核）
 
 1. **链上**：ETH 只登记用户提供的 `tx_hash`，本机不代签；IPFS 锚定需本机 Kubo 或真实 CID；orbitdb / 跨机共识层未接。
-2. **跨机分发**：`world_cards_share` 反序列化成标准 `WorldCard`，媒体卡片 `presentation` 扩展字段对端看不到舞台；QUIC 直发需 feature 开启。
+2. **跨机分发**：`world_cards_share` 反序列化成标准 `WorldCard`，媒体卡片 `presentation` 扩展字段对端看不到舞台。**2026-11-13 已补 QUIC 之外的投递回退**：QUIC 直发优先（仅已登记 socket 的好友），未走通 QUIC 的好友经 `peer_json`（`diap-backend` 开时走 iroh 隧道优先、否则回落 HTTP）推到对端 `/api/world/cards/push`；接收端 `deliver_world_card` 按信封 `signature` 去重，QUIC+HTTP 双通道不重复入库。
 3. **Kernel**：双核心跳是**本机文件互检**（`~/.bolloon/kernel-ha/{a,b}.unified.heartbeat.json`；可读回 `dual_core` 的 `{a,b}.heartbeat.json`，但不覆盖其 fence/seq），启动后前 15s 为相位预热（`phase_ok=false`）；事件序号网页/CLI 统一取 `max(seq)+1`，重启与外部写入都不倒退；跨进程 HA 仍需 `BOLLOON_HA`，外部进程的核只如实报 stale、不由本进程代打；事件面/VFS 是本机机制面，跨机共识未接。
 4. **模型**：API 用户自配；每会话/每智能体绑定在**主聊天与群聊旁路**都用真实 `session_id`（不再拿 `group_id` 冒充），`enforce` 路由不覆盖显式绑定；幂等缓存 key = 规范化后的 provider+model+session+完整请求（tools 排序），TTL 10 分钟 / 200 条上限 / 命中率可查，**工具回合单列 `skipped` 不计入命中率分母**；provider 端 KV prefix（`cache_prompt`/`cached_tokens`）仍未接；模型分享卡片能否导入取决于对端；旧 `charge_model` token 扣费函数保留但**零调用**。
 5. **额度**：付费 = 路由调度次数（100 万次 0.001 元），只有**成功响应**才记一次（缓存命中 / 调用失败 / 账本记账都不计，没用成不收费）；不按 token、不动贡献积分、不再有余额闸与充值提示；历史账本仅作参考。

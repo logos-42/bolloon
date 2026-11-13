@@ -341,6 +341,14 @@ pub async fn media_card(
     if let Some(poster) = req["poster"].as_str().filter(|s| !s.is_empty()) {
         card["cover"] = serde_json::json!({ "url": poster, "kind": "image" });
     }
+    // 2026-11-13 青少年模式：服务端自动分级兜底（防 AI 漏打标）。
+    // 成人级内容在本机生成时就标 mature，youth_mode 开启时 world_cards 会过滤。
+    let summary = req["summary"].as_str().unwrap_or_default();
+    let rating = bolloon_agent::world::auto_rate(&title, summary, &tags);
+    card["content_rating"] = serde_json::json!(match rating {
+        bolloon_agent::world::ContentRating::Mature => "mature",
+        bolloon_agent::world::ContentRating::General => "general",
+    });
     let mut fs = st.forge.lock().await;
     let oid = format!("card-{:04}", fs.inbox.len() + 1);
     fs.inbox.push(serde_json::json!({

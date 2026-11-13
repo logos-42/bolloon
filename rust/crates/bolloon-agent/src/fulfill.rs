@@ -89,6 +89,9 @@ pub fn fulfill(
                 kind: ActionKind::Link,
             }],
             reply_to: Some(ctx.intent_id.clone()),
+        
+        
+    content_rating: None,
         });
     }
 
@@ -115,7 +118,10 @@ pub fn fulfill(
                 tags: tags.clone(),
                 actions: vec![],
                 reply_to: Some(ctx.intent_id.clone()),
-            });
+            
+            
+    content_rating: None,
+        });
         }
     }
 
@@ -138,7 +144,10 @@ pub fn fulfill(
                 tags: tags.clone(),
                 actions: vec![],
                 reply_to: Some(ctx.intent_id.clone()),
-            }),
+            
+            
+    content_rating: None,
+        }),
         }
     }
 
@@ -176,6 +185,9 @@ pub fn fulfill(
             tags: tags.clone(),
             actions: vec![],
             reply_to: Some(ctx.intent_id.clone()),
+        
+        
+    content_rating: None,
         });
     } else {
         note = format!("交付 {} 张卡片", cards.len());

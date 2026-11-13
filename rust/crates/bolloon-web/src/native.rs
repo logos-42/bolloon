@@ -114,6 +114,9 @@ pub struct UiSettings {
     pub model: String,
     #[serde(default)]
     pub tools: Vec<String>,
+    /// 青少年模式（2026-11-13）：开启后服务端过滤成人级世界卡片，正常使用者是成人。
+    #[serde(default)]
+    pub youth_mode: bool,
 }
 
 /// clarity 授权请求 (workspace 外路径; authDlg 形状)
@@ -1345,6 +1348,9 @@ pub async fn set_settings(
             .iter()
             .filter_map(|x| x.as_str().map(|s| s.into()))
             .collect();
+    }
+    if let Some(y) = req["youth_mode"].as_bool() {
+        fs.settings.youth_mode = y;
     }
     let s = fs.settings.clone();
     fs.save(&data_dir());
@@ -5209,6 +5215,11 @@ pub async fn agent_card_paid(
             kind: bolloon_agent::world::ActionKind::Link,
         }],
         reply_to: None,
+    
+    
+        
+    
+    content_rating: None,
     };
     let card_json = serde_json::to_value(&card).unwrap_or(serde_json::Value::Null);
     let mut fs = st.forge.lock().await;
@@ -6281,7 +6292,17 @@ pub async fn world_fulfill(
 /// GET /api/world/cards → 世界卡片列表 (对齐 TS `GET /api/world/cards`)
 pub async fn world_cards(State(st): State<AppState>) -> Json<serde_json::Value> {
     let fs = st.forge.lock().await;
-    let cards: Vec<&serde_json::Value> = fs.inbox.iter().filter(|c| c["kind"] == "card").collect();
+    let cards: Vec<&serde_json::Value> = fs.inbox
+        .iter()
+        .filter(|c| c["kind"] == "card")
+        .filter(|c| {
+            // 2026-11-13 青少年模式：展示层也过滤，覆盖已落库的成人卡片
+            if !fs.settings.youth_mode {
+                return true;
+            }
+            c["card"]["content_rating"].as_str() != Some("mature")
+        })
+        .collect();
     Json(serde_json::json!({ "ok": true, "count": cards.len(), "cards": cards }))
 }
 
@@ -6291,10 +6312,22 @@ pub async fn deliver_world_card(
     st: &AppState,
     env: &bolloon_p2p::envelope::SignedEnvelope,
 ) -> anyhow::Result<serde_json::Value> {
-    let card = bolloon_agent::world::unpack_world_card(env)?;
+    let mut card = bolloon_agent::world::unpack_world_card(env)?;
     let mut fs = st.forge.lock().await;
+    // 2026-11-13 青少年模式：入站前先用服务端分级兜底层补全（防对端漏打标），
+    // youth_mode 开启时直接拒收成人级内容，不进入任何收件路径。
+    let rating = bolloon_agent::world::effective_rating(&card);
+    card.content_rating = Some(rating);
+    if fs.settings.youth_mode && rating == bolloon_agent::world::ContentRating::Mature {
+        return Err(anyhow::anyhow!("青少年模式已开启：拒收成人内容卡片"));
+    }
     // 好友模式的卡只收好友的 (与发送侧 delivery_for 成对, 两端都不放水)
     bolloon_agent::world::accept_card(&card, fs.friends.friends())?;
+    let sig = env.signature.clone();
+    // 去重: 同签名信封不重复入库 (QUIC 直连 + HTTP/DIAP 回退可能各送一次)
+    if fs.inbox.iter().any(|it| it["kind"] == "card" && it["sig"].as_str() == Some(&sig)) {
+        return Ok(serde_json::json!({ "id": "dup", "kind": "card", "dup": true, "sig": sig }));
+    }
     let card_json = serde_json::to_value(&card).unwrap_or(serde_json::Value::Null);
     let item = serde_json::json!({
         "id": format!("card-{:04}", fs.inbox.len() + 1),
@@ -6303,6 +6336,7 @@ pub async fn deliver_world_card(
         "title": card.title,
         "summary": card.summary,
         "card": card_json,
+        "sig": sig,
     });
     fs.inbox.push(item.clone());
     fs.save(&data_dir());
@@ -6345,6 +6379,9 @@ pub async fn world_cards_share(
     let card: bolloon_agent::world::WorldCard = match serde_json::from_value(req) {
         Ok(c) => c,
         Err(e) => return Json(serde_json::json!({ "error": format!("卡片格式错误: {e}") })),
+    
+    
+        
     };
     let all_friends = {
         let fs = st.forge.lock().await;
@@ -6369,7 +6406,9 @@ pub async fn world_cards_share(
         &st, "card_share", &format!("分享卡片 {}", card.title), &contrib_key, "world.card");
     let (env, delivery) =
         bolloon_agent::world::share_card(&st.identity, card, &friends, now_ms());
-    // QUIC 直连出站: 对**已登记 socket 地址**的好友, 经 QUIC 直发信封 (与 HTTP 跨机互补, best-effort)
+    // QUIC 直连出站 (优先): 对**已登记 socket 地址**的好友经 QUIC 直发信封。
+    // 记下来哪些好友走通了 QUIC, 剩下的交给下面的 HTTP/DIAP 回退, 保证「关 QUIC 也能送达」。
+    let mut quic_ok: std::collections::HashSet<String> = Default::default();
     #[cfg(feature = "quic-transport")]
     if let Some(q) = &st.quic {
         if let Ok(payload) = serde_json::to_value(&env) {
@@ -6380,9 +6419,33 @@ pub async fn world_cards_share(
                     payload: payload.clone(),
                     from: Some(st.identity.did.as_str().to_string()),
                 };
-                if let Err(e) = q.send(msg).await {
-                    tracing::warn!("QUIC 直发好友 {} 失败: {e}", f);
+                if q.send(msg).await.is_ok() {
+                    quic_ok.insert(f.clone());
+                } else {
+                    tracing::warn!("QUIC 直发好友 {} 失败, 回落 HTTP/DIAP", f);
                 }
+            }
+        }
+    }
+    // HTTP/DIAP 回退: 对没走通 QUIC 的好友 (含 QUIC 未启用时全体),
+    // 经 peer_json 把信封推到对端 `/api/world/cards/push`。
+    // peer_json 内部 DIAP 优先 (对端登记过隧道地址就走 QUIC 隧道), 否则回落 HTTP —— 与聊天/支付同一路。
+    let mut http_ok = 0usize;
+    if let Ok(payload) = serde_json::to_value(&env) {
+        for f in &friends {
+            if quic_ok.contains(f) {
+                continue;
+            }
+            match peer_url_for_did(&st, f).await {
+                Ok(url) => {
+                    let push_url = format!("{}/api/world/cards/push", url.trim_end_matches('/'));
+                    if peer_json("POST", push_url, Some(payload.clone())).await.is_ok() {
+                        http_ok += 1;
+                    } else {
+                        tracing::warn!("世界卡 HTTP/DIAP 投递好友 {} 失败", f);
+                    }
+                }
+                Err(_) => { /* 好友地址不可解析 (未登记/不在线), 跳过, 不影响其它人 */ }
             }
         }
     }
@@ -6399,6 +6462,11 @@ pub async fn world_cards_share(
             format!("{} 位好友 (定向, 不进公域)", delivery.targets().len())
         },
         "envelope": env,
+        "transport": {
+            "quic": quic_ok.len(),
+            "http_diap": http_ok,
+            "note": "QUIC 直连优先; 未走通 QUIC 的好友经 peer_json (DIAP 隧道优先, 回落 HTTP) 投递",
+        },
     }))
 }
 

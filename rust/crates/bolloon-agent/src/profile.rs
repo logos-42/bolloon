@@ -107,6 +107,8 @@ pub fn to_world_card(
         tags: p.interests.clone(),
         actions: vec![],
         reply_to: None,
+    
+    content_rating: None,
     }
 }
 

@@ -269,6 +269,40 @@ pub struct CardAction {
     pub kind: ActionKind,
 }
 
+/// 内容分级 (2026-11-13 青少年模式)：默认 General；Mature 在青少年模式下被过滤。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentRating {
+    /// 全年龄段
+    #[default]
+    General,
+    /// 成人/限制级（色情、赌博、暴力、毒品、武器、血腥等）
+    Mature,
+}
+
+/// 青少年模式词表（中英文）：命中即判为成人级。
+/// 这是服务端兜底，不依赖 AI 自觉打标；词表可后续扩充。
+fn mature_keywords() -> &'static [&'static str] {
+    &[
+        "色情", "性爱", "裸", "成人", "18禁", "黄", "约炮", "援交",
+        "赌博", "赌场", "博彩", "彩票", "赌球",
+        "暴力", "血腥", "凶杀", "武器", "枪支", "军火",
+        "毒品", "吸毒", "毒品", "冰毒", "大麻", "摇头丸",
+        "porn", "nsfw", "xxx", "sex", "nude", "adult", "erotic",
+        "gambling", "casino", "bet", "violence", "drug", "weapon",
+    ]
+}
+
+/// 根据标题/摘要/标签自动判定分级（服务端兜底层）。
+pub fn auto_rate(title: &str, summary: &str, tags: &[String]) -> ContentRating {
+    let hay = format!("{} {} {}", title, summary, tags.join(" ")).to_lowercase();
+    if mature_keywords().iter().any(|k| hay.contains(&k.to_lowercase())) {
+        ContentRating::Mature
+    } else {
+        ContentRating::General
+    }
+}
+
 /// 世界卡片 (文本/音频/图片/视频 多媒体)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorldCard {
@@ -302,6 +336,15 @@ pub struct WorldCard {
     /// 回应哪条意图 (intent id; 缺省不进签名载荷, 新旧互通)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
+    /// 内容分级 (2026-11-13 青少年模式)：None = 未声明（按 General 处理，且不进签名载荷，
+    /// 旧帧照常解）。None 在落库/分发时会被 auto_rate 兜底补全。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_rating: Option<ContentRating>,
+}
+
+/// 取卡片的生效分级：显式声明优先，否则按内容自动判定（服务端兜底）。
+pub fn effective_rating(card: &WorldCard) -> ContentRating {
+    card.content_rating.unwrap_or_else(|| auto_rate(&card.title, &card.summary, &card.tags))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -469,6 +512,8 @@ struct CardUnsigned<'a> {
     actions: &'a [CardAction],
     #[serde(skip_serializing_if = "Option::is_none")]
     reply_to: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_rating: &'a Option<ContentRating>,
 }
 
 /// 卡片错误
@@ -502,6 +547,7 @@ pub fn card_canonical_bytes(card: &WorldCard) -> String {
         tags: &card.tags,
         actions: &card.actions,
         reply_to: &card.reply_to,
+        content_rating: &card.content_rating,
     };
     bolloon_p2p::envelope::canonical_json(&unsigned)
 }
@@ -724,6 +770,7 @@ mod tests {
             tags: vec![],
             actions: vec![],
             reply_to: None,
+            content_rating: None,
         }
     }
 

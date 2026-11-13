@@ -273,11 +273,16 @@ pub async fn pay_claim(
                 "did": did, "amount_usd": amount_usd, "channel": ev.channel,
                 "proof": ev.proof, "ts_ms": ts, "sig": sig,
             });
-            forwarded = match ureq::post(&format!("{owner}/api/pay/claim/inbound"))
-                .timeout(std::time::Duration::from_secs(8))
-                .send_json(body)
+            // 2026-11-13: 跨机充值申报经 peer_json 隧道 —— DIAP 优先 (有登记的收款人就走 QUIC),
+            // 否则回落 HTTP。这样「付款给好友」也走去中心化通道, 与聊天/指令同一条路。
+            forwarded = match crate::native::peer_json(
+                "POST",
+                format!("{owner}/api/pay/claim/inbound"),
+                Some(body),
+            )
+            .await
             {
-                Ok(r) => r.into_json().unwrap_or(serde_json::Value::Null),
+                Ok(v) => v,
                 Err(e) => serde_json::json!({ "error": format!("发给收款人节点失败: {e}") }),
             };
         }
