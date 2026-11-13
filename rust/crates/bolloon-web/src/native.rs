@@ -8127,15 +8127,6 @@ pub async fn contact_connect(
                 // 自动登记后让 peer_url_for_did 走 DIAP 隧道（对端 HTTP 不必可达）。
                 let mut rec = crate::discovery::lookup(&query);
                 let mut via_name = "去中心化发现";
-                // 2026-11-13 初次寻找: gossip 没见过对方时先问边缘目录。
-                // 排在 DHT 前面 —— DHT 需要 bootstrap, 第一次往往必然 miss 还白等超时。
-                // 返回的记录在这里本地验签(含 DIAP 地址), 服务端不可信也不影响安全。
-                if rec.is_none() {
-                    if let Some(v) = crate::rendezvous::find(&query).await {
-                        rec = Some(v);
-                        via_name = "边缘目录";
-                    }
-                }
                 #[cfg(feature = "dht-backend")]
                 if rec.is_none() {
                     if let Some(dht) = crate::dht::global() {
@@ -8148,6 +8139,15 @@ pub async fn contact_connect(
                                 }
                             }
                         }
+                    }
+                }
+                // 2026-11-13: 边缘目录只作**最后兜底**，且默认关闭
+                // (BOLLOON_RENDEZVOUS 未设置 = 不连任何第三方; 绝不默认走 Cloudflare)。
+                // 第一次互联的顺序固定为: gossip → Kademlia DHT → (显式开启时) 边缘目录。
+                if rec.is_none() {
+                    if let Some(v) = crate::rendezvous::find(&query).await {
+                        rec = Some(v);
+                        via_name = "边缘目录";
                     }
                 }
                 if let Some(rec) = rec {
@@ -9288,11 +9288,44 @@ pub async fn friend_command(
         Ok(u) => u,
         Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
     };
+    // 2026-11-13: 跨机指令也算「交流」，同样进会话历史（指令=out, 结果=in）。
+    // 用户要求「去中心化的 quic 交流要留存历史记录」—— 这里与聊天共用同一份会话。
+    let sid = crate::cross_chat::session_id(st.identity.did.as_str(), &did);
+    let _ = crate::cross_chat::append(
+        &data_dir(),
+        &crate::cross_chat::Turn {
+            ts_ms: now_ms(),
+            session_id: sid.clone(),
+            peer_did: did.clone(),
+            direction: "out".into(),
+            text: format!("[指令] {instruction}"),
+            agent_id: agent_id.clone(),
+        },
+    );
     let body = serde_json::json!({
         "from_did": st.identity.did.as_str(), "agent_id": agent_id, "instruction": instruction,
     });
     match peer_json("POST", format!("{url}/api/agents/public/command"), Some(body)).await {
-        Ok(v) => Json(v),
+        Ok(v) => {
+            if v["ok"].as_bool() == Some(true) {
+                let summary = v["reply"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string().chars().take(500).collect());
+                let _ = crate::cross_chat::append(
+                    &data_dir(),
+                    &crate::cross_chat::Turn {
+                        ts_ms: now_ms(),
+                        session_id: sid,
+                        peer_did: did.clone(),
+                        direction: "in".into(),
+                        text: format!("[结果] {summary}"),
+                        agent_id: agent_id.clone(),
+                    },
+                );
+            }
+            Json(v)
+        }
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
     }
 }

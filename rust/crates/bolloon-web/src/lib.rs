@@ -30,6 +30,8 @@ pub mod discovery;
 pub mod cross_chat;
 /// 边缘目录客户端 (bolloon.cn / Cloudflare Workers 兼容契约)
 pub mod rendezvous;
+/// QUIC/DIAP 交流历史 (去中心化通道留痕)
+pub mod transport_history;
 /// 路径 B: libp2p Kademlia DHT 发现 (可选 feature)
 #[cfg(feature = "dht-backend")]
 pub mod dht;

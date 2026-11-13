@@ -163,6 +163,11 @@ impl DiapHub {
         if id.is_empty() || !path.starts_with('/') {
             return;
         }
+        // 2026-11-13: 留痕用的副本（method/path 下面要 move 进闭包）
+        let started_in = now_ms();
+        let method_log = method.clone();
+        let path_log = path.clone();
+        let req_len = v.to_string().len();
         // 只允许打本机回环的 web 端口
         let url = format!("http://127.0.0.1:{}{}", self.local_port, path);
         let resp = tokio::task::spawn_blocking(move || -> serde_json::Value {
@@ -191,6 +196,8 @@ impl DiapHub {
         .await
         .unwrap_or_else(|e| serde_json::json!({ "id": "", "ok": false, "error": e.to_string() }));
 
+        let resp_len = resp.to_string().len();
+        let ok = resp["ok"].as_bool().unwrap_or(false);
         if !reply_addr.is_null() {
             let im = self
                 .comm
@@ -199,6 +206,18 @@ impl DiapHub {
                 eprintln!("[diap] 回响应失败: {e}");
             }
         }
+        // 对端经 QUIC 打进来的这次请求也留痕（in）
+        crate::transport_history::record(
+            "in",
+            &msg.from_did,
+            "diap/iroh-quic",
+            &method_log,
+            &path_log,
+            req_len,
+            resp_len,
+            ok,
+            now_ms().saturating_sub(started_in),
+        );
     }
 
     /// 若该 url 有 DIAP 地址则走隧道；否则返回 None（调用方回落 HTTP）。
@@ -220,6 +239,9 @@ impl DiapHub {
         path: &str,
         body: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
+        let started = now_ms();
+        let peer = addr["id"].as_str().unwrap_or("unknown").to_string();
+        let req_bytes = body.as_ref().map(|b| b.to_string().len()).unwrap_or(0);
         let id = format!("http-{}", now_ms());
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), tx);
@@ -231,28 +253,47 @@ impl DiapHub {
         let im = self
             .comm
             .create_custom_message("diap-hub", None, &payload.to_string(), MSG_REQ);
-        if let Err(e) = self.comm.send_to_addr_json(addr.clone(), im).await {
-            self.pending.lock().await.remove(&id);
-            return Err(format!("DIAP 发送失败: {e}"));
-        }
 
-        match tokio::time::timeout(REQ_TIMEOUT, rx).await {
-            Ok(Ok(v)) => {
-                if v["ok"].as_bool().unwrap_or(false) {
-                    Ok(v["body"].clone())
-                } else {
-                    Err(v["error"]
-                        .as_str()
-                        .unwrap_or("对端 API 调用失败")
-                        .to_string())
-                }
-            }
-            Ok(Err(_)) => Err("DIAP 响应通道关闭".to_string()),
-            Err(_) => {
+        let out = match self.comm.send_to_addr_json(addr.clone(), im).await {
+            Err(e) => {
                 self.pending.lock().await.remove(&id);
-                Err(format!("DIAP 请求超时 ({}s)", REQ_TIMEOUT.as_secs()))
+                Err(format!("DIAP 发送失败: {e}"))
             }
-        }
+            Ok(()) => match tokio::time::timeout(REQ_TIMEOUT, rx).await {
+                Ok(Ok(v)) => {
+                    if v["ok"].as_bool().unwrap_or(false) {
+                        Ok(v["body"].clone())
+                    } else {
+                        Err(v["error"]
+                            .as_str()
+                            .unwrap_or("对端 API 调用失败")
+                            .to_string())
+                    }
+                }
+                Ok(Err(_)) => Err("DIAP 响应通道关闭".to_string()),
+                Err(_) => {
+                    self.pending.lock().await.remove(&id);
+                    Err(format!("DIAP 请求超时 ({}s)", REQ_TIMEOUT.as_secs()))
+                }
+            },
+        };
+        // 2026-11-13: QUIC 隧道上的每次收发都留历史（失败也记，便于回溯）
+        let (resp_bytes, ok) = match &out {
+            Ok(v) => (v.to_string().len(), true),
+            Err(_) => (0, false),
+        };
+        crate::transport_history::record(
+            "out",
+            &peer,
+            "diap/iroh-quic",
+            method,
+            path,
+            req_bytes,
+            resp_bytes,
+            ok,
+            now_ms().saturating_sub(started),
+        );
+        out
     }
 }
 

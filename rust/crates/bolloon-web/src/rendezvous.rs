@@ -24,6 +24,10 @@ use serde_json::Value;
 use crate::server::AppState;
 
 /// 用户自己的站点；任何 bolloon 节点跑 `bolloon web` 就实现了这套契约。
+///
+/// 2026-11-13: **默认不启用**。第一次互联必须走去中心化（gossip / Kademlia DHT / mDNS），
+/// 绝不暗地里把手机号哈希发给第三方；要用边缘目录必须显式设
+/// `BOLLOON_RENDEZVOUS=https://...`（本常量只作为示例地址保留）。
 pub const DEFAULT_BASE: &str = "https://bolloon.cn";
 const TIMEOUT: Duration = Duration::from_secs(6);
 
@@ -38,7 +42,8 @@ fn base() -> Option<String> {
                 Some(t.trim_end_matches('/').to_string())
             }
         }
-        Err(_) => Some(DEFAULT_BASE.to_string()),
+        // 未设置 = 关闭。去中心化优先：不擅自把号码哈希发到任何服务器。
+        Err(_) => None,
     }
 }
 
@@ -46,6 +51,8 @@ pub fn status() -> Value {
     serde_json::json!({
         "enabled": base().is_some(),
         "base": base(),
+        "default": "off",
+        "opt_in": "默认只走去中心化; 要边缘目录需显式 BOLLOON_RENDEZVOUS=<url>",
         "honest": "只上传手机号加盐哈希与 DID 签名记录; 记录在本地验签, 不信任服务端",
     })
 }
@@ -119,15 +126,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rendezvous_can_be_disabled() {
-        // 不改动进程全局 env 以外的状态；用独立 env key 的语义验证 off/空
+    fn rendezvous_is_off_by_default_and_only_opt_in() {
         unsafe { std::env::set_var("BOLLOON_RENDEZVOUS", "off") };
         assert!(base().is_none());
         unsafe { std::env::set_var("BOLLOON_RENDEZVOUS", "") };
         assert!(base().is_none());
+        // 关键: 不设 env 时绝不默认连 bolloon.cn / Cloudflare
+        unsafe { std::env::remove_var("BOLLOON_RENDEZVOUS") };
+        assert!(base().is_none(), "第一次互联必须去中心化, 默认不得连边缘目录");
         unsafe { std::env::set_var("BOLLOON_RENDEZVOUS", "https://edge.example") };
         assert_eq!(base().as_deref(), Some("https://edge.example"));
         unsafe { std::env::remove_var("BOLLOON_RENDEZVOUS") };
-        assert_eq!(base().as_deref(), Some(DEFAULT_BASE));
     }
 }

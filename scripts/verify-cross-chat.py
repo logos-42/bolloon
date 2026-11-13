@@ -35,8 +35,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, 'rust', 'target', 'debug', 'bolloon')
+REMOTE = (sys.argv[sys.argv.index('--remote') + 1]
+          if '--remote' in sys.argv and len(sys.argv) > sys.argv.index('--remote') + 1 else '')
 MODE = ('http' if '--http' in sys.argv else
-        'rendezvous' if '--rendezvous' in sys.argv else 'diap')
+        'rendezvous' if ('--rendezvous' in sys.argv or REMOTE) else 'diap')
 PORTS = {'R': 54943, 'A': 54941, 'B': 54942}
 DHT_PORTS = {'R': 54953, 'A': 54951, 'B': 54952}
 MOCK_PORT = 54947
@@ -110,10 +112,13 @@ def start(k, bootstrap=''):
         env.update({
             'BOLLOON_DIAP': '1',
             # 边缘目录模式刻意不启 DHT: 证明「初次寻找」不需要任何 bootstrap
-            'BOLLOON_RENDEZVOUS': (f'http://127.0.0.1:{PORTS["R"]}'
-                                   if MODE == 'rendezvous' else 'off'),
+            'BOLLOON_RENDEZVOUS': (REMOTE or f'http://127.0.0.1:{PORTS["R"]}'),
+
+            'BOLLOON_DHT': '0' if MODE == 'rendezvous' else '1',
         })
         if MODE == 'diap':
+            # 不设 BOLLOON_RENDEZVOUS ⇒ 走真实默认（关闭），验证“绝不依赖 Cloudflare”
+            env.pop('BOLLOON_RENDEZVOUS', None)
             env.update({
                 'BOLLOON_DHT': '1',
                 'BOLLOON_DHT_PORT': str(DHT_PORTS[k]),
@@ -153,7 +158,7 @@ def main():
     procs = {}
     try:
         bootstrap = ''
-        if MODE in ('diap', 'rendezvous'):
+        if MODE in ('diap', 'rendezvous') and not REMOTE:
             os.makedirs(HOMES['R'], exist_ok=True)
             procs['R'] = start('R')
             if MODE == 'diap':
@@ -163,7 +168,7 @@ def main():
                 if not pid0:
                     return 1
                 bootstrap = f'/ip4/127.0.0.1/tcp/{DHT_PORTS["R"]}/p2p/{pid0}'
-            else:
+            elif not REMOTE:
                 sr = wait_ready(BR, '/api/discovery/remote/find?topic=' + 'ab' * 32, 'ok')
                 check('边缘目录节点启动（bolloon.cn 的本地替身）', sr.get('ok') is True)
 
@@ -184,6 +189,9 @@ def main():
             check('两端 DHT 与 DIAP/iroh 均已启用',
                   all(x.get('enabled') for x in (dht_a, dht_b, dia_a, dia_b)),
                   f"A(conn={dht_a.get('connections')}) B(conn={dht_b.get('connections')})")
+            rd = api(BA, 'GET', '/api/rendezvous/status')
+            check('默认不启用边缘目录（第一次纯去中心化，绝不依赖 Cloudflare）',
+                  rd.get('enabled') is False, f"enabled={rd.get('enabled')} base={rd.get('base')}")
             time.sleep(2)
         elif MODE == 'rendezvous':
             dia_a = wait_ready(BA, '/api/diap/addr', 'enabled')
@@ -192,6 +200,9 @@ def main():
             check('DIAP/iroh 与边缘目录均已启用（DHT 未启动）',
                   all(x.get('enabled') for x in (dia_a, dia_b, rs)),
                   f'base={rs.get("base")}')
+            if REMOTE:
+                check('边缘目录就是线上 Worker', str(rs.get('base', '')).rstrip('/') == REMOTE.rstrip('/'),
+                      f'base={rs.get("base")}')
 
         sel = {'provider': 'env', 'model': 'mock', 'api_key': 'test-key',
                'base_url': f'http://127.0.0.1:{MOCK_PORT}/v1'}
@@ -279,6 +290,15 @@ def main():
               f'completed={auto.get("completed")} rounds={len(rounds)} '
               f'error={auto.get("error") or auto.get("_err") or ""}')
 
+        qh = api(BA, 'GET', '/api/quic/history?limit=100')
+        items = qh.get('items') or []
+        check('QUIC/DIAP 交流留有历史记录',
+              qh.get('count', 0) > 0
+              and any(x.get('direction') == 'out' for x in items)
+              and any(x.get('direction') == 'in' for x in items),
+              f'count={qh.get("count")} out={sum(1 for x in items if x.get("direction")=="out")} '
+              f'in={sum(1 for x in items if x.get("direction")=="in")}')
+
         hist2 = api(BA, 'GET', f'/api/friends/{db["did"]}/chat/history?limit=50')
         check('自动接力的消息也进了同一会话历史',
               hist2.get('count', 0) > hist.get('count', 0),
@@ -296,7 +316,8 @@ def main():
         srv.shutdown()
         shutil.rmtree(TMP, ignore_errors=True)
 
-    print(f'\n=== RESULT ({MODE} 通道) ===', 'ALL PASS' if not FAILS else f'FAILED: {FAILS}')
+    where = f' · {REMOTE}' if REMOTE else ''
+    print(f'\n=== RESULT ({MODE} 通道{where}) ===', 'ALL PASS' if not FAILS else f'FAILED: {FAILS}')
     return 0 if not FAILS else 1
 
 

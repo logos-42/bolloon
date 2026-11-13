@@ -748,6 +748,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/discovery/remote/find", get(crate::discovery::remote_find))
         .route("/api/dht/status", get(dht_status_route))
         .route("/api/rendezvous/status", get(rendezvous_status_route))
+        .route("/api/quic/history", get(crate::transport_history::http_history))
         // 2026-11-11 去中心化发现: 手机号 → 32B 发现键 (iroh pkarr key / hyperswarm topic)
         .route("/api/contacts/topic", get(crate::native::contact_topic))
         // 首次地址交换: 两端从没连过时, 用签名连接码换「手机号 + DID + 可达基址」
@@ -927,10 +928,11 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
     // 启动即按本机配置装好模型通路 (200+ provider 里能解析的那些)
     state.reload_llm().await;
 
-    // 2026-11-11 路径 B: Kademlia DHT（默认关）。BOLLOON_DHT=1 启用,
-    // BOLLOON_DHT_PORT 固定监听端口, BOLLOON_DHT_BOOTSTRAP 逗号分隔的多地址(带 /p2p/<id>)。
+    // 2026-11-13: Kademlia DHT **默认启用**（编译了 dht-backend 就开）——
+    // 第一次互联必须去中心化, 不能默认依赖任何中心/边缘服务。
+    // BOLLOON_DHT=0 显式关闭; BOLLOON_DHT_PORT 固定端口; BOLLOON_DHT_BOOTSTRAP 逗号分隔多地址。
     #[cfg(feature = "dht-backend")]
-    if std::env::var("BOLLOON_DHT").map(|v| v.trim() == "1").unwrap_or(false) {
+    if std::env::var("BOLLOON_DHT").map(|v| v.trim() != "0").unwrap_or(true) {
         let port = std::env::var("BOLLOON_DHT_PORT")
             .ok().and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
         let boots = std::env::var("BOLLOON_DHT_BOOTSTRAP").unwrap_or_default()

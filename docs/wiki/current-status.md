@@ -2,7 +2,7 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-11-08
+last_confirmed: 2026-11-13
 schema_version: 2
 audience: self
 stage: current
@@ -40,11 +40,11 @@ tags: [status, rust-workspace, app-0.7.8, release-gate, world-cards, contributio
 | 好友 / 群组 | 好友「⋯」全套设置、选择式授权（普通/信任/极度信任三档）、群首轮全员并发（上限 20）、中断一次广播全停、流光面板定高、回合沉淀（技能/意图/判断力/记忆） |
 | 世界模式 | 卡片「⋯」9 项、IPFS/IPNS/Web 链接、固定/持续更新、付费 x402 卡片与买方链路、音乐（唱片/歌词跟随）与视频（封面/全屏半屏）卡片、gap 资产卡片、AI 工具 `world_card_publish` |
 | 交互与推荐 | 每次点击 → 记忆/判断力/工作流/信念四件套；点击上下文按「未对话全量 / 对话中洞察过滤」注入；接受/拒绝写状态并反馈推荐引擎 |
-| 贡献与善意 | 贡献积分显示在左下角余额：服务交付 +5（不可自报）、共享 skill +0.5 / 卡片 +0.3；累计只增不减，仅购买增值服务消耗；求助零分也分发；**跨机可验证**用 DID 自带公钥验签 |
+| 贡献与善意 | 贡献积分显示在左下角余额：服务交付 +5（不可自报）、共享 skill +0.5 / 卡片 +0.3；累计只增不减，仅购买增值服务消耗；求助零分也分发；**跨机可验证**用 DID 自带公钥验签。**2026-11-08 起侧栏贡献分徽标与「用贡献分换增值服务」入口已删**（见 `log.md` 当日 `fix(web)` 行）；单位口径见 [unit-design-cp-ep.md](./unit-design-cp-ep.md)（不做币/点，只做不可转让 receipt） |
 | 路由与成本 | 真实调用账本 + 任务×成本矩阵 + 影子→真路由（带回退）+ 本地小模型 / Ollama Cloud 登记 + 特化包评测与外溢 |
 | 安全边界 | 好友永远拿不到「本地完全权限」；极度信任档开放 shell 但保留审计/预算/取消；只读指挥走显式工具白名单 |
 | 终端 TUI | AI 循环期间 100ms 全周期重绘（秒表连续）、忙时输入草稿实时上屏 + Enter 排队、提交后输入框立即清空；`/agent` 切换当前智能体，`/did /wallet /ipfs /ipns` 全按它读取且可 copy；`/model` 接全量 200+ 家目录；`/help` 默认只列可用命令 |
-| 跨机互联 | 手工登记对端 URL 后：双向好友 + DID 验签消息 + 远程 shell 执行（授权分级 / 逐工具审计）；手机号绑定自动发布盲索引，`/api/contacts/connect` 按手机号一步连上；`/api/agents/{id}/reach-out` 让智能体主动跨机开口（cron 默认关闭）。**整链走 DIAP（Rust 原生，crates.io `diap-rs-sdk 0.3.7`）**：`BOLLOON_DIAP=1` 后 `peer_json`/目录查询/互加回调自动优先走 iroh 隧道；两条去中心化发现路径：**gossip**（DID 签名记录每节点都存都转发）+ **Kademlia DHT**（libp2p 0.57，`PUT/GET_RECORD` 按手机号派生 key 分散存取），**陌生人只输手机号即可互联**（分别实测 `via:"去中心化发现"` / `via:"Kademlia DHT"`）。**多轮交流**：session_id 由双方 DID 确定性派生，消息双向落盘，对端用最近 12 轮上下文回答；`/chat/history` 回看、`/chat/auto` 智能体自动接力（轮数预算）。**初次寻找**：边缘目录**已部署上线**——`https://bolloon.cn/api/discovery/remote/*`（Worker 路由，KV `6848af03…`）+ 备用 `bolloon-rendezvous.yuanjieliu65.workers.dev`；只传 topic 哈希 + DID 签名记录，客户端本地验签、不信服务端，陌生人零 bootstrap 只输手机号即可连上；`BOLLOON_RENDEZVOUS=off` 可改走纯去中心化。DHT/gossip 仍需 bootstrap；公共 pkarr/Mainline relay 本机不可达；无 SMS，隧道只走 JSON API |
+| 跨机互联 | 手工登记对端 URL 后：双向好友 + DID 验签消息 + 远程 shell 执行（授权分级 / 逐工具审计）；手机号绑定自动发布盲索引，`/api/contacts/connect` 按手机号一步连上；`/api/agents/{id}/reach-out` 让智能体主动跨机开口（cron 默认关闭）。**整链走 DIAP（Rust 原生，crates.io `diap-rs-sdk 0.3.7`）**：`BOLLOON_DIAP=1` 后 `peer_json`/目录查询/互加回调自动优先走 iroh 隧道；两条去中心化发现路径：**gossip**（DID 签名记录每节点都存都转发）+ **Kademlia DHT**（libp2p 0.57，`PUT/GET_RECORD` 按手机号派生 key 分散存取），**陌生人只输手机号即可互联**（分别实测 `via:"去中心化发现"` / `via:"Kademlia DHT"`）。**多轮交流**：session_id 由双方 DID 确定性派生，消息双向落盘，对端用最近 12 轮上下文回答；`/chat/history` 回看、`/chat/auto` 智能体自动接力（轮数预算）。**初次寻找默认纯去中心化**：Kademlia DHT **默认启用**（`BOLLOON_DHT=0` 才关），回落顺序固定为 gossip → DHT → 边缘目录；边缘目录**默认关闭**（未设 `BOLLOON_RENDEZVOUS` 就不连任何第三方，绝不默认依赖 Cloudflare），只有显式给 URL 才启用（`bolloon.cn` / Workers 实现仍保留，KV `6848af03…`）。**QUIC 交流留痕**：`diap_hub` 每次隧道收发写 `~/.bolloon/rust/quic-history.jsonl`（时间/对端/方法/路径/字节/耗时/成败，不存正文），`GET /api/quic/history` 可查；跨机指令（`friend_command`）也进同一会话历史。DHT/gossip 仍需至少一个 bootstrap peer；公共 pkarr/Mainline relay 本机不可达；无 SMS，隧道只走 JSON API |
 | Kernel / UI | 双核分工（A 机制 / B 执行）+ **真心跳文件互检/补拍** + 三模式统一事件面 + 8 端口 VFS/dispatch + 网页/终端同源（`bolloon kernel …`）；执行步骤显示工具名与 shell 结果、文档全屏阅读、卡片互动、好友面板、模型池绑定、路由使用费 |
 
 ## 当前已知边界（2026-11-08 复核）
