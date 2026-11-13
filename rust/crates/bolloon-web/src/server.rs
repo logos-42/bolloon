@@ -753,6 +753,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/cross-chat/export", get(crate::cross_chat::http_export))
         .route("/api/cross-chat/import", post(crate::cross_chat::http_import))
         .route("/api/cross-chat/sessions", get(crate::cross_chat::http_sessions))
+        .route("/api/devices", get(crate::device_sync::http_list))
+        .route("/api/devices/register", post(crate::device_sync::http_register))
+        .route("/api/devices/sync", post(crate::device_sync::http_sync))
         // 2026-11-11 去中心化发现: 手机号 → 32B 发现键 (iroh pkarr key / hyperswarm topic)
         .route("/api/contacts/topic", get(crate::native::contact_topic))
         // 首次地址交换: 两端从没连过时, 用签名连接码换「手机号 + DID + 可达基址」
@@ -957,6 +960,10 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
             Err(e) => tracing::warn!("DHT 启动失败: {e}"),
         }
     }
+
+    // 2026-11-13: 多设备自动同步（默认开）。登记过的设备每 N 秒互拉会话记录。
+    // BOLLOON_DEVICE_SYNC=0 关闭; BOLLOON_DEVICE_SYNC_SECS 调间隔; BOLLOON_DEVICE_GROUP 成组。
+    crate::device_sync::spawn(state.clone());
 
     // 2026-11-11: DIAP 跨 NAT 隧道（默认关）。启用后 `peer_json` 自动优先走 iroh，
     // 不需要对端 HTTP 可达；未启用时行为完全不变。

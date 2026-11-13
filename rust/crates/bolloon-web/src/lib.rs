@@ -34,6 +34,8 @@ pub mod cross_chat;
 pub mod rendezvous;
 /// QUIC/DIAP 交流历史 (去中心化通道留痕)
 pub mod transport_history;
+/// 多设备自动同步 (会话记录增量合并)
+pub mod device_sync;
 /// 路径 B: libp2p Kademlia DHT 发现 (可选 feature)
 #[cfg(feature = "dht-backend")]
 pub mod dht;
