@@ -16,7 +16,13 @@
 name = "bolloon-rendezvous"
 main = "src/index.ts"
 compatibility_date = "2026-11-13"
+workers_dev = true
+
+# 只拦这一个前缀，站点其他路径照旧走回源
+routes = [
+  { pattern = "bolloon.cn/api/discovery/remote/*", zone_name = "bolloon.cn" }
+]
 
 [[kv_namespaces]]
 binding = "RECORDS"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "6848af038de54a1786bb48ad73ba3fb8"
