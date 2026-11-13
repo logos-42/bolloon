@@ -713,6 +713,8 @@ pub fn app(state: AppState) -> Router {
         // 2026-10-30 (用户): 点好友 → 看对方开放的智能体 → 跨机聊天
         .route("/api/friends/{did}/agents", get(crate::native::friend_agents))
         .route("/api/friends/{did}/chat", post(crate::native::friend_chat))
+        .route("/api/friends/{did}/chat/history", get(crate::native::friend_chat_history))
+        .route("/api/friends/{did}/chat/auto", post(crate::native::friend_chat_auto))
         // 对端接收面 (只对已加好友的 did 开放; 由上面的代理面在对方机器上调)
         .route("/api/agents/public", get(crate::native::agents_public))
         .route("/api/agents/public/chat", post(crate::native::agents_public_chat))
@@ -742,7 +744,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/contacts/connect", post(crate::native::contact_connect))
         .route("/api/discovery/announce", post(crate::discovery::announce))
         .route("/api/discovery/find", get(crate::discovery::find))
+        .route("/api/discovery/remote/announce", post(crate::discovery::remote_announce))
+        .route("/api/discovery/remote/find", get(crate::discovery::remote_find))
         .route("/api/dht/status", get(dht_status_route))
+        .route("/api/rendezvous/status", get(rendezvous_status_route))
         // 2026-11-11 去中心化发现: 手机号 → 32B 发现键 (iroh pkarr key / hyperswarm topic)
         .route("/api/contacts/topic", get(crate::native::contact_topic))
         // 首次地址交换: 两端从没连过时, 用签名连接码换「手机号 + DID + 可达基址」
@@ -867,6 +872,11 @@ pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {
 }
 
 /// 在已绑定的监听器上服务 (测试: 端口 0 → 用 OS 分配的端口, 不抢固定端口)
+/// GET /api/rendezvous/status —— 当前边缘目录基址与启用状态（不含任何凭据）。
+async fn rendezvous_status_route() -> Json<serde_json::Value> {
+    Json(crate::rendezvous::status())
+}
+
 /// GET /api/dht/status：未编译 feature 时如实说明。
 #[cfg(feature = "dht-backend")]
 async fn dht_status_route() -> Json<serde_json::Value> {
@@ -4332,6 +4342,43 @@ mod route_tests {
         assert!(newest["seq"].as_u64().unwrap() > 9999, "重启/外部写入后 seq 不能倒退");
 
         unsafe { std::env::remove_var("BOLLOON_HA_HOME") };
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 2026-11-13 跨机会话门: 自动接力缺参 / 非好友必须拒；历史端点空会话如实返回 0，
+    /// 不能编出一段不存在的对话。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cross_chat_endpoints_fail_closed() {
+        let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bolloon-web-crosschat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("BOLLOON_HOME", &home) };
+        let state = AppState::new(offline_llm());
+
+        let a = crate::native::friend_chat_auto(
+            axum::extract::Path("did:pi:friend".to_string()),
+            State(state.clone()),
+            Json(serde_json::json!({})),
+        )
+        .await
+        .0;
+        assert_eq!(a["ok"], false, "缺 agent_id 不能起自动对话");
+
+        let r = crate::native::friend_chat_core(&state, "did:pi:not-a-friend", "agent-001", "hi").await;
+        assert_eq!(r["ok"], false, "非好友不能发跨机消息");
+
+        let h = crate::native::friend_chat_history(
+            axum::extract::Path("did:pi:anyone".to_string()),
+            State(state.clone()),
+            axum::extract::Query(std::collections::HashMap::<String, String>::new()),
+        )
+        .await
+        .0;
+        assert_eq!(h["ok"], true);
+        assert_eq!(h["count"], 0, "没聊过就不该凭空出现历史");
+        assert_eq!(h["session_id"].as_str().unwrap_or("").len(), 24);
+
         let _ = std::fs::remove_dir_all(&home);
     }
 

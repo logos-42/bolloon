@@ -26,6 +26,10 @@ pub mod kernel_bus;
 pub mod diap_hub;
 pub mod feature_pack;
 pub mod discovery;
+/// 跨机会话状态机: 多轮上下文 / 消息落盘 / 自动接力
+pub mod cross_chat;
+/// 边缘目录客户端 (bolloon.cn / Cloudflare Workers 兼容契约)
+pub mod rendezvous;
 /// 路径 B: libp2p Kademlia DHT 发现 (可选 feature)
 #[cfg(feature = "dht-backend")]
 pub mod dht;

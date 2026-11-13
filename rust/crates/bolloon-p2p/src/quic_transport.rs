@@ -86,6 +86,10 @@ pub struct QuicTransport {
 impl QuicTransport {
     /// 起一个 QUIC 端点 (随机端口), 同时能收能发
     pub async fn new(kp: &KeyPair) -> anyhow::Result<Self> {
+        // 2026-11-13: DIAP/DHT 把 aws-lc-rs 带进依赖树后，rustls 在只跑 p2p 的进程里
+        // 同时看到 ring + aws-lc-rs，无法自动决定 CryptoProvider ⇒ 首次建端点直接 panic。
+        // 显式装 ring（与 quinn 的 rustls-ring、web 的 serve_on 是同一个后端）。
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let (server_config, client_config) = make_configs()?;
         let mut endpoint = Endpoint::server(server_config, "0.0.0.0:0".parse::<SocketAddr>().unwrap())
             .map_err(|e| anyhow::anyhow!("QUIC bind: {e}"))?;

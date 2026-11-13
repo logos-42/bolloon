@@ -52,6 +52,13 @@ fn signed_message(topic: &str, did: &str, ts: u64) -> String {
     format!("bolloon-discovery|1|{topic}|{did}|{ts}")
 }
 
+/// v2 签名正文: **把 DIAP 地址一起签进去**。
+/// 2026-11-13: v1 只签 topic/did/ts，中间人可拿一条合法签名把 `diap` 换成自己的
+/// 地址（目录/边缘服务器不可信时这就是投毒面）。v2 覆盖地址后，改一个字节都验不过。
+fn signed_message_v2(topic: &str, did: &str, ts: u64, diap: &Value) -> String {
+    format!("bolloon-discovery|2|{topic}|{did}|{ts}|{diap}")
+}
+
 /// 验签：DID 里内嵌 Ed25519 公钥，记录不能被别人伪造或改地址。
 pub fn verify_record(v: &Value) -> bool {
     let did = v["did"].as_str().unwrap_or_default();
@@ -70,7 +77,13 @@ pub fn verify_record(v: &Value) -> bool {
     let Ok(sig) = <[u8; 64]>::try_from(raw) else {
         return false;
     };
-    bolloon_p2p::KeyPair::verify(&pk, signed_message(topic, did, ts).as_bytes(), &sig)
+    // v1 记录仍可验（兼容过渡）；边缘目录只接受 v2。
+    let msg = if v["v"].as_u64().unwrap_or(1) >= 2 {
+        signed_message_v2(topic, did, ts, &v["diap"])
+    } else {
+        signed_message(topic, did, ts)
+    };
+    bolloon_p2p::KeyPair::verify(&pk, msg.as_bytes(), &sig)
 }
 
 /// 新记录（时间戳更新）才落盘并值得继续转发。
@@ -95,7 +108,6 @@ pub fn signed_record(st: &AppState, phone: &str) -> Value {
     let topic = discovery_topic_hex(phone);
     let did = st.identity.did.as_str().to_string();
     let ts = now_ms();
-    let sig = hex::encode(st.identity.sign(signed_message(&topic, &did, ts).as_bytes()));
     let diap = {
         #[cfg(feature = "diap-backend")]
         {
@@ -108,7 +120,11 @@ pub fn signed_record(st: &AppState, phone: &str) -> Value {
             Value::Null
         }
     };
+    let sig = hex::encode(
+        st.identity.sign(signed_message_v2(&topic, &did, ts, &diap).as_bytes()),
+    );
     serde_json::json!({
+        "v": 2,
         "topic": topic, "did": did, "diap": diap,
         "ts_ms": ts, "sig": sig, "hops": 0,
     })
@@ -129,7 +145,12 @@ pub fn topic_short(phone: &str) -> String {
 
 /// 只输手机号就能查：命中返回带签名的记录（含 did + DIAP 地址）。
 pub fn lookup(phone: &str) -> Option<Value> {
-    read_map().get(&discovery_topic_hex(phone)).cloned()
+    lookup_topic(&discovery_topic_hex(phone))
+}
+
+/// 按 topic 直接查（边缘目录的查询入口；服务端从不需要知道手机号明文）。
+pub fn lookup_topic(topic: &str) -> Option<Value> {
+    read_map().get(topic).cloned()
 }
 
 async fn broadcast(st: &AppState, rec: &Value) -> usize {
@@ -178,6 +199,58 @@ pub async fn announce(State(st): State<AppState>, Json(req): Json<Value>) -> Jso
     Json(serde_json::json!({ "ok": true, "fresh": fresh, "forwarded": forwarded }))
 }
 
+// ───────────── 边缘目录端点 (2026-11-13) ─────────────
+// 任何 bolloon 节点都能当「电话簿」: bolloon.cn 只要跑一个 `bolloon web` 即可，
+// Cloudflare Worker 也可以实现同一契约。服务端**只存带签名的记录**，
+// 客户端拿到后自己验签 ⇒ 服务端被投毒/被篡改也冒充不了别人。
+// 与 gossip 的 /announce 区别: 这里**不转发**，避免把边缘节点变成广播源。
+
+const REMOTE_MAX_AGE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+fn valid_topic(t: &str) -> bool {
+    t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// POST /api/discovery/remote/announce —— 存一条 v2 签名记录（按 topic 索引）。
+pub async fn remote_announce(Json(req): Json<Value>) -> Json<Value> {
+    let rec = if req["record"].is_object() {
+        req["record"].clone()
+    } else {
+        req.clone()
+    };
+    let topic = rec["topic"].as_str().unwrap_or_default();
+    if !valid_topic(topic) {
+        return Json(serde_json::json!({ "ok": false, "error": "topic 必须是 64 位 hex" }));
+    }
+    // 边缘目录只收 v2: 签名必须覆盖 DIAP 地址，否则目录可换地址做中间人
+    if rec["v"].as_u64().unwrap_or(1) < 2 {
+        return Json(serde_json::json!({ "ok": false, "error": "只接受 v2 记录 (签名覆盖地址)" }));
+    }
+    if !verify_record(&rec) {
+        return Json(serde_json::json!({ "ok": false, "error": "记录验签不过: 已拒收" }));
+    }
+    let ts = rec["ts_ms"].as_u64().unwrap_or(0);
+    if now_ms().abs_diff(ts) > REMOTE_MAX_AGE_MS {
+        return Json(serde_json::json!({ "ok": false, "error": "记录时间戳过期 (>30d): 已拒收" }));
+    }
+    let fresh = put(&rec);
+    Json(serde_json::json!({ "ok": true, "topic": topic, "fresh": fresh }))
+}
+
+/// GET /api/discovery/remote/find?topic=<64hex> —— 只按哈希查，服务端看不到手机号明文。
+pub async fn remote_find(
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<Value> {
+    let topic = q.get("topic").cloned().unwrap_or_default();
+    if !valid_topic(&topic) {
+        return Json(serde_json::json!({ "ok": false, "error": "topic 必须是 64 位 hex" }));
+    }
+    match lookup_topic(&topic) {
+        Some(rec) => Json(serde_json::json!({ "ok": true, "found": true, "record": rec })),
+        None => Json(serde_json::json!({ "ok": true, "found": false })),
+    }
+}
+
 /// GET /api/discovery/find?phone=… —— 只回显已经验签过的记录，不回显手机号明文。
 pub async fn find(
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -195,5 +268,71 @@ pub async fn find(
             "ok": true, "found": false,
             "note": "gossip 缓存里还没有这个号码; 对方需在线并广播过, 或需要更多 bootstrap peer",
         })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bolloon_p2p::KeyPair;
+
+    fn did_of(kp: &KeyPair) -> String {
+        format!("did:pi:{}", bolloon_p2p::b58_encode(&kp.public_bytes()))
+    }
+
+    fn signed_v2(diap: &Value) -> Value {
+        let kp = KeyPair::from_seed(&[9u8; 32]);
+        let did = did_of(&kp);
+        let topic = "ab".repeat(32);
+        let ts = 1_700_000_000_000u64;
+        let sig = hex::encode(kp.sign(signed_message_v2(&topic, &did, ts, diap).as_bytes()));
+        serde_json::json!({
+            "v": 2, "topic": topic, "did": did, "diap": diap,
+            "ts_ms": ts, "sig": sig, "hops": 0,
+        })
+    }
+
+    /// 边缘目录不可信：把记录里的 DIAP 地址换成中间人地址必须验不过。
+    #[test]
+    fn v2_signature_covers_diap_address() {
+        let rec = signed_v2(&serde_json::json!({"addrs":[{"Ip":"1.2.3.4:54188"}],"id":"node-a"}));
+        assert!(verify_record(&rec));
+        let mut tampered = rec.clone();
+        tampered["diap"] = serde_json::json!({"addrs":[{"Ip":"6.6.6.6:6666"}],"id":"attacker"});
+        assert!(!verify_record(&tampered), "改地址必须验不过");
+        let mut forged = rec.clone();
+        forged["sig"] = serde_json::json!("00".repeat(64));
+        assert!(!verify_record(&forged), "伪造签名必须验不过");
+    }
+
+    /// v1 记录为了兼容旧节点仍可验，但边缘目录只收 v2（签名覆盖地址）。
+    #[test]
+    fn v1_is_compatible_but_not_accepted_by_remote_directory() {
+        let kp = KeyPair::from_seed(&[3u8; 32]);
+        let did = did_of(&kp);
+        let topic = "cd".repeat(32);
+        let ts = 1_700_000_000_000u64;
+        let sig = hex::encode(kp.sign(signed_message(&topic, &did, ts).as_bytes()));
+        let v1 = serde_json::json!({
+            "topic": topic, "did": did, "diap": {"addrs": []}, "ts_ms": ts, "sig": sig,
+        });
+        assert!(verify_record(&v1), "旧记录仍可验");
+        assert!(v1["v"].as_u64().unwrap_or(1) < 2, "但边缘目录只收 v2");
+    }
+
+    #[tokio::test]
+    async fn remote_announce_rejects_v1_and_bad_topic() {
+        let r = remote_announce(axum::Json(serde_json::json!({
+            "topic": "ab".repeat(32), "v": 1, "did": "did:pi:x", "sig": "00",
+        })))
+        .await
+        .0;
+        assert_eq!(r["ok"], false, "v1 必须被边缘目录拒收");
+        let r2 = remote_announce(axum::Json(serde_json::json!({
+            "topic": "not-hex", "v": 2,
+        })))
+        .await
+        .0;
+        assert_eq!(r2["ok"], false, "非法 topic 必须被拒收");
     }
 }

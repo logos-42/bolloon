@@ -8127,6 +8127,15 @@ pub async fn contact_connect(
                 // 自动登记后让 peer_url_for_did 走 DIAP 隧道（对端 HTTP 不必可达）。
                 let mut rec = crate::discovery::lookup(&query);
                 let mut via_name = "去中心化发现";
+                // 2026-11-13 初次寻找: gossip 没见过对方时先问边缘目录。
+                // 排在 DHT 前面 —— DHT 需要 bootstrap, 第一次往往必然 miss 还白等超时。
+                // 返回的记录在这里本地验签(含 DIAP 地址), 服务端不可信也不影响安全。
+                if rec.is_none() {
+                    if let Some(v) = crate::rendezvous::find(&query).await {
+                        rec = Some(v);
+                        via_name = "边缘目录";
+                    }
+                }
                 #[cfg(feature = "dht-backend")]
                 if rec.is_none() {
                     if let Some(dht) = crate::dht::global() {
@@ -8400,10 +8409,6 @@ pub(crate) async fn agent_reach_out_core(
     if !is_local_friend(st, to_did).await {
         return serde_json::json!({ "ok": false, "error": "对方不是本机好友" });
     }
-    let url = match peer_url_for_did(st, to_did).await {
-        Ok(u) => u,
-        Err(e) => return serde_json::json!({ "ok": false, "error": e }),
-    };
     let agent = match agent_by_id(st, Some(agent_id)).await {
         Some(a) => a,
         None => return serde_json::json!({ "ok": false, "error": format!("本机没有智能体 {agent_id}") }),
@@ -8427,24 +8432,14 @@ pub(crate) async fn agent_reach_out_core(
         Ok(_) => return serde_json::json!({ "ok": false, "error": "本机模型返回空开场白 (不伪造消息)" }),
         Err(e) => return serde_json::json!({ "ok": false, "error": format!("本机模型调用失败: {e}") }),
     };
-    // ② 复用 friend_chat 的签名链路 (签名覆盖 收件人 did + agent + 文本 + 时间戳)
-    let our_did = st.identity.did.as_str().to_string();
-    let ts = now_ms();
-    let sig = relay_signature(st, &our_did, to_did, remote_agent_id, &opening, ts);
-    let body = serde_json::json!({
-        "from_did": our_did, "agent_id": remote_agent_id,
-        "text": opening, "ts_ms": ts, "sig": sig,
-    });
-    match peer_json("POST", format!("{url}/api/agents/public/chat"), Some(body)).await {
-        Ok(v) => serde_json::json!({
-            "ok": v["ok"] == serde_json::json!(true),
-            "generated_opening": opening, "to_did": to_did,
-            "agent_id": agent_id, "remote": v,
-        }),
-        Err(e) => serde_json::json!({
-            "ok": false, "generated_opening": opening, "error": format!("对端不可达: {e}"),
-        }),
-    }
+    // ② 复用 friend_chat_core（签名 + DIAP 优先 + 会话落盘），不另造一条执行路径。
+    // 2026-11-13: 以前 reach-out 自己拼 body 直接 POST，消息不进会话历史 ⇒ 无法接力。
+    let remote = friend_chat_core(st, to_did, remote_agent_id, &opening).await;
+    serde_json::json!({
+        "ok": remote["ok"].as_bool().unwrap_or(false),
+        "generated_opening": opening, "to_did": to_did,
+        "agent_id": agent_id, "remote": remote,
+    })
 }
 
 /// cron 侧的无人工触发入口: 必须同时显式打开开关并给出目标, 否则什么都不做。
@@ -9780,35 +9775,74 @@ pub async fn agents_public_chat(
             }));
         }
     }
+    // 2026-11-13: 跨机会话状态机。sid 由双方 DID 确定性派生（不经网络 ⇒ 无法伪造）；
+    // 验签 / 好友 / 授权门全过之后才落盘，拒收的消息绝不污染历史。
+    let sid = crate::cross_chat::session_id(&from_did, &to_did);
+    let _ = crate::cross_chat::append(
+        &data_dir(),
+        &crate::cross_chat::Turn {
+            ts_ms: now_ms(),
+            session_id: sid.clone(),
+            peer_did: from_did.clone(),
+            direction: "in".into(),
+            text: text.clone(),
+            agent_id: agent_id.clone(),
+        },
+    );
+    // 用最近 N 轮拼上下文（最后一条就是刚收到的这句），模型因此能接着上一句聊。
+    let turns = crate::cross_chat::recent(&data_dir(), &sid, crate::cross_chat::CONTEXT_TURNS);
+    let messages: Vec<ChatMessage> = crate::cross_chat::as_context(&turns)
+        .into_iter()
+        .map(|(role, content)| ChatMessage {
+            role: role.to_string(),
+            content,
+            name: None,
+            tool_call_id: None,
+            images: vec![],
+            tool_calls: None,
+            reasoning_content: None,
+        })
+        .collect();
     let extra = format!(
-        "\n\n## 跨机来访\n对方是你主人已加的好友 ({})，从另一台机器发来消息。直接回答对方的这句话，不要声称自己在本地或问对方是谁。",
-        short_did(&from_did)
+        "\n\n## 跨机来访\n对方是你主人已加的好友 ({})，从另一台机器发来消息。这是同一会话的第 {} 轮，请结合上文连续回答，不要声称自己在本地或问对方是谁。",
+        short_did(&from_did),
+        turns.len(),
     );
     let system = build_web_system(&st, &text, Some(&agent), &extra).await;
-    let messages = vec![ChatMessage {
-        role: "user".into(),
-        content: text,
-        name: None,
-        tool_call_id: None,
-        images: vec![],
-        tool_calls: None,
-    reasoning_content: None,
-}];
     let econ = EconCtx {
         intent_id: String::new(),
         group_id: None,
-        session_id: None,
+        // 2026-11-13: 跨机会话现在有真实会话 id，计量/记忆按同一会话归集
+        session_id: Some(sid.clone()),
         agent_id: Some(agent.id.clone()),
         surface: "friend-relay".into(),
         // 跨机来访 = **对方的 did 为这次推理付钱** (免费档不扣)
         bill_did: Some(from_did.clone()),
     };
     match call_model_metered(&st, &system, messages, Some(econ)).await {
-        Ok(reply) => Json(serde_json::json!({
-            "ok": true,
-            "reply": reply,
-            "agent": { "id": agent.id, "name": agent.name },
-        })),
+        Ok(reply) => {
+            // 本机回出去的这句也落盘，两端各自拥有完整会话历史
+            let _ = crate::cross_chat::append(
+                &data_dir(),
+                &crate::cross_chat::Turn {
+                    ts_ms: now_ms(),
+                    session_id: sid.clone(),
+                    peer_did: from_did.clone(),
+                    direction: "out".into(),
+                    text: reply.clone(),
+                    agent_id: agent.id.clone(),
+                },
+            );
+            let turn = crate::cross_chat::recent(&data_dir(), &sid, 1000).len();
+            Json(serde_json::json!({
+                "ok": true,
+                "reply": reply,
+                "agent": { "id": agent.id, "name": agent.name },
+                "session_id": sid,
+                "turn": turn,
+                "context_turns": turns.len(),
+            }))
+        }
         Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("对端模型调用失败: {e}") })),
     }
 }
@@ -9933,31 +9967,216 @@ pub async fn friend_chat(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let did = did.trim().to_string();
-    if !is_local_friend(&st, &did).await {
-        return Json(serde_json::json!({ "ok": false, "error": "不是本机好友" }));
-    }
     let agent_id = req["agent_id"].as_str().unwrap_or_default().to_string();
     let text = req["text"].as_str().unwrap_or_default().trim().to_string();
-    if agent_id.is_empty() || text.is_empty() {
-        return Json(serde_json::json!({ "ok": false, "error": "缺 agent_id 或 text" }));
+    Json(friend_chat_core(&st, &did, &agent_id, &text).await)
+}
+
+/// 跨机聊天的**唯一实现**（handler / 自动接力 / reach-out 共用）。
+///
+/// 2026-11-13: 以前发完就把对端响应原样吐回, 本机不留记录 ⇒ 无法多轮、无法回看。
+/// 现在双方按 DID 对确定性派生 session_id（**不经网络**, 旧版对端完全兼容），
+/// 每一句都在本机 `cross-chat/<sid>.jsonl` 落盘，返回的 `turn` 表明会话进度。
+pub(crate) async fn friend_chat_core(
+    st: &AppState,
+    did: &str,
+    agent_id: &str,
+    text: &str,
+) -> serde_json::Value {
+    if !is_local_friend(st, did).await {
+        return serde_json::json!({ "ok": false, "error": "不是本机好友" });
     }
-    let url = match peer_url_for_did(&st, &did).await {
+    if agent_id.is_empty() || text.is_empty() {
+        return serde_json::json!({ "ok": false, "error": "缺 agent_id 或 text" });
+    }
+    let url = match peer_url_for_did(st, did).await {
         Ok(u) => u,
-        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
+        Err(e) => return serde_json::json!({ "ok": false, "error": e }),
     };
     let our_did = st.identity.did.as_str().to_string();
+    let sid = crate::cross_chat::session_id(&our_did, did);
     // 2026-10-30: 请求必须带签名 —— 只靠请求体里的 from_did 是可冒充的。
     // 签名内容含**收件人 did**, 所以同一份签名重放到别人的节点上无效。
     let ts_ms = now_ms();
-    let sig = relay_signature(&st, &our_did, &did, &agent_id, &text, ts_ms);
+    let sig = relay_signature(st, &our_did, did, agent_id, text, ts_ms);
     let body = serde_json::json!({
         "from_did": our_did, "agent_id": agent_id, "text": text,
         "ts_ms": ts_ms, "sig": sig,
     });
+    // 本机说出去的这一句先落盘（发送失败也留痕，如实反映"尝试过"）
+    let _ = crate::cross_chat::append(
+        &data_dir(),
+        &crate::cross_chat::Turn {
+            ts_ms,
+            session_id: sid.clone(),
+            peer_did: did.to_string(),
+            direction: "out".into(),
+            text: text.to_string(),
+            agent_id: agent_id.to_string(),
+        },
+    );
     match peer_json("POST", format!("{url}/api/agents/public/chat"), Some(body)).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+        Ok(v) => {
+            // 只有真正 ok 且有 reply 才记「收到了」，不把错误响应写进对话历史
+            if v["ok"].as_bool() == Some(true) {
+                if let Some(reply) = v["reply"].as_str() {
+                    let _ = crate::cross_chat::append(
+                        &data_dir(),
+                        &crate::cross_chat::Turn {
+                            ts_ms: now_ms(),
+                            session_id: sid.clone(),
+                            peer_did: did.to_string(),
+                            direction: "in".into(),
+                            text: reply.to_string(),
+                            agent_id: agent_id.to_string(),
+                        },
+                    );
+                }
+            }
+            let turn = crate::cross_chat::recent(&data_dir(), &sid, 1000).len();
+            let mut out = v;
+            out["session_id"] = serde_json::json!(sid);
+            out["turn"] = serde_json::json!(turn);
+            out
+        }
+        Err(e) => serde_json::json!({ "ok": false, "error": e, "session_id": sid }),
     }
+}
+
+/// GET /api/friends/{did}/chat/history?limit=50
+/// 回看与某位好友的跨机会话（本机落盘那份，与对端各自持有）。
+pub async fn friend_chat_history(
+    AxumPath(did): AxumPath<String>,
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let did = did.trim().to_string();
+    let sid = crate::cross_chat::session_id(st.identity.did.as_str(), &did);
+    let limit = q
+        .get("limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(50)
+        .clamp(1, 500);
+    let turns = crate::cross_chat::recent(&data_dir(), &sid, limit);
+    Json(serde_json::json!({
+        "ok": true, "session_id": sid, "count": turns.len(), "turns": turns,
+    }))
+}
+
+/// 让本机智能体生成一句话（主动开口 / 接力下一句共用）。
+/// 失败或空串都如实报错 —— 绝不编一句假消息发到对端。
+async fn generate_cross_turn(
+    st: &AppState,
+    agent: Option<&AgentView>,
+    prompt: &str,
+) -> Result<String, String> {
+    let system = build_web_system(st, prompt, agent, "").await;
+    let messages = vec![ChatMessage {
+        role: "user".into(),
+        content: prompt.to_string(),
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+        images: vec![],
+        reasoning_content: None,
+    }];
+    match call_model_metered(st, &system, messages, None).await {
+        Ok(s) if !s.trim().is_empty() => Ok(s.trim().chars().take(200).collect()),
+        Ok(_) => Err("模型返回空文本 (不伪造消息)".to_string()),
+        Err(e) => Err(format!("模型调用失败: {e}")),
+    }
+}
+
+/// POST /api/friends/{did}/chat/auto {agent_id, intent?, max_turns?}
+///
+/// 2026-11-13: 让两台机器上的**智能体自己连续交流**，不再需要人逐句点发送。
+/// 每一轮都走 `friend_chat_core`（DID 签名 → 对端验签/授权 → 模型回复 → 双方落盘），
+/// 本机智能体再基于对方回复生成下一句。轮数有硬上限，任一轮失败/模型返回空就如实停，
+/// 不伪造任何一句、不假装完成了没发生的轮次。
+pub async fn friend_chat_auto(
+    AxumPath(did): AxumPath<String>,
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let did = did.trim().to_string();
+    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
+    if agent_id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 agent_id" }));
+    }
+    if !is_local_friend(&st, &did).await {
+        return Json(serde_json::json!({ "ok": false, "error": "不是本机好友" }));
+    }
+    // agent_id 指的是**对端**的接待智能体。本机用来生成话语的智能体是可选的：
+    // 陌生人第一次互联时本机往往还没建智能体，此时用系统身份开口即可。
+    let local_agent: Option<AgentView> =
+        match agent_by_id(&st, req["local_agent_id"].as_str()).await {
+            Some(a) => Some(a),
+            None => {
+                let fs = st.forge.lock().await;
+                fs.agents.first().cloned()
+            }
+        };
+    let max_turns = req["max_turns"]
+        .as_u64()
+        .unwrap_or(crate::cross_chat::AUTO_DEFAULT_TURNS as u64)
+        .clamp(1, crate::cross_chat::AUTO_MAX_TURNS as u64) as usize;
+    let intent = req["intent"]
+        .as_str()
+        .unwrap_or("和对方打个招呼，并请教一个具体、可回答的问题")
+        .to_string();
+    let sid = crate::cross_chat::session_id(st.identity.did.as_str(), &did);
+
+    let mut text = match generate_cross_turn(
+        &st,
+        local_agent.as_ref(),
+        &format!(
+            "你要主动向另一台机器的好友智能体发起一次连续对话。请直接写出第一句话（不超过 80 字），不要解释、不要加引号。意图：{intent}"
+        ),
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "session_id": sid, "error": e })),
+    };
+
+    let mut log: Vec<serde_json::Value> = Vec::new();
+    for turn in 1..=max_turns {
+        let remote = friend_chat_core(&st, &did, &agent_id, &text).await;
+        let ok = remote["ok"].as_bool().unwrap_or(false);
+        log.push(serde_json::json!({ "turn": turn, "said": text, "remote": remote }));
+        if !ok {
+            break; // 对端拒收/不可达：如实停，不伪造后续轮次
+        }
+        if turn == max_turns {
+            break;
+        }
+        let reply = remote["reply"].as_str().unwrap_or_default().to_string();
+        if reply.is_empty() {
+            break;
+        }
+        match generate_cross_turn(
+            &st,
+            local_agent.as_ref(),
+            &format!(
+                "你正在与另一台机器的智能体连续对话。对方刚说：\n{reply}\n\n请接着写出你的下一句回复（不超过 100 字），不要解释、不要加引号。意图：{intent}"
+            ),
+        )
+        .await
+        {
+            Ok(s) => text = s,
+            Err(e) => {
+                log.push(serde_json::json!({ "stopped": e }));
+                break;
+            }
+        }
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "session_id": sid,
+        "max_turns": max_turns,
+        "completed": log.iter().filter(|v| v["said"].is_string()).count(),
+        "turns": log,
+    }))
 }
 
 /// 只编码 query 里会出现的那几个字符 (did 里只有 `:`/字母数字, 不引额外依赖)
@@ -10244,6 +10463,10 @@ pub async fn bind_phone(
     // 2026-11-11: 去中心化发现 —— 绑定后把带签名的「手机号 topic → DIAP 地址」记录
     // gossip 给已登记的 DIAP 对端；陌生人只输手机号就能从网络里查到。
     out["discovery"] = crate::discovery::announce_self(&st, &phone).await;
+    // 2026-11-13 初次寻找: 同一条 v2 签名记录也登记到边缘目录
+    // (bolloon.cn / Cloudflare Workers; BOLLOON_RENDEZVOUS=off 可关)。
+    // 只上传 topic 哈希 + 签名记录, 手机号明文不出本机; 失败如实返回, 不阻塞绑定。
+    out["rendezvous"] = crate::rendezvous::announce(&st, &phone).await;
     // 2026-11-11 路径 B: 同一条签名记录也 PUT 进 Kademlia DHT。
     // 陌生人不必和本机在同一 gossip 网络，只要能访问 DHT 就能查到。
     #[cfg(feature = "dht-backend")]

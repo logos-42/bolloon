@@ -1014,10 +1014,16 @@ fn paste_dir() -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
 
+    /// 这三个测试共用 `input::PENDING` 这个**进程级**全局队列。并行跑时 A 的
+    /// `take_pending()` 会清掉 B 刚喂进去的输入 ⇒ B 的 `read_compose` 永远等不到字节,
+    /// 全 workspace 测试就挂死在这里。用同一把锁把它们串行化。
+    static INPUT_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// 2026-11-08: 提交后输入缓冲必须清空。AI 循环期间每帧重画 composer,
     /// 不清就会把「已发送的那句」一直画回输入框 —— 用户看到的就是输入框冻结。
     #[test]
     fn submitting_clears_the_compose_buffer() {
+        let _g = INPUT_TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::input::take_pending(); // 隔离其它测试残留
         crate::input::test_feed_pending(b"hello\r");
         let mut c = Chrome::new(30, 100);
@@ -1032,6 +1038,7 @@ mod tests {
     /// 以前补全打开时 Enter 只接受候选, `/help` 看起来像"没反应"。
     #[test]
     fn unique_slash_candidate_submits_on_first_enter() {
+        let _g = INPUT_TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::input::take_pending();
         crate::input::test_feed_pending(b"/help\r");
         let mut c = Chrome::new(30, 100);
@@ -1049,6 +1056,7 @@ mod tests {
     /// 不能被补全自动改写成 `/agents`。
     #[test]
     fn exact_command_wins_over_prefix_candidates() {
+        let _g = INPUT_TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::input::take_pending();
         crate::input::test_feed_pending(b"/agent\r");
         let mut c = Chrome::new(30, 100);

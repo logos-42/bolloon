@@ -1,0 +1,22 @@
+# Bolloon 边缘目录 — Cloudflare Workers + KV
+#
+# 部署:
+#   npm i -D wrangler
+#   npx wrangler kv:namespace create "RECORDS"          # 拿到 id 填到下面
+#   npx wrangler deploy --config cloudflare/bolloon-rendezvous/wrangler.toml
+#
+# 让 bolloon.cn 使用它: 在 Cloudflare 的 bolloon.cn 域名下加一条 Worker 路由
+#   bolloon.cn/api/discovery/remote/*  →  bolloon-rendezvous
+# 之后客户端默认 https://bolloon.cn 就能用，无需任何配置。
+# 若想直接指向 workers.dev，设 BOLLOON_RENDEZVOUS=https://bolloon-rendezvous.<subdomain>.workers.dev
+# 完全关闭: BOLLOON_RENDEZVOUS=off （改走 gossip / Kademlia DHT）
+#
+# 只存按手机号加盐哈希索引的 DID 签名记录；手机号明文永不上行，验签在客户端做。
+
+name = "bolloon-rendezvous"
+main = "src/index.ts"
+compatibility_date = "2026-11-13"
+
+[[kv_namespaces]]
+binding = "RECORDS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"

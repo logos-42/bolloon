@@ -51,12 +51,14 @@
     "build:mobile": "bash scripts/build-mobile.sh",
     "build:mobile:android": "bash scripts/build-mobile.sh android",
     "build:mobile:ios": "bash scripts/build-mobile.sh ios",
-    "prepublishOnly": "npm run build:all && npm run smoke:esm",
+    "prepublishOnly": "npm run build:all && npm run smoke:esm && node scripts/build-native.mjs --check",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:pi-sdk": "tsx src/test/pi-sdk.test.ts",
     "postinstall": "node scripts/postinstall.js",
-    "verify:ipns": "tsx scripts/verify-ipns-pipeline.ts"
+    "verify:ipns": "tsx scripts/verify-ipns-pipeline.ts",
+    "build:native": "node scripts/build-native.mjs",
+    "verify:cross-chat": "python3 scripts/verify-cross-chat.py"
   },
   "workspaces": [
     "src/constraint-runtime",

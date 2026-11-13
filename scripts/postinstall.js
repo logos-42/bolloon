@@ -160,7 +160,12 @@ function checkNativeDeps() {
 function setupPlatform() {
   log(`\n  平台: ${process.platform}`, CYAN);
   if (process.platform === 'win32') {
-    // 入口由 package.json 的 bin 字段生成 (npm 自己写 .cmd), 这里不再手造第二份
+    // 入口由 package.json 的 bin 字段生成 (npm 自己写 .cmd), 这里不再手造第二份。
+    // 2026-11-13: 本包目前只随附 macOS 原生二进制，以前这里静默 return，
+    // Windows 用户装完才知道跑不起来。现在如实给出可执行的源码构建路径。
+    log('  ⚠ 本包未随附 win32-x64 原生二进制。', YELLOW);
+    log('    从源码构建(会带 diap-backend/dht-backend): scripts\\build-windows.cmd', YELLOW);
+    log('    或把已有的 bolloon.exe 通过 BOLLOON_NATIVE_BIN 环境变量指给 CLI。', YELLOW);
     return;
   }
   for (const rel of ['bin/bolloon.js', 'bin/bolloon.cjs']) {
