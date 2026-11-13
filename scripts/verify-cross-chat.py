@@ -190,8 +190,9 @@ def main():
                   all(x.get('enabled') for x in (dht_a, dht_b, dia_a, dia_b)),
                   f"A(conn={dht_a.get('connections')}) B(conn={dht_b.get('connections')})")
             rd = api(BA, 'GET', '/api/rendezvous/status')
-            check('默认不启用边缘目录（第一次纯去中心化，绝不依赖 Cloudflare）',
-                  rd.get('enabled') is False, f"enabled={rd.get('enabled')} base={rd.get('base')}")
+            check('边缘目录只作兜底（默认 fallback，不是首选）',
+                  rd.get('mode') == 'fallback' and rd.get('enabled') is True,
+                  f"mode={rd.get('mode')} base={rd.get('base')}")
             time.sleep(2)
         elif MODE == 'rendezvous':
             dia_a = wait_ready(BA, '/api/diap/addr', 'enabled')

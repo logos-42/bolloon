@@ -182,7 +182,10 @@ pub async fn remote_announce_self(
     if !matches!(kind.as_str(), "phone" | "email" | "did") {
         return Json(serde_json::json!({ "ok": false, "error": "kind 只支持 phone/email/did" }));
     }
-    Json(announce_self_for(&st, &kind, &value).await)
+    let mut out = announce_self_for(&st, &kind, &value).await;
+    // 2026-11-13: 同时登记到边缘目录（兜底查询要用）。BOLLOON_RENDEZVOUS=off 时自动跳过。
+    out["rendezvous"] = crate::rendezvous::announce(&st, &kind, &value).await;
+    Json(out)
 }
 
 async fn broadcast(st: &AppState, rec: &Value) -> usize {

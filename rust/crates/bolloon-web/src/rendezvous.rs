@@ -28,6 +28,8 @@ use crate::server::AppState;
 /// **连接失败后的兜底**。`BOLLOON_RENDEZVOUS=off` 可完全禁用；给别的 URL 则换地址。
 pub const DEFAULT_BASE: &str = "https://bolloon.cn";
 const TIMEOUT: Duration = Duration::from_secs(6);
+/// 显式 UA: Cloudflare WAF 会拦默认客户端 (error 1010)
+const UA: &str = "bolloon-rendezvous/1 (+https://bolloon.cn)";
 
 /// 返回目录基址；`off`/空 = 完全禁用（改走 DHT/gossip）。
 fn base() -> Option<String> {
@@ -67,7 +69,9 @@ pub async fn announce(st: &AppState, kind: &str, value: &str) -> Value {
     let url = format!("{base}/api/discovery/remote/announce");
     let body = rec.clone();
     let res = tokio::task::spawn_blocking(move || {
+        // Cloudflare WAF 会拦默认 UA（error 1010）—— 必须显式声明自己是应用客户端。
         let r = ureq::post(&url)
+            .set("User-Agent", UA)
             .timeout(TIMEOUT)
             .send_json(body)
             .map_err(|e| e.to_string())?;
@@ -95,6 +99,7 @@ pub async fn find(kind: &str, value: &str) -> Option<Value> {
     let url = format!("{base}/api/discovery/remote/find?topic={topic}");
     let r = tokio::task::spawn_blocking(move || {
         let resp = ureq::get(&url)
+            .set("User-Agent", UA)
             .timeout(TIMEOUT)
             .call()
             .map_err(|e| e.to_string())?;
