@@ -44,6 +44,27 @@ pub fn record(
     ok: bool,
     elapsed_ms: u64,
 ) {
+    record_detail(
+        direction, peer, transport, method, api_path, req_bytes, resp_bytes, ok, elapsed_ms,
+        "api", "",
+    );
+}
+
+/// 带语义的记录：`kind` = chat / command / api，`summary` 只对指令填（聊天不存正文）。
+#[allow(clippy::too_many_arguments)]
+pub fn record_detail(
+    direction: &str,
+    peer: &str,
+    transport: &str,
+    method: &str,
+    api_path: &str,
+    req_bytes: usize,
+    resp_bytes: usize,
+    ok: bool,
+    elapsed_ms: u64,
+    kind: &str,
+    summary: &str,
+) {
     let entry = serde_json::json!({
         "ts_ms": now_ms(),
         "transport": transport,
@@ -55,8 +76,27 @@ pub fn record(
         "resp_bytes": resp_bytes,
         "ok": ok,
         "elapsed_ms": elapsed_ms,
+        "kind": kind,
+        "summary": summary,
     });
     record_to(&path(), &entry);
+}
+
+/// 从隧道路径 + 请求体解析出语义，供历史展示。
+/// 聊天只标 kind（正文已在会话历史），指令额外带一段摘要。
+pub fn classify(api_path: &str, body: Option<&Value>) -> (&'static str, String) {
+    if api_path.contains("/api/agents/public/command") {
+        let ins = body
+            .and_then(|b| b["instruction"].as_str())
+            .unwrap_or_default();
+        ("command", ins.chars().take(120).collect())
+    } else if api_path.contains("/api/agents/public/chat") {
+        ("chat", String::new())
+    } else if api_path.contains("/api/node/connect") {
+        ("connect", String::new())
+    } else {
+        ("api", String::new())
+    }
 }
 
 /// 最近 `limit` 条（最新在前）。损坏行跳过，不让一条坏数据毁掉整个历史。

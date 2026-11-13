@@ -18,16 +18,14 @@
 
 use std::time::Duration;
 
-use bolloon_agent::directory::discovery_topic_hex;
 use serde_json::Value;
 
 use crate::server::AppState;
 
 /// 用户自己的站点；任何 bolloon 节点跑 `bolloon web` 就实现了这套契约。
 ///
-/// 2026-11-13: **默认不启用**。第一次互联必须走去中心化（gossip / Kademlia DHT / mDNS），
-/// 绝不暗地里把手机号哈希发给第三方；要用边缘目录必须显式设
-/// `BOLLOON_RENDEZVOUS=https://...`（本常量只作为示例地址保留）。
+/// 2026-11-13: 去中心化（gossip / Kademlia DHT）**永远先走**；这里的边缘目录只做
+/// **连接失败后的兜底**。`BOLLOON_RENDEZVOUS=off` 可完全禁用；给别的 URL 则换地址。
 pub const DEFAULT_BASE: &str = "https://bolloon.cn";
 const TIMEOUT: Duration = Duration::from_secs(6);
 
@@ -42,8 +40,8 @@ fn base() -> Option<String> {
                 Some(t.trim_end_matches('/').to_string())
             }
         }
-        // 未设置 = 关闭。去中心化优先：不擅自把号码哈希发到任何服务器。
-        Err(_) => None,
+        // 未设置 = 兜底模式：只在去中心化全部失败后才会被查询/登记。
+        Err(_) => Some(DEFAULT_BASE.to_string()),
     }
 }
 
@@ -51,20 +49,20 @@ pub fn status() -> Value {
     serde_json::json!({
         "enabled": base().is_some(),
         "base": base(),
-        "default": "off",
-        "opt_in": "默认只走去中心化; 要边缘目录需显式 BOLLOON_RENDEZVOUS=<url>",
+        "mode": if base().is_some() { "fallback" } else { "off" },
+        "policy": "先走 gossip/Kademlia DHT; 全部失败后才用边缘目录兜底; =off 可完全禁用",
         "honest": "只上传手机号加盐哈希与 DID 签名记录; 记录在本地验签, 不信任服务端",
     })
 }
 
 /// 绑定手机号后把本机 DIAP 地址登记到边缘目录。失败如实返回，不阻塞本地绑定。
-pub async fn announce(st: &AppState, phone: &str) -> Value {
+pub async fn announce(st: &AppState, kind: &str, value: &str) -> Value {
     let Some(base) = base() else {
         return serde_json::json!({
-            "ok": false, "skipped": true, "reason": "BOLLOON_RENDEZVOUS=off (走 DHT/gossip)"
+            "ok": false, "skipped": true, "reason": "BOLLOON_RENDEZVOUS=off (纯去中心化)"
         });
     };
-    let rec = crate::discovery::signed_record(st, phone);
+    let rec = crate::discovery::signed_record_for(st, kind, value);
     let topic = rec["topic"].as_str().unwrap_or_default().to_string();
     let url = format!("{base}/api/discovery/remote/announce");
     let body = rec.clone();
@@ -91,9 +89,9 @@ pub async fn announce(st: &AppState, phone: &str) -> Value {
 }
 
 /// 只输手机号从边缘目录查对方记录；**本地验签**通过才返回。
-pub async fn find(phone: &str) -> Option<Value> {
+pub async fn find(kind: &str, value: &str) -> Option<Value> {
     let base = base()?;
-    let topic = discovery_topic_hex(phone);
+    let topic = bolloon_agent::directory::discovery_topic_for_hex(kind, value);
     let url = format!("{base}/api/discovery/remote/find?topic={topic}");
     let r = tokio::task::spawn_blocking(move || {
         let resp = ureq::get(&url)
@@ -126,14 +124,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rendezvous_is_off_by_default_and_only_opt_in() {
+    fn rendezvous_is_fallback_by_default_and_off_is_explicit() {
         unsafe { std::env::set_var("BOLLOON_RENDEZVOUS", "off") };
         assert!(base().is_none());
         unsafe { std::env::set_var("BOLLOON_RENDEZVOUS", "") };
         assert!(base().is_none());
         // 关键: 不设 env 时绝不默认连 bolloon.cn / Cloudflare
         unsafe { std::env::remove_var("BOLLOON_RENDEZVOUS") };
-        assert!(base().is_none(), "第一次互联必须去中心化, 默认不得连边缘目录");
+        assert_eq!(base().as_deref(), Some(DEFAULT_BASE), "未设置=兜底模式, 但只在去中心化失败后才用");
         unsafe { std::env::set_var("BOLLOON_RENDEZVOUS", "https://edge.example") };
         assert_eq!(base().as_deref(), Some("https://edge.example"));
         unsafe { std::env::remove_var("BOLLOON_RENDEZVOUS") };

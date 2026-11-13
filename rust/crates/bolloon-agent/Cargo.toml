@@ -26,7 +26,13 @@ bs58.workspace = true
 hex.workspace = true
 sha2.workspace = true
 hmac = "0.12"
+ring = "0.17"
 rusqlite = { version = "0.32", features = ["bundled"] }
+# 邮件真协议 (2026-11-13): IMAP 收信 + SMTP 发信
+imap = "2"
+native-tls = "0.2"
+base64.workspace = true
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "rustls-tls"] }
 urlencoding = "2"
 ureq = { version = "2", features = ["json"] }
 # 记忆外挂 (crates.io 0.1.0, logos-42/hindsight-rust): 进程内 retain/recall/reflect

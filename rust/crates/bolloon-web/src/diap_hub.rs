@@ -168,6 +168,7 @@ impl DiapHub {
         let method_log = method.clone();
         let path_log = path.clone();
         let req_len = v.to_string().len();
+        let (kind_in, summary_in) = crate::transport_history::classify(&path_log, body.as_ref());
         // 只允许打本机回环的 web 端口
         let url = format!("http://127.0.0.1:{}{}", self.local_port, path);
         let resp = tokio::task::spawn_blocking(move || -> serde_json::Value {
@@ -207,7 +208,7 @@ impl DiapHub {
             }
         }
         // 对端经 QUIC 打进来的这次请求也留痕（in）
-        crate::transport_history::record(
+        crate::transport_history::record_detail(
             "in",
             &msg.from_did,
             "diap/iroh-quic",
@@ -217,6 +218,8 @@ impl DiapHub {
             resp_len,
             ok,
             now_ms().saturating_sub(started_in),
+            kind_in,
+            &summary_in,
         );
     }
 
@@ -242,6 +245,8 @@ impl DiapHub {
         let started = now_ms();
         let peer = addr["id"].as_str().unwrap_or("unknown").to_string();
         let req_bytes = body.as_ref().map(|b| b.to_string().len()).unwrap_or(0);
+        // 2026-11-13: 从 QUIC 请求里解析语义（聊天 / 指令 / 普通 API），指令带摘要供展示
+        let (kind_out, summary_out) = crate::transport_history::classify(path, body.as_ref());
         let id = format!("http-{}", now_ms());
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), tx);
@@ -282,7 +287,7 @@ impl DiapHub {
             Ok(v) => (v.to_string().len(), true),
             Err(_) => (0, false),
         };
-        crate::transport_history::record(
+        crate::transport_history::record_detail(
             "out",
             &peer,
             "diap/iroh-quic",
@@ -292,6 +297,8 @@ impl DiapHub {
             resp_bytes,
             ok,
             now_ms().saturating_sub(started),
+            kind_out,
+            &summary_out,
         );
         out
     }

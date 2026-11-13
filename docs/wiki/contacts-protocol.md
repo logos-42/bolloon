@@ -2,7 +2,7 @@
 title: 联系方式与社交身份协议 (绑定 → 受约束调用 → 等待回复 → 唤醒任务 → 证据回放)
 source: session (leo 2026-09-19 计划 + 真跑验收)
 created: 2026-09-19
-last_confirmed: 2026-09-19
+last_confirmed: 2026-11-13
 schema_version: 2
 audience: self
 stage: current
@@ -27,7 +27,10 @@ Bolloon 的社交身份 = **DID 主身份 + 已验证联系方式 + 联系能力
 
 只做两个能力: `phone.contact` · `email.contact`。每个能力只支持: 绑定 / 验证 / 查看状态 / 发一条 / 记录或接收回复 / 撤销 / 作为长期任务的等待条件。
 
-**明确不做**: 社交信息流 · 公开通讯录 · 自动群发 · 推荐联系人 · 社交积分 · 自动读全量邮箱 · 自动读全部手机通讯录 · 多账号合并 · 复杂 CRM · 关系图谱 · 自动代表用户做高风险承诺 · 用联系方式替代 DID。
+**明确不做**: 社交信息流 · 公开通讯录 · 自动群发 · 推荐联系人 · 社交积分 · ~~自动读全量邮箱~~ · ~~自动读全部手机通讯录~~ · 多账号合并 · 复杂 CRM · 关系图谱 · 自动代表用户做高风险承诺 · 用联系方式替代 DID。
+
+> **2026-11-13 修订**: 划掉的两项已改为**受支持能力**(用户显式开启、默认支持、硬拒保留)。
+> 见 [邮件/通讯录/短信设计](../plans/2026-11-13-mail-contacts-sms-design.md) 与本文末「2026-11-13 能力边界修订」。
 
 ## 外部只看到四类状态
 
@@ -190,8 +193,11 @@ Agent 侧工具: `contact.list_authorized` · `contact.preview` · `contact.requ
 **即使完全授权也仍然保留**: 单收件人 (批量永远禁止) · 频率限制 · 任务关联 · requestId 幂等 ·
 provider 可用性检查 · 发送证据 · 撤销能力 · Harness 拦截。
 
-**永不纳入联系方式授权** (属另一类高风险能力, 任何等级都拒): 读取全部邮箱 · 读取通讯录 · 短信历史 ·
+**永不纳入联系方式授权** (属另一类高风险能力, 任何等级都拒): ~~读取全部邮箱~~ · ~~读取通讯录~~ · ~~短信历史~~ ·
 邮箱附件 · 代签合同 · 支付/转账 · 绕过工具策略 · 读 API key 明文 · 把手机号/邮箱放进 prompt。
+
+> **2026-11-13 修订**: 划掉的三项不再由「联系方式授权」管辖, 改为独立能力域(默认支持);
+> 其余各项仍然**永不纳入任何授权**。详见文末「2026-11-13 能力边界修订」。
 
 ### 内容类别三分
 
@@ -342,3 +348,43 @@ Node `crypto.verify` 验签。两侧**共用同一个载荷函数** (`grant-payl
 - 手机端是**契约 + 真密码学**(脚本与单测扮演手机: 真 WebCrypto 真签名过真 HTTP), **真机 App 未改** (APK/IPA 未重出)。
 - UI 层 (mobile.html/mobile.js) 只做了语法与构建校验 + 逻辑单测, 没在真机/模拟器点过 (本机 iOS 模拟器脚本可用, 本轮未跑)。
 - 生物识别 (FaceID/指纹) 与系统级确认未接 (当前是 sheet 内 `confirm` 二次确认)。
+
+## 2026-11-13 能力边界修订(邮件 / 通讯录 / 短信)
+
+leo 决定: 通讯录导入、短信读写、邮件读写从「永久禁止」改为**独立能力域**。
+
+| 项 | 旧口径 | 新口径 |
+|---|---|---|
+| 读全量邮箱 / 通讯录 / 短信历史 | 任何等级都拒 | **默认支持**(不分级), 受总闸与硬拒约束 |
+| Agent 自主读写 | 不允许(只允许单次受约束发送) | **允许**(Tool Capability + Harness Gate + 证据链) |
+| 内容进 prompt | 明文不进 prompt | **全文可进 prompt**(用户自配供应商) |
+| 跨机同步 | 只同步 capability 元数据 | 全文可同步, **仅限自己 DID 下已验签设备** |
+
+### 仍然保留的硬拒(代码级, 不属于授权分级)
+
+1. **外发**密码 / 密钥 / 银行账号 / OTP / 支付指令 / 合同承诺 → 拒(`forbidden_content_category`)。
+2. 批量 / 多收件人外发 → 拒(`batch_forbidden`)。
+3. 通讯录/短信/邮件全文**自动同步给好友智能体(他人节点)** → 拒; 仅接受用户显式选中的单条。
+4. iOS 读短信 → 平台无 API, 如实标为不可用。
+5. 绕过 iOS / Android 运行时授权 → 不做。
+
+### 代码落点(Rust 主栈)
+
+| 项 | 路径 |
+|---|---|
+| Port 契约 | `rust/crates/bolloon-agent/src/mail/ports.rs` |
+| 索引 + 正文加密 | `rust/crates/bolloon-agent/src/mail/store.rs` |
+| 硬拒 + 装配 | `rust/crates/bolloon-agent/src/mail/service.rs` |
+| 本地落盘 Adapter | `rust/crates/bolloon-agent/src/mail/adapters/local_sink.rs` |
+| 账号配置 / 工厂 | `rust/crates/bolloon-agent/src/mail/config.rs` |
+| Agent 工具 | `rust/crates/bolloon-agent/src/mail_tools.rs` |
+| HTTP 面 | `rust/crates/bolloon-web/src/mail_api.rs` (`/api/mail/*`) |
+| CLI | `rust/crates/bolloon-cli/src/chat_command.rs` (`/mail`, 直连 crate) |
+
+### 已实现 / 未实现(如实)
+
+- **已实现并跑绿**: Port / Store(WAL + AES-256-GCM) / 硬拒 / LocalSink / 6 个 Agent 工具 / `/api/mail/*` / CLI `/mail`。
+  验收: `cargo test -p bolloon-agent mail` **25/25**、`cargo test -p bolloon-web --lib` **115/0**、`cargo test -p bolloon-cli` **45/45**。
+- **未实现**: 真 IMAP/SMTP Adapter、Android `ContactsContract` / `content://sms` Adapter、iOS `CNContactStore` Adapter、
+  Tauri 手机原生工程(`gen/`)、三端 UI 面板、`scripts/verify-mail-chain.ts`。
+- 因此当前 `local_sink` 账号只做本地落盘并**明确标 `really_sent: false`**, 不谎称已外发。

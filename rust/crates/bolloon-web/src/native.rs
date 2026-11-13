@@ -8102,17 +8102,48 @@ pub async fn contact_connect(
 ) -> Json<serde_json::Value> {
     let query = req["query"].as_str().unwrap_or_default().trim().to_string();
     let explicit = req["did"].as_str().unwrap_or_default().trim().to_string();
+    let kind_str = match req["kind"]
+        .as_str()
+        .unwrap_or("phone")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "email" => "email",
+        _ => "phone",
+    };
+
     let (did, via) = if !explicit.is_empty() {
-        (explicit, "显式 DID")
+        // 显式 DID: 已登记就直接连；否则按 DID 的发现键去 gossip/DHT/边缘目录找。
+        if peer_url_for_did(&st, &explicit).await.is_ok() {
+            (explicit.clone(), "显式 DID")
+        } else {
+            match discover_by(&st, "did", &explicit).await {
+                Some((rec, via_name)) => {
+                    register_discovered(&st, &rec, "did", &explicit).await;
+                    let d = rec["did"].as_str().unwrap_or(&explicit).to_string();
+                    if d.is_empty() {
+                        return Json(serde_json::json!({ "ok": false, "error": "发现记录缺 DID" }));
+                    }
+                    (d, via_name)
+                }
+                None => {
+                    return Json(serde_json::json!({
+                        "ok": false, "did": explicit,
+                        "error": "这个 DID 没有已登记地址, gossip / Kademlia DHT / 边缘目录里也没找到"
+                    }))
+                }
+            }
+        }
     } else {
         if query.is_empty() {
             return Json(serde_json::json!({ "ok": false, "error": "缺 query (手机号/邮箱) 或 did" }));
         }
-        let kind = req["kind"].as_str().and_then(|k| match k {
-            "email" => Some(bolloon_agent::directory::ContactKind::Email),
-            "phone" => Some(bolloon_agent::directory::ContactKind::Phone),
-            _ => None,
-        });
+        let kind = if kind_str == "email" {
+            bolloon_agent::directory::ContactKind::Email
+        } else {
+            bolloon_agent::directory::ContactKind::Phone
+        };
         let local_hit = {
             let fs = st.forge.lock().await;
             let d = dir_view(&fs);
@@ -8121,64 +8152,29 @@ pub async fn contact_connect(
         if local_hit.found {
             (local_hit.did.unwrap_or_default(), "本机目录")
         } else {
-            let (hit, notes) = peers_lookup(&st, &query, kind).await;
-            if !hit.found {
-                // 2026-11-11 去中心化发现: 只凭手机号从 gossip 缓存拿到对方 DIAP 地址,
-                // 自动登记后让 peer_url_for_did 走 DIAP 隧道（对端 HTTP 不必可达）。
-                let mut rec = crate::discovery::lookup(&query);
-                let mut via_name = "去中心化发现";
-                #[cfg(feature = "dht-backend")]
-                if rec.is_none() {
-                    if let Some(dht) = crate::dht::global() {
-                        let key = bolloon_agent::directory::discovery_topic(&query).to_vec();
-                        if let Some(bytes) = dht.get(key).await {
-                            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                                if crate::discovery::verify_record(&v) {
-                                    rec = Some(v);
-                                    via_name = "Kademlia DHT";
-                                }
-                            }
-                        }
-                    }
-                }
-                // 2026-11-13: 边缘目录只作**最后兜底**，且默认关闭
-                // (BOLLOON_RENDEZVOUS 未设置 = 不连任何第三方; 绝不默认走 Cloudflare)。
-                // 第一次互联的顺序固定为: gossip → Kademlia DHT → (显式开启时) 边缘目录。
-                if rec.is_none() {
-                    if let Some(v) = crate::rendezvous::find(&query).await {
-                        rec = Some(v);
-                        via_name = "边缘目录";
-                    }
-                }
-                if let Some(rec) = rec {
-                    let did = rec["did"].as_str().unwrap_or_default().to_string();
-                    if !did.is_empty() {
-                        #[cfg(feature = "diap-backend")]
-                        if !rec["diap"].is_null() {
-                            if let Some(hub) = crate::diap_hub::global() {
-                                let tag = crate::discovery::topic_short(&query);
-                                let url = format!("http://diap-{tag}:54188");
-                                hub.register(&url, rec["diap"].clone()).await;
-                                let mut fs = st.forge.lock().await;
-                                if !fs.directory_peers.iter().any(|p| p == &url) {
-                                    fs.directory_peers.push(url.clone());
-                                    fs.save(&data_dir());
-                                }
-                            }
-                        }
-                        (did, via_name)
-                    } else {
-                        return Json(serde_json::json!({ "ok": false, "error": "发现记录缺 DID" }));
-                    }
-                } else {
-                    return Json(serde_json::json!({
-                        "ok": false,
-                        "error": "目录里没有这个联系方式 (对方未发布/未广播, 或没登记对端节点)",
-                        "notes": notes,
-                    }));
-                }
-            } else {
+            let (hit, notes) = peers_lookup(&st, &query, Some(kind)).await;
+            if hit.found {
                 (hit.did.unwrap_or_default(), "跨机目录")
+            } else {
+                // 2026-11-13: 先走去中心化 (gossip → Kademlia DHT);
+                // 都没找到才用边缘目录兜底 (BOLLOON_RENDEZVOUS=off 时不会发请求)。
+                match discover_by(&st, kind_str, &query).await {
+                    Some((rec, via_name)) => {
+                        register_discovered(&st, &rec, kind_str, &query).await;
+                        let d = rec["did"].as_str().unwrap_or_default().to_string();
+                        if d.is_empty() {
+                            return Json(serde_json::json!({ "ok": false, "error": "发现记录缺 DID" }));
+                        }
+                        (d, via_name)
+                    }
+                    None => {
+                        return Json(serde_json::json!({
+                            "ok": false,
+                            "error": "这个联系方式在 gossip / Kademlia DHT / 边缘目录里都没有记录",
+                            "notes": notes,
+                        }))
+                    }
+                }
             }
         }
     };
@@ -8193,7 +8189,61 @@ pub async fn contact_connect(
     out["did"] = serde_json::json!(did);
     out["url"] = serde_json::json!(url);
     out["via"] = serde_json::json!(via);
+    out["kind"] = serde_json::json!(kind_str);
     Json(out)
+}
+
+/// 去中心化优先的发现: gossip 缓存 → Kademlia DHT → (兜底) 边缘目录。
+/// 边缘目录只在前面全 miss 时才调用，`BOLLOON_RENDEZVOUS=off` 时完全不发请求。
+async fn discover_by(
+    st: &AppState,
+    kind: &str,
+    value: &str,
+) -> Option<(serde_json::Value, &'static str)> {
+    if let Some(v) = crate::discovery::lookup_for(kind, value) {
+        if crate::discovery::verify_record(&v) {
+            return Some((v, "去中心化发现"));
+        }
+    }
+    #[cfg(feature = "dht-backend")]
+    if let Some(dht) = crate::dht::global() {
+        let key = bolloon_agent::directory::discovery_topic_for(kind, value).to_vec();
+        if let Some(bytes) = dht.get(key).await {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if crate::discovery::verify_record(&v) {
+                    return Some((v, "Kademlia DHT"));
+                }
+            }
+        }
+    }
+    let _ = st;
+    if let Some(v) = crate::rendezvous::find(kind, value).await {
+        if crate::discovery::verify_record(&v) {
+            return Some((v, "边缘目录"));
+        }
+    }
+    None
+}
+
+/// 把发现记录里的 DIAP 地址登记成可连对端（url 只是标识，不必 HTTP 可达）。
+async fn register_discovered(st: &AppState, rec: &serde_json::Value, kind: &str, value: &str) {
+    #[cfg(feature = "diap-backend")]
+    if !rec["diap"].is_null() {
+        if let Some(hub) = crate::diap_hub::global() {
+            let tag: String = bolloon_agent::directory::discovery_topic_for_hex(kind, value)
+                .chars()
+                .take(12)
+                .collect();
+            let url = format!("http://diap-{tag}:54188");
+            hub.register(&url, rec["diap"].clone()).await;
+            let mut fs = st.forge.lock().await;
+            if !fs.directory_peers.iter().any(|p| p == &url) {
+                fs.directory_peers.push(url.clone());
+                fs.save(&data_dir());
+            }
+        }
+    }
+    let _ = (st, kind, value);
 }
 
 // ─────────────── 去中心化发现键 + 手机号连接码 (2026-11-11) ───────────────
@@ -10499,7 +10549,7 @@ pub async fn bind_phone(
     // 2026-11-13 初次寻找: 同一条 v2 签名记录也登记到边缘目录
     // (bolloon.cn / Cloudflare Workers; BOLLOON_RENDEZVOUS=off 可关)。
     // 只上传 topic 哈希 + 签名记录, 手机号明文不出本机; 失败如实返回, 不阻塞绑定。
-    out["rendezvous"] = crate::rendezvous::announce(&st, &phone).await;
+    out["rendezvous"] = crate::rendezvous::announce(&st, "phone", &phone).await;
     // 2026-11-11 路径 B: 同一条签名记录也 PUT 进 Kademlia DHT。
     // 陌生人不必和本机在同一 gossip 网络，只要能访问 DHT 就能查到。
     #[cfg(feature = "dht-backend")]

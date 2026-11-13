@@ -11,6 +11,8 @@ pub mod archive;
 pub mod asr;
 pub mod avatar;
 pub mod native;
+/// 邮件能力 HTTP 面 (`/api/mail/*`); CLI 直连 crate, 不走这里
+pub mod mail_api;
 pub mod pay;
 pub mod agent_wallet;
 pub mod qr_login;

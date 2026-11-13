@@ -340,3 +340,9 @@ pub fn account_for_provider(id: &str) -> String {
 pub fn account_for_custom(id: &str) -> String {
     format!("custom:{id}")
 }
+
+/// 邮件账号密码命名空间 (2026-11-13)。IMAP/SMTP 共用同一份密码。
+/// 只存密码本体, 账号元数据在 `<home>/mail/accounts.json`, 两者分离。
+pub fn account_for_mail(email: &str) -> String {
+    format!("mail:{}", email.trim().to_lowercase())
+}

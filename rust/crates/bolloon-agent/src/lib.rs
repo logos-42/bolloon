@@ -40,6 +40,8 @@ pub mod judgeness;
 pub mod judgment;
 pub mod kernel_loop;
 pub mod lsp;
+pub mod mail;
+pub mod mail_tools;
 pub mod mcp;
 pub mod memory;
 pub mod memory_db;

@@ -145,6 +145,30 @@ pub fn discovery_topic_hex(phone: &str) -> String {
     hex::encode(discovery_topic(phone))
 }
 
+/// 通用发现键（2026-11-13）：手机号沿用 v1 算法（已发布记录不失效），
+/// 邮箱 / DID 用独立盐，避免和手机号命名空间撞车。
+/// kind 取 "phone" / "email" / "did"（大小写不敏感，未知值按手机号处理）。
+pub fn discovery_topic_for(kind: &str, value: &str) -> [u8; 32] {
+    let mut h = Sha256::new();
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "email" => {
+            h.update(b"bolloon/email-topic/v1||");
+            h.update(normalize_email(value).as_bytes());
+        }
+        "did" => {
+            h.update(b"bolloon/did-topic/v1||");
+            h.update(value.trim().as_bytes());
+        }
+        _ => return discovery_topic(value),
+    }
+    h.finalize().into()
+}
+
+/// 同 `discovery_topic_for`，返回 hex（gossip / 边缘目录 / API 都用这个）。
+pub fn discovery_topic_for_hex(kind: &str, value: &str) -> String {
+    hex::encode(discovery_topic_for(kind, value))
+}
+
 // ────────────────────────── 目录条目与存储 ──────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

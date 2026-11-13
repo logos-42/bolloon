@@ -745,13 +745,25 @@ pub fn app(state: AppState) -> Router {
         .route("/api/discovery/announce", post(crate::discovery::announce))
         .route("/api/discovery/find", get(crate::discovery::find))
         .route("/api/discovery/remote/announce", post(crate::discovery::remote_announce))
+        .route("/api/discovery/announce-self", post(crate::discovery::remote_announce_self))
         .route("/api/discovery/remote/find", get(crate::discovery::remote_find))
         .route("/api/dht/status", get(dht_status_route))
         .route("/api/rendezvous/status", get(rendezvous_status_route))
         .route("/api/quic/history", get(crate::transport_history::http_history))
+        .route("/api/cross-chat/export", get(crate::cross_chat::http_export))
+        .route("/api/cross-chat/import", post(crate::cross_chat::http_import))
+        .route("/api/cross-chat/sessions", get(crate::cross_chat::http_sessions))
         // 2026-11-11 去中心化发现: 手机号 → 32B 发现键 (iroh pkarr key / hyperswarm topic)
         .route("/api/contacts/topic", get(crate::native::contact_topic))
         // 首次地址交换: 两端从没连过时, 用签名连接码换「手机号 + DID + 可达基址」
+        .route("/api/mail/accounts", get(crate::mail_api::accounts))
+        .route("/api/mail/list", post(crate::mail_api::list))
+        .route("/api/mail/read", post(crate::mail_api::read))
+        .route("/api/mail/send", post(crate::mail_api::send))
+        .route("/api/mail/sync", post(crate::mail_api::sync))
+        .route("/api/mail/delete", post(crate::mail_api::delete))
+        .route("/api/contacts/import", post(crate::mail_api::contacts_import))
+        .route("/api/contacts/imported", post(crate::mail_api::contacts_imported))
         .route("/api/contacts/invite", get(crate::native::contact_invite))
         .route("/api/contacts/accept-invite", post(crate::native::contact_accept_invite))
         // 做梦机制 (整理记忆与经验 → 升级项目 skills)
@@ -3529,6 +3541,10 @@ pub const FULL_ACCESS_GATED_PREFIXES: &[&str] = &[
     "/api/specialize/packs", "/api/specialize/eval", "/api/specialize/run",
     "/api/specialize/share", "/api/router/enforce", "/api/router/prices",
     "/api/friends/", "/api/x402/buy/", "/api/x402/info",
+    // 邮件: 只有同步/外发/删除过总闸; 搜索与读取 (POST 但只读) 不受阻
+    "/api/mail/send", "/api/mail/sync", "/api/mail/delete",
+    // 通讯录导入是写操作
+    "/api/contacts/import",
 ];
 pub const FULL_ACCESS_GATED_SUFFIXES: &[&str] = &[
     "/cards/paid", "/grants", "/grants/revoke", "/command", "/invite-agent",

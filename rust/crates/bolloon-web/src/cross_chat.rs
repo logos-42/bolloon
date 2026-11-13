@@ -18,6 +18,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 /// 上下文最多带多少条（含当前这一句），避免无限增长把 prompt 撑爆
@@ -101,6 +102,125 @@ pub fn as_context(turns: &[Turn]) -> Vec<(&'static str, String)> {
         .collect()
 }
 
+// ───────────── 多设备共享通道 (2026-11-13) ─────────────
+// 同一身份的多台设备，通过 export/import 合并会话历史；谁先拿到都行，
+// 传输可以走 HTTP 也可以走 DIAP 隧道（同一套 JSON）。
+// import 幂等：同 session + 时间 + 方向 + 文本视为同一条，重复导入不会翻倍。
+
+/// 导出全部会话轮次（时间升序）。
+pub fn export_all(root: &Path) -> Vec<Turn> {
+    let mut all = Vec::new();
+    if let Ok(rd) = fs::read_dir(store_dir(root)) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                continue;
+            }
+            if let Ok(txt) = fs::read_to_string(&p) {
+                for line in txt.lines() {
+                    if let Ok(t) = serde_json::from_str::<Turn>(line) {
+                        all.push(t);
+                    }
+                }
+            }
+        }
+    }
+    all.sort_by_key(|t| t.ts_ms);
+    all
+}
+
+/// 幂等导入，返回 (added, skipped)。
+pub fn import_turns(root: &Path, turns: &[Turn]) -> (usize, usize) {
+    use std::collections::HashSet;
+    let mut seen: HashSet<(String, u64, String, String)> = export_all(root)
+        .into_iter()
+        .map(|t| (t.session_id, t.ts_ms, t.direction, t.text))
+        .collect();
+    let (mut added, mut skipped) = (0usize, 0usize);
+    for t in turns {
+        let key = (t.session_id.clone(), t.ts_ms, t.direction.clone(), t.text.clone());
+        if !seen.insert(key) {
+            skipped += 1;
+            continue;
+        }
+        if append(root, t).is_ok() {
+            added += 1;
+        } else {
+            skipped += 1;
+        }
+    }
+    (added, skipped)
+}
+
+/// 会话索引：每个会话一条（对端、条数、首末时间）。
+pub fn sessions(root: &Path) -> Vec<Value> {
+    use std::collections::BTreeMap;
+    let mut map: BTreeMap<String, (String, usize, u64, u64)> = BTreeMap::new();
+    for t in export_all(root) {
+        let e = map
+            .entry(t.session_id.clone())
+            .or_insert((t.peer_did.clone(), 0, 0, u64::MAX));
+        e.1 += 1;
+        e.2 = e.2.max(t.ts_ms);
+        e.3 = e.3.min(t.ts_ms);
+    }
+    map.into_iter()
+        .map(|(sid, (peer, cnt, last, first))| {
+            serde_json::json!({
+                "session_id": sid,
+                "peer_did": peer,
+                "count": cnt,
+                "first_ts_ms": first,
+                "last_ts_ms": last,
+            })
+        })
+        .collect()
+}
+
+fn root() -> std::path::PathBuf {
+    crate::server::data_dir()
+}
+
+/// GET /api/cross-chat/export?since_ms=
+pub async fn http_export(
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::Json<Value> {
+    let since = q
+        .get("since_ms")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+    let turns: Vec<Turn> = export_all(&root())
+        .into_iter()
+        .filter(|t| t.ts_ms >= since)
+        .collect();
+    axum::Json(serde_json::json!({
+        "ok": true, "count": turns.len(), "turns": turns,
+    }))
+}
+
+/// POST /api/cross-chat/import {turns:[...]}
+pub async fn http_import(axum::Json(req): axum::Json<Value>) -> axum::Json<Value> {
+    let raw = req["turns"].as_array().cloned().unwrap_or_default();
+    let mut turns = Vec::new();
+    for v in raw {
+        if let Ok(t) = serde_json::from_value::<Turn>(v) {
+            turns.push(t);
+        }
+    }
+    let (added, skipped) = import_turns(&root(), &turns);
+    axum::Json(serde_json::json!({
+        "ok": true, "received": turns.len(), "added": added, "skipped": skipped,
+    }))
+}
+
+/// GET /api/cross-chat/sessions
+pub async fn http_sessions() -> axum::Json<Value> {
+    let items = sessions(&root());
+    axum::Json(serde_json::json!({
+        "ok": true, "count": items.len(), "sessions": items,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +278,33 @@ mod tests {
         assert_eq!(ctx[1].0, "assistant");
         assert_eq!(ctx[2].0, "user");
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn export_import_is_idempotent_for_multi_device_sync() {
+        let root = tmp();
+        let sid = session_id("did:pi:a", "did:pi:b");
+        for i in 0..3u64 {
+            append(&root, &Turn {
+                ts_ms: 100 + i, session_id: sid.clone(), peer_did: "did:pi:b".into(),
+                direction: if i % 2 == 0 { "out" } else { "in" }.into(),
+                text: format!("m{i}"), agent_id: "a".into(),
+            }).unwrap();
+        }
+        let dumped = export_all(&root);
+        assert_eq!(dumped.len(), 3);
+        assert_eq!(sessions(&root).len(), 1);
+        assert_eq!(sessions(&root)[0]["count"], 3);
+        // 同设备再导入一次：全部跳过，不翻倍
+        let (added, skipped) = import_turns(&root, &dumped);
+        assert_eq!((added, skipped), (0, 3));
+        // 另一台设备导入：全部新增
+        let other = tmp();
+        let (added2, skipped2) = import_turns(&other, &dumped);
+        assert_eq!((added2, skipped2), (3, 0));
+        assert_eq!(export_all(&other).len(), 3);
+        fs::remove_dir_all(&root).ok();
+        fs::remove_dir_all(&other).ok();
     }
 
     #[test]

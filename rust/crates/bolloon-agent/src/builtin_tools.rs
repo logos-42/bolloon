@@ -202,6 +202,8 @@ pub fn builtin_tool_defs() -> Vec<ToolDef> {
     defs.extend(crate::belief_tools::belief_tool_defs());
     // IPFS 原语 (2026-10-31): TS 侧早有, Rust 版智能体一直没有 ⇒ 现在补上并默认授予
     defs.extend(crate::ipfs_tools::ipfs_tool_defs());
+    // 邮件 (2026-11-13): Agent 自主读写邮件; 硬拒在 mail::service, 不靠工具默认值
+    defs.extend(crate::mail_tools::mail_tool_defs());
     defs
 }
 
@@ -221,6 +223,8 @@ pub struct BuiltinExecutor {
     scratch: Arc<crate::scratch_tools::ScratchExecutor>,
     /// 经济层工具上下文（None = 未接线，执行时如实说"未启用"）
     econ: Option<crate::econ_tools::EconTools>,
+    /// 邮件工具上下文（None = 没配账号 / 未注入，执行时如实说"未接线"）
+    mail: Option<Arc<crate::mail_tools::MailExecutor>>,
 }
 
 impl BuiltinExecutor {
@@ -243,12 +247,19 @@ impl BuiltinExecutor {
             shell: Arc::new(ShellExecutor::with_mode(cancel, bypass)),
             scratch: Arc::new(crate::scratch_tools::ScratchExecutor::new(script_run)),
             econ: None,
+            mail: None,
         }
     }
 
     /// 注入经济层工具上下文（agent 侧 `econ_probe` / `econ_claim` 才有数据可看）
     pub fn with_econ(mut self, tools: crate::econ_tools::EconTools) -> Self {
         self.econ = Some(tools);
+        self
+    }
+
+    /// 注入邮件服务（三端共用同一份 MailService；不注入则 mail_* 如实报未接线）
+    pub fn with_mail(mut self, svc: Arc<crate::mail::MailService>) -> Self {
+        self.mail = Some(Arc::new(crate::mail_tools::MailExecutor::new(svc)));
         self
     }
 }
@@ -329,6 +340,12 @@ impl ToolExecutor for BuiltinExecutor {
                     evidence: Some(serde_json::json!({ "econ": "not_wired" })),
                 },
             },
+            "mail_accounts" | "mail_search" | "mail_read" | "mail_sync" | "mail_send" => {
+                match self.mail.as_ref() {
+                    Some(m) => m.execute(call).await,
+                    None => crate::mail_tools::not_wired_result(&call.name),
+                }
+            }
             // 已注册但没接执行器 ⇒ **如实说没接线**, 绝不返回空成功
             other => ToolResult {
                 ok: false,
@@ -383,6 +400,10 @@ pub const DEFAULT_GRANTED_TOOLS: &[&str] = &[
     "ipfs_ls",
     "ipns_publish",
     "ipns_resolve",
+    // 邮件: 读默认放行; 同步与外发也需要默认授予(用户 2026-11-13 定为「默认支持」)。
+    // 注意: 授予只过 permission 门, **外发仍受 service 层硬拒**(单收件人 / 凭据内容)。
+    "mail_sync",
+    "mail_send",
 ];
 
 /// 按权限模式把已注册工具授进 Harness 的 permission 门。
@@ -417,14 +438,32 @@ pub async fn builtin_harness(
     cancel: Arc<AtomicBool>,
     bypass: bool,
 ) -> (Arc<Harness>, Vec<ToolSchema>) {
+    builtin_harness_with_mail(calls, budget_ms, cancel, bypass, None).await
+}
+
+/// 同上, 额外把邮件服务注入工具执行器。
+///
+/// 不注入 ⇒ `mail_*` 如实报「未接线」, 绝不返回空成功;
+/// 注入后仍受 `mail::service::check_send_guard` 的硬拒约束。
+pub async fn builtin_harness_with_mail(
+    calls: u32,
+    budget_ms: u64,
+    cancel: Arc<AtomicBool>,
+    bypass: bool,
+    mail: Option<Arc<crate::mail::MailService>>,
+) -> (Arc<Harness>, Vec<ToolSchema>) {
     let budget = Budget::new(calls, budget_ms);
     let reg = Arc::new(ToolRegistry::new());
     register_builtin_tools(&reg).await;
-    let exec = Arc::new(BuiltinExecutor::new(
+    let mut exec = BuiltinExecutor::new(
         cancel,
         bypass,
         crate::scratch::ScriptRunPort::noop(),
-    ));
+    );
+    if let Some(m) = mail {
+        exec = exec.with_mail(m);
+    }
+    let exec = Arc::new(exec);
     let h = Arc::new(Harness::new(reg.clone(), exec, budget));
     // 授权必须在这里落一次: Harness 只放行 `default_allowed` 或**显式授予**的工具,
     // 不授予 ⇒ shell/write_file 一律 `DENIED (policy=permission)`。

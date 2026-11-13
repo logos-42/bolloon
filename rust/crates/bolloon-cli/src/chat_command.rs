@@ -1112,6 +1112,8 @@ impl ChatSession {
             "/ipns" => Cmd::Say(ipns_lines(&self.agent_id, args)),
             "/interrupt" => Cmd::Say(self.busy_cmd("interrupt")),
             "/web_fetch" => Cmd::Say(web_fetch_lines(args).await),
+            "/mail" => Cmd::Say(mail_lines(args).await),
+            "/contacts" => Cmd::Say(contacts_lines(args).await),
             "/profile" => Cmd::Say(self.profile_lines()),
             "/copy" => Cmd::Say(self.copy_cmd(args)),
             "/paste" => Cmd::Say(self.paste_cmd()),
@@ -2663,6 +2665,172 @@ fn ipns_lines(agent: &str, args: &str) -> Vec<String> {
             }
         }
         _ => vec!["用法: /ipns status | /ipns resolve <name>".into()],
+    }
+}
+
+/// `/mail` — **直连 crate**(不走 HTTP), 与 Web/App 共用同一份 `MailService`。
+///
+/// 没配账号时零副作用直接告知(不在首启/测试里凭空建目录)。
+async fn mail_lines(args: &str) -> Vec<String> {
+    use bolloon_agent::mail::{MailDraft, MailId, MailQuery, accounts_path, build_service};
+
+    let home = bolloon_agent::home::BolloonHome::resolve();
+    let usage = "用法: /mail [accounts|sync|search [关键词]|read <id>|send <收件人> <主题> <正文>]";
+
+    if !accounts_path(&home).exists() {
+        return vec![
+            "（还没有配置邮件账号）".into(),
+            "  配置文件: ~/.bolloon/rust/mail/accounts.json".into(),
+            usage.into(),
+        ];
+    }
+
+    let svc = match build_service(&home) {
+        Ok(s) => s,
+        Err(e) => return vec![format!("✗ 邮件服务打不开: {e}")],
+    };
+
+    let parts: Vec<&str> = args.split_whitespace().collect();
+    match parts.first().copied().unwrap_or("accounts") {
+        "accounts" => {
+            let a = svc.accounts();
+            let mut out = vec![format!("邮件账号 {} 个:", a.len())];
+            for x in a {
+                out.push(format!("  · {x}"));
+            }
+            out
+        }
+        "sync" => {
+            let reports = svc.sync_all().await;
+            let mut out = vec![format!("同步完成: {} 个账号", reports.len())];
+            for r in reports {
+                match r.error {
+                    Some(e) => out.push(format!("  ✗ {}: {e}", r.account)),
+                    None => out.push(format!("  ✓ {}: 新增 {} 条", r.account, r.new)),
+                }
+            }
+            out
+        }
+        "search" => {
+            let q = MailQuery {
+                keyword: parts.get(1).map(|s| s.to_string()),
+                limit: Some(20),
+                ..Default::default()
+            };
+            match svc.list(&q) {
+                Ok(list) if list.is_empty() => vec!["（没有匹配的邮件）".into()],
+                Ok(list) => {
+                    let mut out = vec![format!("{} 封:", list.len())];
+                    for m in list {
+                        out.push(format!("  {}  |  {}  |  {}", m.id, m.from, m.subject));
+                    }
+                    out
+                }
+                Err(e) => vec![format!("✗ {}", e.message())],
+            }
+        }
+        "read" => {
+            let Some(id) = parts.get(1) else {
+                return vec!["用法: /mail read <id>".into()];
+            };
+            match svc.read(&MailId((*id).to_string())).await {
+                Ok(b) => {
+                    let mut out = vec![
+                        format!("主题: {}", b.meta.subject),
+                        format!("来自: {}", b.meta.from),
+                        String::new(),
+                    ];
+                    out.extend(b.text.lines().map(String::from));
+                    out
+                }
+                Err(e) => vec![format!("✗ {}", e.message())],
+            }
+        }
+        "send" => {
+            if parts.len() < 4 {
+                return vec!["用法: /mail send <收件人> <主题> <正文>".into()];
+            }
+            let account = match svc.accounts().first() {
+                Some(a) => a.to_string(),
+                None => return vec!["✗ 还没有可用邮件账号".into()],
+            };
+            let draft = MailDraft {
+                account,
+                to: vec![parts[1].to_string()],
+                subject: parts[2].to_string(),
+                text: parts[3..].join(" "),
+                in_reply_to: None,
+            };
+            match svc.send(&draft).await {
+                Ok(id) => vec![format!("✓ 已提交: {id}")],
+                Err(e) => vec![format!("✗ {}: {}", e.kind(), e.message())],
+            }
+        }
+        other => vec![format!("未知子命令: {other}"), usage.into()],
+    }
+}
+
+/// `/contacts` — 通讯录导入(vCard/CSV)与查询, 直连 crate, 本地文件。
+async fn contacts_lines(args: &str) -> Vec<String> {
+    use bolloon_agent::mail::ContactsPort;
+    use bolloon_agent::mail::adapters::vcard::{VcardCsvAdapter, load_imported, looks_like_contacts_file};
+
+    let home = bolloon_agent::home::BolloonHome::resolve();
+    let usage = "用法: /contacts [import <file.vcf|file.csv>|list [关键词]]";
+    let parts: Vec<&str> = args.split_whitespace().collect();
+
+    match parts.first().copied().unwrap_or("list") {
+        "import" => {
+            let Some(p) = parts.get(1) else {
+                return vec![usage.into()];
+            };
+            let path = std::path::Path::new(p);
+            if !looks_like_contacts_file(path) {
+                return vec![format!("✗ 只认 .vcf / .csv: {p}")];
+            }
+            let ad = VcardCsvAdapter::new(path, home.root());
+            match ad.import_all().await {
+                Ok(r) => vec![
+                    format!(
+                        "✓ 导入完成: 新增 {} · 更新 {} · 跳过 {}",
+                        r.imported, r.updated, r.skipped
+                    ),
+                    format!("  来源: {}", r.source),
+                ],
+                Err(e) => vec![format!("✗ {}: {}", e.kind, e.message)],
+            }
+        }
+        "list" => match load_imported(home.root()) {
+            Ok(mut list) => {
+                if let Some(k) = parts.get(1) {
+                    let k = k.to_lowercase();
+                    list.retain(|c| {
+                        c.name.to_lowercase().contains(&k)
+                            || c.phones.iter().any(|p| p.contains(&k))
+                            || c.emails.iter().any(|e| e.to_lowercase().contains(&k))
+                    });
+                }
+                if list.is_empty() {
+                    return vec!["（还没导入通讯录）".into(), usage.into()];
+                }
+                let mut out = vec![format!("通讯录 {} 条:", list.len())];
+                for c in list.iter().take(50) {
+                    let first = c
+                        .phones
+                        .first()
+                        .cloned()
+                        .or_else(|| c.emails.first().cloned())
+                        .unwrap_or_default();
+                    out.push(format!("  {}  {}", c.name, first));
+                }
+                if list.len() > 50 {
+                    out.push(format!("  … 还有 {} 条", list.len() - 50));
+                }
+                out
+            }
+            Err(e) => vec![format!("✗ {e}")],
+        },
+        other => vec![format!("未知子命令: {other}"), usage.into()],
     }
 }
 

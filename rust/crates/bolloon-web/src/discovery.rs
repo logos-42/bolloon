@@ -105,7 +105,12 @@ fn put(v: &Value) -> bool {
 /// 本机手机号 → gossip 记录；绑定成功后调用（自动带 DIAP 地址）。
 /// 构造一条 DID 私钥签名的发现记录（gossip 与 DHT 共用同一格式/同一套验签）。
 pub fn signed_record(st: &AppState, phone: &str) -> Value {
-    let topic = discovery_topic_hex(phone);
+    signed_record_for(st, "phone", phone)
+}
+
+/// 通用签名记录：kind = phone / email / did。记录里带 kind，客户端可核对。
+pub fn signed_record_for(st: &AppState, kind: &str, value: &str) -> Value {
+    let topic = bolloon_agent::directory::discovery_topic_for_hex(kind, value);
     let did = st.identity.did.as_str().to_string();
     let ts = now_ms();
     let diap = {
@@ -124,14 +129,19 @@ pub fn signed_record(st: &AppState, phone: &str) -> Value {
         st.identity.sign(signed_message_v2(&topic, &did, ts, &diap).as_bytes()),
     );
     serde_json::json!({
-        "v": 2,
+        "v": 2, "kind": kind,
         "topic": topic, "did": did, "diap": diap,
         "ts_ms": ts, "sig": sig, "hops": 0,
     })
 }
 
 pub async fn announce_self(st: &AppState, phone: &str) -> Value {
-    let rec = signed_record(st, phone);
+    announce_self_for(st, "phone", phone).await
+}
+
+/// 发布邮箱 / DID 的发现记录（与手机号同一套签名与 gossip 转发）。
+pub async fn announce_self_for(st: &AppState, kind: &str, value: &str) -> Value {
+    let rec = signed_record_for(st, kind, value);
     let topic = rec["topic"].as_str().unwrap_or_default().to_string();
     let fresh = put(&rec);
     let sent = broadcast(st, &rec).await;
@@ -151,6 +161,28 @@ pub fn lookup(phone: &str) -> Option<Value> {
 /// 按 topic 直接查（边缘目录的查询入口；服务端从不需要知道手机号明文）。
 pub fn lookup_topic(topic: &str) -> Option<Value> {
     read_map().get(topic).cloned()
+}
+
+/// 按 kind + 明文查（本机 gossip 缓存）。
+pub fn lookup_for(kind: &str, value: &str) -> Option<Value> {
+    lookup_topic(&bolloon_agent::directory::discovery_topic_for_hex(kind, value))
+}
+
+/// POST /api/discovery/announce-self {kind, value}
+/// 邮箱 / DID 的发布入口（手机号走 /api/phone/bind 自动发布）。
+pub async fn remote_announce_self(
+    State(st): State<AppState>,
+    Json(req): Json<Value>,
+) -> Json<Value> {
+    let kind = req["kind"].as_str().unwrap_or("phone").trim().to_ascii_lowercase();
+    let value = req["value"].as_str().unwrap_or_default().trim().to_string();
+    if value.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 value" }));
+    }
+    if !matches!(kind.as_str(), "phone" | "email" | "did") {
+        return Json(serde_json::json!({ "ok": false, "error": "kind 只支持 phone/email/did" }));
+    }
+    Json(announce_self_for(&st, &kind, &value).await)
 }
 
 async fn broadcast(st: &AppState, rec: &Value) -> usize {
