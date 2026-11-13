@@ -9,6 +9,7 @@
 
 | 日期 | 主题 | 摘要 |
 |---|---|---|
+| 2026-11-13 | feat(mail) | **邮件/通讯录能力落地**：`bolloon-agent` 新增 `mail` 模块（Port / Store / 硬拒 / IMAP-SMTP / vCard-CSV）+ `mail_tools`；落盘 `rust/mail/`（SQLite WAL + 正文 AES-256-GCM，0600）；硬拒多收件人与凭据正文（service 层，任何配置绕不过）；Web `/api/mail/*`、`/api/contacts/import(ed)`（写入口进总闸）；CLI/TUI `/mail`、`/contacts` 直连 crate 不走 HTTP；`contacts-protocol` 与 `permissions-and-privacy` 同步修订（「永不纳入授权」三项改为默认支持，保留 5 条硬边界）。验收 agent mail **40/40** · web lib **117/0** · cli **45/45** · `mail_chain` **3/3** · `cargo check --workspace` 0 error。**未做**：Android/iOS 原生 Adapter、Tauri mobile `gen/`、三端 UI 面板。 | `rust/crates/bolloon-agent/src/mail/` · `rust/crates/bolloon-web/src/mail_api.rs` · `docs/plans/2026-11-13-mail-contacts-sms-design.md` |
 | 2026-11-01 | world / memory | 世界意图交付面（回应=卡片+澄清）、Install 路径真执行、升级管线 v2、hindsight-engine 记忆外挂接入；npm 0.7.5 发布 |
 | 2026-11-04 | app / web | 版本号不再写死、旧会话上下文、一次性授权库、空产出与阶段折叠、签名身份、中断留痕、流光卡片；信念改存 SQLite；App 0.7.6→0.7.7（空白页事故修复+换钥+发布门）→0.7.8 |
 | 2026-11-04 | world / friend | 世界卡片「⋯」、IPFS/IPNS 链接、固定/持续更新/接受/拒绝/分享；付费 x402 卡片；邀请好友智能体进群、只读指挥、授权三档、SQL 只读工具、CLI 三端同步 |
