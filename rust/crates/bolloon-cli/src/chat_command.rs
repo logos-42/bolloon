@@ -2673,10 +2673,13 @@ fn ipns_lines(agent: &str, args: &str) -> Vec<String> {
 ///
 /// 没配账号时零副作用直接告知(不在首启/测试里凭空建目录)。
 async fn mail_lines(args: &str) -> Vec<String> {
-    use bolloon_agent::mail::{MailDraft, MailId, MailQuery, accounts_path, build_service};
+    use bolloon_agent::mail::{
+        delete_mail_password, MailDraft, MailId, MailQuery, accounts_path, build_service,
+        set_mail_password,
+    };
 
     let home = bolloon_agent::home::BolloonHome::resolve();
-    let usage = "用法: /mail [accounts|sync|search [关键词]|read <id>|send <收件人> <主题> <正文>]";
+    let usage = "用法: /mail [accounts|sync|search [关键词]|read <id>|send <收件人> <主题> <正文>|password <邮箱> [密码]|password <邮箱> --delete]";
 
     if !accounts_path(&home).exists() {
         return vec![
@@ -2765,6 +2768,39 @@ async fn mail_lines(args: &str) -> Vec<String> {
             match svc.send(&draft).await {
                 Ok(id) => vec![format!("✓ 已提交: {id}")],
                 Err(e) => vec![format!("✗ {}: {}", e.kind(), e.message())],
+            }
+        }
+        "password" => {
+            let Some(email) = parts.get(1) else {
+                return vec![
+                    "用法: /mail password <邮箱> [密码]".into(),
+                    "  · 省略密码 ⇒ 从标准输入读一行 (不进 shell history)".into(),
+                    "  · /mail password <邮箱> --delete 删除已存密码".into(),
+                ];
+            };
+            let email = (*email).to_string();
+            if parts.get(2).map(|s| *s == "--delete").unwrap_or(false) {
+                return match delete_mail_password(&email) {
+                    Ok(()) => vec![format!("✓ 已删除 {email} 的密码")],
+                    Err(e) => vec![format!("✗ 删除失败: {e}")],
+                };
+            }
+            let pwd = if let Some(p) = parts.get(2) {
+                (*p).to_string()
+            } else {
+                use std::io::BufRead;
+                let mut line = String::new();
+                if std::io::stdin().lock().read_line(&mut line).is_err() {
+                    return vec!["✗ 读密码失败".into()];
+                }
+                line.trim().to_string()
+            };
+            if pwd.is_empty() {
+                return vec!["✗ 密码不能为空".into()];
+            }
+            match set_mail_password(&email, &pwd) {
+                Ok(()) => vec![format!("✓ 已保存 {email} 的密码到本机凭据库 (macOS 钥匙串 / Windows DPAPI / Linux Secret Service)")],
+                Err(e) => vec![format!("✗ 保存失败: {e}")],
             }
         }
         other => vec![format!("未知子命令: {other}"), usage.into()],

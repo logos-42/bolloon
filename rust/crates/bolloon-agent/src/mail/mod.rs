@@ -16,8 +16,8 @@ pub mod store;
 
 pub use adapters::local_sink::LocalSinkMailPort;
 pub use config::{
-    accounts_path, build_service, load_accounts, mail_dir, save_accounts, AccountConfig,
-    AccountsFile,
+    accounts_path, build_service, delete_mail_password, load_accounts, mail_dir, save_accounts,
+    set_mail_password, AccountConfig, AccountsFile,
 };
 pub use ports::{
     AttachmentMeta, ContactMeta, ContactQuery, ContactsPort, ImportReport, MailBody, MailDraft,

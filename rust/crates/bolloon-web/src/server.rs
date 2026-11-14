@@ -765,6 +765,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/mail/send", post(crate::mail_api::send))
         .route("/api/mail/sync", post(crate::mail_api::sync))
         .route("/api/mail/delete", post(crate::mail_api::delete))
+        .route("/api/mail/password", post(crate::mail_api::password))
         .route("/api/contacts/import", post(crate::mail_api::contacts_import))
         .route("/api/contacts/imported", post(crate::mail_api::contacts_imported))
         // AI 外呼: 目前只有 Mock 服务商(不连运营商)
@@ -3551,8 +3552,8 @@ pub const FULL_ACCESS_GATED_PREFIXES: &[&str] = &[
     "/api/specialize/packs", "/api/specialize/eval", "/api/specialize/run",
     "/api/specialize/share", "/api/router/enforce", "/api/router/prices",
     "/api/friends/", "/api/x402/buy/", "/api/x402/info",
-    // 邮件: 只有同步/外发/删除过总闸; 搜索与读取 (POST 但只读) 不受阻
-    "/api/mail/send", "/api/mail/sync", "/api/mail/delete",
+    // 邮件: 只有同步/外发/删除/密码过总闸; 搜索与读取 (POST 但只读) 不受阻
+    "/api/mail/send", "/api/mail/sync", "/api/mail/delete", "/api/mail/password",
     // 通讯录导入是写操作
     "/api/contacts/import",
     // 外呼(即使当前是 Mock)也按写操作管

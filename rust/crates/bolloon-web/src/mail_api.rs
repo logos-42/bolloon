@@ -9,7 +9,10 @@ use serde_json::{json, Value};
 
 use bolloon_agent::home::BolloonHome;
 use bolloon_agent::mail::adapters::vcard::{load_imported, VcardCsvAdapter};
-use bolloon_agent::mail::{build_service, ContactsPort, MailDraft, MailId, MailQuery, MailService};
+use bolloon_agent::mail::{
+    build_service, delete_mail_password, ContactsPort, MailDraft, MailId, MailQuery, MailService,
+    set_mail_password,
+};
 
 use crate::server::AppState;
 
@@ -159,5 +162,26 @@ pub async fn delete(State(_st): State<AppState>, Json(req): Json<Value>) -> Repl
     match svc.delete(&ids).await {
         Ok(n) => ok(json!({ "deleted": n })),
         Err(e) => fail(e.kind(), e.message()),
+    }
+}
+
+/// 写 / 删某邮箱的 SMTP 密码 (存进本机凭据后端, 键 `mail:<email>`, 不进 accounts.json)。
+/// 密码只经本接口一次性写入, 永不回显; 删除用 `{"email":..,"delete":true}`。
+pub async fn password(State(_st): State<AppState>, Json(req): Json<Value>) -> Reply {
+    let Some(email) = req.get("email").and_then(|v| v.as_str()) else {
+        return fail("missing_email", "缺少 email");
+    };
+    if req.get("delete").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return match delete_mail_password(email) {
+            Ok(()) => ok(json!({ "email": email })),
+            Err(e) => fail("delete_failed", e),
+        };
+    }
+    let Some(pwd) = req.get("password").and_then(|v| v.as_str()) else {
+        return fail("missing_password", "缺少 password");
+    };
+    match set_mail_password(email, pwd) {
+        Ok(()) => ok(json!({ "email": email })),
+        Err(e) => fail("save_failed", e),
     }
 }

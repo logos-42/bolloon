@@ -124,6 +124,19 @@ pub fn build_service(home: &BolloonHome) -> Result<MailService, String> {
     Ok(MailService::new(store, adapters))
 }
 
+/// 把 IMAP/SMTP 密码写进本机凭据后端（键 `mail:<email>`，与账号元数据分离）。
+/// 失败 ⇒ 返回人话原因，调用方据此中止，不静默退回明文。
+pub fn set_mail_password(email: &str, password: &str) -> Result<(), String> {
+    bolloon_llm::secret_store::default_backend()
+        .put(&bolloon_llm::secret_store::account_for_mail(email), password)
+}
+
+/// 删除某邮箱的密码（换密码 / 撤销账号时用）。
+pub fn delete_mail_password(email: &str) -> Result<(), String> {
+    bolloon_llm::secret_store::default_backend()
+        .delete(&bolloon_llm::secret_store::account_for_mail(email))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

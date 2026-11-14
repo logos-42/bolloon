@@ -438,7 +438,12 @@ pub async fn builtin_harness(
     cancel: Arc<AtomicBool>,
     bypass: bool,
 ) -> (Arc<Harness>, Vec<ToolSchema>) {
-    builtin_harness_with_mail(calls, budget_ms, cancel, bypass, None).await
+    // 2026-11-14: 把本机邮件服务接进智能体 —— 配了账号就有 mail_* 工具可用,
+    // 没配 / 配置坏 ⇒ build_service 返回 Err ⇒ .ok() = None ⇒ 工具如实报「未接线」。
+    let mail = crate::mail::build_service(&crate::home::BolloonHome::resolve())
+        .ok()
+        .map(std::sync::Arc::new);
+    builtin_harness_with_mail(calls, budget_ms, cancel, bypass, mail).await
 }
 
 /// 同上, 额外把邮件服务注入工具执行器。
@@ -1030,7 +1035,7 @@ mod tests {
             assert!(
                 !names.iter().any(|n| n == forbidden),
                 "只读子集里混进了 {forbidden}: {names:?}"
-            );
+                );
         }
     }
 
@@ -1045,5 +1050,52 @@ mod tests {
         assert!(names.iter().any(|n| n == "read_file"));
         assert!(names.iter().any(|n| n == "grep_files"));
         assert!(!names.iter().any(|n| n == "shell" || n == "web_fetch"));
+    }
+
+    /// 2026-11-14 接线门: 注入 MailService 后, 智能体的邮件只读工具必须已接线
+    /// (不再报「未接线」) 且能返回当前 home 配置的账号。
+    /// 注: `mail_send` 出于防串号设计走 `BolloonHome::resolve()` 而非 self.svc,
+    ///     生产进程 home 配好账号即生效; 这里用只读工具验证注入本身。
+    #[tokio::test]
+    async fn agent_mail_tools_wired_via_injected_service() {
+        let tmp =
+            std::env::temp_dir().join(format!("bolloon_mail_wire_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        // 建一个 local_sink 账号 (不需要真密码/真 SMTP)
+        let mail_dir = tmp.join("rust").join("mail");
+        std::fs::create_dir_all(&mail_dir).unwrap();
+        std::fs::write(
+            mail_dir.join("accounts.json"),
+            r#"{"accounts":[{"account":"me@x.dev","mode":"local_sink"}]}"#,
+        )
+        .unwrap();
+
+        let home = crate::home::BolloonHome::at(&tmp);
+        let svc = crate::mail::build_service(&home).expect("应能构建 local_sink 服务");
+        let mail = Some(std::sync::Arc::new(svc));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (h, schemas) = builtin_harness_with_mail(20, 30_000, cancel, true, mail).await;
+
+        // schema 里必须出现邮件工具 (模型看得到)
+        let names: Vec<String> = schemas.into_iter().map(|s| s.function.name).collect();
+        for must in ["mail_accounts", "mail_send"] {
+            assert!(names.iter().any(|n| n == must), "缺 {must}: {names:?}");
+        }
+
+        // 经完整 Harness 门执行 mail_accounts ⇒ 已接线, 返回配置的账号 (不是「未接线」)
+        let out = h
+            .gate(ToolCall {
+                id: "ma1".into(),
+                name: "mail_accounts".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await;
+        assert!(out.denied.is_none(), "邮件只读工具不应被拒: {:?}", out.denied);
+        let r = out.result.expect("非 denied 必有 result");
+        assert!(r.ok, "mail_accounts 应成功: {}", r.output);
+        assert!(!r.output.contains("未接线"), "不应再报未接线: {}", r.output);
+        assert!(r.output.contains("me@x.dev"), "应列出配置的账号: {}", r.output);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

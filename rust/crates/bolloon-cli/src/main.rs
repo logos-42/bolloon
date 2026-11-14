@@ -2538,14 +2538,21 @@ async fn send_one(
     let script_run = bolloon_agent::scratch::ScriptRunPort::new(std::sync::Arc::new(
         bolloon_agent::scratch::TokioScriptRunner::new(),
     ));
+    let mail_svc = bolloon_agent::mail::build_service(&bolloon_agent::home::BolloonHome::resolve())
+        .ok()
+        .map(std::sync::Arc::new);
+    let mut exec = bolloon_agent::builtin_tools::BuiltinExecutor::new(
+        cancel.clone(),
+        bypass,
+        script_run,
+    );
+    if let Some(svc) = mail_svc {
+        exec = exec.with_mail(svc);
+    }
     let harness = std::sync::Arc::new(
         bolloon_harness::Harness::new(
             registry.clone(),
-            std::sync::Arc::new(bolloon_agent::builtin_tools::BuiltinExecutor::new(
-                cancel.clone(),
-                bypass,
-                script_run,
-            )),
+            std::sync::Arc::new(exec),
             // 预算 (B 类): 从受治理配置取, 不再各处硬编码
             bolloon_harness::Budget::new(snap.config.task.budget_calls, snap.config.task.budget_ms),
         )

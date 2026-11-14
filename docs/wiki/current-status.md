@@ -53,6 +53,12 @@ tags: [status, rust-workspace, app-0.7.8, release-gate, world-cards, contributio
 - **世界分享自动走 QUIC + 回退**：`world_cards_share` QUIC 直发优先，未走通的好友经 `peer_json` 投递（DIAP 优先、回落 HTTP）；接收端按信封签名去重。`media` 卡片 `distribute=true` 与 `world_fulfill`（gap→fulfill）产出的卡片本就是 **AI 自动生成并自动定向投递给好友**，不进公域。
 - **青少年模式（默认成人）**：`world.rs` 新增 `ContentRating{General(默认)/Mature}` 枚举 + 服务端关键词兜底打标 `auto_rate`；`WorldCard.content_rating` 字段（不进签名载荷，旧帧兼容）。`native.rs`：`UiSettings.youth_mode` 开关、`set_settings` 可设；入站 `deliver_world_card` 在 youth_mode 开启时拒收成人级卡；展示 `world_cards` 过滤成人卡；`media_card` 本机生成处自动分级。正常使用者是成人，`youth_mode=false` 默认。
 
+## 2026-11-14 新增能力（智能体直接发邮件）
+
+- **智能体获得发邮件能力**：`mail_send`/`mail_sync`/`mail_accounts`/`mail_search`/`mail_read` 五个工具早已注册，但会话装配从不注入 `MailService`（`builtin_harness` 固定传 `None`）⇒ 智能体调 `mail_*` 一律报「未接线」。**现已接线**：默认 harness 启动即 `build_service(&BolloonHome::resolve()).ok()` 注入本机邮件服务，CLI `run_chat` 同步注入（`with_mail`）。`mail_send`/`mail_sync` 是写/联网操作，受 Harness 权限门控（默认不授权，需显式授予或完全访问才真发）；只读工具默认授权。`mail_send` 出于防串号设计仍走 `BolloonHome::resolve()` 对齐当前进程 home，生产进程 home 配好账号即生效。
+- **补 SMTP 密码写入入口**：密码不进 `accounts.json`，存系统凭据后端（键 `mail:<email>`，macOS 钥匙串 / Windows DPAPI / Linux Secret Service）。新增 CLI `/mail password <邮箱> [密码]`（省略密码从 stdin 读一行，不进 shell history）与 Web `POST /api/mail/password`（纳入 `FULL_ACCESS_GATED_PREFIXES` 总闸）。账号元数据仍走 `mail/accounts.json`。护栏不变：单收件人、禁含密码/OTP/私钥/卡号类正文、`check_send_guard` 硬拒。
+- **验证**：`builtin_tools` 新增接线测试（注入后 `mail_accounts` 已接线并返回配置账号）通过；`mail` 模块 41、`builtin_tools` 15 全过；CLI/Web 编译通过。
+
 ## 当前已知边界（2026-11-08 复核）
 
 1. **链上**：ETH 只登记用户提供的 `tx_hash`，本机不代签；IPFS 锚定需本机 Kubo 或真实 CID；orbitdb / 跨机共识层未接。
