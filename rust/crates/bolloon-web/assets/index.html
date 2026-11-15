@@ -958,8 +958,6 @@
         <button class="gear" id="settingsBtn" title="设置">⚙</button>
       </div>
       <div class="who"><b id="accountName">用户</b><small id="accountDid">did:…</small></div>
-      <!-- 2026-11-15: 左下角个人页面钱包入口 -->
-      <button id="accountWalletBtn" class="mini" title="钱包（智能体钱包 + 我的个人代币）" style="padding:3px 9px;font-size:11px;white-space:nowrap">💰 钱包</button>
       <!-- 2026-10-30 (leo: 网页端没有订阅栏按钮): 额度/订阅入口 (桌面壳在 #topBar, 网页端在这里) -->
       <button id="payBtn" class="mini" title="额度 / 订阅（按连接的付费路由计费，先充值后使用）" style="margin-left:auto;padding:3px 8px;font-size:11px;white-space:nowrap">额度</button>
     </div>
@@ -1173,6 +1171,8 @@
     <button id="themeBtn" class="mini" title="主题（跟随系统/深/浅）">☾</button>
     <button id="settingsModelBtn" class="mini">模型：<span id="settingsModelLabel">…</span></button>
     <button id="settingsUpdateBtn" class="mini">检查更新</button>
+    <!-- 2026-11-15: 钱包入口放在「用户页面」里（点左下角账号进入后可见） -->
+    <button id="settingsWalletBtn" class="mini" title="钱包（智能体钱包 + 我的个人代币）">💰 钱包</button>
   </div>
   <div class="hint" id="settingsUpdateStatus"></div>
   <div class="row"><button onclick="document.getElementById('profileDlg').close()">取消</button><button class="primary" id="profileSave">保存</button></div>
@@ -5084,7 +5084,8 @@ async function verifyByCode(){
   }catch(e){ toast('验证失败：'+e.message); }
 }
 $('railWalletBtn')?.addEventListener('click',openWallet);
-$('accountWalletBtn')?.addEventListener('click',(e)=>{e.stopPropagation();openWallet();});
+// 2026-11-15: 钱包入口在「用户页面(设置)」里 —— 点它先关设置再开钱包
+$('settingsWalletBtn')?.addEventListener('click',()=>{const p=$('profileDlg');if(p&&p.open)p.close();openWallet();});
 $('tokIssueBtn')?.addEventListener('click',issueToken);
 $('groupClose').onclick=closeGroup;
 $('groupInput').addEventListener('keydown',e=>{
