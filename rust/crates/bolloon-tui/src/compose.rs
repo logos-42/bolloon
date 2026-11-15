@@ -98,7 +98,13 @@ pub struct Compose {
 impl Compose {
     pub fn new(hist: Vec<String>, initial: &str) -> Self {
         let cursor = initial.chars().count();
-        Self { buf: initial.to_string(), cursor, hist, idx: None, saved: String::new() }
+        Self {
+            buf: initial.to_string(),
+            cursor,
+            hist,
+            idx: None,
+            saved: String::new(),
+        }
     }
 
     pub fn buf(&self) -> &str {
@@ -338,7 +344,10 @@ pub fn render_input(
     for (i, line) in all.iter().enumerate().skip(skip) {
         let prefix = if i == skip { prompt } else { pad.as_str() };
         let mut text = if i == skip && fold.is_some() {
-            format!("{prefix}{}{line}", FOLD_MARK.replace("{}", &skip.to_string()))
+            format!(
+                "{prefix}{}{line}",
+                FOLD_MARK.replace("{}", &skip.to_string())
+            )
         } else {
             format!("{prefix}{line}")
         };
@@ -354,7 +363,10 @@ pub fn render_input(
         out.push(truncate_safe(&format!("{NOTE_PREFIX}{n}"), width));
     }
 
-    InputRender { text: out.join("\n"), lines: out.len() }
+    InputRender {
+        text: out.join("\n"),
+        lines: out.len(),
+    }
 }
 
 /**
@@ -368,7 +380,13 @@ pub fn render_input(
  * 中文按 2 列、Emoji 按 2 列 (`width::disp_width`), 绝不用字节长度顶替列宽。
  * 超宽时按光标位置开窗 (左端补 `…`), 保证光标永远可见。
  */
-pub fn editor_row(prompt: &str, buf: &str, cursor: usize, width: usize, show_cursor: bool) -> String {
+pub fn editor_row(
+    prompt: &str,
+    buf: &str,
+    cursor: usize,
+    width: usize,
+    show_cursor: bool,
+) -> String {
     let width = width.max(4);
     let chars: Vec<char> = buf.chars().collect();
     let at = cursor.min(chars.len());
@@ -448,7 +466,11 @@ pub fn editor_row(prompt: &str, buf: &str, cursor: usize, width: usize, show_cur
         body.push_str("\x1b[7m \x1b[0m"); // 行尾光标
     }
 
-    let prompt = if line_idx == 0 { prompt.to_string() } else { " ".repeat(disp_width(prompt)) };
+    let prompt = if line_idx == 0 {
+        prompt.to_string()
+    } else {
+        " ".repeat(disp_width(prompt))
+    };
     let s = format!("{above}{prompt}{body}{below}");
     // 兜底: 标记占宽算不准时按纯文本截 (不切转义序列)
     if disp_width(&s) > width {
@@ -594,7 +616,11 @@ mod tests {
     fn masked_render_hides_plaintext() {
         let r = render_input("key › ", "sk-中文abc", true, 60, 4, &[]);
         assert!(!r.text.contains("sk-"));
-        assert_eq!(r.text.matches('•').count(), 8, "8 个字符 ⇒ 8 个点 (中文也只算一个)");
+        assert_eq!(
+            r.text.matches('•').count(),
+            8,
+            "8 个字符 ⇒ 8 个点 (中文也只算一个)"
+        );
         assert_eq!(r.lines, 1);
     }
 
@@ -612,7 +638,10 @@ mod tests {
     /// 行数超过 max_lines ⇒ **留尾部** + 首行写 `… (+N 行)` (光标在末尾, 得看得见)
     #[test]
     fn overflow_keeps_tail_and_marks_fold() {
-        let buf = (1..=6).map(|i| format!("第{i}行")).collect::<Vec<_>>().join("\n");
+        let buf = (1..=6)
+            .map(|i| format!("第{i}行"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let r = render_input("› ", &buf, false, 40, 3, &[]);
         assert_eq!(r.lines, 3);
         let first = r.text.lines().next().unwrap();
@@ -685,7 +714,10 @@ mod tests {
         assert!(s.contains("…2行"), "上面还有 2 行要标出来: {s:?}");
         assert!(s.contains("…1行"), "下面还有 1 行要标出来: {s:?}");
         assert!(s.contains("第三行"), "光标所在行必须可见: {s:?}");
-        assert!(!s.contains("第一行") && !s.contains("第四行"), "别的行不该混进来: {s:?}");
+        assert!(
+            !s.contains("第一行") && !s.contains("第四行"),
+            "别的行不该混进来: {s:?}"
+        );
         // 续行不再重复 ❯ (缩进对齐)
         assert_eq!(s.matches('❯').count(), 0, "非首行不画提示符: {s:?}");
     }

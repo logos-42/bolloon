@@ -99,7 +99,9 @@ async fn do_read_skill(call: ToolCall) -> ToolResult {
     }
     // 2026-11-15: 插件栏写的是 ~/.bolloon/rust/skills.json（与 run_plugin 同源）。
     //   系统提示把插件列进「可用技能」，所以 read_skill 也必须能读到，否则"存在却读不到"。
-    let plugins_path = crate::home::BolloonHome::resolve().root().join("skills.json");
+    let plugins_path = crate::home::BolloonHome::resolve()
+        .root()
+        .join("skills.json");
     if let Ok(raw) = std::fs::read_to_string(&plugins_path) {
         if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) {
             for v in arr {
@@ -173,7 +175,10 @@ async fn do_todo_add(call: ToolCall) -> ToolResult {
         Ok(id) => {
             save_todo(&dir, &list);
             ok(
-                format!("已加入待办 `{id}`。\n{}", list.progress().unwrap_or_default()),
+                format!(
+                    "已加入待办 `{id}`。\n{}",
+                    list.progress().unwrap_or_default()
+                ),
                 json!({ "id": id }),
             )
         }
@@ -201,7 +206,11 @@ async fn do_todo_list(_call: ToolCall) -> ToolResult {
     let output = format!(
         "{}\n\n{}",
         list.progress().unwrap_or_default(),
-        if body.is_empty() { "（空清单）".into() } else { body }
+        if body.is_empty() {
+            "（空清单）".into()
+        } else {
+            body
+        }
     );
     ok(output, json!({ "count": list.items.len() }))
 }
@@ -225,7 +234,10 @@ async fn do_todo_done(call: ToolCall) -> ToolResult {
         Ok(()) => {
             save_todo(&dir, &list);
             ok(
-                format!("已标记 `{id}` 完成。\n{}", list.progress().unwrap_or_default()),
+                format!(
+                    "已标记 `{id}` 完成。\n{}",
+                    list.progress().unwrap_or_default()
+                ),
                 json!({ "id": id }),
             )
         }
@@ -250,10 +262,7 @@ async fn do_remember(call: ToolCall) -> ToolResult {
         .and_then(|v| v.as_str())
         .unwrap_or("lesson")
         .to_string();
-    let ttl_ms = call
-        .arguments
-        .get("ttl_ms")
-        .and_then(|v| v.as_u64());
+    let ttl_ms = call.arguments.get("ttl_ms").and_then(|v| v.as_u64());
     let dir = agent_dir();
     let db = match MemoryDb::open(dir.join("memory.db").to_str().unwrap_or_default()) {
         Ok(d) => d,
@@ -287,7 +296,11 @@ async fn do_recall(call: ToolCall) -> ToolResult {
         .and_then(|v| v.as_str())
         .unwrap_or("default")
         .to_string();
-    let query = call.arguments.get("query").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let query = call
+        .arguments
+        .get("query")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let k = call
         .arguments
         .get("k")
@@ -358,7 +371,12 @@ async fn do_task_list(call: ToolCall) -> ToolResult {
     } else {
         items
             .iter()
-            .map(|a| format!("[{}] {} | {} | 预算 {}", a.id, a.capability, a.issuer, a.budget))
+            .map(|a| {
+                format!(
+                    "[{}] {} | {} | 预算 {}",
+                    a.id, a.capability, a.issuer, a.budget
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -402,51 +420,91 @@ fn def(name: &str, desc: &str, params: serde_json::Value, effect: EffectKind) ->
 
 pub fn domain_tool_defs() -> Vec<ToolDef> {
     vec![
-        def("read_skill", "读取一个已蒸馏的 skill 正文（只读）。", json!({
-            "type": "object",
-            "properties": { "name": { "type": "string", "description": "skill 名" } },
-            "required": ["name"], "additionalProperties": false
-        }), EffectKind::Read),
-        def("list_skills", "列出所有已蒸馏的 skill（只读）。", json!({
-            "type": "object", "properties": {}, "additionalProperties": false
-        }), EffectKind::Read),
-        def("todo_add", "往计划清单加一项（同一时刻只许一个 in_progress）。", json!({
-            "type": "object",
-            "properties": { "content": { "type": "string", "description": "待办内容" } },
-            "required": ["content"], "additionalProperties": false
-        }), EffectKind::Write),
-        def("todo_list", "查看当前计划清单与进度。", json!({
-            "type": "object", "properties": {}, "additionalProperties": false
-        }), EffectKind::Read),
-        def("todo_done", "标记一项为已完成。", json!({
-            "type": "object",
-            "properties": { "id": { "type": "string", "description": "待办项 id" } },
-            "required": ["id"], "additionalProperties": false
-        }), EffectKind::Write),
-        def("remember", "写入一条记忆（agent 长期记忆, sqlite 持久化）。", json!({
-            "type": "object",
-            "properties": {
-                "content": { "type": "string", "description": "记忆内容" },
-                "layer": { "type": "string", "description": "层: lesson/decision/run_fact/temporary（默认 lesson）" },
-                "agent_id": { "type": "string", "description": "可选, 默认 default" },
-                "ttl_ms": { "type": "integer", "description": "可选过期" }
-            },
-            "required": ["content"], "additionalProperties": false
-        }), EffectKind::Write),
-        def("recall", "召回记忆 top-k（只读）。本地 SQLite 为主源；配置了 hindsight 外挂时附带语义召回（行首 `~` 标注，来自语义记忆）。**建议传 query**（空 query 只翻本地库）。", json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "可选子串过滤" },
-                "k": { "type": "integer", "description": "可选, 默认 5" },
-                "agent_id": { "type": "string", "description": "可选, 默认 default" }
-            },
-            "additionalProperties": false
-        }), EffectKind::Read),
-        def("task_list", "查看协作任务看板（只读; 发布/认领需签名身份, 属独立批次）。", json!({
-            "type": "object",
-            "properties": { "capability": { "type": "string", "description": "可选按能力过滤" } },
-            "additionalProperties": false
-        }), EffectKind::Read),
+        def(
+            "read_skill",
+            "读取一个已蒸馏的 skill 正文（只读）。",
+            json!({
+                "type": "object",
+                "properties": { "name": { "type": "string", "description": "skill 名" } },
+                "required": ["name"], "additionalProperties": false
+            }),
+            EffectKind::Read,
+        ),
+        def(
+            "list_skills",
+            "列出所有已蒸馏的 skill（只读）。",
+            json!({
+                "type": "object", "properties": {}, "additionalProperties": false
+            }),
+            EffectKind::Read,
+        ),
+        def(
+            "todo_add",
+            "往计划清单加一项（同一时刻只许一个 in_progress）。",
+            json!({
+                "type": "object",
+                "properties": { "content": { "type": "string", "description": "待办内容" } },
+                "required": ["content"], "additionalProperties": false
+            }),
+            EffectKind::Write,
+        ),
+        def(
+            "todo_list",
+            "查看当前计划清单与进度。",
+            json!({
+                "type": "object", "properties": {}, "additionalProperties": false
+            }),
+            EffectKind::Read,
+        ),
+        def(
+            "todo_done",
+            "标记一项为已完成。",
+            json!({
+                "type": "object",
+                "properties": { "id": { "type": "string", "description": "待办项 id" } },
+                "required": ["id"], "additionalProperties": false
+            }),
+            EffectKind::Write,
+        ),
+        def(
+            "remember",
+            "写入一条记忆（agent 长期记忆, sqlite 持久化）。",
+            json!({
+                "type": "object",
+                "properties": {
+                    "content": { "type": "string", "description": "记忆内容" },
+                    "layer": { "type": "string", "description": "层: lesson/decision/run_fact/temporary（默认 lesson）" },
+                    "agent_id": { "type": "string", "description": "可选, 默认 default" },
+                    "ttl_ms": { "type": "integer", "description": "可选过期" }
+                },
+                "required": ["content"], "additionalProperties": false
+            }),
+            EffectKind::Write,
+        ),
+        def(
+            "recall",
+            "召回记忆 top-k（只读）。本地 SQLite 为主源；配置了 hindsight 外挂时附带语义召回（行首 `~` 标注，来自语义记忆）。**建议传 query**（空 query 只翻本地库）。",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "可选子串过滤" },
+                    "k": { "type": "integer", "description": "可选, 默认 5" },
+                    "agent_id": { "type": "string", "description": "可选, 默认 default" }
+                },
+                "additionalProperties": false
+            }),
+            EffectKind::Read,
+        ),
+        def(
+            "task_list",
+            "查看协作任务看板（只读; 发布/认领需签名身份, 属独立批次）。",
+            json!({
+                "type": "object",
+                "properties": { "capability": { "type": "string", "description": "可选按能力过滤" } },
+                "additionalProperties": false
+            }),
+            EffectKind::Read,
+        ),
     ]
 }
 
@@ -462,18 +520,29 @@ mod tests {
     }
 
     fn call(name: &str, args: serde_json::Value) -> ToolCall {
-        ToolCall { id: "c1".into(), name: name.into(), arguments: args }
+        ToolCall {
+            id: "c1".into(),
+            name: name.into(),
+            arguments: args,
+        }
     }
 
     #[tokio::test]
     async fn todo_roundtrip_add_list_done() {
         let (_guard, _d) = setup();
-        let r = DomainExecutor.execute(call("todo_add", json!({ "content": "写迁移报告" }))).await;
+        let r = DomainExecutor
+            .execute(call("todo_add", json!({ "content": "写迁移报告" })))
+            .await;
         assert!(r.ok, "{}", r.output);
-        let id = r.evidence.as_ref().unwrap()["id"].as_str().unwrap().to_string();
+        let id = r.evidence.as_ref().unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let lst = DomainExecutor.execute(call("todo_list", json!({}))).await;
         assert!(lst.output.contains(&id));
-        let done = DomainExecutor.execute(call("todo_done", json!({ "id": id }))).await;
+        let done = DomainExecutor
+            .execute(call("todo_done", json!({ "id": id })))
+            .await;
         assert!(done.ok, "{}", done.output);
         assert!(done.output.contains("完成"));
     }
@@ -483,17 +552,25 @@ mod tests {
         let (_guard, _d) = setup();
         let r = DomainExecutor.execute(call("todo_add", json!({}))).await;
         assert!(!r.ok);
-        assert_eq!(r.evidence.as_ref().unwrap()["error"]["code"], "invalid_argument");
+        assert_eq!(
+            r.evidence.as_ref().unwrap()["error"]["code"],
+            "invalid_argument"
+        );
     }
 
     #[tokio::test]
     async fn remember_and_recall() {
         let (_guard, _d) = setup();
         let r = DomainExecutor
-            .execute(call("remember", json!({ "content": "rust 用 ureq 而非 reqwest", "layer": "lesson" })))
+            .execute(call(
+                "remember",
+                json!({ "content": "rust 用 ureq 而非 reqwest", "layer": "lesson" }),
+            ))
             .await;
         assert!(r.ok, "{}", r.output);
-        let rc = DomainExecutor.execute(call("recall", json!({ "query": "ureq" }))).await;
+        let rc = DomainExecutor
+            .execute(call("recall", json!({ "query": "ureq" })))
+            .await;
         assert!(rc.ok, "{}", rc.output);
         assert!(rc.output.contains("ureq"), "{}", rc.output);
     }
@@ -503,7 +580,9 @@ mod tests {
         let (_guard, _d) = setup();
         // 空目录 ⇒ 无 skill
         let _ = std::fs::remove_file(_d.join("skills.json"));
-        let r = DomainExecutor.execute(call("read_skill", json!({ "name": "nope" }))).await;
+        let r = DomainExecutor
+            .execute(call("read_skill", json!({ "name": "nope" })))
+            .await;
         assert!(!r.ok);
         assert_eq!(r.evidence.as_ref().unwrap()["error"]["code"], "not_found");
     }
@@ -511,7 +590,11 @@ mod tests {
     #[test]
     fn domain_tools_are_allowed_locally() {
         for d in domain_tool_defs() {
-            assert!(d.default_allowed, "{} 是 agent 本地状态, 应默认允许", d.name);
+            assert!(
+                d.default_allowed,
+                "{} 是 agent 本地状态, 应默认允许",
+                d.name
+            );
         }
     }
 }

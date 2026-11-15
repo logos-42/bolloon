@@ -33,7 +33,13 @@ pub fn sanitize_channel(channel: Option<&str>) -> String {
     let s = channel.unwrap_or("");
     let cleaned: String = s
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if cleaned.is_empty() {
         "default".to_string()
@@ -59,13 +65,23 @@ pub fn looks_secret(line: &str) -> bool {
         return true;
     }
     let lower = line.to_lowercase();
-    for kw in ["privatekey", "private_key", "mnemonic", "助记词", "seedphrase", "seed_phrase"] {
+    for kw in [
+        "privatekey",
+        "private_key",
+        "mnemonic",
+        "助记词",
+        "seedphrase",
+        "seed_phrase",
+    ] {
         if contains_word(&lower, kw) {
             return true;
         }
     }
     // 助记词形态: 去掉前导非字母后, 整行是 12–30 个 3–8 位小写词
-    let trimmed: String = line.trim_start_matches(|c: char| !c.is_ascii_alphabetic()).trim().to_string();
+    let trimmed: String = line
+        .trim_start_matches(|c: char| !c.is_ascii_alphabetic())
+        .trim()
+        .to_string();
     let words: Vec<&str> = trimmed.split_whitespace().collect();
     if (12..=30).contains(&words.len())
         && words
@@ -80,10 +96,7 @@ pub fn looks_secret(line: &str) -> bool {
 fn is_hex64(s: &str) -> bool {
     // `0x` + 64 位 hex (或裸 64 位 hex)
     let body = s.trim_start_matches("0x");
-    let hex: String = body
-        .chars()
-        .take_while(|c| c.is_ascii_hexdigit())
-        .collect();
+    let hex: String = body.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
     if hex.len() != 64 {
         return false;
     }
@@ -122,7 +135,9 @@ pub fn load_input_history(channel: Option<&str>) -> Vec<String> {
                 if line.is_empty() {
                     continue;
                 }
-                if let Ok(serde_json::Value::String(v)) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Ok(serde_json::Value::String(v)) =
+                    serde_json::from_str::<serde_json::Value>(line)
+                {
                     if !v.trim().is_empty() {
                         out.push(v);
                     }
@@ -145,7 +160,10 @@ pub fn append_input_history(line: &str, channel: Option<&str>) -> bool {
         return false;
     }
     if looks_secret(v) {
-        eprintln!("[input-history] 这行看着像密钥/助记词, **不写历史** (长度 {})", v.len());
+        eprintln!(
+            "[input-history] 这行看着像密钥/助记词, **不写历史** (长度 {})",
+            v.len()
+        );
         return false;
     }
     let file = history_file(channel);
@@ -203,7 +221,10 @@ mod tests {
     /// 渠道名消毒: 防路径穿越
     #[test]
     fn channel_is_sanitized() {
-        assert_eq!(sanitize_channel(Some("../../etc/passwd")), ".._.._etc_passwd");
+        assert_eq!(
+            sanitize_channel(Some("../../etc/passwd")),
+            ".._.._etc_passwd"
+        );
         assert_eq!(sanitize_channel(None), "default");
         assert_eq!(sanitize_channel(Some("")), "default");
         let long = "a".repeat(100);
@@ -216,7 +237,9 @@ mod tests {
         let hex64 = format!("0x{}", "a".repeat(64));
         assert!(looks_secret(&hex64), "64 位 hex 私钥必须被认出");
         assert!(looks_secret("我的 privateKey 是 xxx"));
-        assert!(looks_secret("abandon ability able about above absent absorb abstract absurd abuse access accident account"));
+        assert!(looks_secret(
+            "abandon ability able about above absent absorb abstract absurd abuse access accident account"
+        ));
         // 40 位 hex 地址是公开的 ⇒ **不拦**
         assert!(!looks_secret(&format!("0x{}", "b".repeat(40))));
         assert!(!looks_secret("帮我看一下 src/index.ts"));
@@ -240,7 +263,10 @@ mod tests {
     /// 秘密输入直接跳过 (返回 false)
     #[test]
     fn append_refuses_secret() {
-        assert!(!append_input_history(&format!("0x{}", "c".repeat(64)), Some("test-secret")));
+        assert!(!append_input_history(
+            &format!("0x{}", "c".repeat(64)),
+            Some("test-secret")
+        ));
         assert!(!append_input_history("", Some("test-secret")));
     }
 

@@ -24,7 +24,7 @@ use crate::envelope::canonical_json;
 use crate::group_orbit::GroupAcl;
 use crate::identity::KeyPair;
 use crate::oplog::{OpEntry, OpLog, OpLogError, WriteAcl};
-use crate::replication::{replicate, BlockExchange, ReplicationReport};
+use crate::replication::{BlockExchange, ReplicationReport, replicate};
 
 /// manifest 版本 (冻结: 变了就是另一种 store, 不能混开)
 pub const MANIFEST_VERSION: u8 = 1;
@@ -170,7 +170,10 @@ impl OrbitStore {
         }
         std::fs::create_dir_all(dir.join("blocks"))?;
         write_atomic(&mpath, &serde_json::to_vec_pretty(&manifest)?)?;
-        write_atomic(&heads_path_of(root, &address), &serde_json::to_vec(&serde_json::json!({ "heads": [] }))?)?;
+        write_atomic(
+            &heads_path_of(root, &address),
+            &serde_json::to_vec(&serde_json::json!({ "heads": [] }))?,
+        )?;
         let acl = manifest.write_acl();
         Ok(Self {
             root: root.to_path_buf(),
@@ -197,7 +200,10 @@ impl OrbitStore {
         }
         let actual = manifest.address();
         if actual != address {
-            return Err(OrbitStoreError::AddressMismatch { claimed: address.into(), actual });
+            return Err(OrbitStoreError::AddressMismatch {
+                claimed: address.into(),
+                actual,
+            });
         }
 
         // 重放全部块 → 重建 oplog
@@ -219,7 +225,12 @@ impl OrbitStore {
         // join: ACL 门 + prev 完整性 (缺块 = 真缺, 如实报错)
         log.join(&good)?;
 
-        let store = Self { root: root.to_path_buf(), manifest, log, corrupt_blocks: corrupt };
+        let store = Self {
+            root: root.to_path_buf(),
+            manifest,
+            log,
+            corrupt_blocks: corrupt,
+        };
         store.write_heads()?;
         Ok(store)
     }
@@ -372,7 +383,8 @@ mod tests {
     }
 
     fn tmp_root(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("bolloon-orbit-store-{tag}-{}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("bolloon-orbit-store-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -398,8 +410,12 @@ mod tests {
         let k = kp(1);
         let manifest = StoreManifest::group("群", k.did.as_str(), &GroupAcl::OwnerOnly, 1000);
         let mut store = OrbitStore::open_or_create(&root, manifest.clone()).unwrap();
-        let e1 = store.append(&k, serde_json::json!({"text": "m1"}), 1000).unwrap();
-        let e2 = store.append(&k, serde_json::json!({"text": "m2"}), 2000).unwrap();
+        let e1 = store
+            .append(&k, serde_json::json!({"text": "m1"}), 1000)
+            .unwrap();
+        let e2 = store
+            .append(&k, serde_json::json!({"text": "m2"}), 2000)
+            .unwrap();
         assert_eq!(store.len(), 2);
         let addr = store.address();
 
@@ -435,7 +451,9 @@ mod tests {
         let k = kp(1);
         let manifest = StoreManifest::group("群", k.did.as_str(), &GroupAcl::OwnerOnly, 1000);
         let mut store = OrbitStore::open_or_create(&root, manifest).unwrap();
-        let e = store.append(&k, serde_json::json!({"text": "真消息"}), 1000).unwrap();
+        let e = store
+            .append(&k, serde_json::json!({"text": "真消息"}), 1000)
+            .unwrap();
         let addr = store.address();
 
         // 篡改块文件里的载荷 (hash 对不上)
@@ -471,7 +489,10 @@ mod tests {
             1000,
         );
         let mut s2 = OrbitStore::open_or_create(&root, m2).unwrap();
-        assert!(s2.append(&member, serde_json::json!({"text": "hi"}), 1).is_ok());
+        assert!(
+            s2.append(&member, serde_json::json!({"text": "hi"}), 1)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -481,7 +502,11 @@ mod tests {
         let stranger = kp(9);
         let manifest = StoreManifest::group("开放群", owner.did.as_str(), &GroupAcl::Open, 1000);
         let mut store = OrbitStore::open_or_create(&root, manifest).unwrap();
-        assert!(store.append(&stranger, serde_json::json!({"text": "hi"}), 1).is_ok());
+        assert!(
+            store
+                .append(&stranger, serde_json::json!({"text": "hi"}), 1)
+                .is_ok()
+        );
         assert_eq!(store.len(), 1);
     }
 
@@ -500,7 +525,10 @@ mod tests {
         v["name"] = serde_json::json!("被改的群名");
         std::fs::write(&mpath, serde_json::to_vec(&v).unwrap()).unwrap();
         let err = OrbitStore::open_by_address(&root, &addr).unwrap_err();
-        assert!(matches!(err, OrbitStoreError::AddressMismatch { .. }), "{err:?}");
+        assert!(
+            matches!(err, OrbitStoreError::AddressMismatch { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -512,7 +540,12 @@ mod tests {
         assert!(!acl.allows("did:pi:x"));
         let open = StoreManifest::group("群", "did:pi:o", &GroupAcl::Open, 1);
         assert!(open.write_acl().allows("did:pi:anyone"));
-        let wl = StoreManifest::group("群", "did:pi:o", &GroupAcl::Whitelist(vec!["did:pi:m".into()]), 1);
+        let wl = StoreManifest::group(
+            "群",
+            "did:pi:o",
+            &GroupAcl::Whitelist(vec!["did:pi:m".into()]),
+            1,
+        );
         assert!(wl.write_acl().allows("did:pi:m"));
         assert!(!wl.write_acl().allows("did:pi:z"));
         let _ = WriteAcl::owner_only("x");

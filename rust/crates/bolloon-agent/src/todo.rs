@@ -52,7 +52,7 @@ fn can_transition(from: TodoStatus, to: TodoStatus) -> bool {
             | (InProgress, Pending)      // 打回重做
             | (InProgress, Cancelled)
             | (Completed, InProgress)    // 复工
-            | (Cancelled, Pending)       // 恢复
+            | (Cancelled, Pending) // 恢复
     )
 }
 
@@ -211,7 +211,10 @@ mod tests {
         let mut t = TodoList::new();
         let a = t.add("A", 1).unwrap();
         t.set_status(&a, TodoStatus::InProgress, 2).unwrap();
-        assert!(t.set_status(&a, TodoStatus::InProgress, 3).is_ok(), "同状态幂等");
+        assert!(
+            t.set_status(&a, TodoStatus::InProgress, 3).is_ok(),
+            "同状态幂等"
+        );
     }
 
     #[test]
@@ -232,7 +235,10 @@ mod tests {
 
     #[test]
     fn empty_list_no_progress_injection() {
-        assert!(TodoList::new().progress().is_none(), "空清单不注入 (防上下文腐烂)");
+        assert!(
+            TodoList::new().progress().is_none(),
+            "空清单不注入 (防上下文腐烂)"
+        );
     }
 
     #[test]
@@ -241,6 +247,9 @@ mod tests {
         let a = t.add("A", 1).unwrap();
         t.set_status(&a, TodoStatus::InProgress, 2).unwrap();
         t.set_status(&a, TodoStatus::Completed, 3).unwrap();
-        assert!(t.set_status(&a, TodoStatus::InProgress, 4).is_ok(), "复工允许");
+        assert!(
+            t.set_status(&a, TodoStatus::InProgress, 4).is_ok(),
+            "复工允许"
+        );
     }
 }

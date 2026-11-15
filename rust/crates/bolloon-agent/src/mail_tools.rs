@@ -9,11 +9,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bolloon_harness::{EffectKind, ToolCall, ToolDef, ToolExecutor, ToolResult};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::mail::{MailDraft, MailId, MailQuery, MailService};
 
-fn result(ok: bool, output: String, evidence: Option<Value>, started: std::time::Instant) -> ToolResult {
+fn result(
+    ok: bool,
+    output: String,
+    evidence: Option<Value>,
+    started: std::time::Instant,
+) -> ToolResult {
     ToolResult {
         ok,
         output,
@@ -65,7 +70,8 @@ pub fn mail_tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "mail_read".into(),
-            description: "读取一封邮件的正文（本地有缓存就用缓存，没有则向账号拉取一次）。只读。".into(),
+            description: "读取一封邮件的正文（本地有缓存就用缓存，没有则向账号拉取一次）。只读。"
+                .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -90,7 +96,8 @@ pub fn mail_tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "mail_send".into(),
-            description: "发送一封邮件。硬约束：只允许单收件人；正文含密码/OTP/私钥/卡号会被拒绝。".into(),
+            description: "发送一封邮件。硬约束：只允许单收件人；正文含密码/OTP/私钥/卡号会被拒绝。"
+                .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -132,7 +139,12 @@ impl MailExecutor {
                 "inbox_cursor": cursor.map(|(v, u)| json!({ "uidvalidity": v, "last_uid": u })),
             }));
         }
-        result(true, serde_json::to_string_pretty(&out).unwrap_or_default(), Some(json!({ "count": out.len() })), started)
+        result(
+            true,
+            serde_json::to_string_pretty(&out).unwrap_or_default(),
+            Some(json!({ "count": out.len() })),
+            started,
+        )
     }
 
     async fn search(&self, call: &ToolCall, started: std::time::Instant) -> ToolResult {
@@ -140,26 +152,54 @@ impl MailExecutor {
         let q = MailQuery {
             account: a.get("account").and_then(|v| v.as_str()).map(String::from),
             mailbox: a.get("mailbox").and_then(|v| v.as_str()).map(String::from),
-            unread_only: a.get("unread_only").and_then(|v| v.as_bool()).unwrap_or(false),
+            unread_only: a
+                .get("unread_only")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             keyword: a.get("keyword").and_then(|v| v.as_str()).map(String::from),
             limit: Some(a.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize),
         };
         match self.svc.list(&q) {
             Ok(list) => {
                 let n = list.len();
-                result(true, serde_json::to_string_pretty(&list).unwrap_or_default(), Some(json!({ "count": n })), started)
+                result(
+                    true,
+                    serde_json::to_string_pretty(&list).unwrap_or_default(),
+                    Some(json!({ "count": n })),
+                    started,
+                )
             }
-            Err(e) => result(false, format!("{}: {}", e.kind(), e.message()), Some(json!({ "error": e.kind() })), started),
+            Err(e) => result(
+                false,
+                format!("{}: {}", e.kind(), e.message()),
+                Some(json!({ "error": e.kind() })),
+                started,
+            ),
         }
     }
 
     async fn read(&self, call: &ToolCall, started: std::time::Instant) -> ToolResult {
         let Some(id) = call.arguments.get("id").and_then(|v| v.as_str()) else {
-            return result(false, "缺少参数 id".into(), Some(json!({ "error": "missing_id" })), started);
+            return result(
+                false,
+                "缺少参数 id".into(),
+                Some(json!({ "error": "missing_id" })),
+                started,
+            );
         };
         match self.svc.read(&MailId(id.to_string())).await {
-            Ok(body) => result(true, serde_json::to_string_pretty(&body).unwrap_or_default(), Some(json!({ "id": id })), started),
-            Err(e) => result(false, format!("{}: {}", e.kind(), e.message()), Some(json!({ "error": e.kind(), "id": id })), started),
+            Ok(body) => result(
+                true,
+                serde_json::to_string_pretty(&body).unwrap_or_default(),
+                Some(json!({ "id": id })),
+                started,
+            ),
+            Err(e) => result(
+                false,
+                format!("{}: {}", e.kind(), e.message()),
+                Some(json!({ "error": e.kind(), "id": id })),
+                started,
+            ),
         }
     }
 
@@ -176,22 +216,50 @@ impl MailExecutor {
 
     async fn send(&self, call: &ToolCall, started: std::time::Instant) -> ToolResult {
         let a = &call.arguments;
-        let account = a.get("account").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let account = a
+            .get("account")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
         let to: Vec<String> = match a.get("to") {
-            Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
             Some(Value::String(s)) => vec![s.clone()],
             _ => vec![],
         };
         let draft = MailDraft {
             account,
             to,
-            subject: a.get("subject").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            text: a.get("text").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            in_reply_to: a.get("in_reply_to").and_then(|v| v.as_str()).map(String::from),
+            subject: a
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            text: a
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            in_reply_to: a
+                .get("in_reply_to")
+                .and_then(|v| v.as_str())
+                .map(String::from),
         };
         match self.svc.send(&draft).await {
-            Ok(id) => result(true, format!("已提交: {id}"), Some(json!({ "id": id.to_string() })), started),
-            Err(e) => result(false, format!("{}: {}", e.kind(), e.message()), Some(json!({ "error": e.kind() })), started),
+            Ok(id) => result(
+                true,
+                format!("已提交: {id}"),
+                Some(json!({ "id": id.to_string() })),
+                started,
+            ),
+            Err(e) => result(
+                false,
+                format!("{}: {}", e.kind(), e.message()),
+                Some(json!({ "error": e.kind() })),
+                started,
+            ),
         }
     }
 }
@@ -247,7 +315,11 @@ mod tests {
     }
 
     fn call(name: &str, args: Value) -> ToolCall {
-        ToolCall { id: "t1".into(), name: name.into(), arguments: args }
+        ToolCall {
+            id: "t1".into(),
+            name: name.into(),
+            arguments: args,
+        }
     }
 
     #[tokio::test]
@@ -268,7 +340,9 @@ mod tests {
         assert!(r.ok, "{}", r.output);
         assert!(r.output.contains("已提交"));
 
-        let s = ex.execute(call("mail_search", json!({ "keyword": "报价" }))).await;
+        let s = ex
+            .execute(call("mail_search", json!({ "keyword": "报价" })))
+            .await;
         assert!(s.ok, "{}", s.output);
         assert!(s.output.contains("报价单"));
 

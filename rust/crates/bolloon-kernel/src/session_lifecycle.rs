@@ -174,7 +174,14 @@ impl SessionLifecycle {
     /// composeRunSeed：把历史尾部 + 运行种子合并成新 run 的初始上下文
     /// 规则：取最近 N 条（默认 20），与 run_seed 合并
     pub fn compose_run_seed(&self, state: &SessionState, tail: usize) -> serde_json::Value {
-        let history: Vec<SessionMessage> = state.messages.iter().rev().take(tail).rev().cloned().collect();
+        let history: Vec<SessionMessage> = state
+            .messages
+            .iter()
+            .rev()
+            .take(tail)
+            .rev()
+            .cloned()
+            .collect();
         serde_json::json!({
             "history": history,
             "seed": state.run_seed,

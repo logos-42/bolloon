@@ -14,33 +14,29 @@
 //! - dual_core       双核 Kernel — 对等互维互保 + 间隔相位心跳 (staggered phase)
 
 pub mod channel_actor;
-pub mod model_runtime;
 pub mod control;
+pub mod cron;
+pub mod dual_core;
+pub mod ha;
+pub mod model_runtime;
+pub mod orphan_recovery;
 pub mod run_lifecycle;
 pub mod session_lifecycle;
 pub mod transport;
-pub mod cron;
-pub mod ha;
-pub mod dual_core;
-pub mod orphan_recovery;
 
-pub use channel_actor::{
-    ChannelActor, ChannelEvent, ChannelHandle, ChannelId, SerialMailbox,
-};
-pub use model_runtime::{
-    ModelRuntime, ModelLease, ModelSnapshot, ProviderId, RuntimeError,
-};
+pub use channel_actor::{ChannelActor, ChannelEvent, ChannelHandle, ChannelId, SerialMailbox};
 pub use control::{Control, ControlCommand, ControlHandle, ControlState};
+pub use dual_core::{
+    Beat, BeatSchedule, CoreId, DualArbiter, DualGuard, FencingToken, HeartbeatStore, PeerHealth,
+    TakeoverDecision,
+};
+pub use ha::{GuardStatus, HeartbeatArbiter, HeartbeatGuard, HeartbeatState, RecoveryAction};
+pub use model_runtime::{ModelLease, ModelRuntime, ModelSnapshot, ProviderId, RuntimeError};
 pub use run_lifecycle::{
-    RunLifecycle, RunEvent, RunId, RunStatus, RunStore, StepRecord, NoopRunStore,
+    NoopRunStore, RunEvent, RunId, RunLifecycle, RunStatus, RunStore, StepRecord,
 };
 pub use session_lifecycle::{
-    SessionLifecycle, SessionState, SessionEvent, SessionId, SessionMessage,
-    SessionStore, MemorySessionStore, is_internal_chatter,
+    MemorySessionStore, SessionEvent, SessionId, SessionLifecycle, SessionMessage, SessionState,
+    SessionStore, is_internal_chatter,
 };
-pub use transport::{Transport, TransportPort, PeerInfo, TransportMessage, TransportError};
-pub use ha::{HeartbeatArbiter, HeartbeatGuard, HeartbeatState, GuardStatus, RecoveryAction};
-pub use dual_core::{
-    BeatSchedule, Beat, CoreId, FencingToken, PeerHealth, TakeoverDecision, HeartbeatStore,
-    DualArbiter, DualGuard,
-};
+pub use transport::{PeerInfo, Transport, TransportError, TransportMessage, TransportPort};

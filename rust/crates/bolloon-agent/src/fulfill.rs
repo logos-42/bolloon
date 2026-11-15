@@ -48,9 +48,7 @@ pub fn clarify_question(category: IntentCategory) -> &'static str {
         IntentCategory::Learn => "想学什么? 目标到什么水平? 每周能投入多少时间?",
         IntentCategory::Trade => "买还是卖? 具体什么东西? 预算区间?",
         IntentCategory::Travel => "想去哪? 什么时候出发? 预算大概多少?",
-        IntentCategory::Other => {
-            "能多说一点吗? 你想要的是链接、信息、服务, 还是想认识人?"
-        }
+        IntentCategory::Other => "能多说一点吗? 你想要的是链接、信息、服务, 还是想认识人?",
     }
 }
 
@@ -89,9 +87,8 @@ pub fn fulfill(
                 kind: ActionKind::Link,
             }],
             reply_to: Some(ctx.intent_id.clone()),
-        
-        
-    content_rating: None,
+
+            content_rating: None,
         });
     }
 
@@ -118,21 +115,22 @@ pub fn fulfill(
                 tags: tags.clone(),
                 actions: vec![],
                 reply_to: Some(ctx.intent_id.clone()),
-            
-            
-    content_rating: None,
-        });
+
+                content_rating: None,
+            });
         }
     }
 
     // ② 内容卡: Social/Work 场景带出对外内容卡 (有就用, 没有标草稿让用户维护)
-    if matches!(intent.category, IntentCategory::Social | IntentCategory::Work) {
+    if matches!(
+        intent.category,
+        IntentCategory::Social | IntentCategory::Work
+    ) {
         match &ctx.profile {
             Some(p) => cards.push(profile_card_of(p, intent, provider_did, ctx, now_ms)),
             None => cards.push(WorldCard {
                 title: "关于我 (草稿 · 待维护)".into(),
-                summary: "还没有对外内容卡。补上名字/介绍/兴趣后, 认识人或投简历都能用它。"
-                    .into(),
+                summary: "还没有对外内容卡。补上名字/介绍/兴趣后, 认识人或投简历都能用它。".into(),
                 media: vec![],
                 cover: None,
                 provider_did: provider_did.into(),
@@ -144,10 +142,9 @@ pub fn fulfill(
                 tags: tags.clone(),
                 actions: vec![],
                 reply_to: Some(ctx.intent_id.clone()),
-            
-            
-    content_rating: None,
-        }),
+
+                content_rating: None,
+            }),
         }
     }
 
@@ -185,9 +182,8 @@ pub fn fulfill(
             tags: tags.clone(),
             actions: vec![],
             reply_to: Some(ctx.intent_id.clone()),
-        
-        
-    content_rating: None,
+
+            content_rating: None,
         });
     } else {
         note = format!("交付 {} 张卡片", cards.len());
@@ -203,7 +199,12 @@ pub fn fulfill(
         note.push_str(" · 已附澄清问题");
     }
 
-    Fulfillment { cards, question, paths: gap.paths.clone(), note }
+    Fulfillment {
+        cards,
+        question,
+        paths: gap.paths.clone(),
+        note,
+    }
 }
 
 /// profile → 世界卡 (复用 `profile::to_world_card`, 补行动链接与 reply_to)
@@ -214,8 +215,7 @@ fn profile_card_of(
     ctx: &FulfillContext,
     now_ms: u64,
 ) -> WorldCard {
-    let mut card =
-        crate::profile::to_world_card(p, provider_did, intent.category, now_ms);
+    let mut card = crate::profile::to_world_card(p, provider_did, intent.category, now_ms);
     card.actions = vec![CardAction {
         label: "联系我".into(),
         url: provider_did.into(),
@@ -229,7 +229,7 @@ fn profile_card_of(
 mod tests {
     use super::*;
     use crate::gap::{CapabilityInventory, detect_gaps};
-    use crate::world::{classify_intent, CardScope, Intent};
+    use crate::world::{CardScope, Intent, classify_intent};
 
     fn intent_of(text: &str) -> Intent {
         let c = classify_intent(text);
@@ -246,18 +246,33 @@ mod tests {
     }
 
     fn ctx_of(links: Vec<LinkHit>) -> FulfillContext {
-        FulfillContext { intent_id: "intent-1".into(), links, profile: None, search_text: None }
+        FulfillContext {
+            intent_id: "intent-1".into(),
+            links,
+            profile: None,
+            search_text: None,
+        }
     }
 
     /// 真跑过搜索但解不出结构化链接 → 原文装进内容卡 (不编 URL)
     #[test]
     fn raw_search_text_becomes_content_card() {
         let intent = intent_of("我想吃饭");
-        let gap = detect_gaps(&intent, &CapabilityInventory { has_web_search: true, ..Default::default() });
+        let gap = detect_gaps(
+            &intent,
+            &CapabilityInventory {
+                has_web_search: true,
+                ..Default::default()
+            },
+        );
         let mut ctx = ctx_of(vec![]);
         ctx.search_text = Some("[搜索] 我想吃饭\n\n<html>一堆非 JSON 原文…</html>".into());
         let f = fulfill(&intent, &gap, &ctx, "did:pi:me", 42);
-        let raw = f.cards.iter().find(|c| c.title.contains("检索结果")).expect("应有原文卡");
+        let raw = f
+            .cards
+            .iter()
+            .find(|c| c.title.contains("检索结果"))
+            .expect("应有原文卡");
         assert_eq!(raw.media.len(), 1);
         assert!(raw.media[0].url.contains("非 JSON 原文"));
         assert!(raw.actions.is_empty(), "原文卡不带行动链接 (不编 URL)");
@@ -266,10 +281,25 @@ mod tests {
     #[test]
     fn links_become_action_cards_with_real_urls() {
         let intent = intent_of("我在杭州找后端开发的工作");
-        let gap = detect_gaps(&intent, &CapabilityInventory { has_web_fetch: true, has_web_search: true, ..Default::default() });
+        let gap = detect_gaps(
+            &intent,
+            &CapabilityInventory {
+                has_web_fetch: true,
+                has_web_search: true,
+                ..Default::default()
+            },
+        );
         let links = vec![
-            LinkHit { title: "职位A".into(), url: "https://jobs.example.com/a".into(), note: Some("杭州·后端".into()) },
-            LinkHit { title: "职位B".into(), url: "https://jobs.example.com/b".into(), note: None },
+            LinkHit {
+                title: "职位A".into(),
+                url: "https://jobs.example.com/a".into(),
+                note: Some("杭州·后端".into()),
+            },
+            LinkHit {
+                title: "职位B".into(),
+                url: "https://jobs.example.com/b".into(),
+                note: None,
+            },
         ];
         let f = fulfill(&intent, &gap, &ctx_of(links), "did:pi:me", 42);
         assert_eq!(f.cards.len(), 3, "2 张链接卡 + 1 张 profile 草稿卡");
@@ -292,9 +322,14 @@ mod tests {
         // 零链接 → 不许编 URL, 只出补能力说明卡
         assert!(f.cards.iter().all(|c| c.actions.is_empty()));
         assert!(f.cards[0].title.contains("补能力计划"));
-        assert!(f.cards[0].summary.contains("Install") || f.cards[0].summary.contains("先接网络能力"));
+        assert!(
+            f.cards[0].summary.contains("Install") || f.cards[0].summary.contains("先接网络能力")
+        );
         // Vague 必附澄清问题
-        assert_eq!(f.question.as_deref(), Some(clarify_question(IntentCategory::Food)));
+        assert_eq!(
+            f.question.as_deref(),
+            Some(clarify_question(IntentCategory::Food))
+        );
     }
 
     #[test]
@@ -302,7 +337,11 @@ mod tests {
         let intent = intent_of("想认识一些爬山的朋友");
         let gap = detect_gaps(&intent, &CapabilityInventory::default());
         let f = fulfill(&intent, &gap, &ctx_of(vec![]), "did:pi:me", 42);
-        let draft = f.cards.iter().find(|c| c.title.contains("关于我")).expect("应有草稿卡");
+        let draft = f
+            .cards
+            .iter()
+            .find(|c| c.title.contains("关于我"))
+            .expect("应有草稿卡");
         assert!(draft.summary.contains("自我介绍卡") || draft.summary.contains("对外内容卡"));
         assert_eq!(draft.scope, CardScope::Private);
     }
@@ -319,7 +358,11 @@ mod tests {
             updated_at_ms: 7,
         });
         let f = fulfill(&intent, &gap, &ctx, "did:pi:me", 42);
-        let pc = f.cards.iter().find(|c| c.title.contains("小李")).expect("应有内容卡");
+        let pc = f
+            .cards
+            .iter()
+            .find(|c| c.title.contains("小李"))
+            .expect("应有内容卡");
         assert!(pc.summary.contains("爱爬山"));
         assert!(pc.actions.iter().any(|a| a.kind == ActionKind::Contact));
     }
@@ -328,9 +371,19 @@ mod tests {
     #[test]
     fn link_cards_capped_at_three() {
         let intent = intent_of("我在杭州找后端开发的工作");
-        let gap = detect_gaps(&intent, &CapabilityInventory { has_web_search: true, ..Default::default() });
+        let gap = detect_gaps(
+            &intent,
+            &CapabilityInventory {
+                has_web_search: true,
+                ..Default::default()
+            },
+        );
         let links: Vec<LinkHit> = (0..10)
-            .map(|i| LinkHit { title: format!("职位{i}"), url: format!("https://j.example/{i}"), note: None })
+            .map(|i| LinkHit {
+                title: format!("职位{i}"),
+                url: format!("https://j.example/{i}"),
+                note: None,
+            })
             .collect();
         let f = fulfill(&intent, &gap, &ctx_of(links), "did:pi:me", 42);
         let link_cards = f.cards.iter().filter(|c| !c.actions.is_empty()).count();

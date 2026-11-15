@@ -6,10 +6,10 @@
 //! 注意: 本工具**只检查**, 不下载/安装（`UpdateSource::download` 返回未实现）——安装是独立流程。
 //! Network effect, 只读 ⇒ `default_allowed: true`。
 
-use async_trait::async_trait;
-use bolloon_harness::{EffectKind, ToolCall, ToolDef, ToolExecutor, ToolResult};
 use crate::tool_contract::{ErrorCode, error_evidence};
 use crate::updater::{UpdateInfo, UpdateSource};
+use async_trait::async_trait;
+use bolloon_harness::{EffectKind, ToolCall, ToolDef, ToolExecutor, ToolResult};
 
 /// 从任意响应体里抠出第一个 `v?x.y.z`
 fn extract_version(s: &str) -> Option<String> {
@@ -63,18 +63,19 @@ impl UpdateSource for HttpUpdateSource {
 }
 
 async fn do_check_update(_call: ToolCall) -> ToolResult {
-    let url = match std::env::var("BOLLOON_UPDATE_URL") {
-        Ok(u) if !u.trim().is_empty() => u,
-        _ => {
-            return ToolResult {
+    let url =
+        match std::env::var("BOLLOON_UPDATE_URL") {
+            Ok(u) if !u.trim().is_empty() => u,
+            _ => return ToolResult {
                 ok: false,
-                output: "check_update 未配置更新源: 设置 BOLLOON_UPDATE_URL（返回 x.y.z 版本号）后可用".into(),
+                output:
+                    "check_update 未配置更新源: 设置 BOLLOON_UPDATE_URL（返回 x.y.z 版本号）后可用"
+                        .into(),
                 elapsed_ms: 0,
                 verified: Some(false),
                 evidence: Some(error_evidence(ErrorCode::Unwired, "缺少更新源配置")),
-            }
-        }
-    };
+            },
+        };
     let src = HttpUpdateSource { url };
     let info: UpdateInfo = crate::updater::check(&src);
     let output = if info.update_available {
@@ -127,7 +128,9 @@ impl ToolExecutor for UpdaterExecutor {
 pub fn updater_tool_defs() -> Vec<ToolDef> {
     vec![ToolDef {
         name: "check_update".into(),
-        description: "检查是否有新版本（需配置 BOLLOON_UPDATE_URL, 返回 x.y.z 版本号）。只读网络检查。".into(),
+        description:
+            "检查是否有新版本（需配置 BOLLOON_UPDATE_URL, 返回 x.y.z 版本号）。只读网络检查。"
+                .into(),
         parameters: serde_json::json!({
             "type": "object", "properties": {}, "additionalProperties": false
         }),
@@ -143,13 +146,23 @@ mod tests {
     use bolloon_harness::ToolExecutor;
 
     fn call(name: &str) -> ToolCall {
-        ToolCall { id: "c1".into(), name: name.into(), arguments: serde_json::json!({}) }
+        ToolCall {
+            id: "c1".into(),
+            name: name.into(),
+            arguments: serde_json::json!({}),
+        }
     }
 
     #[test]
     fn extract_version_finds_semver() {
-        assert_eq!(extract_version("{\"version\":\"0.6.11\"}"), Some("0.6.11".into()));
-        assert_eq!(extract_version("latest v0.7.0 released"), Some("0.7.0".into()));
+        assert_eq!(
+            extract_version("{\"version\":\"0.6.11\"}"),
+            Some("0.6.11".into())
+        );
+        assert_eq!(
+            extract_version("latest v0.7.0 released"),
+            Some("0.7.0".into())
+        );
         assert_eq!(extract_version("no version here"), None);
     }
 
@@ -163,6 +176,9 @@ mod tests {
 
     #[test]
     fn current_version_known() {
-        assert!(CURRENT_VERSION.contains('.'), "CURRENT_VERSION 应形如 x.y.z");
+        assert!(
+            CURRENT_VERSION.contains('.'),
+            "CURRENT_VERSION 应形如 x.y.z"
+        );
     }
 }

@@ -49,15 +49,17 @@ impl BolloonHome {
     pub fn resolve() -> Self {
         let base = std::env::var("BOLLOON_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs_home().join(".bolloon")
-            });
-        Self { root: base.join("rust") }
+            .unwrap_or_else(|_| dirs_home().join(".bolloon"));
+        Self {
+            root: base.join("rust"),
+        }
     }
 
     /// 显式指定 (测试/App 注入)
     pub fn at(base: impl Into<PathBuf>) -> Self {
-        Self { root: base.into().join("rust") }
+        Self {
+            root: base.into().join("rust"),
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -130,8 +132,7 @@ impl BolloonHome {
     /// 建 agent 目录族 (幂等)
     pub fn ensure_agent(&self, agent_id: &str) -> Result<PathBuf, HomeError> {
         let dir = self.agent_dir(agent_id)?;
-        std::fs::create_dir_all(dir.join("sessions"))
-            .map_err(|e| HomeError::Io(format!("{e}")))?;
+        std::fs::create_dir_all(dir.join("sessions")).map_err(|e| HomeError::Io(format!("{e}")))?;
         Ok(dir)
     }
 
@@ -203,13 +204,24 @@ impl DocSnapshot {
                 let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
                 (text, DocStat { mtime_ms, size })
             }
-            Err(_) => (String::new(), DocStat { mtime_ms: 0, size: 0 }),
+            Err(_) => (
+                String::new(),
+                DocStat {
+                    mtime_ms: 0,
+                    size: 0,
+                },
+            ),
         };
         let content_hash = {
             let d = Sha256::digest(content.as_bytes());
             hex::encode(d)
         };
-        Self { kind: kind.into(), content, content_hash, stat }
+        Self {
+            kind: kind.into(),
+            content,
+            content_hash,
+            stat,
+        }
     }
 
     /// 快照指纹 (内容哈希; 不看盘 —— 冻结语义: 运行期间不重读)
@@ -229,7 +241,10 @@ impl DocSnapshot {
             kind: kind.into(),
             content: String::new(),
             content_hash: String::new(),
-            stat: DocStat { mtime_ms: 0, size: 0 },
+            stat: DocStat {
+                mtime_ms: 0,
+                size: 0,
+            },
         }
     }
 }
@@ -291,8 +306,8 @@ impl AgentDocs {
             agent.content = default_agent_doc(agent_id);
         }
         // persona 按 agentId 三级回落 (见 persona_source_path); 无源 = 空快照
-        let persona_path = persona_source_path(home, agent_id)
-            .unwrap_or_else(|| home.global_persona_path());
+        let persona_path =
+            persona_source_path(home, agent_id).unwrap_or_else(|| home.global_persona_path());
         let persona = DocSnapshot::freeze("persona", &persona_path);
         let memory = DocSnapshot::freeze("memory", &home.agent_memory_path(agent_id)?);
         Ok(Self {
@@ -307,18 +322,26 @@ impl AgentDocs {
 
     /// 四件套指纹是否与盘一致 (任何一份 drift = 本 agent 需要 re-freeze)
     pub fn any_disk_drift(&self, home: &BolloonHome) -> Result<bool, HomeError> {
-        Ok(self.soul.disk_drifted(&home.agent_soul_path(&self.agent_id)?)
-            || self.agent.disk_drifted(&home.agent_doc_path(&self.agent_id)?)
+        Ok(self
+            .soul
+            .disk_drifted(&home.agent_soul_path(&self.agent_id)?)
+            || self
+                .agent
+                .disk_drifted(&home.agent_doc_path(&self.agent_id)?)
             || self.persona.disk_drifted(
                 &persona_source_path(home, &self.agent_id)
                     .unwrap_or_else(|| home.global_persona_path()),
             )
-            || self.memory.disk_drifted(&home.agent_memory_path(&self.agent_id)?))
+            || self
+                .memory
+                .disk_drifted(&home.agent_memory_path(&self.agent_id)?))
     }
 }
 
 fn default_soul(agent_id: &str) -> String {
-    format!("# Soul · {agent_id}\n\n合作 · 分享 · 探索。矛盾中找平衡，混沌中找秩序。内心持有，不必随时显示。\n")
+    format!(
+        "# Soul · {agent_id}\n\n合作 · 分享 · 探索。矛盾中找平衡，混沌中找秩序。内心持有，不必随时显示。\n"
+    )
 }
 
 fn default_agent_doc(agent_id: &str) -> String {
@@ -333,10 +356,7 @@ mod tests {
     use super::*;
 
     fn tmp_home(tag: &str) -> BolloonHome {
-        let dir = std::env::temp_dir().join(format!(
-            "bolloon-home-{}-{tag}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("bolloon-home-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         BolloonHome::at(&dir)
     }
@@ -346,9 +366,21 @@ mod tests {
         let h = tmp_home("paths");
         let agents = h.agent_dir("leo").unwrap();
         assert!(agents.ends_with("agents/leo"));
-        assert!(h.agent_memory_path("leo").unwrap().ends_with("agents/leo/memory.json"));
-        assert!(h.agent_soul_path("leo").unwrap().ends_with("agents/leo/soul.md"));
-        assert!(h.agent_sessions_dir("leo").unwrap().ends_with("agents/leo/sessions"));
+        assert!(
+            h.agent_memory_path("leo")
+                .unwrap()
+                .ends_with("agents/leo/memory.json")
+        );
+        assert!(
+            h.agent_soul_path("leo")
+                .unwrap()
+                .ends_with("agents/leo/soul.md")
+        );
+        assert!(
+            h.agent_sessions_dir("leo")
+                .unwrap()
+                .ends_with("agents/leo/sessions")
+        );
         // 四端共享: config/sessions/logs 在 root 下, 不在 agent 下
         assert!(h.config_dir().ends_with("rust/config"));
         assert!(h.sessions_dir().ends_with("rust/sessions"));
@@ -363,7 +395,10 @@ mod tests {
             HomeError::BadAgentId("../evil".into()),
             "路径穿越拒"
         );
-        assert_eq!(validate_agent_id("").unwrap_err(), HomeError::BadAgentId("".into()));
+        assert_eq!(
+            validate_agent_id("").unwrap_err(),
+            HomeError::BadAgentId("".into())
+        );
         assert_eq!(
             validate_agent_id("空格 id").unwrap_err(),
             HomeError::BadAgentId("空格 id".into())
@@ -395,9 +430,14 @@ mod tests {
     fn missing_docs_get_defaults() {
         let h = tmp_home("defaults");
         let docs = AgentDocs::freeze(&h, "fresh").unwrap();
-        assert!(docs.soul.content.contains("Soul · fresh"), "缺省 soul 有内置文案");
         assert!(
-            docs.agent.content.contains(&format!("rust native {}", env!("CARGO_PKG_VERSION"))),
+            docs.soul.content.contains("Soul · fresh"),
+            "缺省 soul 有内置文案"
+        );
+        assert!(
+            docs.agent
+                .content
+                .contains(&format!("rust native {}", env!("CARGO_PKG_VERSION"))),
             "默认文档的版本号要跟 crate 版本一致: {}",
             docs.agent.content
         );
@@ -416,7 +456,10 @@ mod tests {
         // 快照不变 (运行期间即真源)
         assert_eq!(docs.soul.content, "v1");
         // 但 drift 检测能看见 (下一会话生效)
-        assert!(docs.any_disk_drift(&h).unwrap(), "盘已偏离快照 → 下一会话要 re-freeze");
+        assert!(
+            docs.any_disk_drift(&h).unwrap(),
+            "盘已偏离快照 → 下一会话要 re-freeze"
+        );
     }
 
     #[test]
@@ -474,7 +517,10 @@ mod tests {
         std::fs::create_dir_all(h.persona_dir().join("a1")).unwrap();
         std::fs::write(h.agent_persona_path("a1").unwrap(), "{\"name\":\"专属\"}").unwrap();
         let docs3 = AgentDocs::freeze(&h, "a1").unwrap();
-        assert!(docs3.persona.content.contains("专属"), "agent 专属 persona 优先");
+        assert!(
+            docs3.persona.content.contains("专属"),
+            "agent 专属 persona 优先"
+        );
         assert!(!docs3.persona.content.contains("全局"));
         // drift 检测跟随回落路径
         assert!(!docs3.any_disk_drift(&h).unwrap());

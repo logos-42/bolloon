@@ -10,31 +10,35 @@
 use std::sync::Arc;
 
 use axum::{
+    Router,
     extract::{Path, Query, State},
     response::{Html, IntoResponse, Json},
     routing::{get, post},
-    Router,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use bolloon_agent::{MemoryLayer, MemoryStore, TaskBoard};
+use bolloon_agent::clarity::{ClaritySummary, clarity_of};
 use bolloon_agent::deliberation::{ElectionMode, MemberRole};
 use bolloon_agent::judgment::JudgmentStore;
-use bolloon_agent::world::OpportunityStream;
 use bolloon_agent::memory_db::MemoryDb;
-use bolloon_agent::clarity::{clarity_of, ClaritySummary};
-use bolloon_x402::{
-    direct_payment::{verify_direct_payment, DirectPaymentConfig, PaymentClaim, RpcObservation},
-    paid_info::{compute_content_hash, PaidInfoItem},
-};
+use bolloon_agent::world::OpportunityStream;
+use bolloon_agent::{MemoryLayer, MemoryStore, TaskBoard};
 use bolloon_llm::{ChatMessage, GenerateParams, LlmRuntime, ProviderConfig};
-use bolloon_p2p::{make_invite_link, pubkey_of_did, verify_invite_link, GroupAcl, GroupOrbitHub, KeyPair};
+use bolloon_p2p::{
+    GroupAcl, GroupOrbitHub, KeyPair, make_invite_link, pubkey_of_did, verify_invite_link,
+};
+use bolloon_x402::{
+    direct_payment::{DirectPaymentConfig, PaymentClaim, RpcObservation, verify_direct_payment},
+    paid_info::{PaidInfoItem, compute_content_hash},
+};
 use std::io::Read;
 
 /// rust 原生版数据目录 — **单一真源** (CLI/Web/App/SDK 同一口径: BolloonHome)
 pub fn data_dir() -> std::path::PathBuf {
-    bolloon_agent::home::BolloonHome::resolve().root().to_path_buf()
+    bolloon_agent::home::BolloonHome::resolve()
+        .root()
+        .to_path_buf()
 }
 
 /// 完全访问开关的落盘位置（与其它小型运行态同目录: `~/.bolloon/rust/permission.json`）。
@@ -135,8 +139,9 @@ pub struct AppState {
     /// Forge 兼容层状态 (agents/sessions/profile/settings/auth 队列)
     pub forge: Arc<Mutex<crate::native::NativeState>>,
     /// 群内商议中枢 (按 group_id 分群; 运行态, 不持久化): 推选 / 控麦 / 并发去重 / 命令门禁
-    pub deliberation:
-        Arc<Mutex<std::collections::HashMap<String, Arc<bolloon_agent::deliberation::DeliberationHub>>>>,
+    pub deliberation: Arc<
+        Mutex<std::collections::HashMap<String, Arc<bolloon_agent::deliberation::DeliberationHub>>>,
+    >,
     /// 项目 skills 注册表 (经验提炼后升级到这里; 做梦机制用)
     pub skills: Arc<Mutex<bolloon_agent::skills_runtime::SkillEvolver>>,
     /// 用户最近一次说话的时刻 (Unix ms; 0 = 还没有记录) —— 主动性空闲判定
@@ -176,7 +181,11 @@ impl AppState {
             .map(|(events, _)| {
                 bolloon_agent::SessionStore::messages_of(&events)
                     .into_iter()
-                    .map(|(role, content)| ChatMessageView { role, content, name: None })
+                    .map(|(role, content)| ChatMessageView {
+                        role,
+                        content,
+                        name: None,
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -192,7 +201,9 @@ impl AppState {
             memory,
             // 2026-11-04 (bug 10): 判断力以前每次都从空库开始 (new() + 不落盘) ⇒ 注入门永远是空。
             // 现在启动即从盘上装载, 演化后落盘 ⇒ "过去的经验"真的会被下一轮读到。
-            judgments: Arc::new(Mutex::new(JudgmentStore::load_json(&dir.join("judgments.json")))),
+            judgments: Arc::new(Mutex::new(JudgmentStore::load_json(
+                &dir.join("judgments.json"),
+            ))),
             world: Arc::new(Mutex::new(OpportunityStream::new())),
             paid_info: Arc::new(Mutex::new(std::collections::HashMap::new())),
             x402_used_txs: Arc::new(Mutex::new(std::collections::HashSet::new())),
@@ -207,7 +218,9 @@ impl AppState {
             room_bus: Arc::new(crate::room_bus::RoomBus::default()),
             router: crate::router::RouterSwitch::new(),
             cron: Arc::new(Mutex::new(bolloon_kernel::cron::CronScheduler::new())),
-            heartbeats: Arc::new(Mutex::new(bolloon_agent::heartbeat::HeartbeatRegistry::new())),
+            heartbeats: Arc::new(Mutex::new(
+                bolloon_agent::heartbeat::HeartbeatRegistry::new(),
+            )),
             cron_stats: Arc::new(Mutex::new(CronStats::default())),
             chat_runs: Arc::new(crate::native::ChatRuns::default()),
             kernel: Arc::new(tokio::sync::Mutex::new(
@@ -221,10 +234,13 @@ impl AppState {
                 // + 内置「Shell 直接操作」速查: 播种进运行时库, read_skill 随时可读全文。
                 let path = dir.join("skills.json");
                 let mut ev = bolloon_agent::skills_runtime::SkillEvolver::load_json(&path);
-                use bolloon_agent::skills_runtime::{SHELL_DIRECT_BODY, SHELL_DIRECT_DESC, SHELL_DIRECT_NAME};
+                use bolloon_agent::skills_runtime::{
+                    SHELL_DIRECT_BODY, SHELL_DIRECT_DESC, SHELL_DIRECT_NAME,
+                };
                 if ev.registry.read_skill(SHELL_DIRECT_NAME).is_none() {
                     let now = chrono::Utc::now().timestamp_millis() as u64;
-                    if ev.registry
+                    if ev
+                        .registry
                         .register(SHELL_DIRECT_NAME, SHELL_DIRECT_DESC, SHELL_DIRECT_BODY, now)
                         .is_ok()
                     {
@@ -295,10 +311,7 @@ impl AppState {
 
     /// 取当前 runtime 快照（Arc 克隆，不持锁过 await）
     pub fn llm_snapshot(&self) -> Arc<LlmRuntime> {
-        self.llm
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.llm.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// 配置/选择变了 → 重建 runtime（只装**能解析**的家：有 key 或本机服务）
@@ -437,6 +450,8 @@ struct SendResponse {
 
 /// 路由表 (serve 与测试共用; 端口绑定与路由分离)
 pub fn app(state: AppState) -> Router {
+    // 某些 feature 组合下后续没有对 router 的再赋值；保留 mut 以兼容所有组合。
+    #[allow(unused_mut)]
     let mut router = Router::new()
         .route("/", get(index))
         // 原生 UI 数据面 (前端 index.html 期望的形状: agents/sessions/profile/settings/update)
@@ -449,7 +464,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/models/options", get(crate::native::models_options))
         .route("/api/models/select", post(crate::native::models_select))
         .route("/api/models/test", post(crate::native::models_test))
-        .route("/api/sessions", get(sessions).post(crate::native::create_session))
+        .route(
+            "/api/sessions",
+            get(sessions).post(crate::native::create_session),
+        )
         // 用户当前选中哪个智能体/会话 (持久化; 修「切智能体跳回第一个」)
         .route("/api/active", post(crate::native::set_active))
         .route("/api/sessions/branch", post(crate::native::branch_session))
@@ -462,7 +480,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/avatars", get(avatar_families))
         .route("/api/avatar/{seed}", get(avatar_svg))
         .route("/api/sessions/delete", post(crate::native::delete_session))
-        .route("/api/sessions/truncate", post(crate::native::truncate_session))
+        .route(
+            "/api/sessions/truncate",
+            post(crate::native::truncate_session),
+        )
         .route("/api/sessions/share", post(crate::native::share_session))
         // 分享快照取回 (链接真能打开, 不是死链)
         .route("/api/share/{token}", get(crate::native::share_json))
@@ -475,9 +496,18 @@ pub fn app(state: AppState) -> Router {
         // 置顶(固定) = 排最前 + 立刻 ping 一次 (不是 cron 间隔)
         .route("/api/agents/pin", post(crate::native::pin_agent))
         // 智能体档案（DID 缩写 + soul 介绍 + 功能简介），眼镜端详情页用
-        .route("/api/agents/{id}/profile", get(crate::native::agent_profile))
-        .route("/api/agents/{id}/ownership", get(crate::native::agent_ownership))
-        .route("/api/wallet/authorize", post(crate::native::authorize_wallet))
+        .route(
+            "/api/agents/{id}/profile",
+            get(crate::native::agent_profile),
+        )
+        .route(
+            "/api/agents/{id}/ownership",
+            get(crate::native::agent_ownership),
+        )
+        .route(
+            "/api/wallet/authorize",
+            post(crate::native::authorize_wallet),
+        )
         // 眼镜端钱包视图: 地址 + 链上余额（真实 RPC）
         .route("/api/wallet", get(crate::wallet::wallet))
         // ── 充值 / 按量扣费 (2026-10-30) ──────────────────────────────
@@ -494,10 +524,22 @@ pub fn app(state: AppState) -> Router {
         // 智能体钱包: 创建本地钱包 (自建不限) / 绑定已有地址 (上限 20) / 列表 / 解绑
         // 智能体自查: 自己的 DID / persona / memory / workspace 路径
         .route("/api/agents/{id}/paths", get(crate::native::agent_paths))
-        .route("/api/agents/{id}/wallets", get(crate::agent_wallet::list_wallets))
-        .route("/api/agents/{id}/wallets/create", post(crate::agent_wallet::create_wallet))
-        .route("/api/agents/{id}/wallets/bind", post(crate::agent_wallet::bind_wallet))
-        .route("/api/agents/{id}/wallets/remove", post(crate::agent_wallet::remove_wallet))
+        .route(
+            "/api/agents/{id}/wallets",
+            get(crate::agent_wallet::list_wallets),
+        )
+        .route(
+            "/api/agents/{id}/wallets/create",
+            post(crate::agent_wallet::create_wallet),
+        )
+        .route(
+            "/api/agents/{id}/wallets/bind",
+            post(crate::agent_wallet::bind_wallet),
+        )
+        .route(
+            "/api/agents/{id}/wallets/remove",
+            post(crate::agent_wallet::remove_wallet),
+        )
         // 2026-11-15: 个人代币 + DID 真人验证（未通过真人验证不许发币）
         .route("/api/verify/status", get(crate::verify::status))
         .route("/api/verify/personhood", post(crate::verify::personhood))
@@ -512,15 +554,39 @@ pub fn app(state: AppState) -> Router {
         .route("/api/plugins/share", get(crate::plugins::share))
         .route("/api/plugins/import", post(crate::plugins::import))
         .route("/api/plugins/remove", post(crate::plugins::remove))
-        .route("/api/wallet/status", get(crate::personal_token::wallet_status))
-        .route("/api/wallet/setup", post(crate::personal_token::wallet_setup))
-        .route("/api/wallet/unlock", post(crate::personal_token::wallet_unlock))
+        .route(
+            "/api/wallet/status",
+            get(crate::personal_token::wallet_status),
+        )
+        .route(
+            "/api/wallet/setup",
+            post(crate::personal_token::wallet_setup),
+        )
+        .route(
+            "/api/wallet/unlock",
+            post(crate::personal_token::wallet_unlock),
+        )
         .route("/api/wallet/lock", post(crate::personal_token::wallet_lock))
-        .route("/api/wallet/backup", get(crate::personal_token::wallet_backup))
-        .route("/api/wallet/share", get(crate::personal_token::wallet_share))
-        .route("/api/wallet/restore", post(crate::personal_token::wallet_restore))
-        .route("/api/wallet/adopt", post(crate::personal_token::wallet_adopt))
-        .route("/api/wallet/accept-share", post(crate::personal_token::wallet_accept_share))
+        .route(
+            "/api/wallet/backup",
+            get(crate::personal_token::wallet_backup),
+        )
+        .route(
+            "/api/wallet/share",
+            get(crate::personal_token::wallet_share),
+        )
+        .route(
+            "/api/wallet/restore",
+            post(crate::personal_token::wallet_restore),
+        )
+        .route(
+            "/api/wallet/adopt",
+            post(crate::personal_token::wallet_adopt),
+        )
+        .route(
+            "/api/wallet/accept-share",
+            post(crate::personal_token::wallet_accept_share),
+        )
         .route("/api/wallet/push", post(crate::personal_token::wallet_push))
         .route("/api/pay/credit", post(crate::pay::pay_credit))
         .route("/api/pay/accounts", get(crate::pay::pay_accounts))
@@ -531,7 +597,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/pay/upstream", get(crate::pay::pay_upstream))
         .route("/api/pay/claim", post(crate::pay::pay_claim))
         // 收款人节点: 收跨机充值申报 (DID 签名验过才落 pending)
-        .route("/api/pay/claim/inbound", post(crate::pay::pay_claim_inbound))
+        .route(
+            "/api/pay/claim/inbound",
+            post(crate::pay::pay_claim_inbound),
+        )
         .route("/api/pay/confirm", post(crate::pay::pay_confirm))
         .route("/api/phone/bind", post(crate::native::bind_phone))
         .route("/api/phone", get(crate::native::phone_status))
@@ -575,7 +644,10 @@ pub fn app(state: AppState) -> Router {
         // clarity 授权队列 (workspace 外路径: 仅一次/本项目/完全访问/拒绝)
         .route("/api/auth/requests", get(crate::native::auth_requests))
         // 一次性授权库（工具/命令/二进制/路径）—— 三平台同一套
-        .route("/api/grants", get(crate::native::grants_get).post(crate::native::grants_add))
+        .route(
+            "/api/grants",
+            get(crate::native::grants_get).post(crate::native::grants_add),
+        )
         .route("/api/grants/revoke", post(crate::native::grants_revoke))
         .route("/api/auth/request", post(crate::native::auth_request))
         .route("/api/auth/decide", post(crate::native::auth_decide))
@@ -583,42 +655,93 @@ pub fn app(state: AppState) -> Router {
         .route("/api/update", get(crate::native::update))
         .route("/api/update/apply", post(crate::native::update_apply))
         // 世界模式 (意图 / 机会流 / 校准环 / 信箱 — 对齐 TS routes-world)
-        .route("/api/intents", get(crate::native::list_intents).post(crate::native::add_intent))
+        .route(
+            "/api/intents",
+            get(crate::native::list_intents).post(crate::native::add_intent),
+        )
         .route("/api/intents/remove", post(crate::native::remove_intent))
         .route("/api/opportunities", get(crate::native::list_opportunities))
-        .route("/api/opportunities/{id}/ignore", post(crate::native::ignore_opportunity))
+        .route(
+            "/api/opportunities/{id}/ignore",
+            post(crate::native::ignore_opportunity),
+        )
         // 世界卡片菜单: 置顶 / 持续更新 (cron 每 30 分钟抓一次)
-        .route("/api/opportunities/{id}/pin", post(crate::native::pin_opportunity))
-        .route("/api/opportunities/{id}/watch", post(crate::native::watch_opportunity))
-        .route("/api/opportunities/{id}/accept", post(crate::native::accept_opportunity))
+        .route(
+            "/api/opportunities/{id}/pin",
+            post(crate::native::pin_opportunity),
+        )
+        .route(
+            "/api/opportunities/{id}/watch",
+            post(crate::native::watch_opportunity),
+        )
+        .route(
+            "/api/opportunities/{id}/accept",
+            post(crate::native::accept_opportunity),
+        )
         .route("/api/world/profile", get(crate::native::world_profile))
         .route("/api/world/watch", get(crate::native::world_watch))
-        .route("/api/world/inbox", get(crate::native::world_inbox).post(crate::native::world_inbox_post))
+        .route(
+            "/api/world/inbox",
+            get(crate::native::world_inbox).post(crate::native::world_inbox_post),
+        )
         // 意图交付面: 分类 → 差距检测 → 交付物卡片 (回应的是卡片集合, 不是聊天)
         .route("/api/world/fulfill", post(crate::native::world_fulfill))
         // 交互沉淀 (任何点击 → 记忆/判断力/工作流/信念) + 媒体/gap 资产卡片
         .route("/api/trace", post(crate::world_interact::trace_click))
-        .route("/api/trace/recent", get(crate::world_interact::trace_recent))
+        .route(
+            "/api/trace/recent",
+            get(crate::world_interact::trace_recent),
+        )
         .route("/api/context", get(crate::world_interact::context_view))
         // 贡献记录 / 善意积分 / 求助意图卡片 (非货币化合作)
-        .route("/api/contribution/record", post(crate::contribution::record))
+        .route(
+            "/api/contribution/record",
+            post(crate::contribution::record),
+        )
         .route("/api/contribution/ledger", get(crate::contribution::ledger))
-        .route("/api/contribution/anchor", post(crate::contribution::anchor))
-        .route("/api/world/cards/help", post(crate::contribution::help_card))
+        .route(
+            "/api/contribution/anchor",
+            post(crate::contribution::anchor),
+        )
+        .route(
+            "/api/world/cards/help",
+            post(crate::contribution::help_card),
+        )
         // 跨机可验证贡献: 签名信封 / 独立验签 / 对端收件箱 / 公告 / 已验列表
         .route("/api/contribution/proof", get(crate::contribution::proof))
-        .route("/api/contribution/verify", post(crate::contribution::verify))
+        .route(
+            "/api/contribution/verify",
+            post(crate::contribution::verify),
+        )
         .route("/api/contribution/inbox", post(crate::contribution::inbox))
-        .route("/api/contribution/announce", post(crate::contribution::announce))
+        .route(
+            "/api/contribution/announce",
+            post(crate::contribution::announce),
+        )
         .route("/api/contribution/peers", get(crate::contribution::peers))
-        .route("/api/contribution/balance", get(crate::contribution::balance))
+        .route(
+            "/api/contribution/balance",
+            get(crate::contribution::balance),
+        )
         .route("/api/contribution/spend", post(crate::contribution::spend))
-        .route("/api/world/cards/media", post(crate::world_interact::media_card))
-        .route("/api/world/cards/from-gap", post(crate::world_interact::gap_asset_card))
+        .route(
+            "/api/world/cards/media",
+            post(crate::world_interact::media_card),
+        )
+        .route(
+            "/api/world/cards/from-gap",
+            post(crate::world_interact::gap_asset_card),
+        )
         // 付费卡片: 智能体发布 (x402) + 报价 + 确认
-        .route("/api/agents/{id}/cards/paid", post(crate::native::agent_card_paid))
+        .route(
+            "/api/agents/{id}/cards/paid",
+            post(crate::native::agent_card_paid),
+        )
         .route("/api/world/pay", post(crate::native::world_pay_quote))
-        .route("/api/world/pay/confirm", post(crate::native::world_pay_confirm))
+        .route(
+            "/api/world/pay/confirm",
+            post(crate::native::world_pay_confirm),
+        )
         // x402 买方 (应用内付款): 报价 → 多 RPC 读链 → 卖方验链交付 → 订单落盘
         .route("/api/x402/buy/quote", post(crate::x402_buy::buy_quote))
         .route("/api/x402/buy/pay", post(crate::x402_buy::buy_pay))
@@ -626,14 +749,35 @@ pub fn app(state: AppState) -> Router {
         .route("/api/world/stats", get(crate::native::world_stats))
         // 世界卡片跨机投递 (对齐 TS routes-world: cards / push / protocol)
         .route("/api/world/cards", get(crate::native::world_cards))
-        .route("/api/world/cards/push", post(crate::native::world_cards_push))
-        .route("/api/world/cards/share", post(crate::native::world_cards_share))
-        .route("/api/world/cards/protocol", get(crate::native::world_cards_protocol))
+        .route(
+            "/api/world/cards/push",
+            post(crate::native::world_cards_push),
+        )
+        .route(
+            "/api/world/cards/share",
+            post(crate::native::world_cards_share),
+        )
+        .route(
+            "/api/world/cards/protocol",
+            get(crate::native::world_cards_protocol),
+        )
         // 人类目录 (手机号/邮箱盲化 + 跨机查询 + 跨机加好友)
-        .route("/api/directory/publish", post(crate::native::directory_publish))
-        .route("/api/directory/lookup", get(crate::native::directory_lookup))
-        .route("/api/directory/retract", post(crate::native::directory_retract))
-        .route("/api/directory/remote-lookup", get(crate::native::directory_remote_lookup))
+        .route(
+            "/api/directory/publish",
+            post(crate::native::directory_publish),
+        )
+        .route(
+            "/api/directory/lookup",
+            get(crate::native::directory_lookup),
+        )
+        .route(
+            "/api/directory/retract",
+            post(crate::native::directory_retract),
+        )
+        .route(
+            "/api/directory/remote-lookup",
+            get(crate::native::directory_remote_lookup),
+        )
         // 真跨机的接收侧 (对端探针) + 对端节点登记
         .route("/api/directory/rpc", post(crate::native::directory_rpc))
         .route(
@@ -641,40 +785,49 @@ pub fn app(state: AppState) -> Router {
             get(crate::native::directory_peers_list)
                 .post(crate::native::directory_peers_add)
                 .delete(crate::native::directory_peers_remove),
-                )
-                .route("/api/node/connect", post(crate::native::node_connect))
-                .route("/api/scratch/run", post(crate::native::scratch_run))
-                .route("/api/scratch/list", get(crate::native::scratch_list))
-                .route("/api/config/current", get(crate::native::config_current))
-                .route("/api/config/apply", post(crate::native::config_apply))
-                .route("/api/config/rollback", post(crate::native::config_rollback))
-                // 可观测: 配置指标 + 任务↔版本证据链 + 回滚点
-                .route(
-                    "/api/config/observability",
-                    get(crate::native::config_observability),
-                )
-                // AI 优化闭环 (默认建议级: 只出提案, 不写配置)
-                .route("/api/config/optimize", post(crate::native::config_optimize))
-                // 多节点: 从对端拉取配置 (最终一致; 对端不可用则本地不变)
-                .route("/api/config/peer-sync", post(crate::native::config_peer_sync))
-                // 监控面板 (自包含静态页, 不进前端构建)
-                .route("/config", get(crate::native::config_panel))
-                // 经济层 (旁路计量) 报告: 影子模式下的真实成本/本该被拦/影子路由
-                .route("/api/econ/report", get(crate::native::econ_report))
-                .route(
-                    "/api/groups/{id}/reply-limit",
-                    post(set_reply_limit).get(get_reply_limit),
-                )
-                .route("/api/groups/{id}/invite", get(group_invite))
-                .route("/api/groups/{id}/members", get(group_members_api))
-                .route("/api/groups/{id}/participants", post(set_group_participants))
+        )
+        .route("/api/node/connect", post(crate::native::node_connect))
+        .route("/api/scratch/run", post(crate::native::scratch_run))
+        .route("/api/scratch/list", get(crate::native::scratch_list))
+        .route("/api/config/current", get(crate::native::config_current))
+        .route("/api/config/apply", post(crate::native::config_apply))
+        .route("/api/config/rollback", post(crate::native::config_rollback))
+        // 可观测: 配置指标 + 任务↔版本证据链 + 回滚点
+        .route(
+            "/api/config/observability",
+            get(crate::native::config_observability),
+        )
+        // AI 优化闭环 (默认建议级: 只出提案, 不写配置)
+        .route("/api/config/optimize", post(crate::native::config_optimize))
+        // 多节点: 从对端拉取配置 (最终一致; 对端不可用则本地不变)
+        .route(
+            "/api/config/peer-sync",
+            post(crate::native::config_peer_sync),
+        )
+        // 监控面板 (自包含静态页, 不进前端构建)
+        .route("/config", get(crate::native::config_panel))
+        // 经济层 (旁路计量) 报告: 影子模式下的真实成本/本该被拦/影子路由
+        .route("/api/econ/report", get(crate::native::econ_report))
+        .route(
+            "/api/groups/{id}/reply-limit",
+            post(set_reply_limit).get(get_reply_limit),
+        )
+        .route("/api/groups/{id}/invite", get(group_invite))
+        .route("/api/groups/{id}/members", get(group_members_api))
+        .route(
+            "/api/groups/{id}/participants",
+            post(set_group_participants),
+        )
         .route("/api/groups/{id}/update", post(update_group))
         .route("/api/groups/{id}/delete", post(delete_group))
         .route("/api/groups/purge-closed", post(purge_closed_groups))
         // 信念层 (2026-11-05): agent 自己写的信念/长短期目标 —— 看面 + 手动触发一次自我设计
         .route("/api/beliefs", get(beliefs_get))
         .route("/api/beliefs/reflect", post(beliefs_reflect))
-        .route("/api/groups/{id}/publish", post(crate::native::publish_group_to_world))
+        .route(
+            "/api/groups/{id}/publish",
+            post(crate::native::publish_group_to_world),
+        )
         // 群内回合运行时设置：群里是否真执行（工具/kernel loop）、步数/时长/预算
         // 群内 API 共享: 配置 / 查看本群可借用的好友节点 + 对端借算力的入口
         .route("/api/groups/{id}/pool", get(crate::native::group_pool_get))
@@ -683,47 +836,62 @@ pub fn app(state: AppState) -> Router {
         // 借出算力的贡献账（谁用过我、几次、哪个群；经济层开启时另有 Contribution 记录）
         .route("/api/pool/credit", get(crate::native::pool_credit_get))
         // 智能体级「对好友开放」开关（跨机对话与借算力共用）
-        .route("/api/agents/{id}/friends-open", post(crate::native::agent_friends_open))
-        .route("/api/agents/{id}/friends-open", get(crate::native::agent_friends_open))
+        .route(
+            "/api/agents/{id}/friends-open",
+            post(crate::native::agent_friends_open),
+        )
+        .route(
+            "/api/agents/{id}/friends-open",
+            get(crate::native::agent_friends_open),
+        )
         // 智能体对外门户: IPFS 名片 + 自己的 IPNS 名（换内容名字不变）
         .route("/api/agents/{id}/portal", get(crate::native::agent_portal))
-        .route("/api/agents/{id}/portal/publish", post(crate::native::agent_portal_publish))
-        .route("/api/agents/{id}/portal/resolve", get(crate::native::agent_portal_resolve))
+        .route(
+            "/api/agents/{id}/portal/publish",
+            post(crate::native::agent_portal_publish),
+        )
+        .route(
+            "/api/agents/{id}/portal/resolve",
+            get(crate::native::agent_portal_resolve),
+        )
         // 通过门户加好友（门户里的 did/node_base 让"加入别人的智能体圈"不需要先交换地址）
         .route("/api/portal/follow", post(crate::native::portal_follow))
         .route("/api/room/runtime", get(crate::native::room_runtime_get))
         .route("/api/room/runtime", post(crate::native::room_runtime_set))
-                .route("/api/econ/probe", get(crate::native::econ_probe))
-                .route("/api/econ/reputation/{principal}", get(econ_reputation))
-                .route("/api/econ/immune/report", post(immune_report))
-                .route("/api/econ/immune/{subject}", get(immune_status))
-                .route("/api/econ/consciousness/{principal}", get(econ_consciousness))
-                .route("/api/econ/pool/view", get(pool_view))
-                .route("/api/econ/pool/peers", post(pool_peer_add))
-                .route(
-                    "/api/econ/providers",
-                    post(crate::native::econ_provider_register),
-                )
-                .route(
-                    "/api/econ/providers/{id}/revoke",
-                    post(crate::native::econ_provider_revoke),
-                )
-                .route(
-                    "/api/econ/contributions",
-                    post(crate::native::econ_contribute),
-                )
-                .route(
-                    "/api/econ/contributions/{id}/confirm",
-                    post(crate::native::econ_contribute_confirm),
-                )
-                .route("/api/econ/pool/topup", post(crate::native::econ_pool_topup))
-                .route(
-                    "/api/econ/intent/{id}/budget",
-                    post(crate::native::econ_intent_budget),
-                )
-                // 2026-10-31: 对端收件箱 — 好友请求/同意通知的投递落点 (离线留存后补投)
-                .route("/api/friend/inbox", post(crate::native::friend_inbox))
-                .route("/api/friends/request", post(crate::native::friend_request))
+        .route("/api/econ/probe", get(crate::native::econ_probe))
+        .route("/api/econ/reputation/{principal}", get(econ_reputation))
+        .route("/api/econ/immune/report", post(immune_report))
+        .route("/api/econ/immune/{subject}", get(immune_status))
+        .route(
+            "/api/econ/consciousness/{principal}",
+            get(econ_consciousness),
+        )
+        .route("/api/econ/pool/view", get(pool_view))
+        .route("/api/econ/pool/peers", post(pool_peer_add))
+        .route(
+            "/api/econ/providers",
+            post(crate::native::econ_provider_register),
+        )
+        .route(
+            "/api/econ/providers/{id}/revoke",
+            post(crate::native::econ_provider_revoke),
+        )
+        .route(
+            "/api/econ/contributions",
+            post(crate::native::econ_contribute),
+        )
+        .route(
+            "/api/econ/contributions/{id}/confirm",
+            post(crate::native::econ_contribute_confirm),
+        )
+        .route("/api/econ/pool/topup", post(crate::native::econ_pool_topup))
+        .route(
+            "/api/econ/intent/{id}/budget",
+            post(crate::native::econ_intent_budget),
+        )
+        // 2026-10-31: 对端收件箱 — 好友请求/同意通知的投递落点 (离线留存后补投)
+        .route("/api/friend/inbox", post(crate::native::friend_inbox))
+        .route("/api/friends/request", post(crate::native::friend_request))
         .route("/api/friends/accept", post(crate::native::friend_accept))
         .route("/api/friends/reject", post(crate::native::friend_reject))
         .route("/api/friends", get(crate::native::friend_list))
@@ -732,53 +900,125 @@ pub fn app(state: AppState) -> Router {
         .route("/api/friends/remove", post(crate::native::friend_remove))
         .route("/api/friends/block", post(crate::native::friend_block))
         .route("/api/friends/mute", post(crate::native::friend_mute))
-        .route("/api/friends/revoke-grants", post(crate::native::friend_revoke_grants))
+        .route(
+            "/api/friends/revoke-grants",
+            post(crate::native::friend_revoke_grants),
+        )
         .route("/api/friends/report", post(crate::native::friend_report))
         // 2026-10-30 (用户): 点好友 → 看对方开放的智能体 → 跨机聊天
-        .route("/api/friends/{did}/agents", get(crate::native::friend_agents))
+        .route(
+            "/api/friends/{did}/agents",
+            get(crate::native::friend_agents),
+        )
         .route("/api/friends/{did}/chat", post(crate::native::friend_chat))
-        .route("/api/friends/{did}/chat/history", get(crate::native::friend_chat_history))
-        .route("/api/friends/{did}/chat/auto", post(crate::native::friend_chat_auto))
+        .route(
+            "/api/friends/{did}/chat/history",
+            get(crate::native::friend_chat_history),
+        )
+        .route(
+            "/api/friends/{did}/chat/auto",
+            post(crate::native::friend_chat_auto),
+        )
         // 对端接收面 (只对已加好友的 did 开放; 由上面的代理面在对方机器上调)
         .route("/api/agents/public", get(crate::native::agents_public))
-        .route("/api/agents/public/chat", post(crate::native::agents_public_chat))
+        .route(
+            "/api/agents/public/chat",
+            post(crate::native::agents_public_chat),
+        )
         // 好友 × 智能体 授权面 (2026-11-04): 按好友授予 chat / payment_info / share_judgment;
         // 白名单之外(含"本地完全权限")写入即丢 —— 好友永远拿不到全权
         .route(
             "/api/agents/{id}/grants",
             get(crate::native::agent_grants_get).post(crate::native::agent_grants_set),
         )
-        .route("/api/agents/{id}/grants/revoke", post(crate::native::agent_grants_revoke))
-        .route("/api/agents/public/wallet", get(crate::native::agents_public_wallet))
-        .route("/api/agents/public/judgments", get(crate::native::agents_public_judgments))
+        .route(
+            "/api/agents/{id}/grants/revoke",
+            post(crate::native::agent_grants_revoke),
+        )
+        .route(
+            "/api/agents/public/wallet",
+            get(crate::native::agents_public_wallet),
+        )
+        .route(
+            "/api/agents/public/judgments",
+            get(crate::native::agents_public_judgments),
+        )
         // 邀请好友的智能体进群 (跨机): 本机签发链接 → 对端验好友+invite_group 授权 → 导入并登记
-        .route("/api/agents/public/join-group", post(crate::native::agents_public_join_group))
+        .route(
+            "/api/agents/public/join-group",
+            post(crate::native::agents_public_join_group),
+        )
         // 好友只读指挥 (command_readonly 授权; 只读工具子集 + 5 次/20s 死预算 + 审计)
-        .route("/api/agents/public/command", post(crate::native::agents_public_command))
-        .route("/api/friends/{did}/command", post(crate::native::friend_command))
-        .route("/api/agents/{id}/reach-out", post(crate::native::agent_reach_out))
-        .route("/api/groups/{id}/invite-agent", post(crate::native::group_invite_agent))
+        .route(
+            "/api/agents/public/command",
+            post(crate::native::agents_public_command),
+        )
+        .route(
+            "/api/friends/{did}/command",
+            post(crate::native::friend_command),
+        )
+        .route(
+            "/api/agents/{id}/reach-out",
+            post(crate::native::agent_reach_out),
+        )
+        .route(
+            "/api/groups/{id}/invite-agent",
+            post(crate::native::group_invite_agent),
+        )
         // 好友侧代理 (需对端授权; 没授权就如实把对端的拒绝原样带回)
-        .route("/api/friends/{did}/wallet", get(crate::native::friend_wallet))
-        .route("/api/friends/{did}/judgments", get(crate::native::friend_judgments))
+        .route(
+            "/api/friends/{did}/wallet",
+            get(crate::native::friend_wallet),
+        )
+        .route(
+            "/api/friends/{did}/judgments",
+            get(crate::native::friend_judgments),
+        )
         // 通讯录 (2026-10-28): 网页端/APP 端统一的联系人搜索面 — 手机号走跨机目录, 名称走本机名片本
         .route("/api/contacts", get(crate::native::contact_list))
         .route("/api/contacts/set", post(crate::native::contact_set))
         .route("/api/contacts/search", post(crate::native::contact_search))
-        .route("/api/contacts/connect", post(crate::native::contact_connect))
+        .route(
+            "/api/contacts/connect",
+            post(crate::native::contact_connect),
+        )
         .route("/api/discovery/announce", post(crate::discovery::announce))
         .route("/api/discovery/find", get(crate::discovery::find))
-        .route("/api/discovery/remote/announce", post(crate::discovery::remote_announce))
-        .route("/api/discovery/announce-self", post(crate::discovery::remote_announce_self))
-        .route("/api/discovery/remote/find", get(crate::discovery::remote_find))
+        .route(
+            "/api/discovery/remote/announce",
+            post(crate::discovery::remote_announce),
+        )
+        .route(
+            "/api/discovery/announce-self",
+            post(crate::discovery::remote_announce_self),
+        )
+        .route(
+            "/api/discovery/remote/find",
+            get(crate::discovery::remote_find),
+        )
         .route("/api/dht/status", get(dht_status_route))
         .route("/api/rendezvous/status", get(rendezvous_status_route))
-        .route("/api/quic/history", get(crate::transport_history::http_history))
-        .route("/api/cross-chat/export", get(crate::cross_chat::http_export))
-        .route("/api/cross-chat/import", post(crate::cross_chat::http_import))
-        .route("/api/cross-chat/sessions", get(crate::cross_chat::http_sessions))
+        .route(
+            "/api/quic/history",
+            get(crate::transport_history::http_history),
+        )
+        .route(
+            "/api/cross-chat/export",
+            get(crate::cross_chat::http_export),
+        )
+        .route(
+            "/api/cross-chat/import",
+            post(crate::cross_chat::http_import),
+        )
+        .route(
+            "/api/cross-chat/sessions",
+            get(crate::cross_chat::http_sessions),
+        )
         .route("/api/devices", get(crate::device_sync::http_list))
-        .route("/api/devices/register", post(crate::device_sync::http_register))
+        .route(
+            "/api/devices/register",
+            post(crate::device_sync::http_register),
+        )
         .route("/api/devices/sync", post(crate::device_sync::http_sync))
         // 2026-11-11 去中心化发现: 手机号 → 32B 发现键 (iroh pkarr key / hyperswarm topic)
         .route("/api/contacts/topic", get(crate::native::contact_topic))
@@ -790,13 +1030,22 @@ pub fn app(state: AppState) -> Router {
         .route("/api/mail/sync", post(crate::mail_api::sync))
         .route("/api/mail/delete", post(crate::mail_api::delete))
         .route("/api/mail/password", post(crate::mail_api::password))
-        .route("/api/contacts/import", post(crate::mail_api::contacts_import))
-        .route("/api/contacts/imported", post(crate::mail_api::contacts_imported))
+        .route(
+            "/api/contacts/import",
+            post(crate::mail_api::contacts_import),
+        )
+        .route(
+            "/api/contacts/imported",
+            post(crate::mail_api::contacts_imported),
+        )
         // AI 外呼: 目前只有 Mock 服务商(不连运营商)
         .route("/api/call/records", get(crate::call_api::records))
         .route("/api/call/dial", post(crate::call_api::dial))
         .route("/api/contacts/invite", get(crate::native::contact_invite))
-        .route("/api/contacts/accept-invite", post(crate::native::contact_accept_invite))
+        .route(
+            "/api/contacts/accept-invite",
+            post(crate::native::contact_accept_invite),
+        )
         // 做梦机制 (整理记忆与经验 → 升级项目 skills)
         .route("/api/dream", post(crate::native::dream_run))
         .route("/api/dream/last", get(crate::native::dream_last))
@@ -808,13 +1057,28 @@ pub fn app(state: AppState) -> Router {
         // 路由账本 / 任务×成本矩阵 / 影子→真路由开关
         .route("/api/router/state", get(crate::router::router_state))
         .route("/api/router/matrix", get(crate::router::router_matrix))
-        .route("/api/router/prices", get(crate::router::router_prices_get).post(crate::router::router_prices_set))
+        .route(
+            "/api/router/prices",
+            get(crate::router::router_prices_get).post(crate::router::router_prices_set),
+        )
         .route("/api/router/enforce", post(crate::router::router_enforce))
         // 本地小模型接口 (阶段4 运行位) + 特化包评测/外溢 (阶段2/3)
-        .route("/api/models/local", get(crate::local_model::local_status).post(crate::local_model::local_register))
-        .route("/api/models/ollama", get(crate::local_model::ollama_status).post(crate::local_model::ollama_register))
-        .route("/api/models/activate", post(crate::local_model::activate_model))
-        .route("/api/specialize/packs", get(crate::specialize::list_packs).post(crate::specialize::upsert_pack))
+        .route(
+            "/api/models/local",
+            get(crate::local_model::local_status).post(crate::local_model::local_register),
+        )
+        .route(
+            "/api/models/ollama",
+            get(crate::local_model::ollama_status).post(crate::local_model::ollama_register),
+        )
+        .route(
+            "/api/models/activate",
+            post(crate::local_model::activate_model),
+        )
+        .route(
+            "/api/specialize/packs",
+            get(crate::specialize::list_packs).post(crate::specialize::upsert_pack),
+        )
         .route("/api/specialize/eval", post(crate::specialize::eval_pack))
         .route("/api/specialize/run", post(crate::specialize::run_pack))
         .route("/api/specialize/receipts", get(crate::specialize::receipts))
@@ -846,8 +1110,14 @@ pub fn app(state: AppState) -> Router {
         .route("/api/world/say", post(world_say))
         .route("/api/world/thread", get(world_thread))
         .route("/api/world/intents", get(world_intents))
-        .route("/api/world/intents/announce", post(crate::native::world_intents_announce))
-        .route("/api/world/intents/broadcast", post(crate::native::world_intents_broadcast))
+        .route(
+            "/api/world/intents/announce",
+            post(crate::native::world_intents_announce),
+        )
+        .route(
+            "/api/world/intents/broadcast",
+            post(crate::native::world_intents_broadcast),
+        )
         .route("/api/world/judgment", get(judgment)) // 世界侧意图权重+决策记录 (原有的 /api/judgment 是另一套判断账本)
         .route("/api/world/opened", post(crate::native::mark_world_opened))
         .route("/api/world/vote", post(crate::native::vote_world_card))
@@ -868,17 +1138,33 @@ pub fn app(state: AppState) -> Router {
         .route("/api/kernel/state", get(crate::kernel_bus::kernel_state))
         .route("/api/kernel/tick", post(crate::kernel_bus::kernel_tick))
         .route("/api/kernel/record", post(crate::kernel_bus::kernel_record))
-        .route("/api/kernel/dispatch", post(crate::kernel_bus::kernel_dispatch))
+        .route(
+            "/api/kernel/dispatch",
+            post(crate::kernel_bus::kernel_dispatch),
+        )
         .route("/api/diap/addr", get(diap_addr_route))
-        .route("/api/world/cards/react", post(crate::feature_pack::react_card))
+        .route(
+            "/api/world/cards/react",
+            post(crate::feature_pack::react_card),
+        )
         .route("/api/models/bind", post(crate::feature_pack::bind_model))
-        .route("/api/models/bindings", get(crate::feature_pack::model_bindings))
+        .route(
+            "/api/models/bindings",
+            get(crate::feature_pack::model_bindings),
+        )
         .route("/api/cache/stats", get(crate::feature_pack::cache_stats))
         .route("/api/pay/route-fee", get(crate::feature_pack::route_fee))
         .route("/api/kernel/vfs", get(crate::kernel_bus::kernel_vfs))
-        .route("/api/models/custom", get(crate::feature_pack::list_custom_models).post(crate::feature_pack::register_custom_model))
+        .route(
+            "/api/models/custom",
+            get(crate::feature_pack::list_custom_models)
+                .post(crate::feature_pack::register_custom_model),
+        )
         .route("/api/models/share", post(crate::feature_pack::share_model))
-        .route("/api/friends/access", get(crate::feature_pack::friend_access))
+        .route(
+            "/api/friends/access",
+            get(crate::feature_pack::friend_access),
+        )
         .route("/api/room/retry", post(room_retry));
     // QUIC 直连对端管理接口 (feature 门控; 默认启用): 暴露本节点收件地址 + 登记对端 socket
     #[cfg(feature = "quic-transport")]
@@ -929,7 +1215,9 @@ async fn dht_status_route() -> Json<serde_json::Value> {
 
 #[cfg(not(feature = "dht-backend"))]
 async fn dht_status_route() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": false, "enabled": false, "error": "未编译 dht-backend feature" }))
+    Json(
+        serde_json::json!({ "ok": false, "enabled": false, "error": "未编译 dht-backend feature" }),
+    )
 }
 
 /// GET /api/diap/addr：DIAP 未编译时也返回明确原因，不假装 enabled。
@@ -963,7 +1251,10 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                 addr.ip().to_string()
             };
             unsafe {
-                std::env::set_var("BOLLOON_LOCAL_API", format!("http://{host}:{}", addr.port()))
+                std::env::set_var(
+                    "BOLLOON_LOCAL_API",
+                    format!("http://{host}:{}", addr.port()),
+                )
             };
         }
     }
@@ -975,11 +1266,20 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
     // 第一次互联必须去中心化, 不能默认依赖任何中心/边缘服务。
     // BOLLOON_DHT=0 显式关闭; BOLLOON_DHT_PORT 固定端口; BOLLOON_DHT_BOOTSTRAP 逗号分隔多地址。
     #[cfg(feature = "dht-backend")]
-    if std::env::var("BOLLOON_DHT").map(|v| v.trim() != "0").unwrap_or(true) {
+    if std::env::var("BOLLOON_DHT")
+        .map(|v| v.trim() != "0")
+        .unwrap_or(true)
+    {
         let port = std::env::var("BOLLOON_DHT_PORT")
-            .ok().and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
-        let boots = std::env::var("BOLLOON_DHT_BOOTSTRAP").unwrap_or_default()
-            .split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0);
+        let boots = std::env::var("BOLLOON_DHT_BOOTSTRAP")
+            .unwrap_or_default()
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect();
         match crate::dht::Dht::start(port, boots).await {
             Ok(d) => {
                 tracing::info!(peer_id = %d.peer_id(), listen = ?d.listen_addrs(), "Kademlia DHT 已启用");
@@ -1019,9 +1319,15 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
         k.restore();
     }
     tokio::spawn(crate::kernel_bus::beat_loop(
-        state.clone(), "a", crate::kernel_bus::BEAT_INTERVAL_MS));
+        state.clone(),
+        "a",
+        crate::kernel_bus::BEAT_INTERVAL_MS,
+    ));
     tokio::spawn(crate::kernel_bus::beat_loop(
-        state.clone(), "b", crate::kernel_bus::BEAT_INTERVAL_MS / 2));
+        state.clone(),
+        "b",
+        crate::kernel_bus::BEAT_INTERVAL_MS / 2,
+    ));
     tokio::spawn(crate::kernel_bus::watch_loop(state.clone()));
 
     // 2026-11-04 (bug 7): cron + 心跳 的 tick 循环**真跑起来**（每 30s）。
@@ -1109,7 +1415,15 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                         }
                     }
                     let swept = st.heartbeats.lock().await.sweep(now, 90_000);
-                    (due.len(), swept, portal_due, world_due, world_watch_due, idle_due, reach_due)
+                    (
+                        due.len(),
+                        swept,
+                        portal_due,
+                        world_due,
+                        world_watch_due,
+                        idle_due,
+                        reach_due,
+                    )
                 };
                 if reach_due {
                     if let Some(r) = crate::native::agent_reach_out_cron(&st).await {
@@ -1290,8 +1604,7 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                 let st_sync = state.clone();
                 tokio::spawn(async move {
                     crate::native::sync_quic_peers(&st_sync, &q).await;
-                    let mut ticker =
-                        tokio::time::interval(std::time::Duration::from_secs(30));
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
                     loop {
                         ticker.tick().await;
                         crate::native::sync_quic_peers(&st_sync, &q).await;
@@ -1371,7 +1684,9 @@ const TOUCH_PNG: &[u8] = include_bytes!("../assets/icons/apple-touch-icon.png");
 const FAVICON_32: &[u8] = include_bytes!("../assets/icons/favicon-32.png");
 
 /// `/icons/<name>`: 只认白名单三张图 (不做出目录遍历, 也不偷偷 404)
-async fn icon_file(axum::extract::Path(name): axum::extract::Path<String>) -> axum::response::Response {
+async fn icon_file(
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> axum::response::Response {
     use axum::response::IntoResponse;
     let (body, ctype): (&'static [u8], &'static str) = match name.as_str() {
         "icon.png" => (ICON_PNG, "image/png"),
@@ -1383,7 +1698,7 @@ async fn icon_file(axum::extract::Path(name): axum::extract::Path<String>) -> ax
                 [(axum::http::header::CONTENT_TYPE, "text/plain")],
                 "no such icon".to_string(),
             )
-                .into_response()
+                .into_response();
         }
     };
     (
@@ -1414,11 +1729,17 @@ struct AvatarQuery {
     k: Option<u8>,
 }
 
-async fn avatar_svg(Path(seed): Path<String>, Query(q): Query<AvatarQuery>) -> axum::response::Response {
+async fn avatar_svg(
+    Path(seed): Path<String>,
+    Query(q): Query<AvatarQuery>,
+) -> axum::response::Response {
     let svg = crate::avatar::svg(&seed, q.k);
     (
         [
-            (axum::http::header::CONTENT_TYPE, "image/svg+xml; charset=utf-8"),
+            (
+                axum::http::header::CONTENT_TYPE,
+                "image/svg+xml; charset=utf-8",
+            ),
             // 头像按身份恒定: 长缓存, 打开面板不再重算
             (axum::http::header::CACHE_CONTROL, "public, max-age=604800"),
         ],
@@ -1465,14 +1786,21 @@ async fn author_skills_from_intents(st: &AppState, now: u64, cap: usize) -> usiz
         let intent = bolloon_agent::world::Intent {
             id: format!("intent-auto-{}-{}", now, short_hash(&text)),
             text: text.clone(),
-            tags: text.split_whitespace().take(6).map(|s| s.to_string()).collect(),
+            tags: text
+                .split_whitespace()
+                .take(6)
+                .map(|s| s.to_string())
+                .collect(),
             active: true,
             created_at_ms: now,
             category: cls.category,
             want: cls.want,
             clarity: cls.clarity,
         };
-        if crate::native::author_skill_for_intent(st, &intent).await.is_some() {
+        if crate::native::author_skill_for_intent(st, &intent)
+            .await
+            .is_some()
+        {
             n += 1;
         }
     }
@@ -1542,8 +1870,11 @@ async fn self_design(st: &AppState, now: u64, force: bool) -> Option<String> {
     if let Some(c) = bolloon_agent::belief_tools::todo_progress_text() {
         facts.push(format!("未完成的待办:\n{c}"));
     }
-    facts.push(format!("现在有 {} 条活着的信念、{} 个活着目标",
-        store.live_beliefs().len(), store.active_commitments().len()));
+    facts.push(format!(
+        "现在有 {} 条活着的信念、{} 个活着目标",
+        store.live_beliefs().len(),
+        store.active_commitments().len()
+    ));
 
     let (sys, user) = bolloon_agent::belief::reflection_prompt(&store, now, &facts);
     let llm = st.llm_snapshot();
@@ -1627,7 +1958,8 @@ async fn self_design(st: &AppState, now: u64, force: bool) -> Option<String> {
                 flush(&record);
                 return None;
             }
-            record["last_result"] = serde_json::to_value(&applied).unwrap_or(serde_json::Value::Null);
+            record["last_result"] =
+                serde_json::to_value(&applied).unwrap_or(serde_json::Value::Null);
             flush(&record);
             let note = format!(
                 "信念+{} 目标+{} 退休{} 跳过{}",
@@ -1740,7 +2072,11 @@ async fn send(State(st): State<AppState>, Json(req): Json<SendRequest>) -> Json<
     // 记录用户消息
     {
         let mut msgs = st.messages.lock().await;
-        msgs.push(ChatMessageView { role: "user".into(), content: req.text.clone(), name: None });
+        msgs.push(ChatMessageView {
+            role: "user".into(),
+            content: req.text.clone(),
+            name: None,
+        });
     }
 
     // 真实模型调用（唯一咽喉 generate；provider/model 由 UI 选择与配置决定）
@@ -1753,17 +2089,22 @@ async fn send(State(st): State<AppState>, Json(req): Json<SendRequest>) -> Json<
     // 记录回复 + 仅追加落盘 (可审计)
     {
         let mut msgs = st.messages.lock().await;
-        msgs.push(ChatMessageView { role: "assistant".into(), content: reply.clone(), name: None });
+        msgs.push(ChatMessageView {
+            role: "assistant".into(),
+            content: reply.clone(),
+            name: None,
+        });
     }
-    let _ = st.session_store.append(&bolloon_agent::SessionEvent::User { text: req.text });
     let _ = st
         .session_store
-        .append(&bolloon_agent::SessionEvent::Assistant { text: reply.clone() });
+        .append(&bolloon_agent::SessionEvent::User { text: req.text });
+    let _ = st
+        .session_store
+        .append(&bolloon_agent::SessionEvent::Assistant {
+            text: reply.clone(),
+        });
 
-    Json(SendResponse {
-        session_id,
-        reply,
-    })
+    Json(SendResponse { session_id, reply })
 }
 
 /// 用户在说话 ⇒ 主动性退让 (记一笔"刚活跃")。
@@ -1852,7 +2193,11 @@ pub(crate) fn group_id_from_name(name: &str) -> String {
         })
         .collect();
     let cleaned = cleaned.trim().to_string();
-    if cleaned.is_empty() { "新群组".to_string() } else { cleaned }
+    if cleaned.is_empty() {
+        "新群组".to_string()
+    } else {
+        cleaned
+    }
 }
 
 async fn create_group(
@@ -1959,7 +2304,11 @@ async fn update_group(
     let entry = fs.group_overrides.entry(id.clone()).or_default();
     if let Some(n) = req["name"].as_str() {
         let n = n.trim();
-        entry.name = if n.is_empty() { None } else { Some(n.to_string()) };
+        entry.name = if n.is_empty() {
+            None
+        } else {
+            Some(n.to_string())
+        };
     }
     if let Some(p) = req["pinned"].as_bool() {
         entry.pinned = p;
@@ -1967,7 +2316,9 @@ async fn update_group(
     if let Some(p) = req["ping"].as_u64() {
         // 5–86400 秒, 与智能体的固定 ping 同一范围
         if !(5..=86_400).contains(&p) {
-            return Json(serde_json::json!({ "ok": false, "error": "ping 间隔要在 5–86400 秒之间" }));
+            return Json(
+                serde_json::json!({ "ok": false, "error": "ping 间隔要在 5–86400 秒之间" }),
+            );
         }
         entry.ping_secs = Some(p);
     }
@@ -1976,7 +2327,11 @@ async fn update_group(
     }
     if let Some(i) = req["intro"].as_str() {
         let i = i.trim();
-        entry.intro = if i.is_empty() { None } else { Some(i.to_string()) };
+        entry.intro = if i.is_empty() {
+            None
+        } else {
+            Some(i.to_string())
+        };
         entry.intro_manual = !i.is_empty();
     }
     let out = entry.clone();
@@ -2052,7 +2407,10 @@ async fn beliefs_get(State(_st): State<AppState>) -> Json<serde_json::Value> {
 async fn beliefs_reflect(State(st): State<AppState>) -> Json<serde_json::Value> {
     let now = chrono::Utc::now().timestamp_millis() as u64;
     let before = bolloon_agent::belief_tools::load_store();
-    let (live0, goals0) = (before.live_beliefs().len(), before.active_commitments().len());
+    let (live0, goals0) = (
+        before.live_beliefs().len(),
+        before.active_commitments().len(),
+    );
     match self_design(&st, now, true).await {
         Some(note) => {
             let after = bolloon_agent::belief_tools::load_store();
@@ -2284,7 +2642,8 @@ async fn group_messages(
         }
     };
     // 警长 = 本群任期选举 (三天一换, 只在本群参与者里选): 群页要看得见谁在主持
-    let (sheriff, sheriff_name, sheriff_ends_ms) = match crate::native::sheriff_term(&st, &id).await {
+    let (sheriff, sheriff_name, sheriff_ends_ms) = match crate::native::sheriff_term(&st, &id).await
+    {
         Some(t) => {
             let name = {
                 let fs = st.forge.lock().await;
@@ -2334,13 +2693,20 @@ async fn set_group_participants(
 ) -> Json<serde_json::Value> {
     let requested: Vec<String> = req["agent_ids"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
     let (chosen, known) = {
         let mut fs = st.forge.lock().await;
         let known: std::collections::HashSet<String> =
             fs.agents.iter().map(|a| a.id.clone()).collect();
-        let chosen: Vec<String> = requested.into_iter().filter(|id| known.contains(id)).collect();
+        let chosen: Vec<String> = requested
+            .into_iter()
+            .filter(|id| known.contains(id))
+            .collect();
         fs.room_participants.insert(id.clone(), chosen.clone());
         // 选人变了: 警长/组织名单/上次推举都按新范围重来
         fs.sheriffs.remove(&id);
@@ -2445,7 +2811,9 @@ fn lan_ip() -> Option<String> {
 
 /// 分享 token = 身份私钥对 (群|时间) 签名取前 24 hex ⇒ 不可猜 (不依赖随机源)
 fn group_share_token(st: &AppState, group_id: &str, now: u64) -> String {
-    let sig = st.identity.sign(format!("groupshare|{group_id}|{now}").as_bytes());
+    let sig = st
+        .identity
+        .sign(format!("groupshare|{group_id}|{now}").as_bytes());
     sig.iter().take(12).map(|b| format!("{b:02x}")).collect()
 }
 
@@ -2469,10 +2837,14 @@ async fn group_create_topic(
         .id
         .clone()
         .unwrap_or_else(|| format!("{id}-t{:x}", now % 0xffff_ffff));
-    match st
-        .groups
-        .create_topic(&id, &topic_id, &req.name, req.members.clone(), &st.identity, now)
-    {
+    match st.groups.create_topic(
+        &id,
+        &topic_id,
+        &req.name,
+        req.members.clone(),
+        &st.identity,
+        now,
+    ) {
         Ok(meta) => Json(serde_json::json!({
             "id": meta.id, "name": meta.name, "parent": meta.parent,
             "address": meta.address, "members": req.members,
@@ -2482,7 +2854,10 @@ async fn group_create_topic(
 }
 
 /// GET /api/groups/{id}/topics — 列出某个群的子讨论
-async fn group_topics(State(st): State<AppState>, Path(id): Path<String>) -> Json<serde_json::Value> {
+async fn group_topics(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
     if group_closed(&st, &id).await {
         return Json(serde_json::json!({
             "deleted": true, "group_id": id, "topics": [],
@@ -2493,9 +2868,11 @@ async fn group_topics(State(st): State<AppState>, Path(id): Path<String>) -> Jso
         .groups
         .topics(&id)
         .iter()
-        .map(|m| serde_json::json!({
-            "id": m.id, "name": m.name, "address": m.address, "created_at_ms": m.created_at_ms,
-        }))
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id, "name": m.name, "address": m.address, "created_at_ms": m.created_at_ms,
+            })
+        })
         .collect();
     Json(serde_json::json!({ "topics": topics }))
 }
@@ -2535,11 +2912,13 @@ pub(crate) async fn group_share(
             let self_did = st.identity.did.as_str().to_string();
             let rows: Vec<serde_json::Value> = msgs
                 .iter()
-                .map(|m| serde_json::json!({
-                    "role": if m.signer == self_did { "user" } else { "agent" },
-                    "from": m.from, "text": m.text, "ts": m.ts,
-                    "kind": m.kind, "signer": m.signer, "hash": m.hash,
-                }))
+                .map(|m| {
+                    serde_json::json!({
+                        "role": if m.signer == self_did { "user" } else { "agent" },
+                        "from": m.from, "text": m.text, "ts": m.ts,
+                        "kind": m.kind, "signer": m.signer, "hash": m.hash,
+                    })
+                })
                 .collect();
             let n = rows.len();
             let token = group_share_token(&st, &id, now);
@@ -2603,7 +2982,7 @@ pub(crate) async fn group_join(
                     .ok()
                     .zip(chrono::NaiveDate::parse_from_str(&first, "%Y-%m-%d").ok())
                     .map(|(a, b)| (a - b).num_days().max(0) as u32))
-                    .unwrap_or(0);
+                .unwrap_or(0);
                 let used = fs
                     .join_today
                     .get(&principal)
@@ -2630,7 +3009,10 @@ pub(crate) async fn group_join(
                     ))
                 } else {
                     let mut fs = st.forge.lock().await;
-                    let e = fs.join_today.entry(principal.clone()).or_insert((today.clone(), 0));
+                    let e = fs
+                        .join_today
+                        .entry(principal.clone())
+                        .or_insert((today.clone(), 0));
                     if e.0 != today {
                         *e = (today.clone(), 0);
                     }
@@ -2642,7 +3024,9 @@ pub(crate) async fn group_join(
             if let Err(why) = allowed {
                 return Json(serde_json::json!({ "error": why, "quota_exhausted": true }));
             }
-            let meta = st.groups.import_group_as(&gid, manifest, req.parent.clone(), now);
+            let meta = st
+                .groups
+                .import_group_as(&gid, manifest, req.parent.clone(), now);
             // 重新加入 = 用户明确要它回来 ⇒ 把它从"已删名单"里摘掉。
             // (以前这里没摘: 删过的群即使凭邀请重新加入, 也永远被当成不存在 —— 这就是"删不干净的镜像面: 加不回来")
             {
@@ -2751,10 +3135,7 @@ async fn pool_snapshot(st: &AppState) -> serde_json::Value {
                     .collect::<Vec<_>>(),
             )
         }
-        None => (
-            bolloon_econ::PublicPool::default(),
-            vec![],
-        ),
+        None => (bolloon_econ::PublicPool::default(), vec![]),
     };
     let node = st.identity.did.to_string();
     let at_ms = chrono::Utc::now().timestamp_millis();
@@ -2830,14 +3211,18 @@ async fn pool_peer_add(
             None => {
                 return Json(
                     serde_json::json!({ "ok": false, "error": "拉取失败（超时或响应不合法）" }),
-                )
+                );
             }
         }
     } else {
         return Json(serde_json::json!({ "ok": false, "error": "要 url 或 peer 快照" }));
     };
 
-    let node = snap.get("node").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let node = snap
+        .get("node")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if node.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "快照缺 node" }));
     }
@@ -2850,11 +3235,16 @@ async fn pool_peer_add(
         o.remove("sig");
         o.remove("schema");
     }
-    let sig_ok = match (pubkey_of_did(&node), snap.get("sig").and_then(|v| v.as_str())) {
+    let sig_ok = match (
+        pubkey_of_did(&node),
+        snap.get("sig").and_then(|v| v.as_str()),
+    ) {
         (Some(pubkey), Some(sig)) => match (Some(pubkey), b58_decode_64(sig)) {
-            (Some(pubkey), Some(sig_bytes)) => {
-                bolloon_p2p::identity::KeyPair::verify(&pubkey, canonical(&body_only).as_bytes(), &sig_bytes)
-            }
+            (Some(pubkey), Some(sig_bytes)) => bolloon_p2p::identity::KeyPair::verify(
+                &pubkey,
+                canonical(&body_only).as_bytes(),
+                &sig_bytes,
+            ),
             _ => false,
         },
         _ => false,
@@ -2862,18 +3252,31 @@ async fn pool_peer_add(
     let peer = PoolPeer {
         node: node.clone(),
         at_ms: snap.get("at_ms").and_then(|v| v.as_i64()).unwrap_or(0),
-        cash_available_usd: snap.get("cash_available_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        cash_available_usd: snap
+            .get("cash_available_usd")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
         contribution_cash_usd: snap
             .get("contribution_cash_usd")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0),
-        committed_usd: snap.get("committed_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
-        spent_usd: snap.get("spent_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        committed_usd: snap
+            .get("committed_usd")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        spent_usd: snap
+            .get("spent_usd")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
         providers: snap
             .get("providers")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default(),
-        sig: snap.get("sig").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        sig: snap
+            .get("sig")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         verified: sig_ok,
         age_ms: 0,
     };
@@ -2937,22 +3340,34 @@ async fn immune_report(
     Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let Some(econ) = st.econ.get() else {
-        return Json(serde_json::json!({ "ok": false, "error": "经济层未启用（免疫系统没有挂载）" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "经济层未启用（免疫系统没有挂载）" }),
+        );
     };
-    let subject = body.get("subject").and_then(|v| v.as_str()).unwrap_or("").trim();
-    let reporter = body.get("reporter").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let subject = body
+        .get("subject")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let reporter = body
+        .get("reporter")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
     if subject.is_empty() || reporter.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "subject 与 reporter 都必填" }));
     }
     let kind: bolloon_econ::AlarmKind = match serde_json::from_value(
-        body.get("kind").cloned().unwrap_or(serde_json::json!("spam")),
+        body.get("kind")
+            .cloned()
+            .unwrap_or(serde_json::json!("spam")),
     ) {
         Ok(k) => k,
         Err(_) => {
             return Json(serde_json::json!({
                 "ok": false,
                 "error": "kind 非法 (spam/failed_verification/budget_abuse/prompt_injection/data_exfiltration/impersonation)"
-            }))
+            }));
         }
     };
     let note = body.get("note").and_then(|v| v.as_str()).unwrap_or("");
@@ -2969,7 +3384,9 @@ async fn immune_status(
     let Some(econ) = st.econ.get() else {
         return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
     };
-    let a = econ.immune().assess(&subject, chrono::Utc::now().timestamp_millis());
+    let a = econ
+        .immune()
+        .assess(&subject, chrono::Utc::now().timestamp_millis());
     Json(serde_json::json!({ "ok": true, "assessment": a }))
 }
 
@@ -3049,7 +3466,9 @@ async fn group_invite(
     }
     let now = chrono::Utc::now().timestamp_millis() as u64;
     let Some(manifest) = st.groups.manifest_of(&id) else {
-        return Json(serde_json::json!({ "ok": false, "error": "取不到该群 manifest (store 未打开)" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "取不到该群 manifest (store 未打开)" }),
+        );
     };
     let exp = now + 7 * 24 * 3600 * 1000;
     match make_invite_link(&id, &st.identity, &manifest, exp, now) {
@@ -3074,7 +3493,9 @@ async fn group_invite(
                 "note": "人类：点侧边栏底部「邀请」即复制；智能体：GET 本接口拿 link 发给其它智能体，对方 POST /api/groups/join",
             }))
         }
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("邀请链接签发失败: {e}") })),
+        Err(e) => {
+            Json(serde_json::json!({ "ok": false, "error": format!("邀请链接签发失败: {e}") }))
+        }
     }
 }
 
@@ -3182,9 +3603,12 @@ async fn room_retry(
         State(st),
         axum::extract::Path(gid.clone()),
         Json(GroupSayRequest { text, role: None }),
-    ).await;
+    )
+    .await;
     // group_say 的返回值里 ok 可能缺省, 用 error 是否为空兜底; 群被关闭时如实回错
-    let ok = r.0["ok"].as_bool().unwrap_or_else(|| r.0["error"].is_null());
+    let ok = r.0["ok"]
+        .as_bool()
+        .unwrap_or_else(|| r.0["error"].is_null());
     Json(serde_json::json!({ "ok": ok, "group_id": gid, "result": r.0 }))
 }
 
@@ -3238,9 +3662,13 @@ async fn group_say(
             // 后台执行 (这次请求立刻返回): 推举 → 并发跑 → 只把汇报落回群
             // 谁接话 = **唯一选举入口** (与商议 /api/room/guide 同一套):
             // 参与者范围 → 组织名单 → 限额(小群全员, 大群 5) → 免疫过滤
-            let targets =
-                crate::native::elect_group_targets(&st, &id, &req.text, decision.speaker_id.as_deref())
-                    .await;
+            let targets = crate::native::elect_group_targets(
+                &st,
+                &id,
+                &req.text,
+                decision.speaker_id.as_deref(),
+            )
+            .await;
             let queued: Vec<String> = targets.iter().map(|a| a.name.clone()).collect();
             if let Some(first) = queued.first() {
                 let mut fs = st.forge.lock().await;
@@ -3251,7 +3679,13 @@ async fn group_say(
             st.room_bus.mark_human(&id);
             // 一条群消息 = 一个根意图；被推举的 N 个 agent 的调用都记在它名下
             let intent = crate::room_bus::group_intent(&id, now_ms);
-            crate::room_bus::spawn_reports(st.clone(), id.clone(), req.text.clone(), targets, intent);
+            crate::room_bus::spawn_reports(
+                st.clone(),
+                id.clone(),
+                req.text.clone(),
+                targets,
+                intent,
+            );
             Json(serde_json::json!({
             "hash": entry.hash,
             "clock": entry.clock,
@@ -3325,10 +3759,7 @@ async fn list_tasks(State(st): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "tasks": items }))
 }
 
-async fn claim_task(
-    State(st): State<AppState>,
-    Path(id): Path<String>,
-) -> Json<serde_json::Value> {
+async fn claim_task(State(st): State<AppState>, Path(id): Path<String>) -> Json<serde_json::Value> {
     let mut board = st.tasks.lock().await;
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
     match board.claim(&st.identity, &id, None, now_ms) {
@@ -3362,8 +3793,15 @@ async fn remember_memory(
     let importance = req.importance.unwrap_or(0.5);
     let row = {
         let db = st.memory_db.lock().await;
-        db.remember("local", &layer.to_string(), &req.content, importance, now_ms, None)
-            .map_err(|e| e.to_string())
+        db.remember(
+            "local",
+            &layer.to_string(),
+            &req.content,
+            importance,
+            now_ms,
+            None,
+        )
+        .map_err(|e| e.to_string())
     };
     // 快照同步落盘 (memory.json): 进程重启/离线读面用同一口径
     {
@@ -3400,7 +3838,10 @@ struct RecallQuery {
     k: Option<usize>,
 }
 
-async fn recall_memory(State(st): State<AppState>, Query(q): Query<RecallQuery>) -> Json<serde_json::Value> {
+async fn recall_memory(
+    State(st): State<AppState>,
+    Query(q): Query<RecallQuery>,
+) -> Json<serde_json::Value> {
     let db = st.memory_db.lock().await;
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
     match db.recall("local", q.q.as_deref(), q.k.unwrap_or(5), now_ms) {
@@ -3459,10 +3900,7 @@ async fn recall_memory(State(st): State<AppState>, Query(q): Query<RecallQuery>)
 }
 
 /// Clarity 一键说清楚 (纯函数: 从当前会话事件提取结构化现状)
-async fn clarity(
-    State(st): State<AppState>,
-    Query(q): Query<RecallQuery>,
-) -> Json<ClaritySummary> {
+async fn clarity(State(st): State<AppState>, Query(q): Query<RecallQuery>) -> Json<ClaritySummary> {
     let msgs = st.messages.lock().await;
     let events: Vec<(&str, &str)> = msgs
         .iter()
@@ -3478,7 +3916,11 @@ async fn providers(State(st): State<AppState>) -> Json<serde_json::Value> {
     let active = {
         let fs = st.forge.lock().await;
         let ui = fs.settings.provider.trim().to_string();
-        if ui.is_empty() { cfg.active_provider.clone() } else { ui }
+        if ui.is_empty() {
+            cfg.active_provider.clone()
+        } else {
+            ui
+        }
     };
     let items = crate::native::provider_rows(&cfg);
     Json(serde_json::json!({
@@ -3494,25 +3936,26 @@ async fn update_check() -> Json<bolloon_agent::updater::UpdateInfo> {
     impl bolloon_agent::updater::UpdateSource for GitHubSource {
         fn latest_version(&self) -> Result<String, String> {
             // GitHub Release latest (无网络/超时 → Err, 如实 unknown)
-            let body: serde_json::Value = ureq::get(
-                "https://api.github.com/repos/logos-42/bolloon/releases/latest",
-            )
-            .timeout(std::time::Duration::from_secs(5))
-            .set("User-Agent", "bolloon-updater")
-            .call()
-            .map_err(|e| e.to_string())?
-            .into_json()
-            .map_err(|e| e.to_string())?;
+            let body: serde_json::Value =
+                ureq::get("https://api.github.com/repos/logos-42/bolloon/releases/latest")
+                    .timeout(std::time::Duration::from_secs(5))
+                    .set("User-Agent", "bolloon-updater")
+                    .call()
+                    .map_err(|e| e.to_string())?
+                    .into_json()
+                    .map_err(|e| e.to_string())?;
             body["tag_name"]
                 .as_str()
                 .map(|s| s.to_string())
                 .ok_or_else(|| "无 tag_name".into())
         }
         fn download(&self) -> Result<Vec<u8>, String> {
-            let bytes = ureq::get("https://github.com/logos-42/bolloon/releases/latest/download/bolloon-bin")
-                .timeout(std::time::Duration::from_secs(120))
-                .call()
-                .map_err(|e| e.to_string())?;
+            let bytes = ureq::get(
+                "https://github.com/logos-42/bolloon/releases/latest/download/bolloon-bin",
+            )
+            .timeout(std::time::Duration::from_secs(120))
+            .call()
+            .map_err(|e| e.to_string())?;
             let mut out = Vec::new();
             bytes
                 .into_reader()
@@ -3532,10 +3975,12 @@ async fn update_install() -> Json<serde_json::Value> {
             Ok("latest".into())
         }
         fn download(&self) -> Result<Vec<u8>, String> {
-            let bytes = ureq::get("https://github.com/logos-42/bolloon/releases/latest/download/bolloon-bin")
-                .timeout(std::time::Duration::from_secs(120))
-                .call()
-                .map_err(|e| e.to_string())?;
+            let bytes = ureq::get(
+                "https://github.com/logos-42/bolloon/releases/latest/download/bolloon-bin",
+            )
+            .timeout(std::time::Duration::from_secs(120))
+            .call()
+            .map_err(|e| e.to_string())?;
             let mut out = Vec::new();
             bytes
                 .into_reader()
@@ -3568,23 +4013,45 @@ async fn update_install() -> Json<serde_json::Value> {
 /// 路由开关、好友与智能体授权都在这里登记; 关掉开关后这些写操作一律 403,
 /// 只读端点 (ledger/peers/matrix/context/receipts/status) 不受影响。
 pub const FULL_ACCESS_GATED_PREFIXES: &[&str] = &[
-    "/api/models/ollama", "/api/models/local", "/api/models/activate",
-    "/api/world/cards/media", "/api/world/cards/from-gap", "/api/world/cards/help",
-    "/api/world/cards/share", "/api/world/pay", "/api/world/fulfill",
-    "/api/contribution/record", "/api/contribution/anchor",
-    "/api/contribution/announce", "/api/contribution/inbox", "/api/contribution/spend",
-    "/api/specialize/packs", "/api/specialize/eval", "/api/specialize/run",
-    "/api/specialize/share", "/api/router/enforce", "/api/router/prices",
-    "/api/friends/", "/api/x402/buy/", "/api/x402/info",
+    "/api/models/ollama",
+    "/api/models/local",
+    "/api/models/activate",
+    "/api/world/cards/media",
+    "/api/world/cards/from-gap",
+    "/api/world/cards/help",
+    "/api/world/cards/share",
+    "/api/world/pay",
+    "/api/world/fulfill",
+    "/api/contribution/record",
+    "/api/contribution/anchor",
+    "/api/contribution/announce",
+    "/api/contribution/inbox",
+    "/api/contribution/spend",
+    "/api/specialize/packs",
+    "/api/specialize/eval",
+    "/api/specialize/run",
+    "/api/specialize/share",
+    "/api/router/enforce",
+    "/api/router/prices",
+    "/api/friends/",
+    "/api/x402/buy/",
+    "/api/x402/info",
     // 邮件: 只有同步/外发/删除/密码过总闸; 搜索与读取 (POST 但只读) 不受阻
-    "/api/mail/send", "/api/mail/sync", "/api/mail/delete", "/api/mail/password",
+    "/api/mail/send",
+    "/api/mail/sync",
+    "/api/mail/delete",
+    "/api/mail/password",
     // 通讯录导入是写操作
     "/api/contacts/import",
     // 外呼(即使当前是 Mock)也按写操作管
     "/api/call/dial",
 ];
 pub const FULL_ACCESS_GATED_SUFFIXES: &[&str] = &[
-    "/cards/paid", "/grants", "/grants/revoke", "/command", "/invite-agent",
+    "/cards/paid",
+    "/grants",
+    "/grants/revoke",
+    "/command",
+    "/invite-agent",
 ];
 
 pub fn is_full_access_gated(method: &str, path: &str) -> bool {
@@ -3592,7 +4059,9 @@ pub fn is_full_access_gated(method: &str, path: &str) -> bool {
     if !write {
         return false;
     }
-    FULL_ACCESS_GATED_PREFIXES.iter().any(|p| path.starts_with(p))
+    FULL_ACCESS_GATED_PREFIXES
+        .iter()
+        .any(|p| path.starts_with(p))
         || FULL_ACCESS_GATED_SUFFIXES.iter().any(|s| path.ends_with(s))
 }
 
@@ -3616,7 +4085,8 @@ async fn full_access_guard(
                 "path": path,
                 "hint": "在 App/Web 的「Clarity 完全访问」开关打开，或 CLI: bolloon permission on",
             })),
-        ).into_response();
+        )
+            .into_response();
     }
     next.run(req).await
 }
@@ -3637,7 +4107,8 @@ async fn set_permission(
     Json(req): Json<std::collections::HashMap<String, bool>>,
 ) -> Json<serde_json::Value> {
     let on = req.get("full_access").copied().unwrap_or(false);
-    st.full_access.store(on, std::sync::atomic::Ordering::SeqCst);
+    st.full_access
+        .store(on, std::sync::atomic::Ordering::SeqCst);
     // 2026-10-31 (leo): 这个开关必须记得住 —— 以前只存在内存里, 每次启动都回落到默认。
     save_full_access(on);
     // 开启时: 把已挂起的非敏感授权请求直接放行, 让 agent 立即不被门拦截
@@ -3681,12 +4152,23 @@ async fn evolve_judgment(
 ) -> Json<serde_json::Value> {
     let mut store = st.judgments.lock().await;
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-    let action = store.evolve(&req.statement, req.domain.as_deref().unwrap_or("all"), req.confidence.unwrap_or(0.7), now_ms);
+    let action = store.evolve(
+        &req.statement,
+        req.domain.as_deref().unwrap_or("all"),
+        req.confidence.unwrap_or(0.7),
+        now_ms,
+    );
     let (kind, detail) = match &action {
         bolloon_agent::judgment::EvolveAction::None => ("none", "无动作".to_string()),
-        bolloon_agent::judgment::EvolveAction::Merged { with, .. } => ("merged", format!("并入 {with}")),
-        bolloon_agent::judgment::EvolveAction::Contradicted { with } => ("contradicted", format!("与 {with} 反向 (标记给用户)")),
-        bolloon_agent::judgment::EvolveAction::Superseded { old } => ("superseded", format!("顶掉 {old}")),
+        bolloon_agent::judgment::EvolveAction::Merged { with, .. } => {
+            ("merged", format!("并入 {with}"))
+        }
+        bolloon_agent::judgment::EvolveAction::Contradicted { with } => {
+            ("contradicted", format!("与 {with} 反向 (标记给用户)"))
+        }
+        bolloon_agent::judgment::EvolveAction::Superseded { old } => {
+            ("superseded", format!("顶掉 {old}"))
+        }
         bolloon_agent::judgment::EvolveAction::Created { id } => ("created", format!("新增 {id}")),
     };
     // 演进即落盘 (以前只在内存里 ⇒ 重启清零, 注入门永远读不到"过去的经验")
@@ -3831,7 +4313,6 @@ fn tokenize_for_score(text: &str) -> Vec<String> {
     out
 }
 
-
 /// POST /api/world/say  body: {text}
 ///
 /// 世界模式发一句话 = ① 记进世界对话线 ② 变成意图标签 ③ **本机智能体真的回应**
@@ -3877,7 +4358,11 @@ async fn world_say(
         let fs = st.forge.lock().await;
         let mut hit: Option<String> = None;
         for i in &fs.intents {
-            if text.contains(i.as_str()) && hit.as_ref().is_none_or(|h| i.chars().count() > h.chars().count()) {
+            if text.contains(i.as_str())
+                && hit
+                    .as_ref()
+                    .is_none_or(|h| i.chars().count() > h.chars().count())
+            {
                 hit = Some(i.clone());
             }
         }
@@ -3924,7 +4409,8 @@ async fn world_say(
                 })
                 .collect();
             let tags = tokenize_for_score(&text);
-            let (picked, reason) = crate::native::judge_candidates(&tags, &cands, &fs.intent_weights);
+            let (picked, reason) =
+                crate::native::judge_candidates(&tags, &cands, &fs.intent_weights);
             if picked.is_empty() {
                 targets = fs.agents.iter().take(2).cloned().collect();
             } else {
@@ -3976,13 +4462,13 @@ async fn world_say(
         let st2 = st.clone();
         let q = text.clone();
         let topic = topic_key.clone(); // 闭包要 move, 每轮克隆 */
-
         tokio::spawn(async move {
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let sid = format!("world:{}", agent.id);
-            let reply = crate::native::reply_with_agent_stages(&st2, &q, Some(&agent), &sid, None, cancel)
-                .await
-                .unwrap_or_else(|e| format!("（没答上：{e}）"));
+            let reply =
+                crate::native::reply_with_agent_stages(&st2, &q, Some(&agent), &sid, None, cancel)
+                    .await
+                    .unwrap_or_else(|e| format!("（没答上：{e}）"));
             let ts = chrono::Utc::now().timestamp_millis();
             let short: String = reply.chars().take(80).collect();
             let mut fs = st2.forge.lock().await;
@@ -4002,7 +4488,11 @@ async fn world_say(
             fs.inbox.retain(|c| c["key"].as_str() != Some(key.as_str()));
             // 标题 = **内容摘要** (leo 2026-10-30): 取正文第一句/前 28 字, 不写"谁 · 主题"
             let headline: String = {
-                let flat = reply.split('\n').map(|l| l.trim()).find(|l| !l.is_empty()).unwrap_or("");
+                let flat = reply
+                    .split('\n')
+                    .map(|l| l.trim())
+                    .find(|l| !l.is_empty())
+                    .unwrap_or("");
                 let flat = flat.trim_start_matches(['#', '-', '*', ' ']);
                 let first = flat.split(['。', '！', '？', '.']).next().unwrap_or(flat);
                 first.chars().take(28).collect()
@@ -4123,7 +4613,10 @@ async fn x402_publish(
         content_hash: compute_content_hash(&req.content),
         issued_at_ms: chrono::Utc::now().timestamp_millis() as u64,
     };
-    st.paid_info.lock().await.insert(req.id.clone(), (item.clone(), req.content));
+    st.paid_info
+        .lock()
+        .await
+        .insert(req.id.clone(), (item.clone(), req.content));
     Json(serde_json::to_value(&item).unwrap())
 }
 
@@ -4134,7 +4627,11 @@ async fn x402_info_quote(
 ) -> axum::response::Response {
     let store = st.paid_info.lock().await;
     let Some((item, _)) = store.get(&id) else {
-        return (axum::http::StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"not found"}))).into_response();
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"not found"})),
+        )
+            .into_response();
     };
     let accepts = serde_json::json!({
         "scheme": "exact",
@@ -4152,7 +4649,10 @@ async fn x402_info_quote(
     });
     (
         axum::http::StatusCode::PAYMENT_REQUIRED,
-        [("x-payment-required", serde_json::to_string(&accepts).unwrap().as_str())],
+        [(
+            "x-payment-required",
+            serde_json::to_string(&accepts).unwrap().as_str(),
+        )],
         Json(body),
     )
         .into_response()
@@ -4230,7 +4730,8 @@ mod route_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn kernel_and_feature_pack_endpoints_are_really_wired() {
         let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-        let home = std::env::temp_dir().join(format!("bolloon-web-kernelgate-{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("bolloon-web-kernelgate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(home.join("kernel-ha")).unwrap();
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
@@ -4239,15 +4740,28 @@ mod route_tests {
         let state = AppState::new(offline_llm());
         let now = chrono::Utc::now().timestamp_millis() as u64;
         let ha = crate::kernel_bus::ha_dir();
-        std::fs::write(ha.join("a.heartbeat.json"), serde_json::json!({
-            "core": "a", "lastBeat": now - 1_000, "phase_ms": 0, "pid": 0, "seq": 1 }).to_string()).unwrap();
-        std::fs::write(ha.join("b.heartbeat.json"), serde_json::json!({
-            "core": "b", "lastBeat": now - 1_000 - 15_000, "phase_ms": 15_000, "pid": 0, "seq": 1 }).to_string()).unwrap();
+        std::fs::write(
+            ha.join("a.heartbeat.json"),
+            serde_json::json!({
+            "core": "a", "lastBeat": now - 1_000, "phase_ms": 0, "pid": 0, "seq": 1 })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            ha.join("b.heartbeat.json"),
+            serde_json::json!({
+            "core": "b", "lastBeat": now - 1_000 - 15_000, "phase_ms": 15_000, "pid": 0, "seq": 1 })
+            .to_string(),
+        )
+        .unwrap();
 
         let s = crate::kernel_bus::kernel_tick(State(state.clone())).await.0;
         assert_eq!(s["cores"]["A"]["alive"], true);
         assert_eq!(s["cores"]["B"]["alive"], true);
-        assert_eq!(s["phase_ok"], true, "半拍相位必须从文件里的真实时间戳算出来");
+        assert_eq!(
+            s["phase_ok"], true,
+            "半拍相位必须从文件里的真实时间戳算出来"
+        );
         assert_eq!(s["degraded"], false);
         // 删掉 B 的心跳 ⇒ 必须如实判死, 不能双双 true
         let _ = std::fs::remove_file(ha.join("b.heartbeat.json"));
@@ -4256,46 +4770,101 @@ mod route_tests {
         assert_eq!(s["degraded"], true);
 
         // 三模式: 非法模式拒, group 事件真进事件面 (以前全被记成 agent)
-        let bad = crate::kernel_bus::kernel_record(State(state.clone()), Json(serde_json::json!({
-            "mode": "bogus", "kind": "button", "label": "x" }))).await.0;
+        let bad = crate::kernel_bus::kernel_record(
+            State(state.clone()),
+            Json(serde_json::json!({
+            "mode": "bogus", "kind": "button", "label": "x" })),
+        )
+        .await
+        .0;
         assert_eq!(bad["ok"], false);
-        let ok = crate::kernel_bus::kernel_record(State(state.clone()), Json(serde_json::json!({
-            "mode": "group", "kind": "switch", "label": "允许智能体访问 开" }))).await.0;
+        let ok = crate::kernel_bus::kernel_record(
+            State(state.clone()),
+            Json(serde_json::json!({
+            "mode": "group", "kind": "switch", "label": "允许智能体访问 开" })),
+        )
+        .await
+        .0;
         assert_eq!(ok["ok"], true);
-        let s = crate::kernel_bus::kernel_state(State(state.clone())).await.0;
+        let s = crate::kernel_bus::kernel_state(State(state.clone()))
+            .await
+            .0;
         let evs = s["events_recent"].as_array().unwrap();
-        assert!(evs.iter().any(|e| e["mode"] == "group" && e["kind"] == "switch"));
+        assert!(
+            evs.iter()
+                .any(|e| e["mode"] == "group" && e["kind"] == "switch")
+        );
         assert_eq!(s["ports"].as_array().map(|a| a.len()), Some(8));
 
-        let port = crate::kernel_bus::kernel_dispatch(State(state.clone()), Json(serde_json::json!({
-            "port": "context", "op": "read" }))).await.0;
+        let port = crate::kernel_bus::kernel_dispatch(
+            State(state.clone()),
+            Json(serde_json::json!({
+            "port": "context", "op": "read" })),
+        )
+        .await
+        .0;
         assert_eq!(port["ok"], true);
-        let no_port = crate::kernel_bus::kernel_dispatch(State(state.clone()), Json(serde_json::json!({
-            "port": "nope", "op": "read" }))).await.0;
+        let no_port = crate::kernel_bus::kernel_dispatch(
+            State(state.clone()),
+            Json(serde_json::json!({
+            "port": "nope", "op": "read" })),
+        )
+        .await
+        .0;
         assert_eq!(no_port["ok"], false);
 
         // 老卡片只有 like 计数: 点赞切换不能 panic, 计数要真回显
         {
             let mut fs = state.forge.lock().await;
-            fs.inbox.push(serde_json::json!({ "id": "c1", "title": "文档卡", "reactions": { "like": 2 } }));
+            fs.inbox.push(
+                serde_json::json!({ "id": "c1", "title": "文档卡", "reactions": { "like": 2 } }),
+            );
         }
-        let r1 = crate::feature_pack::react_card(State(state.clone()), Json(serde_json::json!({
-            "id": "c1", "type": "like" }))).await.0;
+        let r1 = crate::feature_pack::react_card(
+            State(state.clone()),
+            Json(serde_json::json!({
+            "id": "c1", "type": "like" })),
+        )
+        .await
+        .0;
         assert_eq!(r1["ok"], true);
         assert_eq!(r1["reactions"]["like"], 3);
-        let r2 = crate::feature_pack::react_card(State(state.clone()), Json(serde_json::json!({
-            "id": "c1", "type": "favorite" }))).await.0;
+        let r2 = crate::feature_pack::react_card(
+            State(state.clone()),
+            Json(serde_json::json!({
+            "id": "c1", "type": "favorite" })),
+        )
+        .await
+        .0;
         assert_eq!(r2["ok"], true, "旧卡缺 comments/by 字段时不能崩");
-        let r3 = crate::feature_pack::react_card(State(state.clone()), Json(serde_json::json!({
-            "id": "c1", "type": "like" }))).await.0;
-        assert_eq!(r3["reactions"]["like"], 2, "同一 DID 再点一次要取消, 不是无限加");
+        let r3 = crate::feature_pack::react_card(
+            State(state.clone()),
+            Json(serde_json::json!({
+            "id": "c1", "type": "like" })),
+        )
+        .await
+        .0;
+        assert_eq!(
+            r3["reactions"]["like"], 2,
+            "同一 DID 再点一次要取消, 不是无限加"
+        );
 
         // 模型绑定: 不存在的 provider 拒; 真 provider 存下并可按 session/agent 解析
-        let bad_bind = crate::feature_pack::bind_model(State(state.clone()), Json(serde_json::json!({
-            "scope": "session", "id": "s1", "provider": "ghost", "model": "m" }))).await.0;
+        let bad_bind = crate::feature_pack::bind_model(
+            State(state.clone()),
+            Json(serde_json::json!({
+            "scope": "session", "id": "s1", "provider": "ghost", "model": "m" })),
+        )
+        .await
+        .0;
         assert_eq!(bad_bind["ok"], false);
-        let good = crate::feature_pack::bind_model(State(state.clone()), Json(serde_json::json!({
-            "scope": "agent", "id": "a1", "provider": "test", "model": "test-model" }))).await.0;
+        let good = crate::feature_pack::bind_model(
+            State(state.clone()),
+            Json(serde_json::json!({
+            "scope": "agent", "id": "a1", "provider": "test", "model": "test-model" })),
+        )
+        .await
+        .0;
         assert_eq!(good["ok"], true);
         assert_eq!(
             crate::feature_pack::resolve_binding("s1", "a1"),
@@ -4320,7 +4889,8 @@ mod route_tests {
     async fn rust_hardening_gates() {
         use std::io::Write;
         let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-        let home = std::env::temp_dir().join(format!("bolloon-web-hardening-{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("bolloon-web-hardening-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let dd = home.join("rust");
         std::fs::create_dir_all(dd.join("kernel-ha")).unwrap();
@@ -4328,33 +4898,57 @@ mod route_tests {
         unsafe { std::env::set_var("BOLLOON_HA_HOME", home.join("kernel-ha")) };
 
         // 全部关键 JSON 故意写成顶层数组 (旧版 / 写了一半), 任何一处链式 IndexMut 都不许 panic
-        for f in ["model-bindings.json", "response-cache.json", "cache-counters.json",
-                  "friend-access.json", "router-prices.json"] {
+        for f in [
+            "model-bindings.json",
+            "response-cache.json",
+            "cache-counters.json",
+            "friend-access.json",
+            "router-prices.json",
+        ] {
             std::fs::write(dd.join(f), "[]").unwrap();
         }
         let state = AppState::new(offline_llm());
-        let bind = crate::feature_pack::bind_model(State(state.clone()), Json(serde_json::json!({
-            "scope": "session", "id": "s1", "provider": "test", "model": "test-model" }))).await.0;
+        let bind = crate::feature_pack::bind_model(
+            State(state.clone()),
+            Json(serde_json::json!({
+            "scope": "session", "id": "s1", "provider": "test", "model": "test-model" })),
+        )
+        .await
+        .0;
         assert_eq!(bind["ok"], true);
-        assert_eq!(crate::feature_pack::resolve_binding("s1", ""),
-                   Some(("test".into(), "test-model".into())));
+        assert_eq!(
+            crate::feature_pack::resolve_binding("s1", ""),
+            Some(("test".into(), "test-model".into()))
+        );
         crate::feature_pack::cache_store_by_key("k1", "hello");
-        assert_eq!(crate::feature_pack::cache_lookup_by_key("k1").as_deref(), Some("hello"));
+        assert_eq!(
+            crate::feature_pack::cache_lookup_by_key("k1").as_deref(),
+            Some("hello")
+        );
         crate::feature_pack::cache_skip();
         let cs = crate::feature_pack::cache_stats().await.0;
         assert_eq!(cs["hits"], 1);
         assert_eq!(cs["skipped"], 1, "工具回合单列, 不灌进 misses 压低命中率");
         let rp = crate::router::router_prices_set(Json(serde_json::json!({
-            "id": "m1", "usd_per_1k_in": 0.1, "usd_per_1k_out": 0.2 }))).await.0;
+            "id": "m1", "usd_per_1k_in": 0.1, "usd_per_1k_out": 0.2 })))
+        .await
+        .0;
         assert_eq!(rp["ok"], true, "价目表形状损坏时不能 panic");
 
         // 好友开关: 只提交 allow_agent, blocked 必须保留
-        std::fs::write(dd.join("friend-access.json"), serde_json::json!({
-            "did:pi:x": { "allow_agent": false, "blocked": true } }).to_string()).unwrap();
+        std::fs::write(
+            dd.join("friend-access.json"),
+            serde_json::json!({
+            "did:pi:x": { "allow_agent": false, "blocked": true } })
+            .to_string(),
+        )
+        .unwrap();
         crate::feature_pack::update_friend_access("did:pi:x", Some(true), None);
         let mut q = std::collections::HashMap::new();
         q.insert("did".to_string(), "did:pi:x".to_string());
-        let fa = crate::feature_pack::friend_access(State(state.clone()), axum::extract::Query(q)).await.0;
+        let fa = crate::feature_pack::friend_access(State(state.clone()), axum::extract::Query(q))
+            .await
+            .0;
         assert_eq!(fa["allow_agent"], true);
         assert_eq!(fa["blocked"], true, "没提交的开关不能被重置成默认值");
 
@@ -4367,34 +4961,72 @@ mod route_tests {
             fs.inbox.push(serde_json::json!({ "id": "c1", "reactions": {
                 "like": 1, "favorite": 0, "share": 0, "comments": [], "by": by } }));
         }
-        let like = crate::feature_pack::react_card(State(state.clone()), Json(serde_json::json!({
-            "id": "c1", "type": "like" }))).await.0;
+        let like = crate::feature_pack::react_card(
+            State(state.clone()),
+            Json(serde_json::json!({
+            "id": "c1", "type": "like" })),
+        )
+        .await
+        .0;
         assert_eq!(like["reactions"]["like"], 0, "旧 by 布尔不能当没点过再 +1");
-        let sh1 = crate::feature_pack::react_card(State(state.clone()), Json(serde_json::json!({
-            "id": "c1", "type": "share" }))).await.0;
+        let sh1 = crate::feature_pack::react_card(
+            State(state.clone()),
+            Json(serde_json::json!({
+            "id": "c1", "type": "share" })),
+        )
+        .await
+        .0;
         assert_eq!(sh1["action"], "share");
-        let evs_before = crate::kernel_bus::kernel_state(State(state.clone())).await.0["events_recent"]
-            .as_array().map(|a| a.len()).unwrap_or(0);
-        let sh2 = crate::feature_pack::react_card(State(state.clone()), Json(serde_json::json!({
-            "id": "c1", "type": "share" }))).await.0;
+        let evs_before = crate::kernel_bus::kernel_state(State(state.clone()))
+            .await
+            .0["events_recent"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let sh2 = crate::feature_pack::react_card(
+            State(state.clone()),
+            Json(serde_json::json!({
+            "id": "c1", "type": "share" })),
+        )
+        .await
+        .0;
         assert_eq!(sh2["action"], "duplicate");
-        let evs_after = crate::kernel_bus::kernel_state(State(state.clone())).await.0["events_recent"]
-            .as_array().map(|a| a.len()).unwrap_or(0);
-        assert_eq!(evs_before, evs_after, "duplicate 不该再写一条按钮事件/沉淀记忆");
+        let evs_after = crate::kernel_bus::kernel_state(State(state.clone()))
+            .await
+            .0["events_recent"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0);
+        assert_eq!(
+            evs_before, evs_after,
+            "duplicate 不该再写一条按钮事件/沉淀记忆"
+        );
 
         // 事件序号: 外部(CLI)写了更大的 seq 后, 本机下一号必须接着走
         crate::kernel_bus::record_event("agent", "step", "有序号", serde_json::json!({}));
         let ep = dd.join("kernel-events.jsonl");
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&ep).unwrap();
-        writeln!(f, "{}", serde_json::json!({
-            "mode": "agent", "kind": "tool_result", "label": "cli", "seq": 9999 })).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&ep)
+            .unwrap();
+        writeln!(
+            f,
+            "{}",
+            serde_json::json!({
+            "mode": "agent", "kind": "tool_result", "label": "cli", "seq": 9999 })
+        )
+        .unwrap();
         drop(f);
         let mut k = crate::kernel_bus::UnifiedKernel::default();
         k.restore();
         assert!(k.record("agent", "button", "本机事件", serde_json::json!({})));
         // events_recent 是「最新在前」; 刚写的那条是第 0 条
         let newest = k.snapshot()["events_recent"].as_array().unwrap()[0].clone();
-        assert!(newest["seq"].as_u64().unwrap() > 9999, "重启/外部写入后 seq 不能倒退");
+        assert!(
+            newest["seq"].as_u64().unwrap() > 9999,
+            "重启/外部写入后 seq 不能倒退"
+        );
 
         unsafe { std::env::remove_var("BOLLOON_HA_HOME") };
         let _ = std::fs::remove_dir_all(&home);
@@ -4405,7 +5037,8 @@ mod route_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cross_chat_endpoints_fail_closed() {
         let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-        let home = std::env::temp_dir().join(format!("bolloon-web-crosschat-{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("bolloon-web-crosschat-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
@@ -4420,7 +5053,8 @@ mod route_tests {
         .0;
         assert_eq!(a["ok"], false, "缺 agent_id 不能起自动对话");
 
-        let r = crate::native::friend_chat_core(&state, "did:pi:not-a-friend", "agent-001", "hi").await;
+        let r =
+            crate::native::friend_chat_core(&state, "did:pi:not-a-friend", "agent-001", "hi").await;
         assert_eq!(r["ok"], false, "非好友不能发跨机消息");
 
         let h = crate::native::friend_chat_history(
@@ -4441,13 +5075,16 @@ mod route_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cross_node_new_endpoints_fail_closed() {
         let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-        let home = std::env::temp_dir().join(format!("bolloon-web-crossgate-{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("bolloon-web-crossgate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
         let state = AppState::new(offline_llm());
 
-        let c = crate::native::contact_connect(State(state.clone()), Json(serde_json::json!({}))).await.0;
+        let c = crate::native::contact_connect(State(state.clone()), Json(serde_json::json!({})))
+            .await
+            .0;
         assert_eq!(c["ok"], false, "没 query/did 不能假装连上");
 
         let r = crate::native::agent_reach_out(
@@ -4496,7 +5133,8 @@ mod route_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sheriff_and_agenda_are_scoped_to_selected_members() {
         let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-        let home = std::env::temp_dir().join(format!("bolloon-web-agendatest-{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("bolloon-web-agendatest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
@@ -4527,18 +5165,29 @@ mod route_tests {
         let sheriff = crate::native::elect_group_sheriff(&state, "g-scope")
             .await
             .expect("有参与者就必须选得出警长");
-        assert!(inside.contains(&sheriff.as_str()), "警长必须是本群选中的成员, 实际 {sheriff}");
+        assert!(
+            inside.contains(&sheriff.as_str()),
+            "警长必须是本群选中的成员, 实际 {sheriff}"
+        );
 
         let roster = crate::native::roster_of(&state, "g-scope").await.roster;
         for id in roster.eligible() {
             assert!(inside.contains(&id.as_str()), "组织名单越出参与者: {id}");
         }
-        assert_eq!(roster.sheriff.as_deref(), Some(sheriff.as_str()), "名单第 1 名与警长同源");
+        assert_eq!(
+            roster.sheriff.as_deref(),
+            Some(sheriff.as_str()),
+            "名单第 1 名与警长同源"
+        );
 
         let targets = crate::native::elect_group_targets(&state, "g-scope", "大家聊聊", None).await;
         assert!(!targets.is_empty(), "选中的成员要进交流");
         for t in &targets {
-            assert!(inside.contains(&t.id.as_str()), "接话人越出参与者: {}", t.id);
+            assert!(
+                inside.contains(&t.id.as_str()),
+                "接话人越出参与者: {}",
+                t.id
+            );
         }
         // 小群（2 人）没人点名 ⇒ 全员并发接话
         assert_eq!(targets.len(), 2, "2 人小群应并发接话");
@@ -4549,14 +5198,19 @@ mod route_tests {
             fs.room_participants
                 .insert("g-other".to_string(), vec!["a3".into()]);
         }
-        let other = crate::native::elect_group_sheriff(&state, "g-other").await.unwrap();
+        let other = crate::native::elect_group_sheriff(&state, "g-other")
+            .await
+            .unwrap();
         assert_eq!(other, "a3");
         assert_ne!(other, sheriff, "不同群按各自的成员选人");
 
         // 创建群组不弹名字框: 空名 ⇒ 自动起名, 重名顺延
         let n1 = auto_group_name(&state, "群聊");
         assert_eq!(n1, "群聊");
-        let _ = state.groups.create_group(&group_id_from_name(&n1), &n1, "owner", GroupAcl::Open, 1);
+        let _ =
+            state
+                .groups
+                .create_group(&group_id_from_name(&n1), &n1, "owner", GroupAcl::Open, 1);
         let n2 = auto_group_name(&state, "群聊");
         assert_eq!(n2, "群聊 2", "同名不能用两次 (同名=同一个群)");
     }
@@ -4571,7 +5225,8 @@ mod route_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn group_name_identity_and_friend_agents_gates() {
         let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-        let home = std::env::temp_dir().join(format!("bolloon-web-grouptest-{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("bolloon-web-grouptest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
@@ -4586,7 +5241,9 @@ mod route_tests {
             let fr = fs.friends.inbound(&friend_did, &friend_did, 1_000);
             fs.friends.accept(&fr.request_id, 1_001).unwrap();
         }
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let _ = serve_on(state, listener).await;
@@ -4707,15 +5364,27 @@ mod route_tests {
             !INDEX_HTML.contains("id=\"shellRail\""),
             "不许再有独立外壳栏 —— 外壳就是第一栏 (#primaryRail)"
         );
-        assert!(!INDEX_HTML.contains("id=\"titlebar\""), "旧顶部标题栏必须删掉 (否则与 header 叠两条横栏)");
         assert!(
-            INDEX_HTML.contains("id=\"primaryRail\"") && INDEX_HTML.contains("data-tauri-drag-region"),
+            !INDEX_HTML.contains("id=\"titlebar\""),
+            "旧顶部标题栏必须删掉 (否则与 header 叠两条横栏)"
+        );
+        assert!(
+            INDEX_HTML.contains("id=\"primaryRail\"")
+                && INDEX_HTML.contains("data-tauri-drag-region"),
             "第一栏必须存在且自己是窗口拖拽区"
         );
-        for need in ["id=\"addFriendBtn\"", "id=\"joinGroupBtn\"", "id=\"groupDots\"", "id=\"friendAgents\""] {
+        for need in [
+            "id=\"addFriendBtn\"",
+            "id=\"joinGroupBtn\"",
+            "id=\"groupDots\"",
+            "id=\"friendAgents\"",
+        ] {
             assert!(INDEX_HTML.contains(need), "群组页入口缺失: {need}");
         }
-        assert!(INDEX_HTML.contains("/api/friends/"), "跨机好友面必须接到界面上");
+        assert!(
+            INDEX_HTML.contains("/api/friends/"),
+            "跨机好友面必须接到界面上"
+        );
         const TAURI_UI: &str = include_str!("../../../app-tauri/ui/index.html");
         assert!(
             !TAURI_UI.contains("desktop3col"),
@@ -4740,7 +5409,9 @@ mod route_tests {
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
 
         let state = AppState::new(offline_llm());
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let _ = serve_on(state, listener).await;
@@ -4750,7 +5421,11 @@ mod route_tests {
 
         tokio::task::spawn_blocking(move || {
             let get_json = |path: &str| -> serde_json::Value {
-                ureq::get(&format!("{base}{path}")).call().unwrap().into_json().unwrap()
+                ureq::get(&format!("{base}{path}"))
+                    .call()
+                    .unwrap()
+                    .into_json()
+                    .unwrap()
             };
             let post_json = |path: &str, body: serde_json::Value| -> serde_json::Value {
                 ureq::post(&format!("{base}{path}"))
@@ -4761,7 +5436,11 @@ mod route_tests {
 
             // 默认: 群里允许真执行 (工具 + kernel loop)
             let rt = get_json("/api/room/runtime");
-            assert_eq!(rt["runtime"]["tools"], serde_json::json!(true), "群内默认应可执行");
+            assert_eq!(
+                rt["runtime"]["tools"],
+                serde_json::json!(true),
+                "群内默认应可执行"
+            );
 
             // 关掉后立刻反映
             let off = post_json("/api/room/runtime", serde_json::json!({"tools": false}));
@@ -4787,7 +5466,11 @@ mod route_tests {
                     "ts_ms": chrono::Utc::now().timestamp_millis(), "sig": "00"
                 }),
             );
-            assert_eq!(wrong["ok"], serde_json::json!(false), "收件人不是本机必须拒");
+            assert_eq!(
+                wrong["ok"],
+                serde_json::json!(false),
+                "收件人不是本机必须拒"
+            );
             assert!(wrong["error"].as_str().unwrap_or("").contains("收件人"));
 
             // 借算力: 收件人不是本机 ⇒ 拒; 群池默认空但有 candidates 结构
@@ -4803,16 +5486,38 @@ mod route_tests {
             assert!(borrow["error"].as_str().unwrap_or("").contains("收件人"));
             // 智能体门户: 没发布时如实说"还没发布", 不是假装有
             let portal = get_json("/api/agents/no-such-agent/portal");
-            assert_eq!(portal["ok"], serde_json::json!(false), "没有的智能体要如实报错");
-            assert!(portal["error"].as_str().unwrap_or("").contains("没有这个智能体"));
+            assert_eq!(
+                portal["ok"],
+                serde_json::json!(false),
+                "没有的智能体要如实报错"
+            );
+            assert!(
+                portal["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("没有这个智能体")
+            );
 
             let credit = get_json("/api/pool/credit");
             assert_eq!(credit["ok"], serde_json::json!(true));
-            assert_eq!(credit["total_calls"], serde_json::json!(0), "还没借出过就应该是 0");
-            assert_eq!(credit["econ_enabled"], serde_json::json!(false), "默认不假装经济层在跑");
+            assert_eq!(
+                credit["total_calls"],
+                serde_json::json!(0),
+                "还没借出过就应该是 0"
+            );
+            assert_eq!(
+                credit["econ_enabled"],
+                serde_json::json!(false),
+                "默认不假装经济层在跑"
+            );
             let pool = get_json("/api/groups/g/pool");
             assert_eq!(pool["ok"], serde_json::json!(true));
-            assert!(pool["candidates"].as_array().map(|a| a.is_empty()).unwrap_or(false));
+            assert!(
+                pool["candidates"]
+                    .as_array()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false)
+            );
 
             // 没有签名的请求 ⇒ 拒 (以前好友请求根本不发, 现在要发就必须签名)
             let unsigned = post_json(
@@ -4839,7 +5544,9 @@ mod route_tests {
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
 
         let state = AppState::new(offline_llm());
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let _ = serve_on(state, listener).await;
@@ -4849,10 +5556,18 @@ mod route_tests {
         // ureq 是阻塞客户端 → 放 spawn_blocking, 不占 tokio worker
         tokio::task::spawn_blocking(move || {
             let get_json = |path: &str| -> serde_json::Value {
-                ureq::get(&format!("{base}{path}")).call().unwrap().into_json().unwrap()
+                ureq::get(&format!("{base}{path}"))
+                    .call()
+                    .unwrap()
+                    .into_json()
+                    .unwrap()
             };
             let get_text = |path: &str| -> String {
-                ureq::get(&format!("{base}{path}")).call().unwrap().into_string().unwrap()
+                ureq::get(&format!("{base}{path}"))
+                    .call()
+                    .unwrap()
+                    .into_string()
+                    .unwrap()
             };
             let post_json = |path: &str, body: serde_json::Value| -> serde_json::Value {
                 ureq::post(&format!("{base}{path}"))
@@ -4864,7 +5579,10 @@ mod route_tests {
 
             // 1) bootstrap: 首启种子会话 + 真实消息流 + 形状字段
             let boot = get_json("/api/bootstrap");
-            let sid = boot["state"]["sessions"][0]["id"].as_str().expect("种子会话").to_string();
+            let sid = boot["state"]["sessions"][0]["id"]
+                .as_str()
+                .expect("种子会话")
+                .to_string();
             assert!(boot["state"]["messages"].is_array());
             assert_eq!(boot["state"]["edge"], serde_json::json!(false));
             assert!(boot["state"]["active_session_id"].as_str().is_some());
@@ -4890,7 +5608,10 @@ mod route_tests {
             // 坏 token → 如实说不存在 (不冒充)
             assert!(get_text("/share/deadbeef").contains("分享不存在或已失效"));
             // 会话不存在 → 明确报错, 不返回假链接
-            let miss = post_json("/api/sessions/share", serde_json::json!({ "id": "sess-nope" }));
+            let miss = post_json(
+                "/api/sessions/share",
+                serde_json::json!({ "id": "sess-nope" }),
+            );
             assert!(miss["error"].as_str().unwrap().contains("会话不存在"));
 
             // 4) 群 + 子讨论: **分开讨论** —— 小组消息不混进父群
@@ -4904,54 +5625,120 @@ mod route_tests {
             assert_eq!(topic["parent"], serde_json::json!(gid), "{topic}");
 
             let tid = "t1".to_string();
-            let r1 = post_json(&format!("/api/groups/{tid}/say"), serde_json::json!({ "text": "小组内部意见" }));
-            let r2 = post_json(&format!("/api/groups/{gid}/say"), serde_json::json!({ "text": "群里公开说" }));
+            let r1 = post_json(
+                &format!("/api/groups/{tid}/say"),
+                serde_json::json!({ "text": "小组内部意见" }),
+            );
+            let r2 = post_json(
+                &format!("/api/groups/{gid}/say"),
+                serde_json::json!({ "text": "群里公开说" }),
+            );
             assert!(r1["error"].is_null(), "子讨论发言应成功: {r1}");
             assert!(r2["error"].is_null(), "父群发言应成功: {r2}");
 
             let sub = get_json(&format!("/api/groups/{tid}/messages"));
             let parent = get_json(&format!("/api/groups/{gid}/messages"));
             // 注意: 群消息的 HTTP 形状字段是 content/sender/seq (不是 text)
-            let sub_txt: Vec<&str> = sub["messages"].as_array().unwrap().iter().filter_map(|m| m["content"].as_str()).collect();
-            let par_txt: Vec<&str> = parent["messages"].as_array().unwrap().iter().filter_map(|m| m["content"].as_str()).collect();
+            let sub_txt: Vec<&str> = sub["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|m| m["content"].as_str())
+                .collect();
+            let par_txt: Vec<&str> = parent["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|m| m["content"].as_str())
+                .collect();
             assert!(sub_txt.contains(&"小组内部意见"), "{sub_txt:?}");
-            assert!(!par_txt.contains(&"小组内部意见"), "子讨论消息不该混进父群: {par_txt:?}");
+            assert!(
+                !par_txt.contains(&"小组内部意见"),
+                "子讨论消息不该混进父群: {par_txt:?}"
+            );
             assert!(par_txt.contains(&"群里公开说"), "{par_txt:?}");
             assert!(
-                parent["messages"].as_array().unwrap().iter().any(|m| m["kind"] == "topic"),
+                parent["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|m| m["kind"] == "topic"),
                 "父群应留有签名 topic 记录"
             );
-            assert_eq!(get_json(&format!("/api/groups/{gid}/topics"))["topics"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                get_json(&format!("/api/groups/{gid}/topics"))["topics"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
 
             // 5) **统一分享**: 整群与子讨论同一入口、同一套判据
-            let join_share = post_json(&format!("/api/groups/{gid}/share"), serde_json::json!({ "mode": "join" }));
-            let link = join_share["invite"].as_str().expect("invite link").to_string();
-            assert!(link.starts_with(&format!("bolloon://join/{gid}?")), "{link}");
-            assert!(link.contains("&m="), "邀请链接必须带 manifest ⇒ 对方开同一个 store: {link}");
+            let join_share = post_json(
+                &format!("/api/groups/{gid}/share"),
+                serde_json::json!({ "mode": "join" }),
+            );
+            let link = join_share["invite"]
+                .as_str()
+                .expect("invite link")
+                .to_string();
+            assert!(
+                link.starts_with(&format!("bolloon://join/{gid}?")),
+                "{link}"
+            );
+            assert!(
+                link.contains("&m="),
+                "邀请链接必须带 manifest ⇒ 对方开同一个 store: {link}"
+            );
 
-            let read_share = post_json(&format!("/api/groups/{gid}/share"), serde_json::json!({ "mode": "read" }));
+            let read_share = post_json(
+                &format!("/api/groups/{gid}/share"),
+                serde_json::json!({ "mode": "read" }),
+            );
             let gtok = read_share["token"].as_str().expect("token").to_string();
             assert_eq!(gtok.len(), 24, "{read_share}");
-            assert!(get_text(&format!("/share/{gtok}")).contains("群里公开说"), "只读快照页应有群消息");
+            assert!(
+                get_text(&format!("/share/{gtok}")).contains("群里公开说"),
+                "只读快照页应有群消息"
+            );
             let gsnap = get_json(&format!("/api/share/{gtok}"));
             assert_eq!(gsnap["kind"], serde_json::json!("group"), "{gsnap}");
             assert_eq!(gsnap["group_id"], serde_json::json!(gid));
 
             // 未知模式 → 明确报错, 不静默走默认
-            let bad = post_json(&format!("/api/groups/{gid}/share"), serde_json::json!({ "mode": "zip" }));
-            assert!(bad["error"].as_str().unwrap().contains("未知分享模式"), "{bad}");
+            let bad = post_json(
+                &format!("/api/groups/{gid}/share"),
+                serde_json::json!({ "mode": "zip" }),
+            );
+            assert!(
+                bad["error"].as_str().unwrap().contains("未知分享模式"),
+                "{bad}"
+            );
 
             // 6) **凭邀请加入**闭环: 从链接的 by=<did> 反解邀请者公钥验签 ⇒ 开出同一个 store
-            let joined = post_json("/api/groups/join", serde_json::json!({ "link": link.clone() }));
+            let joined = post_json(
+                "/api/groups/join",
+                serde_json::json!({ "link": link.clone() }),
+            );
             assert!(joined["error"].is_null(), "邀请加入应成功: {joined}");
-            assert_eq!(joined["same_store_as_inviter"], serde_json::json!(true), "{joined}");
+            assert_eq!(
+                joined["same_store_as_inviter"],
+                serde_json::json!(true),
+                "{joined}"
+            );
             // 篡改签名 ⇒ 必须被拒 (不让伪造链接混进同一个 store)
             let tampered = link.replacen("t=", "t=zz", 1);
             let bad_join = post_json("/api/groups/join", serde_json::json!({ "link": tampered }));
-            assert!(!bad_join["error"].is_null(), "伪造邀请链接必须被拒: {bad_join}");
+            assert!(
+                !bad_join["error"].is_null(),
+                "伪造邀请链接必须被拒: {bad_join}"
+            );
 
             // 4) 梦想文档: 作者取真实 profile 名 (不硬编码 user), 并登记到状态
-            let dream = post_json("/api/dream/topic", serde_json::json!({ "topic": "核聚变口径" }));
+            let dream = post_json(
+                "/api/dream/topic",
+                serde_json::json!({ "topic": "核聚变口径" }),
+            );
             assert_eq!(dream["author"], serde_json::json!("用户"));
             let written = dream["written"].as_str().expect("写入路径").to_string();
             assert!(written.ends_with("核聚变口径.md"), "{written}");
@@ -4983,32 +5770,38 @@ mod route_tests {
                 tags: vec![],
                 actions: vec![],
                 reply_to: None,
-            
-            
-        
-    
-    content_rating: None,
-    };
+
+                content_rating: None,
+            };
             let env = bolloon_agent::world::pack_world_card(&kp, &card, 1);
             let pushed = post_json("/api/world/cards/push", serde_json::to_value(&env).unwrap());
             assert_eq!(pushed["ok"], serde_json::json!(true), "{pushed}");
             assert_eq!(pushed["card"]["title"], serde_json::json!("跨机卡片"));
-            assert_eq!(pushed["card"]["card"]["verification"], serde_json::json!("verified"));
+            assert_eq!(
+                pushed["card"]["card"]["verification"],
+                serde_json::json!("verified")
+            );
             // 封面档位随卡片一起过网 (video → 前端渲染成高卡)
-            assert_eq!(pushed["card"]["card"]["cover"]["kind"], serde_json::json!("video"));
+            assert_eq!(
+                pushed["card"]["card"]["cover"]["kind"],
+                serde_json::json!("video")
+            );
 
             // 伪卡: 换掉正文 (签名不覆盖新内容) → 拒收, 不静默降级
             let mut forged = env.clone();
             forged.payload = serde_json::to_value(bolloon_agent::world::WorldCard {
                 title: "伪卡".into(),
                 ..card.clone()
-            
-            
-        
-    })
+            })
             .unwrap();
-            let rejected = post_json("/api/world/cards/push", serde_json::to_value(&forged).unwrap());
-            assert!(rejected["error"].as_str().unwrap().contains("拒收"), "{rejected}");
+            let rejected = post_json(
+                "/api/world/cards/push",
+                serde_json::to_value(&forged).unwrap(),
+            );
+            assert!(
+                rejected["error"].as_str().unwrap().contains("拒收"),
+                "{rejected}"
+            );
 
             // 列表端点读到的是刚收的那张 (伪卡没入库)
             let cards = get_json("/api/world/cards");
@@ -5017,31 +5810,49 @@ mod route_tests {
             // 6) 两种分享路径: 好友模式 = 自动定向给好友 (不进公域); 公开模式 = 广播给世界
             let mut priv_card = card.clone();
             priv_card.scope = bolloon_agent::world::CardScope::Private;
-            let shared_priv = post_json("/api/world/cards/share", serde_json::to_value(&priv_card).unwrap());
+            let shared_priv = post_json(
+                "/api/world/cards/share",
+                serde_json::to_value(&priv_card).unwrap(),
+            );
             assert_eq!(shared_priv["ok"], serde_json::json!(true), "{shared_priv}");
             assert_eq!(shared_priv["mode"], serde_json::json!("friends"));
             assert_eq!(
-                shared_priv["targets"], serde_json::json!([]),
+                shared_priv["targets"],
+                serde_json::json!([]),
                 "本用例没有好友 → 如实'没人收到', 不退化成广播"
             );
             // 好友卡发出的信封 scope 仍是 private (把它改成 public 验签必败, 不能偷扩受众)
             let priv_env: bolloon_p2p::envelope::SignedEnvelope =
                 serde_json::from_value(shared_priv["envelope"].clone()).unwrap();
             assert_eq!(
-                bolloon_agent::world::unpack_world_card(&priv_env).unwrap().scope,
+                bolloon_agent::world::unpack_world_card(&priv_env)
+                    .unwrap()
+                    .scope,
                 bolloon_agent::world::CardScope::Private
             );
 
             let mut pub_card = card.clone();
             pub_card.scope = bolloon_agent::world::CardScope::Public;
-            let shared_pub = post_json("/api/world/cards/share", serde_json::to_value(&pub_card).unwrap());
-            assert_eq!(shared_pub["mode"], serde_json::json!("broadcast"), "{shared_pub}");
-            assert!(shared_pub["delivery"].as_str().unwrap().contains("世界"), "{shared_pub}");
+            let shared_pub = post_json(
+                "/api/world/cards/share",
+                serde_json::to_value(&pub_card).unwrap(),
+            );
+            assert_eq!(
+                shared_pub["mode"],
+                serde_json::json!("broadcast"),
+                "{shared_pub}"
+            );
+            assert!(
+                shared_pub["delivery"].as_str().unwrap().contains("世界"),
+                "{shared_pub}"
+            );
 
             // 好友模式的卡: 非好友投递 → 拒收 (接收侧也不放水)
             let env2 = bolloon_agent::world::pack_world_card(&kp, &priv_card, 2);
-            let rejected_friend =
-                post_json("/api/world/cards/push", serde_json::to_value(&env2).unwrap());
+            let rejected_friend = post_json(
+                "/api/world/cards/push",
+                serde_json::to_value(&env2).unwrap(),
+            );
             assert!(
                 rejected_friend["error"].as_str().unwrap().contains("好友"),
                 "{rejected_friend}"
@@ -5057,7 +5868,11 @@ mod route_tests {
             );
             assert_eq!(bind["ok"], serde_json::json!(true), "{bind}");
             assert_eq!(bind["verified"], serde_json::json!(true));
-            assert_eq!(bind["phone"], serde_json::json!("8613800000000"), "手机号要归一成纯数字");
+            assert_eq!(
+                bind["phone"],
+                serde_json::json!("8613800000000"),
+                "手机号要归一成纯数字"
+            );
             let pk = bind["public_key"].as_str().expect("公钥").to_string();
             assert_eq!(pk.len(), 64, "公钥是 32 字节 hex");
 
@@ -5071,9 +5886,15 @@ mod route_tests {
             let mut other: serde_json::Value = serde_json::from_str(&good).unwrap();
             other["did"] = serde_json::json!("did:pi:someone-else");
             std::fs::write(&bpath, serde_json::to_string_pretty(&other).unwrap()).unwrap();
-            let clash = post_json("/api/phone/bind", serde_json::json!({ "phone": "8613800000000" }));
+            let clash = post_json(
+                "/api/phone/bind",
+                serde_json::json!({ "phone": "8613800000000" }),
+            );
             assert!(
-                clash["error"].as_str().unwrap().contains("已绑定另一个 DID"),
+                clash["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("已绑定另一个 DID"),
                 "{clash}"
             );
 
@@ -5084,7 +5905,10 @@ mod route_tests {
             assert_eq!(login["ok"], serde_json::json!(true), "{login}");
             // 挑战一次性: 同一个 nonce 重放必拒
             let replay = post_json("/api/phone/login", serde_json::json!({}));
-            assert!(replay["error"].as_str().unwrap().contains("已用过"), "{replay}");
+            assert!(
+                replay["error"].as_str().unwrap().contains("已用过"),
+                "{replay}"
+            );
 
             // 篡改签名 ⇒ "身份一致" 必须变 false (证明它在真验签, 不是自己签自己)
             let mut tampered: serde_json::Value = serde_json::from_str(&good).unwrap();
@@ -5116,13 +5940,16 @@ mod route_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn contacts_search_endpoint_e2e() {
         let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-        let home = std::env::temp_dir().join(format!("bolloon-web-contacts-{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("bolloon-web-contacts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
 
         let state = AppState::new(offline_llm());
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let _ = serve_on(state, listener).await;
@@ -5131,7 +5958,11 @@ mod route_tests {
 
         tokio::task::spawn_blocking(move || {
             let get_json = |path: &str| -> serde_json::Value {
-                ureq::get(&format!("{base}{path}")).call().unwrap().into_json().unwrap()
+                ureq::get(&format!("{base}{path}"))
+                    .call()
+                    .unwrap()
+                    .into_json()
+                    .unwrap()
             };
             let post_json = |path: &str, body: serde_json::Value| -> serde_json::Value {
                 ureq::post(&format!("{base}{path}"))
@@ -5143,7 +5974,10 @@ mod route_tests {
 
             // 1) 起手是空的
             let empty = get_json("/api/contacts");
-            assert!(empty["items"].as_array().unwrap().is_empty(), "新 home 通讯录为空: {empty}");
+            assert!(
+                empty["items"].as_array().unwrap().is_empty(),
+                "新 home 通讯录为空: {empty}"
+            );
 
             // 2) 存两个备注名
             let a = post_json(
@@ -5157,18 +5991,31 @@ mod route_tests {
             );
 
             // 3) 按**姓名**搜 — 大小写不敏感, 且明确不是跨机搜索
-            let s1 = post_json("/api/contacts/search", serde_json::json!({ "query": "老李" }));
+            let s1 = post_json(
+                "/api/contacts/search",
+                serde_json::json!({ "query": "老李" }),
+            );
             assert_eq!(s1["count"], serde_json::json!(1), "{s1}");
             assert_eq!(s1["locals"][0]["did"], serde_json::json!("did:pi:AAA111"));
             assert_eq!(s1["locals"][0]["name"], serde_json::json!("老李"));
-            assert_eq!(s1["cross_machine_tried"], serde_json::json!(false), "名字走本机名片本, 不假装跨机: {s1}");
+            assert_eq!(
+                s1["cross_machine_tried"],
+                serde_json::json!(false),
+                "名字走本机名片本, 不假装跨机: {s1}"
+            );
 
-            let s2 = post_json("/api/contacts/search", serde_json::json!({ "query": "leo" }));
+            let s2 = post_json(
+                "/api/contacts/search",
+                serde_json::json!({ "query": "leo" }),
+            );
             assert_eq!(s2["count"], serde_json::json!(1), "大小写不敏感: {s2}");
             assert_eq!(s2["locals"][0]["did"], serde_json::json!("did:pi:BBB222"));
 
             // DID 片段也能搜到 (拿半截 DID 找人)
-            let s3 = post_json("/api/contacts/search", serde_json::json!({ "query": "AAA111" }));
+            let s3 = post_json(
+                "/api/contacts/search",
+                serde_json::json!({ "query": "AAA111" }),
+            );
             assert_eq!(s3["count"], serde_json::json!(1), "{s3}");
 
             // 4) 按**手机号**搜 — 形状合法 ⇒ 真的去做了跨机尝试; 但**没登记任何对端**
@@ -5177,8 +6024,15 @@ mod route_tests {
                 "/api/contacts/search",
                 serde_json::json!({ "query": "13800001111" }),
             );
-            assert_eq!(s4["cross_machine_tried"], serde_json::json!(true), "手机号形状要走跨机: {s4}");
-            assert!(s4["directory"].is_null(), "没有对手域就不该有目录命中 — 不冒充: {s4}");
+            assert_eq!(
+                s4["cross_machine_tried"],
+                serde_json::json!(true),
+                "手机号形状要走跨机: {s4}"
+            );
+            assert!(
+                s4["directory"].is_null(),
+                "没有对手域就不该有目录命中 — 不冒充: {s4}"
+            );
 
             // 5) 空查询 = 打开通讯录的全量
             let s5 = post_json("/api/contacts/search", serde_json::json!({ "query": "" }));
@@ -5191,7 +6045,10 @@ mod route_tests {
             );
             let s6 = post_json("/api/contacts/search", serde_json::json!({ "query": "" }));
             assert_eq!(s6["count"], serde_json::json!(2), "改名而不是新增: {s6}");
-            let s7 = post_json("/api/contacts/search", serde_json::json!({ "query": "老李" }));
+            let s7 = post_json(
+                "/api/contacts/search",
+                serde_json::json!({ "query": "老李" }),
+            );
             assert_eq!(s7["locals"][0]["name"], serde_json::json!("老李叔"), "{s7}");
 
             // 7) 空名字写得进去就出鬼了 → 拒
@@ -5231,8 +6088,12 @@ mod route_tests {
             b.identity.did.to_string(),
             "两个节点必须是不同身份"
         );
-        let la = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let lb = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let la = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let lb = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let (ua, ub) = (
             format!("http://{}", la.local_addr().unwrap()),
             format!("http://{}", lb.local_addr().unwrap()),
@@ -5254,9 +6115,15 @@ mod route_tests {
                 .unwrap();
 
             // B 是空池
-            let b_view: serde_json::Value =
-                ureq::get(&format!("{ub2}/api/econ/pool/view")).call().unwrap().into_json().unwrap();
-            assert_eq!(b_view["local"]["cash_available_usd"], serde_json::json!(0.0));
+            let b_view: serde_json::Value = ureq::get(&format!("{ub2}/api/econ/pool/view"))
+                .call()
+                .unwrap()
+                .into_json()
+                .unwrap();
+            assert_eq!(
+                b_view["local"]["cash_available_usd"],
+                serde_json::json!(0.0)
+            );
 
             // B 拉 A 的快照 ⇒ 验签通过，全网可用 = B(0) + A(5)
             let r: serde_json::Value = ureq::post(&format!("{ub2}/api/econ/pool/peers"))
@@ -5264,10 +6131,17 @@ mod route_tests {
                 .unwrap()
                 .into_json()
                 .unwrap();
-            assert_eq!(r["verified"], serde_json::json!(true), "签名必须能验过: {r}");
+            assert_eq!(
+                r["verified"],
+                serde_json::json!(true),
+                "签名必须能验过: {r}"
+            );
 
-            let after: serde_json::Value =
-                ureq::get(&format!("{ub2}/api/econ/pool/view")).call().unwrap().into_json().unwrap();
+            let after: serde_json::Value = ureq::get(&format!("{ub2}/api/econ/pool/view"))
+                .call()
+                .unwrap()
+                .into_json()
+                .unwrap();
             assert_eq!(after["peers"].as_array().unwrap().len(), 1);
             assert_eq!(after["network"]["verified_nodes"], serde_json::json!(2));
             assert_eq!(
@@ -5289,9 +6163,16 @@ mod route_tests {
                 .unwrap()
                 .into_json()
                 .unwrap();
-            assert_eq!(r2["verified"], serde_json::json!(false), "改数字必须验不过: {r2}");
-            let after2: serde_json::Value =
-                ureq::get(&format!("{ub2}/api/econ/pool/view")).call().unwrap().into_json().unwrap();
+            assert_eq!(
+                r2["verified"],
+                serde_json::json!(false),
+                "改数字必须验不过: {r2}"
+            );
+            let after2: serde_json::Value = ureq::get(&format!("{ub2}/api/econ/pool/view"))
+                .call()
+                .unwrap()
+                .into_json()
+                .unwrap();
             assert_eq!(
                 after2["network"]["cash_available_sum_usd"],
                 serde_json::json!(0.0),
@@ -5320,7 +6201,9 @@ mod route_tests {
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
 
         let state = AppState::new(offline_llm());
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let _ = serve_on(state, listener).await;
@@ -5375,7 +6258,9 @@ mod route_tests {
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
 
         let state = AppState::new(offline_llm());
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let _ = serve_on(state, listener).await;
@@ -5383,15 +6268,26 @@ mod route_tests {
         let base = format!("http://{addr}");
         tokio::task::spawn_blocking(move || {
             let get = |p: &str| -> serde_json::Value {
-                ureq::get(&format!("{base}{p}")).call().unwrap().into_json().unwrap()
+                ureq::get(&format!("{base}{p}"))
+                    .call()
+                    .unwrap()
+                    .into_json()
+                    .unwrap()
             };
             let post = |p: &str, body: serde_json::Value| -> serde_json::Value {
-                ureq::post(&format!("{base}{p}")).send_json(body).unwrap().into_json().unwrap()
+                ureq::post(&format!("{base}{p}"))
+                    .send_json(body)
+                    .unwrap()
+                    .into_json()
+                    .unwrap()
             };
 
             let grp = post("/api/groups", serde_json::json!({ "name": "删了就该没了" }));
             let gid = grp["id"].as_str().unwrap().to_string();
-            post(&format!("/api/groups/{gid}/say"), serde_json::json!({ "text": "删前留一句" }));
+            post(
+                &format!("/api/groups/{gid}/say"),
+                serde_json::json!({ "text": "删前留一句" }),
+            );
             // 删除前先拿邀请链接: 这个链接就是"软删可回"的凭据
             let link = get(&format!("/api/groups/{gid}/invite"))["link"]
                 .as_str()
@@ -5405,26 +6301,46 @@ mod route_tests {
             // ① 列表里没有
             let list = get("/api/groups");
             assert!(
-                list["groups"].as_array().unwrap().iter().all(|g| g["id"] != serde_json::json!(gid)),
+                list["groups"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|g| g["id"] != serde_json::json!(gid)),
                 "删掉的群还���列表里: {list}"
             );
             // ② 消息读不到 (智能体视角也一样)
             let msgs = get(&format!("/api/groups/{gid}/messages?role=agent"));
             assert_eq!(msgs["deleted"], serde_json::json!(true), "{msgs}");
-            assert!(msgs["messages"].as_array().unwrap().is_empty(), "删了还能读到历史: {msgs}");
+            assert!(
+                msgs["messages"].as_array().unwrap().is_empty(),
+                "删了还能读到历史: {msgs}"
+            );
             // ③ 成员看不到
-            assert_eq!(get(&format!("/api/groups/{gid}/members"))["deleted"], serde_json::json!(true));
+            assert_eq!(
+                get(&format!("/api/groups/{gid}/members"))["deleted"],
+                serde_json::json!(true)
+            );
             // ④ 不能往里说话
-            let said = post(&format!("/api/groups/{gid}/say"), serde_json::json!({ "text": "还想发" }));
+            let said = post(
+                &format!("/api/groups/{gid}/say"),
+                serde_json::json!({ "text": "还想发" }),
+            );
             assert_eq!(said["ok"], serde_json::json!(false), "{said}");
             // ⑤ 不再签发邀请
-            assert_eq!(get(&format!("/api/groups/{gid}/invite"))["ok"], serde_json::json!(false));
+            assert_eq!(
+                get(&format!("/api/groups/{gid}/invite"))["ok"],
+                serde_json::json!(false)
+            );
 
             // ⑥ 凭删除前那条邀请链接重新加入 ⇒ 群回来 (软删不是焚尸)
             let rejoin = post("/api/groups/join", serde_json::json!({ "link": link }));
             assert!(rejoin.get("error").is_none(), "重新加入失败: {rejoin}");
             let msgs2 = get(&format!("/api/groups/{gid}/messages?role=agent"));
-            assert_ne!(msgs2["deleted"], serde_json::json!(true), "重加回来了就该能读: {msgs2}");
+            assert_ne!(
+                msgs2["deleted"],
+                serde_json::json!(true),
+                "重加回来了就该能读: {msgs2}"
+            );
             assert_eq!(msgs2["messages"].as_array().unwrap().len(), 1);
         })
         .await
@@ -5451,7 +6367,9 @@ mod route_tests {
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
 
         let state = AppState::new(offline_llm());
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let _ = serve_on(state, listener).await;
@@ -5594,7 +6512,7 @@ mod route_tests {
                     session_id: Some("room-g1".into()),
                     agent_id: Some(agent.into()),
                     bill_did: None,
-            surface: "web-room".into(),
+                    surface: "web-room".into(),
                 }),
             )
             .await;
@@ -5614,13 +6532,23 @@ mod route_tests {
             })
             .collect();
         agents.sort();
-        assert_eq!(agents, vec!["agent-a", "agent-b", "agent-c"], "每个 agent 各自一条");
+        assert_eq!(
+            agents,
+            vec!["agent-a", "agent-b", "agent-c"],
+            "每个 agent 各自一条"
+        );
         for e in &evs {
             assert_eq!(e.status, bolloon_econ::MeterStatus::Failed, "失败也要记");
-            assert!(e.tokens_in.is_none() && e.tokens_out.is_none(), "失败时 token 不许编 0");
+            assert!(
+                e.tokens_in.is_none() && e.tokens_out.is_none(),
+                "失败时 token 不许编 0"
+            );
             assert_eq!(e.provider, "test");
             assert_eq!(
-                e.evidence.as_ref().and_then(|v| v.get("group_id")).and_then(|v| v.as_str()),
+                e.evidence
+                    .as_ref()
+                    .and_then(|v| v.get("group_id"))
+                    .and_then(|v| v.as_str()),
                 Some("g1")
             );
             assert_eq!(e.intent_id.as_deref(), Some(intent), "根意图必须共用");
@@ -5645,7 +6573,7 @@ mod route_tests {
                 session_id: Some("room-g1".into()),
                 agent_id: Some("a".into()),
                 bill_did: None,
-            surface: "web-room".into(),
+                surface: "web-room".into(),
             }),
         )
         .await;
@@ -5674,7 +6602,9 @@ mod route_tests {
         async fn report_once(home: &std::path::Path) -> serde_json::Value {
             let _ = home;
             let state = AppState::new(offline_llm());
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
             let addr = listener.local_addr().unwrap();
             tokio::spawn(async move {
                 let _ = serve_on(state, listener).await;
@@ -5722,12 +6652,19 @@ mod route_tests {
             "打开经济层不等于允许强制: {on}"
         );
         assert_eq!(on["settlement_enabled"], serde_json::json!(false));
-        assert_eq!(on["price_version"], serde_json::Value::Null, "没价格表就不许编价格");
+        assert_eq!(
+            on["price_version"],
+            serde_json::Value::Null,
+            "没价格表就不许编价格"
+        );
 
         // ③ 凭证不上线: 报告里不许出现 key/secret 形状
         let raw = on.to_string().to_lowercase();
         for forbidden in ["api_key", "apikey", "authorization", "sk-", "secret"] {
-            assert!(!raw.contains(forbidden), "经济层报告泄漏了 `{forbidden}`: {on}");
+            assert!(
+                !raw.contains(forbidden),
+                "经济层报告泄漏了 `{forbidden}`: {on}"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&home);
@@ -5743,7 +6680,9 @@ mod route_tests {
         unsafe { std::env::set_var("BOLLOON_HOME", &home) };
 
         let state = AppState::new(offline_llm());
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let _ = serve_on(state, listener).await;

@@ -32,7 +32,10 @@ impl Workspace {
     /// 建 workspace (root 为绝对路径)
     pub fn new(id: &str, root: impl Into<PathBuf>) -> Self {
         let root = root.into();
-        Self { id: id.into(), root }
+        Self {
+            id: id.into(),
+            root,
+        }
     }
 
     /// 解析相对路径 → 绝对路径 (词法 canonical + 越界校验)
@@ -110,7 +113,10 @@ mod tests {
             w.resolve("a/b.txt").unwrap(),
             PathBuf::from("/tmp/bolloon-ws-test/proj/a/b.txt")
         );
-        assert_eq!(w.resolve("./a.txt").unwrap(), PathBuf::from("/tmp/bolloon-ws-test/proj/a.txt"));
+        assert_eq!(
+            w.resolve("./a.txt").unwrap(),
+            PathBuf::from("/tmp/bolloon-ws-test/proj/a.txt")
+        );
         // canonical: a/./b/../c → a/c
         assert_eq!(
             w.resolve("a/./b/../c.txt").unwrap(),
@@ -121,8 +127,14 @@ mod tests {
     #[test]
     fn traversal_rejected() {
         let w = ws();
-        assert_eq!(w.resolve("../x").unwrap_err(), WorkspaceError::Traversal("../x".into()));
-        assert_eq!(w.resolve("a/../../x").unwrap_err(), WorkspaceError::Traversal("a/../../x".into()));
+        assert_eq!(
+            w.resolve("../x").unwrap_err(),
+            WorkspaceError::Traversal("../x".into())
+        );
+        assert_eq!(
+            w.resolve("a/../../x").unwrap_err(),
+            WorkspaceError::Traversal("a/../../x".into())
+        );
     }
 
     #[test]

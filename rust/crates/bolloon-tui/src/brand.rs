@@ -19,8 +19,12 @@ pub const BOLLOON_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn robot_head() -> Vec<String> {
     vec![
         format!("{C_ACCENT}   ╭───────╮{RESET}"),
-        format!("{C_ACCENT} ╭─╯{C_ACCENT_BG}  {C_WHITE}◉{C_ACCENT_BG} {C_WHITE}◉{C_ACCENT_BG}  {RESET}{C_ACCENT}╰─╮{RESET}"),
-        format!("{C_ACCENT} │{C_ACCENT_BG}     {C_WHITE}◡{C_ACCENT_BG}     {RESET}{C_ACCENT}│{RESET}"),
+        format!(
+            "{C_ACCENT} ╭─╯{C_ACCENT_BG}  {C_WHITE}◉{C_ACCENT_BG} {C_WHITE}◉{C_ACCENT_BG}  {RESET}{C_ACCENT}╰─╮{RESET}"
+        ),
+        format!(
+            "{C_ACCENT} │{C_ACCENT_BG}     {C_WHITE}◡{C_ACCENT_BG}     {RESET}{C_ACCENT}│{RESET}"
+        ),
         format!("{C_ACCENT} ╰─╮{C_ACCENT_BG}       {RESET}{C_ACCENT}╭─╯{RESET}"),
         format!("{C_ACCENT}   ╰───┬───╯{RESET}"),
         format!("{C_ACCENT}       │{RESET}"),
@@ -37,12 +41,24 @@ pub fn bolloon_icon() -> String {
 // ── 艺术字: BOLLOON (box 字体) + Bolloon Agent 副标题 ──
 pub fn bolloon_banner() -> Vec<String> {
     vec![
-        format!("{C_TEXT}{BOLD}██████╗  ██████╗ ██╗     ██╗      ██████╗  ██████╗ ███╗   ██╗{RESET}"),
-        format!("{C_TEXT}{BOLD}██╔══██╗██╔═══██╗██║     ██║     ██╔═══██╗██╔═══██╗████╗  ██║{RESET}"),
-        format!("{C_TEXT}{BOLD}██████╔╝██║   ██║██║     ██║     ██║   ██║██║   ██║██╔██╗ ██║{RESET}"),
-        format!("{C_TEXT}{BOLD}██╔══██╗██║   ██║██║     ██║     ██║   ██║██║   ██║██║╚██╗██║{RESET}"),
-        format!("{C_TEXT}{BOLD}██████╔╝╚██████╔╝███████╗███████╗╚██████╔╝╚██████╔╝██║ ╚████║{RESET}"),
-        format!("{C_TEXT}{BOLD}╚═════╝  ╚═════╝ ╚══════╝╚══════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝{RESET}"),
+        format!(
+            "{C_TEXT}{BOLD}██████╗  ██████╗ ██╗     ██╗      ██████╗  ██████╗ ███╗   ██╗{RESET}"
+        ),
+        format!(
+            "{C_TEXT}{BOLD}██╔══██╗██╔═══██╗██║     ██║     ██╔═══██╗██╔═══██╗████╗  ██║{RESET}"
+        ),
+        format!(
+            "{C_TEXT}{BOLD}██████╔╝██║   ██║██║     ██║     ██║   ██║██║   ██║██╔██╗ ██║{RESET}"
+        ),
+        format!(
+            "{C_TEXT}{BOLD}██╔══██╗██║   ██║██║     ██║     ██║   ██║██║   ██║██║╚██╗██║{RESET}"
+        ),
+        format!(
+            "{C_TEXT}{BOLD}██████╔╝╚██████╔╝███████╗███████╗╚██████╔╝╚██████╔╝██║ ╚████║{RESET}"
+        ),
+        format!(
+            "{C_TEXT}{BOLD}╚═════╝  ╚═════╝ ╚══════╝╚══════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝{RESET}"
+        ),
         format!("{C_DIM}Bolloon Agent v{BOLLOON_VERSION}{RESET}"),
     ]
 }
@@ -144,8 +160,8 @@ fn dash(w: usize) -> String {
 /// 标题两侧各留 1 空格, 剩余用横线**对称**填充 (`left_dash + 1 + tw + 1 + right_dash = inner`)。
 /// 总长恒为 `inner + 2 = w`, 边框闭合。
 fn dash_top(title: &str, w: usize) -> String {
-    use crate::width::{disp_width, truncate};
     use crate::theme::{C_ACCENT, C_BORDER_BRIGHT, RESET};
+    use crate::width::{disp_width, truncate};
     let inner = w.saturating_sub(2);
     let t = truncate(title, inner.saturating_sub(2));
     let tw = disp_width(&t);
@@ -193,7 +209,6 @@ fn dash_bottom(w: usize) -> String {
     format!("{C_BORDER_BRIGHT}╰{}╯{RESET}", dash(w.saturating_sub(2)))
 }
 
-
 /// 渲染启动 Dashboard, 返回逐行字符串 (含圆角边框与分区)
 pub fn render_startup_dashboard(d: &DashboardData) -> Vec<String> {
     use crate::theme::{BOLD, C_ACCENT, C_BORDER_BRIGHT, C_DIM, C_OK, RESET};
@@ -235,7 +250,11 @@ pub fn render_startup_dashboard(d: &DashboardData) -> Vec<String> {
     let mut right: Vec<String> = Vec::new();
     // 三个分区统一压缩显示（总数真实, 名字不全铺 —— 工具族会涨到 186）
     right.extend(list_block("Available Tools", &d.tools, "无"));
-    right.extend(list_block("MCP Servers", &d.mcp, "未配置 (按 mcp.json 加载)"));
+    right.extend(list_block(
+        "MCP Servers",
+        &d.mcp,
+        "未配置 (按 mcp.json 加载)",
+    ));
     right.extend(list_block(
         "Available Skills",
         &d.skills,
@@ -252,12 +271,17 @@ pub fn render_startup_dashboard(d: &DashboardData) -> Vec<String> {
         let l = if i < pad_top_l {
             blank_l.clone()
         } else {
-            left.get(i - pad_top_l).cloned().unwrap_or_else(|| blank_l.clone())
+            left.get(i - pad_top_l)
+                .cloned()
+                .unwrap_or_else(|| blank_l.clone())
         };
         let r = if i < pad_top_r {
             blank_r.clone()
         } else {
-            right.get(i - pad_top_r).cloned().unwrap_or_else(|| blank_r.clone())
+            right
+                .get(i - pad_top_r)
+                .cloned()
+                .unwrap_or_else(|| blank_r.clone())
         };
         out.push(format!(
             "{C_BORDER_BRIGHT}│{RESET}{}{C_BORDER_BRIGHT}│{RESET}{}{C_BORDER_BRIGHT}│{RESET}",
@@ -288,7 +312,6 @@ pub fn render_startup_dashboard(d: &DashboardData) -> Vec<String> {
     ));
     out
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -352,7 +375,10 @@ mod tests {
 
         // 只列前 8 个代表, 其余折叠
         let flat = lines.join("\n");
-        assert!(flat.contains("tool_0") && flat.contains("tool_7"), "前 8 个应列出");
+        assert!(
+            flat.contains("tool_0") && flat.contains("tool_7"),
+            "前 8 个应列出"
+        );
         assert!(flat.contains("还有 12 个"), "应折叠 12 个: {flat}");
         assert!(!flat.contains("tool_8"), "第 9 个起不该全铺: {flat}");
 
@@ -375,10 +401,7 @@ mod tests {
             h[1],
             "\x1b[38;2;196;214;64m ╭─╯\x1b[48;2;196;214;64m  \x1b[38;2;255;255;255m◉\x1b[48;2;196;214;64m \x1b[38;2;255;255;255m◉\x1b[48;2;196;214;64m  \x1b[0m\x1b[38;2;196;214;64m╰─╮\x1b[0m"
         );
-        assert_eq!(
-            h[5],
-            "\x1b[38;2;196;214;64m       │\x1b[0m"
-        );
+        assert_eq!(h[5], "\x1b[38;2;196;214;64m       │\x1b[0m");
     }
 
     /// 艺术字档位宽度 —— **真测值** (从 TS 原文逐字搬过来后用 dispWidth 实测):

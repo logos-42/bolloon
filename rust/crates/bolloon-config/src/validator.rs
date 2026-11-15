@@ -25,7 +25,11 @@ pub fn validate(cfg: &AppConfig) -> Result<(), ConfigError> {
         cfg.runtime.tool_timeout_ms,
         LIMIT_TOOL_TIMEOUT_MS,
     )?;
-    check_u32("runtime.llm_retries", cfg.runtime.llm_retries, LIMIT_LLM_RETRIES)?;
+    check_u32(
+        "runtime.llm_retries",
+        cfg.runtime.llm_retries,
+        LIMIT_LLM_RETRIES,
+    )?;
     check_u32(
         "runtime.model_concurrency",
         cfg.runtime.model_concurrency,
@@ -41,7 +45,11 @@ pub fn validate(cfg: &AppConfig) -> Result<(), ConfigError> {
         cfg.runtime.max_reflect,
         LIMIT_MAX_REFLECT,
     )?;
-    check_u32("task.budget_calls", cfg.task.budget_calls, LIMIT_BUDGET_CALLS)?;
+    check_u32(
+        "task.budget_calls",
+        cfg.task.budget_calls,
+        LIMIT_BUDGET_CALLS,
+    )?;
     check_u64("task.budget_ms", cfg.task.budget_ms, LIMIT_BUDGET_MS)?;
     check_u32("task.max_steps", cfg.task.max_steps, LIMIT_MAX_STEPS)?;
 
@@ -64,7 +72,8 @@ pub fn validate(cfg: &AppConfig) -> Result<(), ConfigError> {
         // 影子模式就意味着"不拦不换": 想强制必须显式 mode=enforce
         if e.budget_enforcement_enabled && e.mode != EconomicMode::Enforce {
             return Err(ConfigError::Validation(
-                "economic.budget_enforcement_enabled 只能在 mode=enforce 下开启 (shadow 只计量)".into(),
+                "economic.budget_enforcement_enabled 只能在 mode=enforce 下开启 (shadow 只计量)"
+                    .into(),
             ));
         }
         if e.community_routing_enabled && e.mode != EconomicMode::Enforce {

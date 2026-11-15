@@ -18,7 +18,7 @@
 //! 多机 → 各节点本地 `apply_coordinated` + 定期 `sync_from_peer`, 并接受有界延迟。
 
 use serde::{Deserialize, Serialize};
-use std::fs::{create_dir_all, OpenOptions};
+use std::fs::{OpenOptions, create_dir_all};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -31,7 +31,9 @@ pub enum CoordError {
         expires_at_ms: u64,
         now_ms: u64,
     },
-    #[error("租约不匹配: 期望 {expected_holder}#{expected_fencing}, 实际 {actual_holder}#{actual_fencing}")]
+    #[error(
+        "租约不匹配: 期望 {expected_holder}#{expected_fencing}, 实际 {actual_holder}#{actual_fencing}"
+    )]
     LeaseMismatch {
         expected_holder: String,
         expected_fencing: u64,
@@ -104,7 +106,9 @@ impl FileLeaseCoordinator {
         if let Some(dir) = self.path.parent() {
             let _ = create_dir_all(dir);
         }
-        let tmp = self.path.with_extension(format!("{}.tmp", std::process::id()));
+        let tmp = self
+            .path
+            .with_extension(format!("{}.tmp", std::process::id()));
         let body = serde_json::to_string(lease).map_err(|e| CoordError::Io(e.to_string()))?;
         {
             let mut f = OpenOptions::new()
@@ -147,9 +151,9 @@ impl LeaseCoordinator for FileLeaseCoordinator {
             Err(e) => return Err(CoordError::Io(e.to_string())),
         }
         // 2) 有人在持: 未过期 → 拒绝; 已过期 → 抢 (fencing + 1)
-        let cur = self.read().ok_or_else(|| {
-            CoordError::Io("租约文件存在但内容不可解析 (视为不安全状态)".into())
-        })?;
+        let cur = self
+            .read()
+            .ok_or_else(|| CoordError::Io("租约文件存在但内容不可解析 (视为不安全状态)".into()))?;
         if cur.expires_at_ms > now {
             return Err(CoordError::LeaseHeld {
                 holder: cur.holder,
@@ -180,14 +184,12 @@ impl LeaseCoordinator for FileLeaseCoordinator {
     }
 
     fn renew(&self, lease: &Lease, ttl_ms: u64) -> Result<Lease, CoordError> {
-        let cur = self
-            .read()
-            .ok_or_else(|| CoordError::LeaseMismatch {
-                expected_holder: lease.holder.clone(),
-                expected_fencing: lease.fencing,
-                actual_holder: "<none>".into(),
-                actual_fencing: 0,
-            })?;
+        let cur = self.read().ok_or_else(|| CoordError::LeaseMismatch {
+            expected_holder: lease.holder.clone(),
+            expected_fencing: lease.fencing,
+            actual_holder: "<none>".into(),
+            actual_fencing: 0,
+        })?;
         if cur.holder != lease.holder || cur.fencing != lease.fencing {
             return Err(CoordError::LeaseMismatch {
                 expected_holder: lease.holder.clone(),

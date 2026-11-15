@@ -75,7 +75,12 @@ pub fn validate_milestone_spec(milestone_id: &str, amount: &str) -> Result<(), M
 }
 
 /// 建里程碑 (默认 unpaid/pending/pending)
-pub fn make_milestone(milestone_id: &str, title: &str, amount: &str, now_ms: u64) -> Result<TransactionMilestone, MilestoneError> {
+pub fn make_milestone(
+    milestone_id: &str,
+    title: &str,
+    amount: &str,
+    now_ms: u64,
+) -> Result<TransactionMilestone, MilestoneError> {
     validate_milestone_spec(milestone_id, amount)?;
     Ok(TransactionMilestone {
         milestone_id: milestone_id.into(),
@@ -90,8 +95,14 @@ pub fn make_milestone(milestone_id: &str, title: &str, amount: &str, now_ms: u64
 }
 
 /// 里程碑总额必须等于交易金额 (否则就是账不平)
-pub fn milestones_match_amount(ms: &[TransactionMilestone], tx_amount: Option<&str>) -> Result<String, MilestoneError> {
-    let sum: u128 = ms.iter().map(|m| m.amount.parse::<u128>().unwrap_or(0)).sum();
+pub fn milestones_match_amount(
+    ms: &[TransactionMilestone],
+    tx_amount: Option<&str>,
+) -> Result<String, MilestoneError> {
+    let sum: u128 = ms
+        .iter()
+        .map(|m| m.amount.parse::<u128>().unwrap_or(0))
+        .sum();
     let sum_str = sum.to_string();
     if let Some(expected) = tx_amount {
         if expected != sum_str {
@@ -125,9 +136,18 @@ pub struct MilestoneAggregate {
 
 /// 聚合 (纯函数, 对齐 TS aggregateMilestones)
 pub fn aggregate_milestones(ms: &[TransactionMilestone]) -> MilestoneAggregate {
-    let paid = ms.iter().filter(|m| m.payment_status == MilestonePaymentStatus::Paid).count();
-    let delivered = ms.iter().filter(|m| m.delivery_status == MilestoneDeliveryStatus::Delivered).count();
-    let verified = ms.iter().filter(|m| m.verification_status == MilestoneVerificationStatus::Verified).count();
+    let paid = ms
+        .iter()
+        .filter(|m| m.payment_status == MilestonePaymentStatus::Paid)
+        .count();
+    let delivered = ms
+        .iter()
+        .filter(|m| m.delivery_status == MilestoneDeliveryStatus::Delivered)
+        .count();
+    let verified = ms
+        .iter()
+        .filter(|m| m.verification_status == MilestoneVerificationStatus::Verified)
+        .count();
     let failed = ms
         .iter()
         .filter(|m| {
@@ -140,7 +160,10 @@ pub fn aggregate_milestones(ms: &[TransactionMilestone]) -> MilestoneAggregate {
     let partially_complete = any_progress && !all_complete && failed == 0;
     let next = ms
         .iter()
-        .find(|m| m.verification_status != MilestoneVerificationStatus::Verified && m.delivery_status != MilestoneDeliveryStatus::Failed)
+        .find(|m| {
+            m.verification_status != MilestoneVerificationStatus::Verified
+                && m.delivery_status != MilestoneDeliveryStatus::Failed
+        })
         .map(|m| m.milestone_id.clone());
 
     let settlement_fact = if all_complete {
@@ -159,7 +182,10 @@ pub fn aggregate_milestones(ms: &[TransactionMilestone]) -> MilestoneAggregate {
     } else if all_complete {
         "全部里程碑支付+交付+验真完成".into()
     } else if partially_complete {
-        format!("{verified}/{} 个里程碑完成 → partially_settled (不算完成, 也不进 Goal 成功证据)", ms.len())
+        format!(
+            "{verified}/{} 个里程碑完成 → partially_settled (不算完成, 也不进 Goal 成功证据)",
+            ms.len()
+        )
     } else if ms.is_empty() {
         "没有里程碑 (单笔交易)".into()
     } else {
@@ -225,10 +251,28 @@ mod tests {
     #[test]
     fn spec_validation() {
         assert!(validate_milestone_spec("m1", "5000").is_ok());
-        assert_eq!(validate_milestone_spec("", "100").unwrap_err(), MilestoneError::EmptyId);
-        assert!(matches!(validate_milestone_spec("m", "1.5"), Err(MilestoneError::BadAmount(_))), "浮点拒");
-        assert!(matches!(validate_milestone_spec("m", "-5"), Err(MilestoneError::BadAmount(_))), "负数拒");
-        assert_eq!(validate_milestone_spec("m", "0").unwrap_err(), MilestoneError::ZeroAmount);
+        assert_eq!(
+            validate_milestone_spec("", "100").unwrap_err(),
+            MilestoneError::EmptyId
+        );
+        assert!(
+            matches!(
+                validate_milestone_spec("m", "1.5"),
+                Err(MilestoneError::BadAmount(_))
+            ),
+            "浮点拒"
+        );
+        assert!(
+            matches!(
+                validate_milestone_spec("m", "-5"),
+                Err(MilestoneError::BadAmount(_))
+            ),
+            "负数拒"
+        );
+        assert_eq!(
+            validate_milestone_spec("m", "0").unwrap_err(),
+            MilestoneError::ZeroAmount
+        );
     }
 
     #[test]
@@ -237,7 +281,10 @@ mod tests {
         assert!(milestones_match_amount(&ms, Some("10000")).is_ok());
         assert_eq!(
             milestones_match_amount(&ms, Some("9999")).unwrap_err(),
-            MilestoneError::AmountMismatch { sum: "10000".into(), expected: "9999".into() },
+            MilestoneError::AmountMismatch {
+                sum: "10000".into(),
+                expected: "9999".into()
+            },
             "账不平必须拒"
         );
     }
@@ -245,8 +292,26 @@ mod tests {
     #[test]
     fn aggregate_all_complete_is_fully_settled() {
         let ms = ms_pair();
-        let (ms, _) = apply_milestone_result(&ms, "m1", Some(MilestonePaymentStatus::Paid), Some(MilestoneDeliveryStatus::Delivered), Some(MilestoneVerificationStatus::Verified), &[], 2).unwrap();
-        let (ms, agg) = apply_milestone_result(&ms, "m2", Some(MilestonePaymentStatus::Paid), Some(MilestoneDeliveryStatus::Delivered), Some(MilestoneVerificationStatus::Verified), &[], 3).unwrap();
+        let (ms, _) = apply_milestone_result(
+            &ms,
+            "m1",
+            Some(MilestonePaymentStatus::Paid),
+            Some(MilestoneDeliveryStatus::Delivered),
+            Some(MilestoneVerificationStatus::Verified),
+            &[],
+            2,
+        )
+        .unwrap();
+        let (ms, agg) = apply_milestone_result(
+            &ms,
+            "m2",
+            Some(MilestonePaymentStatus::Paid),
+            Some(MilestoneDeliveryStatus::Delivered),
+            Some(MilestoneVerificationStatus::Verified),
+            &[],
+            3,
+        )
+        .unwrap();
         assert!(agg.all_complete);
         assert_eq!(agg.settlement_fact, "fully_settled");
         assert_eq!(ms.len(), 2);
@@ -255,18 +320,40 @@ mod tests {
     #[test]
     fn partial_settlement_is_not_complete() {
         let ms = ms_pair();
-        let (ms, _) = apply_milestone_result(&ms, "m1", Some(MilestonePaymentStatus::Paid), Some(MilestoneDeliveryStatus::Delivered), Some(MilestoneVerificationStatus::Verified), &[], 2).unwrap();
+        let (ms, _) = apply_milestone_result(
+            &ms,
+            "m1",
+            Some(MilestonePaymentStatus::Paid),
+            Some(MilestoneDeliveryStatus::Delivered),
+            Some(MilestoneVerificationStatus::Verified),
+            &[],
+            2,
+        )
+        .unwrap();
         let agg = aggregate_milestones(&ms);
         assert_eq!(agg.settlement_fact, "partially_settled");
         assert!(agg.partially_complete);
         assert!(!agg.all_complete, "partially_settled 不算完成");
-        assert_eq!(agg.next_milestone_id.as_deref(), Some("m2"), "下一个待做里程碑");
+        assert_eq!(
+            agg.next_milestone_id.as_deref(),
+            Some("m2"),
+            "下一个待做里程碑"
+        );
     }
 
     #[test]
     fn failed_delivery_goes_to_dispute() {
         let ms = ms_pair();
-        let (ms, _) = apply_milestone_result(&ms, "m1", Some(MilestonePaymentStatus::Paid), Some(MilestoneDeliveryStatus::Failed), None, &[], 2).unwrap();
+        let (ms, _) = apply_milestone_result(
+            &ms,
+            "m1",
+            Some(MilestonePaymentStatus::Paid),
+            Some(MilestoneDeliveryStatus::Failed),
+            None,
+            &[],
+            2,
+        )
+        .unwrap();
         let agg = aggregate_milestones(&ms);
         assert!(agg.should_dispute, "交付失败 → 进争议 (不许静默关闭)");
         assert!(agg.reason.contains("争议"));
@@ -291,8 +378,10 @@ mod tests {
     #[test]
     fn evidence_accumulates() {
         let ms = ms_pair();
-        let (ms, _) = apply_milestone_result(&ms, "m1", None, None, None, &["ev-1".into()], 2).unwrap();
-        let (ms, _) = apply_milestone_result(&ms, "m1", None, None, None, &["ev-2".into()], 3).unwrap();
+        let (ms, _) =
+            apply_milestone_result(&ms, "m1", None, None, None, &["ev-1".into()], 2).unwrap();
+        let (ms, _) =
+            apply_milestone_result(&ms, "m1", None, None, None, &["ev-2".into()], 3).unwrap();
         assert_eq!(ms[0].evidence, vec!["ev-1", "ev-2"], "证据累积, 不覆盖");
     }
 }

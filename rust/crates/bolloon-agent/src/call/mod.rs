@@ -71,7 +71,9 @@ pub enum CallEvent {
     PeerUtterance(String),
     /// 对方按键
     PeerDtmf(String),
-    Hangup { by: String },
+    Hangup {
+        by: String,
+    },
     Error(String),
 }
 
@@ -110,7 +112,10 @@ pub struct CallPortError {
 
 impl CallPortError {
     pub fn new(kind: &str, msg: impl Into<String>) -> Self {
-        Self { kind: kind.into(), message: msg.into() }
+        Self {
+            kind: kind.into(),
+            message: msg.into(),
+        }
     }
 }
 

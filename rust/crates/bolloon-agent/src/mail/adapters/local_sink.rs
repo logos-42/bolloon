@@ -34,7 +34,10 @@ impl LocalSinkMailPort {
     pub fn new(account: impl Into<String>, mail_dir: impl Into<PathBuf>) -> Self {
         let outbox = mail_dir.into().join("outbox");
         let _ = std::fs::create_dir_all(&outbox);
-        Self { account: account.into(), outbox }
+        Self {
+            account: account.into(),
+            outbox,
+        }
     }
 
     fn record_path(&self, id: &MailId) -> PathBuf {
@@ -60,7 +63,10 @@ impl MailPort for LocalSinkMailPort {
     }
 
     async fn sync(&self) -> MailResult<SyncReport> {
-        Ok(SyncReport { account: self.account.clone(), ..Default::default() })
+        Ok(SyncReport {
+            account: self.account.clone(),
+            ..Default::default()
+        })
     }
 
     async fn list(&self, q: MailQuery) -> MailResult<Vec<MailMeta>> {
@@ -74,14 +80,30 @@ impl MailPort for LocalSinkMailPort {
             if e.path().extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
-            let Ok(raw) = std::fs::read_to_string(e.path()) else { continue };
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else { continue };
-            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
-            let subject = v.get("subject").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+            let Ok(raw) = std::fs::read_to_string(e.path()) else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                continue;
+            };
+            let id = v
+                .get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let subject = v
+                .get("subject")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
             let to: Vec<String> = v
                 .get("to")
                 .and_then(|x| x.as_array())
-                .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             let ts = v.get("ts_ms").and_then(|x| x.as_i64()).unwrap_or(0);
             if q.unread_only {
@@ -118,11 +140,19 @@ impl MailPort for LocalSinkMailPort {
         let v = self.read_record(id)?;
         // outbox 不存正文; 正文由 MailService 从加密 bodies/ 读缓存给
         let text = String::new();
-        let subject = v.get("subject").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        let subject = v
+            .get("subject")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string();
         let to: Vec<String> = v
             .get("to")
             .and_then(|x| x.as_array())
-            .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         let ts = v.get("ts_ms").and_then(|x| x.as_i64()).unwrap_or(0);
         Ok(MailBody {

@@ -13,7 +13,7 @@
 //! - 三模式 (world / group / agent) 事件走同一个 `record`，落 `kernel-events.jsonl`，
 //!   每轮 system prompt 由 `prompt_block()` 按模式分组注入；网页 / 终端读的是同一份事实。
 
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub const ROLE_A: &str = "mechanism"; // 意图/按钮/开关/路由/模式
@@ -65,7 +65,10 @@ pub struct Beat {
 
 fn beat_ms(v: &serde_json::Value) -> u64 {
     for k in ["lastBeat", "last_beat_ms", "received_at_ms", "ts_ms"] {
-        if let Some(x) = v[k].as_u64().or_else(|| v[k].as_i64().and_then(|n| u64::try_from(n).ok())) {
+        if let Some(x) = v[k]
+            .as_u64()
+            .or_else(|| v[k].as_i64().and_then(|n| u64::try_from(n).ok()))
+        {
             return x;
         }
         if let Some(s) = v[k].as_str() {
@@ -139,20 +142,22 @@ pub fn evaluate_health(a: Beat, b: Beat, now: u64) -> Health {
     let raw = pa.abs_diff(pb);
     let diff = raw.min(BEAT_INTERVAL_MS.saturating_sub(raw));
     let half = BEAT_INTERVAL_MS / 2;
-    let phase_ok = a_alive
-        && b_alive
-        && diff.abs_diff(half) <= PHASE_TOLERANCE_MS;
+    let phase_ok = a_alive && b_alive && diff.abs_diff(half) <= PHASE_TOLERANCE_MS;
     let source = match (a.last_beat_ms, b.last_beat_ms, a.pid, b.pid) {
         (0, 0, _, _) => "no-heartbeat",
         (ta, tb, _, _) if ta == 0 || tb == 0 => "partial-heartbeat",
-        (_, _, pa_pid, pb_pid)
-            if pa_pid == std::process::id() && pb_pid == std::process::id() =>
-        {
+        (_, _, pa_pid, pb_pid) if pa_pid == std::process::id() && pb_pid == std::process::id() => {
             "in-process"
         }
         _ => "shared-ha-files",
     };
-    Health { a_alive, b_alive, phase_ok, phase_diff_ms: diff, source }
+    Health {
+        a_alive,
+        b_alive,
+        phase_ok,
+        phase_diff_ms: diff,
+        source,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -225,7 +230,15 @@ pub const PORTS: [(&str, &str, &str); 8] = [
     ("tools", "工具", "kernel-events.jsonl"),
 ];
 const A_KINDS: [&str; 6] = ["intent", "button", "switch", "route", "mode", "bind"];
-const B_KINDS: [&str; 7] = ["step", "tool_result", "error", "maintenance", "health", "cache", "observe"];
+const B_KINDS: [&str; 7] = [
+    "step",
+    "tool_result",
+    "error",
+    "maintenance",
+    "health",
+    "cache",
+    "observe",
+];
 
 /// 合法化上报: 模式必须是三模式之一(内部事件用 kernel), kind 不许乱填。
 pub fn normalize_event<'a>(mode: &'a str, kind: &'a str) -> Option<(&'a str, &'a str)> {
@@ -245,10 +258,20 @@ pub fn normalize_event<'a>(mode: &'a str, kind: &'a str) -> Option<(&'a str, &'a
 }
 
 fn core_of(kind: &str) -> &'static str {
-    if A_KINDS.contains(&kind) { ROLE_A } else { ROLE_B }
+    if A_KINDS.contains(&kind) {
+        ROLE_A
+    } else {
+        ROLE_B
+    }
 }
 
-fn make_event(mode: &str, kind: &str, label: &str, detail: serde_json::Value, seq: u64) -> serde_json::Value {
+fn make_event(
+    mode: &str,
+    kind: &str,
+    label: &str,
+    detail: serde_json::Value,
+    seq: u64,
+) -> serde_json::Value {
     serde_json::json!({
         "at_ms": now_ms(),
         "seq": seq,
@@ -267,7 +290,11 @@ fn append_event(ev: &serde_json::Value) {
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
         let _ = writeln!(f, "{}", serde_json::to_string(ev).unwrap_or_default());
     }
 }
@@ -275,16 +302,24 @@ fn append_event(ev: &serde_json::Value) {
 /// 文件尾 N 行 (从尾部按块回读, 不整文件载入; 事件文件可无限增长)
 pub fn tail_lines(path: &std::path::Path, n: usize) -> Vec<String> {
     use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut f) = std::fs::File::open(path) else { return Vec::new() };
-    let Ok(len) = f.metadata().map(|m| m.len()) else { return Vec::new() };
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(len) = f.metadata().map(|m| m.len()) else {
+        return Vec::new();
+    };
     let mut buf = Vec::new();
     let mut start = len;
     while start > 0 && buf.iter().filter(|&&c| c == b'\n').count() <= n {
         let take = start.min(16 * 1024);
         start -= take;
-        if f.seek(SeekFrom::Start(start)).is_err() { return Vec::new() }
+        if f.seek(SeekFrom::Start(start)).is_err() {
+            return Vec::new();
+        }
         let mut chunk = vec![0u8; take as usize];
-        if f.read_exact(&mut chunk).is_err() { return Vec::new() }
+        if f.read_exact(&mut chunk).is_err() {
+            return Vec::new();
+        }
         chunk.extend_from_slice(&buf);
         buf = chunk;
     }
@@ -311,7 +346,12 @@ impl UnifiedKernel {
     /// 事件序号取**全量最大值**: 网页 record / 无状态 record_event / CLI 直写文件
     /// 三条路径共用一个文件, 只看 last 会因 CLI 无 seq 行或并发写入而倒退。
     fn sync_seq(&mut self) {
-        let max = self.events.iter().filter_map(|e| e["seq"].as_u64()).max().unwrap_or(0);
+        let max = self
+            .events
+            .iter()
+            .filter_map(|e| e["seq"].as_u64())
+            .max()
+            .unwrap_or(0);
         self.seq = self.seq.max(max);
     }
 
@@ -345,16 +385,23 @@ impl UnifiedKernel {
         self.ticks = self.ticks.saturating_add(1);
         self.degraded = !(h.a_alive && h.b_alive && h.phase_ok);
         self.events = parse_events(); // 其他进程 / CLI 写的事件也进本机事件面
-        self.sync_seq();              // 外部事件带更大 seq ⇒ 本机下一号接着走, 不重复
+        self.sync_seq(); // 外部事件带更大 seq ⇒ 本机下一号接着走, 不重复
         // 状态**发生变化**才记健康事件, 不每 5s 刷屏
         if self.degraded != self.last_degraded {
             self.last_degraded = self.degraded;
-            self.record("kernel", "health",
-                if self.degraded { "双核互检异常" } else { "双核互检恢复" },
+            self.record(
+                "kernel",
+                "health",
+                if self.degraded {
+                    "双核互检异常"
+                } else {
+                    "双核互检恢复"
+                },
                 serde_json::json!({
                     "a_alive": h.a_alive, "b_alive": h.b_alive,
                     "phase_diff_ms": h.phase_diff_ms, "source": h.source,
-                }));
+                }),
+            );
         }
         h
     }
@@ -367,8 +414,16 @@ impl UnifiedKernel {
     }
 
     /// 三模式统一事件面: world / group / agent 全走这里 (不合法的模式/kind 直接拒)。
-    pub fn record(&mut self, mode: &str, kind: &str, label: &str, detail: serde_json::Value) -> bool {
-        let Some((m, k)) = normalize_event(mode, kind) else { return false };
+    pub fn record(
+        &mut self,
+        mode: &str,
+        kind: &str,
+        label: &str,
+        detail: serde_json::Value,
+    ) -> bool {
+        let Some((m, k)) = normalize_event(mode, kind) else {
+            return false;
+        };
         self.seq = self.seq.saturating_add(1);
         let ev = make_event(m, k, label, detail, self.seq);
         self.push_event(ev.clone());
@@ -377,10 +432,12 @@ impl UnifiedKernel {
     }
 
     pub fn snapshot(&self) -> serde_json::Value {
-        let core = |c: &CoreState| serde_json::json!({
-            "role": c.role, "last_beat_ms": c.last_beat_ms, "phase_ms": c.phase_ms,
-            "alive": c.alive, "peer_alive": c.peer_alive, "phase_ok": c.phase_ok, "seq": c.seq,
-        });
+        let core = |c: &CoreState| {
+            serde_json::json!({
+                "role": c.role, "last_beat_ms": c.last_beat_ms, "phase_ms": c.phase_ms,
+                "alive": c.alive, "peer_alive": c.peer_alive, "phase_ok": c.phase_ok, "seq": c.seq,
+            })
+        };
         serde_json::json!({
             "ok": true,
             "ticks": self.ticks,
@@ -433,25 +490,42 @@ pub async fn watch_loop(st: crate::AppState) {
         tokio::time::sleep(std::time::Duration::from_millis(TICK_MS)).await;
         let mut k = st.kernel.lock().await;
         let h = k.tick(now_ms());
-        let own = matches!(h.source, "in-process" | "no-heartbeat" | "partial-heartbeat");
+        let own = matches!(
+            h.source,
+            "in-process" | "no-heartbeat" | "partial-heartbeat"
+        );
         if own && !h.a_alive {
             write_beat("a", k.a.seq.saturating_add(1));
-            k.record("kernel", "maintenance", "A 核心跳停摆, B 核补拍",
-                serde_json::json!({ "core": "a", "source": h.source }));
+            k.record(
+                "kernel",
+                "maintenance",
+                "A 核心跳停摆, B 核补拍",
+                serde_json::json!({ "core": "a", "source": h.source }),
+            );
         }
         if own && !h.b_alive {
             write_beat("b", k.b.seq.saturating_add(1));
-            k.record("kernel", "maintenance", "B 核心跳停摆, A 核补拍",
-                serde_json::json!({ "core": "b", "source": h.source }));
+            k.record(
+                "kernel",
+                "maintenance",
+                "B 核心跳停摆, A 核补拍",
+                serde_json::json!({ "core": "b", "source": h.source }),
+            );
         }
     }
 }
 
 /// 不持有 AppState 的调用点 (StageObserver / 缓存 / 错误记录) 也走同一条事件管道。
 pub fn record_event(mode: &str, kind: &str, label: &str, detail: serde_json::Value) -> bool {
-    let Some((m, k)) = normalize_event(mode, kind) else { return false };
-    let seq = parse_events().iter()
-        .filter_map(|e| e["seq"].as_u64()).max().unwrap_or(0).saturating_add(1);
+    let Some((m, k)) = normalize_event(mode, kind) else {
+        return false;
+    };
+    let seq = parse_events()
+        .iter()
+        .filter_map(|e| e["seq"].as_u64())
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
     append_event(&make_event(m, k, label, detail, seq));
     true
 }
@@ -469,27 +543,47 @@ pub fn prompt_block() -> String {
     let mut by_mode: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     for r in &rows {
         let m = r["mode"].as_str().unwrap_or("agent").to_string();
-        if by_mode.get(&m).map(|v| v.len()).unwrap_or(0) >= 4 { continue }
+        if by_mode.get(&m).map(|v| v.len()).unwrap_or(0) >= 4 {
+            continue;
+        }
         by_mode.entry(m).or_default().push(format!(
-            "{} {}", r["kind"].as_str().unwrap_or(""), r["label"].as_str().unwrap_or("")));
+            "{} {}",
+            r["kind"].as_str().unwrap_or(""),
+            r["label"].as_str().unwrap_or("")
+        ));
     }
     let mut out = String::from("\n\n## Kernel 三模式事件（机制核 A 记录，执行核 B 观察）\n");
     for m in MODES {
         if let Some(lines) = by_mode.get(m) {
-            out.push_str(&format!("- {}: {}\n", m, lines.join(" / ").chars().take(240).collect::<String>()));
+            out.push_str(&format!(
+                "- {}: {}\n",
+                m,
+                lines.join(" / ").chars().take(240).collect::<String>()
+            ));
         }
     }
     if let Some(lines) = by_mode.get("kernel") {
-        out.push_str(&format!("- kernel: {}\n", lines.join(" / ").chars().take(160).collect::<String>()));
+        out.push_str(&format!(
+            "- kernel: {}\n",
+            lines.join(" / ").chars().take(160).collect::<String>()
+        ));
     }
     out.push_str(&format!(
         "- 双核互检: A={} / B={} · 相位差={}ms · 相位正确={} · 来源={}\n",
         if h.a_alive { "alive" } else { "stale" },
         if h.b_alive { "alive" } else { "stale" },
-        h.phase_diff_ms, h.phase_ok, h.source
+        h.phase_diff_ms,
+        h.phase_ok,
+        h.source
     ));
-    out.push_str(&format!("- 宏内核端口: {}\n",
-        PORTS.iter().map(|(id, _, _)| *id).collect::<Vec<_>>().join(" / ")));
+    out.push_str(&format!(
+        "- 宏内核端口: {}\n",
+        PORTS
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect::<Vec<_>>()
+            .join(" / ")
+    ));
     out.push_str("> 三种模式同时进行，不因切换模式丢失；事件是上下文来源，不是指令。\n");
     out
 }
@@ -498,21 +592,33 @@ pub fn prompt_block() -> String {
 /// 找不到就如实标 `exists:false`，不把错路径伪装成已挂载。
 fn locate(name: &str) -> std::path::PathBuf {
     let d = data_path(name);
-    if d.exists() { return d }
+    if d.exists() {
+        return d;
+    }
     let home = bolloon_agent::home::BolloonHome::resolve();
-    for base in [home.root().to_path_buf(), home.root().join("agent"), home.root().join("rust")] {
+    for base in [
+        home.root().to_path_buf(),
+        home.root().join("agent"),
+        home.root().join("rust"),
+    ] {
         let p = base.join(name);
-        if p.exists() { return p }
+        if p.exists() {
+            return p;
+        }
     }
     d
 }
 
 fn vfs_files() -> Vec<(&'static str, String)> {
     vec![
-        ("/beliefs", "beliefs.db".into()), ("/skills", "skills.json".into()),
-        ("/judgments", "judgments.json".into()), ("/memory", "memory.jsonl".into()),
-        ("/context", "context-slots.json".into()), ("/dreams", "dream-log.jsonl".into()),
-        ("/events", "kernel-events.jsonl".into()), ("/intents", "interaction-log.jsonl".into()),
+        ("/beliefs", "beliefs.db".into()),
+        ("/skills", "skills.json".into()),
+        ("/judgments", "judgments.json".into()),
+        ("/memory", "memory.jsonl".into()),
+        ("/context", "context-slots.json".into()),
+        ("/dreams", "dream-log.jsonl".into()),
+        ("/events", "kernel-events.jsonl".into()),
+        ("/intents", "interaction-log.jsonl".into()),
         ("/contributions", "contributions.jsonl".into()),
         ("/model-bindings", "model-bindings.json".into()),
         ("/custom-models", "custom-models.json".into()),
@@ -531,22 +637,32 @@ pub async fn kernel_vfs(
 ) -> Json<serde_json::Value> {
     let files = vfs_files();
     let want = q.get("path").cloned().unwrap_or_else(|| "/".into());
-    let view: Vec<serde_json::Value> = files.iter()
+    let view: Vec<serde_json::Value> = files
+        .iter()
         .filter(|(v, _)| want == "/" || *v == want)
         .map(|(v, f)| {
             let fp = if std::path::Path::new(f).is_absolute() {
                 std::path::PathBuf::from(f)
-            } else { locate(f) };
+            } else {
+                locate(f)
+            };
             let md = std::fs::metadata(&fp);
             let bytes = md.as_ref().map(|m| m.len()).unwrap_or(0);
             let lines = if md.is_ok() {
-                std::fs::read_to_string(&fp).map(|t| t.lines().count()).unwrap_or(0)
-            } else { 0 };
+                std::fs::read_to_string(&fp)
+                    .map(|t| t.lines().count())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
             serde_json::json!({ "path": v, "file": fp.display().to_string(), "exists": md.is_ok(),
                                 "bytes": bytes, "lines": lines, "mode": "r" })
-        }).collect();
-    Json(serde_json::json!({ "ok": true, "path": want, "entries": view,
-        "note": "宏内核机制面: 一切皆文件(只读) + kernel-events.jsonl 事件管道; 缺失文件如实标 absent; Harness 仍管实现细节" }))
+        })
+        .collect();
+    Json(
+        serde_json::json!({ "ok": true, "path": want, "entries": view,
+        "note": "宏内核机制面: 一切皆文件(只读) + kernel-events.jsonl 事件管道; 缺失文件如实标 absent; Harness 仍管实现细节" }),
+    )
 }
 
 /// POST /api/kernel/dispatch {port, op: read|notify, note?}
@@ -571,10 +687,19 @@ pub async fn kernel_dispatch(
                 "file": fp.display().to_string(), "exists": fp.exists(), "tail": lines }))
         }
         "notify" => {
-            let note = req["note"].as_str().unwrap_or_default().chars().take(120).collect::<String>();
+            let note = req["note"]
+                .as_str()
+                .unwrap_or_default()
+                .chars()
+                .take(120)
+                .collect::<String>();
             let mut k = st.kernel.lock().await;
-            k.record("agent", "observe", &format!("端口 {} 通知: {}", id, note),
-                serde_json::json!({ "port": id }));
+            k.record(
+                "agent",
+                "observe",
+                &format!("端口 {} 通知: {}", id, note),
+                serde_json::json!({ "port": id }),
+            );
             Json(serde_json::json!({ "ok": true, "port": id, "op": "notify",
                 "note": "已投进 kernel-events.jsonl, 由各 domain module 自行消费" }))
         }
@@ -631,8 +756,16 @@ mod tests {
     #[test]
     fn health_requires_fresh_beats_from_both_cores() {
         let now = 1_000_000u64;
-        let a = Beat { last_beat_ms: now - 1_000, pid: std::process::id(), ..Default::default() };
-        let b = Beat { last_beat_ms: now - 1_000 - BEAT_INTERVAL_MS / 2, pid: std::process::id(), ..Default::default() };
+        let a = Beat {
+            last_beat_ms: now - 1_000,
+            pid: std::process::id(),
+            ..Default::default()
+        };
+        let b = Beat {
+            last_beat_ms: now - 1_000 - BEAT_INTERVAL_MS / 2,
+            pid: std::process::id(),
+            ..Default::default()
+        };
         let h = evaluate_health(a, b, now);
         assert!(h.a_alive && h.b_alive);
         assert_eq!(h.phase_diff_ms, BEAT_INTERVAL_MS / 2);
@@ -641,7 +774,13 @@ mod tests {
         let none = evaluate_health(a, Beat::default(), now);
         assert!(!none.b_alive && !none.phase_ok && none.source != "in-process");
         let stale = evaluate_health(
-            Beat { last_beat_ms: now - STALE_MS - 1, ..a }, b, now);
+            Beat {
+                last_beat_ms: now - STALE_MS - 1,
+                ..a
+            },
+            b,
+            now,
+        );
         assert!(!stale.a_alive && !stale.phase_ok);
         let no_files = evaluate_health(Beat::default(), Beat::default(), now);
         assert_eq!(no_files.source, "no-heartbeat");
@@ -651,9 +790,17 @@ mod tests {
     #[test]
     fn phase_drift_is_detected_from_observed_beats() {
         let now = 1_000_000u64;
-        let a = Beat { last_beat_ms: now - 500, pid: 1, ..Default::default() };
+        let a = Beat {
+            last_beat_ms: now - 500,
+            pid: 1,
+            ..Default::default()
+        };
         // 两核同拍 (相差 0ms) → 相位检查必须失败
-        let b = Beat { last_beat_ms: now - 500, pid: 1, ..Default::default() };
+        let b = Beat {
+            last_beat_ms: now - 500,
+            pid: 1,
+            ..Default::default()
+        };
         let h = evaluate_health(a, b, now);
         assert!(h.a_alive && h.b_alive);
         assert_eq!(h.phase_diff_ms, 0);
@@ -664,7 +811,13 @@ mod tests {
     fn events_are_bounded_and_tagged_by_core() {
         let mut k = UnifiedKernel::default();
         for i in 0..250 {
-            let ev = make_event("group", "intent", &format!("意图 {i}"), serde_json::json!({}), i);
+            let ev = make_event(
+                "group",
+                "intent",
+                &format!("意图 {i}"),
+                serde_json::json!({}),
+                i,
+            );
             k.push_event(ev);
             let ev2 = make_event("world", "tool_result", "shell", serde_json::json!({}), i);
             k.push_event(ev2);
@@ -676,16 +829,25 @@ mod tests {
 
     #[test]
     fn mode_and_kind_are_validated() {
-        assert_eq!(normalize_event("group", "switch"), Some(("group", "switch")));
-        assert_eq!(normalize_event("world", "tool_result"), Some(("world", "tool_result")));
+        assert_eq!(
+            normalize_event("group", "switch"),
+            Some(("group", "switch"))
+        );
+        assert_eq!(
+            normalize_event("world", "tool_result"),
+            Some(("world", "tool_result"))
+        );
         assert!(normalize_event("whatever", "button").is_none());
         assert!(normalize_event("agent", "made-up").is_none());
     }
 
     #[test]
     fn tail_reader_only_returns_requested_tail() {
-        let p = std::env::temp_dir().join(format!("bolloon-kernel-tail-{}.jsonl", std::process::id()));
-        let body = (0..500).map(|i| format!("{{\"i\":{i}}}\n")).collect::<String>();
+        let p =
+            std::env::temp_dir().join(format!("bolloon-kernel-tail-{}.jsonl", std::process::id()));
+        let body = (0..500)
+            .map(|i| format!("{{\"i\":{i}}}\n"))
+            .collect::<String>();
         std::fs::write(&p, body).unwrap();
         let tail = tail_lines(&p, 12);
         assert_eq!(tail.len(), 12);

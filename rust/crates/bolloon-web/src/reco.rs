@@ -124,7 +124,6 @@ impl Interests {
     }
 }
 
-
 // ─────────────── 向量化: 主题→特征哈希稀疏向量 (无外部依赖, 确定性可复现) ───────────────
 
 /// 向量维度 (512 维足够区分主题; 特征哈希把 token 映到某一维)
@@ -229,7 +228,10 @@ impl Interests {
         let age_h = ((now_ms - e.updated_ms).max(0) as f64) / 3_600_000.0;
         e.weight = (decay(e.weight, age_h, INTEREST_HALF_LIFE_H) + step).clamp(W_MIN, W_MAX);
         e.updated_ms = now_ms;
-        self.topics.entry(key).or_insert(Interest { weight: e.weight, updated_ms: now_ms });
+        self.topics.entry(key).or_insert(Interest {
+            weight: e.weight,
+            updated_ms: now_ms,
+        });
     }
 
     /// 做梦期更新: 全量衰减 → 剪掉长期不用/负权重的原型 → 合并相近原型 (余弦 > 0.92)
@@ -257,7 +259,10 @@ impl Interests {
                 if dead.contains(&keys[i]) || dead.contains(&keys[j]) {
                     continue;
                 }
-                let (a, b) = (self.prototypes[&keys[i]].clone(), self.prototypes[&keys[j]].clone());
+                let (a, b) = (
+                    self.prototypes[&keys[i]].clone(),
+                    self.prototypes[&keys[j]].clone(),
+                );
                 if cosine(&a.vec, &b.vec) > 0.92 {
                     let w = (a.weight + b.weight).clamp(W_MIN, W_MAX);
                     let e = self.prototypes.get_mut(&keys[i]).unwrap();
@@ -273,7 +278,13 @@ impl Interests {
         }
         // ③ 同步 topics 视图 (外部/面板读的是它)
         for (k, p) in &self.prototypes {
-            self.topics.insert(k.clone(), Interest { weight: p.weight, updated_ms: p.updated_ms });
+            self.topics.insert(
+                k.clone(),
+                Interest {
+                    weight: p.weight,
+                    updated_ms: p.updated_ms,
+                },
+            );
         }
         self.topics.retain(|k, _| self.prototypes.contains_key(k));
         (self.prototypes.len(), dropped, merged)
@@ -360,7 +371,11 @@ impl Engine {
                     why.push(format!("兴趣 {aff:.2}"));
                 }
                 if c.vote.abs() > 0.1 {
-                    why.push(if c.vote > 0.0 { "你赞过".into() } else { "你踩过".into() });
+                    why.push(if c.vote > 0.0 {
+                        "你赞过".into()
+                    } else {
+                        "你踩过".into()
+                    });
                 }
                 if c.opened {
                     why.push("看过".into());
@@ -371,14 +386,21 @@ impl Engine {
                 if why.is_empty() {
                     why.push("默认流入".into());
                 }
-                Ranked { id: c.id.clone(), score, why: why.join(" · ") }
+                Ranked {
+                    id: c.id.clone(),
+                    score,
+                    why: why.join(" · "),
+                }
             })
             .collect();
-        base.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        base.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // 多样性: 同主题已出现过 n 次 ⇒ 分数 × (diversity^n)
-        let by_id: HashMap<&str, &Candidate> =
-            cards.iter().map(|c| (c.id.as_str(), c)).collect();
+        let by_id: HashMap<&str, &Candidate> = cards.iter().map(|c| (c.id.as_str(), c)).collect();
         let mut seen: HashMap<&str, usize> = HashMap::new();
         let mut adjusted: Vec<Ranked> = base
             .into_iter()
@@ -396,7 +418,11 @@ impl Engine {
                 r
             })
             .collect();
-        adjusted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        adjusted.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         adjusted
     }
 }
@@ -455,9 +481,30 @@ mod tests {
         let mut i = Interests::default();
         i.feedback("聚变", "up", now());
         let cards = vec![
-            Candidate { id: "a".into(), topics: vec!["聚变".into()], quality: 0.5, vote: 0.0, age_h: 1.0, opened: false },
-            Candidate { id: "b".into(), topics: vec!["聚变".into()], quality: 0.5, vote: 0.0, age_h: 1.0, opened: false },
-            Candidate { id: "c".into(), topics: vec!["其他".into()], quality: 0.5, vote: 0.0, age_h: 1.0, opened: false },
+            Candidate {
+                id: "a".into(),
+                topics: vec!["聚变".into()],
+                quality: 0.5,
+                vote: 0.0,
+                age_h: 1.0,
+                opened: false,
+            },
+            Candidate {
+                id: "b".into(),
+                topics: vec!["聚变".into()],
+                quality: 0.5,
+                vote: 0.0,
+                age_h: 1.0,
+                opened: false,
+            },
+            Candidate {
+                id: "c".into(),
+                topics: vec!["其他".into()],
+                quality: 0.5,
+                vote: 0.0,
+                age_h: 1.0,
+                opened: false,
+            },
         ];
         let out = Engine::default().rank(&i, &cards, now());
         assert_eq!(out.len(), 3);
@@ -472,8 +519,22 @@ mod tests {
     fn opened_and_voted_cards_get_a_push() {
         let i = Interests::default();
         let cards = vec![
-            Candidate { id: "plain".into(), topics: vec!["x".into()], quality: 0.0, vote: 0.0, age_h: 50.0, opened: false },
-            Candidate { id: "liked".into(), topics: vec!["y".into()], quality: 0.0, vote: 1.0, age_h: 50.0, opened: true },
+            Candidate {
+                id: "plain".into(),
+                topics: vec!["x".into()],
+                quality: 0.0,
+                vote: 0.0,
+                age_h: 50.0,
+                opened: false,
+            },
+            Candidate {
+                id: "liked".into(),
+                topics: vec!["y".into()],
+                quality: 0.0,
+                vote: 1.0,
+                age_h: 50.0,
+                opened: true,
+            },
         ];
         let out = Engine::default().rank(&i, &cards, now());
         assert_eq!(out[0].id, "liked");
@@ -502,7 +563,7 @@ mod tests {
     fn dream_consolidates_and_prunes_prototypes() {
         let mut i = Interests::default();
         i.absorb(&["聚变".into()], "up", now());
-        i.absorb(&["噪声".into()], "ignore", now());   // 负权重, 会被剪掉
+        i.absorb(&["噪声".into()], "ignore", now()); // 负权重, 会被剪掉
         let (kept, dropped, _merged) = i.dream_consolidate(now(), 1.0);
         assert!(kept >= 1, "正向原型要留: {kept}");
         assert!(dropped >= 1, "负权重原型要被剪: {dropped}");

@@ -50,8 +50,7 @@ pub enum LoopEndReason {
 }
 
 /// 循环状态
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct PivotState {
     pub round: u32,
     pub done: bool,
@@ -61,7 +60,6 @@ pub struct PivotState {
     /// 连续同签名轮数
     same_sig_rounds: u32,
 }
-
 
 /// 质量评估 (纯函数)
 ///
@@ -81,15 +79,29 @@ pub fn evaluate_quality(reply: &str) -> f64 {
     if trimmed.contains("1.") || trimmed.contains("- ") || trimmed.contains("•") {
         struct_score += 0.2;
     }
-    let concrete = (if trimmed
-        .chars()
-        .any(|c| c.is_ascii_digit()) { 0.1 } else { 0.0 })
-        + if trimmed.contains("http") || trimmed.contains(".rs") || trimmed.contains(".ts") || trimmed.contains(".md") { 0.1 } else { 0.0 };
+    let concrete = (if trimmed.chars().any(|c| c.is_ascii_digit()) {
+        0.1
+    } else {
+        0.0
+    }) + if trimmed.contains("http")
+        || trimmed.contains(".rs")
+        || trimmed.contains(".ts")
+        || trimmed.contains(".md")
+    {
+        0.1
+    } else {
+        0.0
+    };
     (len_score + struct_score + concrete).min(1.0)
 }
 
 /// 决策: 本轮结束后继续还是收尾 (纯函数)
-pub fn decide_round(state: &mut PivotState, reply: &str, tools_used: &[String], cfg: &PivotConfig) -> LoopEndReason {
+pub fn decide_round(
+    state: &mut PivotState,
+    reply: &str,
+    tools_used: &[String],
+    cfg: &PivotConfig,
+) -> LoopEndReason {
     state.round += 1;
     // 上限
     if state.round >= cfg.max_iterations {
@@ -100,12 +112,20 @@ pub fn decide_round(state: &mut PivotState, reply: &str, tools_used: &[String], 
     // 无进展熔断: 工具签名 (排序后拼接, 顺序不敏感)
     let mut sig_tools: Vec<&String> = tools_used.iter().collect();
     sig_tools.sort();
-    let sig = sig_tools.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",");
+    let sig = sig_tools
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
     if !tools_used.is_empty() && state.last_tool_sig.as_deref() == Some(sig.as_str()) {
         state.same_sig_rounds += 1;
     } else {
         state.same_sig_rounds = 0;
-        state.last_tool_sig = if tools_used.is_empty() { state.last_tool_sig.clone() } else { Some(sig) };
+        state.last_tool_sig = if tools_used.is_empty() {
+            state.last_tool_sig.clone()
+        } else {
+            Some(sig)
+        };
     }
     if state.same_sig_rounds >= cfg.no_progress_rounds {
         state.done = true;
@@ -152,7 +172,9 @@ fn sort_json(v: &serde_json::Value) -> serde_json::Value {
             }
             serde_json::Value::Object(out)
         }
-        serde_json::Value::Array(items) => serde_json::Value::Array(items.iter().map(sort_json).collect()),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(sort_json).collect())
+        }
         other => other.clone(),
     }
 }
@@ -203,7 +225,10 @@ mod tests {
 
     #[test]
     fn max_iterations_enforced_not_adaptive_crushed() {
-        let cfg = PivotConfig { max_iterations: 3, ..Default::default() };
+        let cfg = PivotConfig {
+            max_iterations: 3,
+            ..Default::default()
+        };
         let mut st = PivotState::default();
         for _ in 0..3 {
             decide_round(&mut st, "一般", &[], &cfg);
@@ -221,13 +246,20 @@ mod tests {
 
     #[test]
     fn no_progress_loop_detected() {
-        let cfg = PivotConfig { no_progress_rounds: 3, ..Default::default() };
+        let cfg = PivotConfig {
+            no_progress_rounds: 3,
+            ..Default::default()
+        };
         let mut st = PivotState::default();
         for _ in 0..4 {
             decide_round(&mut st, "x", &["read_file".into()], &cfg);
         }
         assert!(st.done);
-        assert_eq!(st.reason, Some(LoopEndReason::NoProgressLoop), "同工具连续 N 轮 = 死循环熔断");
+        assert_eq!(
+            st.reason,
+            Some(LoopEndReason::NoProgressLoop),
+            "同工具连续 N 轮 = 死循环熔断"
+        );
     }
 
     #[test]
@@ -248,13 +280,19 @@ mod tests {
 
     #[test]
     fn slow_tool_timeout_is_not_fatal() {
-        assert!(tool_timed_out(121_000, 120_000), "超时 = 失败进上下文让 LLM 下轮修正");
+        assert!(
+            tool_timed_out(121_000, 120_000),
+            "超时 = 失败进上下文让 LLM 下轮修正"
+        );
         assert!(!tool_timed_out(60_000, 120_000));
     }
 
     #[test]
     fn progress_resets_stall_counter() {
-        let cfg = PivotConfig { no_progress_rounds: 2, ..Default::default() };
+        let cfg = PivotConfig {
+            no_progress_rounds: 2,
+            ..Default::default()
+        };
         let mut st = PivotState::default();
         decide_round(&mut st, "x", &["read".into()], &cfg);
         decide_round(&mut st, "x", &["read".into()], &cfg);

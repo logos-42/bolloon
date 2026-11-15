@@ -206,7 +206,10 @@ mod tests {
         assert!(update_available("0.6.10", "0.6.11").unwrap());
         assert!(update_available("0.6.10", "0.7.0").unwrap());
         assert!(update_available("0.6.10", "1.0.0").unwrap());
-        assert!(!update_available("0.6.10", "0.6.10").unwrap(), "同版本无更新");
+        assert!(
+            !update_available("0.6.10", "0.6.10").unwrap(),
+            "同版本无更新"
+        );
         assert!(!update_available("0.6.10", "0.6.9").unwrap());
         assert!(matches!(
             update_available("0.6.10", "banana"),
@@ -219,7 +222,10 @@ mod tests {
     #[test]
     fn check_no_update_means_hidden() {
         // 同版本 → update_available=false ⇒ **UI/CLI 不显示提示的前置**
-        let src = FakeSource { version: Ok(CURRENT_VERSION.into()), payload: vec![] };
+        let src = FakeSource {
+            version: Ok(CURRENT_VERSION.into()),
+            payload: vec![],
+        };
         let info = check(&src);
         assert!(!info.update_available);
         assert_eq!(info.status, "ok");
@@ -228,7 +234,10 @@ mod tests {
 
     /// CURRENT_VERSION 的 patch + 1 (测试里"比当前新一版")
     fn next_patch() -> String {
-        let mut p: Vec<u32> = CURRENT_VERSION.split('.').filter_map(|x| x.parse().ok()).collect();
+        let mut p: Vec<u32> = CURRENT_VERSION
+            .split('.')
+            .filter_map(|x| x.parse().ok())
+            .collect();
         while p.len() < 3 {
             p.push(0);
         }
@@ -239,7 +248,10 @@ mod tests {
     #[test]
     fn check_source_unreachable_is_unknown_not_available() {
         // 无网络/源不可达 → unknown, **绝不误报有更新**
-        let src = FakeSource { version: Err("network down".into()), payload: vec![] };
+        let src = FakeSource {
+            version: Err("network down".into()),
+            payload: vec![],
+        };
         let info = check(&src);
         assert!(!info.update_available);
         assert!(info.status.starts_with("unknown"), "{}", info.status);
@@ -249,7 +261,10 @@ mod tests {
     #[test]
     fn check_with_runtime_version() {
         // 运行时版本 (服务端 st.version / CLI 实际跑的版本) 参与比较, 不看成编译期常量
-        let src = FakeSource { version: Ok("0.6.11".into()), payload: vec![] };
+        let src = FakeSource {
+            version: Ok("0.6.11".into()),
+            payload: vec![],
+        };
         let info = check_with(&src, "0.6.10");
         assert!(info.update_available);
         assert_eq!(info.current, "0.6.10");
@@ -258,7 +273,10 @@ mod tests {
         assert!(!info.update_available);
         assert_eq!(info.current, "0.6.11");
         // 源不可达时, 注入的版本仍如实回显
-        let src = FakeSource { version: Err("network down".into()), payload: vec![] };
+        let src = FakeSource {
+            version: Err("network down".into()),
+            payload: vec![],
+        };
         let info = check_with(&src, "0.6.12");
         assert_eq!(info.current, "0.6.12");
         assert!(!info.update_available);
@@ -268,7 +286,10 @@ mod tests {
     fn check_update_available_with_notes() {
         // 不写死版本号: 拿 CURRENT_VERSION 的 patch+1 当"新版本" (写死会在每次发版时假红)
         let newer = next_patch();
-        let src = FakeSource { version: Ok(newer.clone()), payload: vec![] };
+        let src = FakeSource {
+            version: Ok(newer.clone()),
+            payload: vec![],
+        };
         let info = check(&src);
         assert!(info.update_available);
         assert_eq!(info.latest, newer);
@@ -282,7 +303,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("bolloon");
         std::fs::write(&exe, b"OLD-BINARY-V1").unwrap();
-        let src = FakeSource { version: Ok("0.6.11".into()), payload: vec![b'N'; 4096] };
+        let src = FakeSource {
+            version: Ok("0.6.11".into()),
+            payload: vec![b'N'; 4096],
+        };
 
         let report = install(&src, &exe).unwrap();
         assert!(report.replaced && report.restart_requested);
@@ -310,9 +334,16 @@ mod tests {
         let exe = dir.join("bolloon");
         std::fs::write(&exe, b"OLD-GOOD").unwrap();
         // 太小的 payload → 校验失败, 旧二进制完好
-        let bad = FakeSource { version: Ok("0.6.11".into()), payload: b"tiny".to_vec() };
+        let bad = FakeSource {
+            version: Ok("0.6.11".into()),
+            payload: b"tiny".to_vec(),
+        };
         assert!(matches!(install(&bad, &exe), Err(UpdateError::BadPayload)));
-        assert_eq!(std::fs::read(&exe).unwrap(), b"OLD-GOOD", "失败自动回滚, 不把自己装残");
+        assert_eq!(
+            std::fs::read(&exe).unwrap(),
+            b"OLD-GOOD",
+            "失败自动回滚, 不把自己装残"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -322,7 +353,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // 用 /bin/echo 当"新二进制" (跨平台最小)
-        let echo = if cfg!(target_os = "windows") { PathBuf::from("cmd") } else { PathBuf::from("/bin/echo") };
+        let echo = if cfg!(target_os = "windows") {
+            PathBuf::from("cmd")
+        } else {
+            PathBuf::from("/bin/echo")
+        };
         let pid = restart(&echo, &["hi".to_string()]).unwrap();
         assert!(pid > 0, "新进程 pid > 0");
         let _ = std::fs::remove_dir_all(&dir);

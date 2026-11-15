@@ -114,7 +114,12 @@ impl CronScheduler {
 
     /// 崩溃恢复: 陈旧锁回收 (进程重启后 running 残留清零)
     pub fn recover_stale_locks(&mut self) -> usize {
-        let ids: Vec<String> = self.runtime.iter().filter(|(_, rt)| rt.running).map(|(id, _)| id.clone()).collect();
+        let ids: Vec<String> = self
+            .runtime
+            .iter()
+            .filter(|(_, rt)| rt.running)
+            .map(|(id, _)| id.clone())
+            .collect();
         let n = ids.len();
         for id in ids {
             if let Some(rt) = self.runtime.get_mut(&id) {
@@ -127,7 +132,9 @@ impl CronScheduler {
 
 /// DND 窗口判定 (支持跨零点, 如 22:00-07:00)
 pub fn in_dnd(window: Option<(u16, u16)>, minute_of_day: u16) -> bool {
-    let Some((start, end)) = window else { return false };
+    let Some((start, end)) = window else {
+        return false;
+    };
     if start == end {
         return false;
     }
@@ -202,7 +209,10 @@ mod tests {
         assert!(s.begin("t4", 0));
         // 模拟崩溃重启: runtime 还带 running 残留
         assert_eq!(s.recover_stale_locks(), 1);
-        assert!(s.due_tasks(61_000, 0).contains(&"t4".into()), "回收后可再跑");
+        assert!(
+            s.due_tasks(61_000, 0).contains(&"t4".into()),
+            "回收后可再跑"
+        );
     }
 
     #[test]

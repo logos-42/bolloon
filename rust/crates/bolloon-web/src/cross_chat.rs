@@ -56,7 +56,11 @@ fn store_dir(root: &Path) -> PathBuf {
 
 fn session_path(root: &Path, sid: &str) -> PathBuf {
     // sid 是内部派生的 hex，不接受外部路径，这里仍做一次白名单校验防止路径穿越
-    let safe: String = sid.chars().filter(|c| c.is_ascii_hexdigit()).take(64).collect();
+    let safe: String = sid
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .take(64)
+        .collect();
     store_dir(root).join(format!("{safe}.jsonl"))
 }
 
@@ -68,8 +72,8 @@ pub fn append(root: &Path, turn: &Turn) -> io::Result<()> {
         .create(true)
         .append(true)
         .open(session_path(root, &turn.session_id))?;
-    let line = serde_json::to_string(turn)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let line =
+        serde_json::to_string(turn).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     writeln!(f, "{line}")
 }
 
@@ -96,7 +100,11 @@ pub fn as_context(turns: &[Turn]) -> Vec<(&'static str, String)> {
     turns
         .iter()
         .map(|t| {
-            let role = if t.direction == "in" { "user" } else { "assistant" };
+            let role = if t.direction == "in" {
+                "user"
+            } else {
+                "assistant"
+            };
             (role, t.text.clone())
         })
         .collect()
@@ -138,7 +146,12 @@ pub fn import_turns(root: &Path, turns: &[Turn]) -> (usize, usize) {
         .collect();
     let (mut added, mut skipped) = (0usize, 0usize);
     for t in turns {
-        let key = (t.session_id.clone(), t.ts_ms, t.direction.clone(), t.text.clone());
+        let key = (
+            t.session_id.clone(),
+            t.ts_ms,
+            t.direction.clone(),
+            t.text.clone(),
+        );
         if !seen.insert(key) {
             skipped += 1;
             continue;
@@ -229,9 +242,7 @@ mod tests {
         // 每个测试独立目录: 用原子序号, 不依赖纳秒分辨率 (并行时可能撞车)
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let p = std::env::temp_dir().join(format!(
-            "bolloon-cross-chat-{}-{n}", std::process::id()
-        ));
+        let p = std::env::temp_dir().join(format!("bolloon-cross-chat-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         p
@@ -270,8 +281,10 @@ mod tests {
         assert_eq!(all[0].text, "turn-0");
         assert_eq!(all[4].text, "turn-4");
         let last3 = recent(&root, &sid, 3);
-        assert_eq!(last3.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(),
-                   vec!["turn-2", "turn-3", "turn-4"]);
+        assert_eq!(
+            last3.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(),
+            vec!["turn-2", "turn-3", "turn-4"]
+        );
         let ctx = as_context(&last3);
         // turn-2 (i=2) = in, turn-3 = out, turn-4 = in
         assert_eq!(ctx[0].0, "user");
@@ -285,11 +298,18 @@ mod tests {
         let root = tmp();
         let sid = session_id("did:pi:a", "did:pi:b");
         for i in 0..3u64 {
-            append(&root, &Turn {
-                ts_ms: 100 + i, session_id: sid.clone(), peer_did: "did:pi:b".into(),
-                direction: if i % 2 == 0 { "out" } else { "in" }.into(),
-                text: format!("m{i}"), agent_id: "a".into(),
-            }).unwrap();
+            append(
+                &root,
+                &Turn {
+                    ts_ms: 100 + i,
+                    session_id: sid.clone(),
+                    peer_did: "did:pi:b".into(),
+                    direction: if i % 2 == 0 { "out" } else { "in" }.into(),
+                    text: format!("m{i}"),
+                    agent_id: "a".into(),
+                },
+            )
+            .unwrap();
         }
         let dumped = export_all(&root);
         assert_eq!(dumped.len(), 3);

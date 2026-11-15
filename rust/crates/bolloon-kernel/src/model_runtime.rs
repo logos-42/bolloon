@@ -98,9 +98,7 @@ impl ModelRuntime {
     pub fn new(global_max_concurrency: usize) -> Self {
         Self {
             providers: Arc::new(Mutex::new(HashMap::new())),
-            semaphore: Arc::new(tokio::sync::Semaphore::new(
-                global_max_concurrency.max(1),
-            )),
+            semaphore: Arc::new(tokio::sync::Semaphore::new(global_max_concurrency.max(1))),
         }
     }
 
@@ -241,8 +239,11 @@ mod tests {
     #[tokio::test]
     async fn acquire_returns_frozen_snapshot() {
         let rt = ModelRuntime::new(4);
-        rt.register(ModelSnapshot::new(ProviderId::new("deepseek"), "deepseek-chat"))
-            .await;
+        rt.register(ModelSnapshot::new(
+            ProviderId::new("deepseek"),
+            "deepseek-chat",
+        ))
+        .await;
 
         let lease = rt.acquire(&ProviderId::new("deepseek")).await.unwrap();
         assert_eq!(lease.snapshot.model, "deepseek-chat");
@@ -290,11 +291,7 @@ mod tests {
         let l1 = rt.acquire(&pid).await.unwrap();
         let l2 = rt.acquire(&pid).await.unwrap();
         // 第 3 个 acquire 会等——用 timeout 验证它没有立刻拿到
-        let wait = tokio::time::timeout(
-            Duration::from_millis(100),
-            rt.acquire(&pid),
-        )
-        .await;
+        let wait = tokio::time::timeout(Duration::from_millis(100), rt.acquire(&pid)).await;
         assert!(wait.is_err(), "并发上限 2，第三个应等待");
         drop(l1);
         drop(l2);

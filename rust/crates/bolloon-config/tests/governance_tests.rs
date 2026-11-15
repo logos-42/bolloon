@@ -80,7 +80,10 @@ async fn evidence_binds_task_to_version_and_persists() {
 
     let mut cfg = AppConfig::default();
     cfg.runtime.tool_timeout_ms = 45_000;
-    let v1 = mgr.apply(ConfigProposal::system(cfg, "raise timeout")).await.unwrap();
+    let v1 = mgr
+        .apply(ConfigProposal::system(cfg, "raise timeout"))
+        .await
+        .unwrap();
     assert_eq!(v1.version, 1);
 
     let start = TaskBinding::start("task-abc", "cli", v1.version, Some("m1".into()));
@@ -88,7 +91,10 @@ async fn evidence_binds_task_to_version_and_persists() {
     mgr.record_binding(start.end("Finished", 3));
 
     assert_eq!(mgr.evidence().len(), 2);
-    assert_eq!(mgr.evidence().versions_for_task("task-abc"), vec![v1.version]);
+    assert_eq!(
+        mgr.evidence().versions_for_task("task-abc"),
+        vec![v1.version]
+    );
     let by_version = mgr.evidence().tasks_for_version(v1.version);
     assert_eq!(by_version.len(), 2);
     assert_eq!(by_version[1].tool_calls, Some(3));
@@ -294,7 +300,8 @@ async fn optimizer_rolls_back_when_metric_degrades() {
     assert!(rep.rolled_back, "指标恶化必须回滚: {rep:?}");
     assert_eq!(rep.stop_reason, "rollback.degraded");
     assert_eq!(
-        mgr.current().config.runtime.llm_retries, baseline_retries,
+        mgr.current().config.runtime.llm_retries,
+        baseline_retries,
         "回滚后参数必须回到基线"
     );
     assert!(mgr.current().restored_from.is_some());

@@ -8,7 +8,7 @@
 //! ③ 外溢只复用现有 skill 分享 / x402 付费卡片通道, 不新造协议;
 //! ④ "有没有人真用真付钱"看卡片接收与 x402 订单, 本机不伪造结果。
 
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EvalCase {
@@ -49,8 +49,11 @@ fn save(packs: &[SpecialPack]) -> Result<(), String> {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
     let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(packs).unwrap_or_default())
-        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        &tmp,
+        serde_json::to_string_pretty(packs).unwrap_or_default(),
+    )
+    .map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, p).map_err(|e| e.to_string())
 }
 
@@ -71,10 +74,14 @@ pub async fn upsert_pack(Json(req): Json<serde_json::Value>) -> Json<serde_json:
         "eval_cases": req["eval_cases"], "created_at_ms": now_ms(),
     })) {
         Ok(p) => p,
-        Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("包格式错误: {e}") })),
+        Err(e) => {
+            return Json(serde_json::json!({ "ok": false, "error": format!("包格式错误: {e}") }));
+        }
     };
     if pack.id.trim().is_empty() || pack.task.trim().is_empty() || pack.eval_cases.is_empty() {
-        return Json(serde_json::json!({ "ok": false, "error": "缺 id / task / eval_cases（没有评测集不许自称特化）" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "缺 id / task / eval_cases（没有评测集不许自称特化）" }),
+        );
     }
     if pack.eval_cases.len() > 10 {
         return Json(serde_json::json!({ "ok": false, "error": "评测用例上限 10 条" }));
@@ -129,18 +136,18 @@ pub async fn eval_pack(
     let id = req["id"].as_str().unwrap_or_default().trim().to_string();
     let pack = match load().into_iter().find(|p| p.id == id) {
         Some(p) => p,
-        None => return Json(serde_json::json!({ "ok": false, "error": format!("没有这个特化包: {id}") })),
+        None => {
+            return Json(
+                serde_json::json!({ "ok": false, "error": format!("没有这个特化包: {id}") }),
+            );
+        }
     };
     let provider = current_provider();
     let mut base = Vec::new();
     let mut spec = Vec::new();
     for case in &pack.eval_cases {
         for (label, system, bucket) in [
-            (
-                format!("base:{}", pack.task),
-                String::new(),
-                &mut base,
-            ),
+            (format!("base:{}", pack.task), String::new(), &mut base),
             (
                 format!("pack:{}", pack.task),
                 format!("{}\n\n{}", pack.persona, pack.skill_text),
@@ -182,8 +189,14 @@ pub async fn eval_pack(
     }
     let stat = |v: &Vec<serde_json::Value>| {
         let n = v.len() as f64;
-        let hits = v.iter().filter(|x| x["hit"] == serde_json::json!(true)).count();
-        let lat: u64 = v.iter().map(|x| x["latency_ms"].as_u64().unwrap_or(0)).sum();
+        let hits = v
+            .iter()
+            .filter(|x| x["hit"] == serde_json::json!(true))
+            .count();
+        let lat: u64 = v
+            .iter()
+            .map(|x| x["latency_ms"].as_u64().unwrap_or(0))
+            .sum();
         serde_json::json!({
             "cases": v.len(),
             "hit": hits,
@@ -223,7 +236,11 @@ pub async fn run_pack(
     }
     let pack = match load().into_iter().find(|p| p.id == id) {
         Some(p) => p,
-        None => return Json(serde_json::json!({ "ok": false, "error": format!("没有这个特化包: {id}") })),
+        None => {
+            return Json(
+                serde_json::json!({ "ok": false, "error": format!("没有这个特化包: {id}") }),
+            );
+        }
     };
     let sid = format!("pack-run-{}", now_ms());
     let cancel = st.chat_runs.begin(&sid);
@@ -260,7 +277,11 @@ fn append_receipt(rec: &serde_json::Value) {
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
         let _ = writeln!(f, "{}", serde_json::to_string(rec).unwrap_or_default());
     }
 }
@@ -285,7 +306,10 @@ pub async fn receipts() -> Json<serde_json::Value> {
         .into_iter()
         .filter(|o| {
             o["source"].as_str() == Some("world_card")
-                || o["pack_id"].as_str().map(|s| !s.is_empty()).unwrap_or(false)
+                || o["pack_id"]
+                    .as_str()
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false)
         })
         .collect();
     Json(serde_json::json!({
@@ -309,7 +333,11 @@ pub async fn share_pack(
     let id = req["id"].as_str().unwrap_or_default().trim().to_string();
     let pack = match load().into_iter().find(|p| p.id == id) {
         Some(p) => p,
-        None => return Json(serde_json::json!({ "ok": false, "error": format!("没有这个特化包: {id}") })),
+        None => {
+            return Json(
+                serde_json::json!({ "ok": false, "error": format!("没有这个特化包: {id}") }),
+            );
+        }
     };
     let content = serde_json::to_string_pretty(&pack).unwrap_or_default();
     let price_atomic = req["price_atomic"].as_u64().unwrap_or(0);
@@ -364,18 +392,22 @@ pub async fn share_pack(
         tags: vec!["specialize".into(), pack.task.clone()],
         actions: vec![],
         reply_to: None,
-    
-    
-        
-    
-    content_rating: None,
+
+        content_rating: None,
     };
     let mut v = serde_json::to_value(&card).unwrap_or(serde_json::Value::Null);
     v["pack"] = serde_json::to_value(&pack).unwrap_or(serde_json::Value::Null);
     // 共享特化包/技能给好友 = 一点点积分 (按 pack.id 去重)
     let pts = crate::contribution::award(
-        &st, "skill_share", &format!("共享特化包 {}", pack.task), &pack.id, "specialize/share");
-    let r = crate::native::world_cards_share(State(st.clone()), Json(v)).await.0;
+        &st,
+        "skill_share",
+        &format!("共享特化包 {}", pack.task),
+        &pack.id,
+        "specialize/share",
+    );
+    let r = crate::native::world_cards_share(State(st.clone()), Json(v))
+        .await
+        .0;
     let _ = pts;
     append_receipt(&serde_json::json!({
         "at_ms": now_ms(), "pack_id": pack.id, "mode": "signed_card",
@@ -395,7 +427,10 @@ mod tests {
     fn hit_is_deterministic() {
         assert!(hit(true, "先用最小版本再扩展", &["最小版本".into()]));
         assert!(!hit(true, "随便写点别的", &["最小版本".into()]));
-        assert!(!hit(false, "最小版本", &["最小版本".into()]), "调用失败不算命中");
+        assert!(
+            !hit(false, "最小版本", &["最小版本".into()]),
+            "调用失败不算命中"
+        );
     }
 
     #[test]

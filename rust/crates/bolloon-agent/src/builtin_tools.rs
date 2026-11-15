@@ -249,7 +249,9 @@ impl BuiltinExecutor {
             domain: Arc::new(crate::domain_tools::DomainExecutor),
             updater: Arc::new(crate::updater_tools::UpdaterExecutor),
             shell: Arc::new(ShellExecutor::with_mode(cancel, bypass)),
-            scratch: Arc::new(crate::scratch_tools::ScratchExecutor::new(script_run.clone())),
+            scratch: Arc::new(crate::scratch_tools::ScratchExecutor::new(
+                script_run.clone(),
+            )),
             plugin: Arc::new(crate::plugin_tools::PluginExecutor::new(script_run)),
             econ: None,
             mail: None,
@@ -1073,7 +1075,7 @@ mod tests {
             assert!(
                 !names.iter().any(|n| n == forbidden),
                 "只读子集里混进了 {forbidden}: {names:?}"
-                );
+            );
         }
     }
 
@@ -1096,8 +1098,7 @@ mod tests {
     ///     生产进程 home 配好账号即生效; 这里用只读工具验证注入本身。
     #[tokio::test]
     async fn agent_mail_tools_wired_via_injected_service() {
-        let tmp =
-            std::env::temp_dir().join(format!("bolloon_mail_wire_{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("bolloon_mail_wire_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         // 建一个 local_sink 账号 (不需要真密码/真 SMTP)
         let mail_dir = tmp.join("rust").join("mail");
@@ -1128,11 +1129,19 @@ mod tests {
                 arguments: serde_json::json!({}),
             })
             .await;
-        assert!(out.denied.is_none(), "邮件只读工具不应被拒: {:?}", out.denied);
+        assert!(
+            out.denied.is_none(),
+            "邮件只读工具不应被拒: {:?}",
+            out.denied
+        );
         let r = out.result.expect("非 denied 必有 result");
         assert!(r.ok, "mail_accounts 应成功: {}", r.output);
         assert!(!r.output.contains("未接线"), "不应再报未接线: {}", r.output);
-        assert!(r.output.contains("me@x.dev"), "应列出配置的账号: {}", r.output);
+        assert!(
+            r.output.contains("me@x.dev"),
+            "应列出配置的账号: {}",
+            r.output
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

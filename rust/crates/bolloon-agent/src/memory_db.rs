@@ -8,7 +8,7 @@
 //! - 查询: top-k (importance × 衰减), 全文子串过滤 (SQL LIKE)
 //! - 迁移友好: 表结构带 schema_version; 老 memory.json 可导入
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 /// 表 schema 版本 (迁移链用)
@@ -211,8 +211,10 @@ mod tests {
     #[test]
     fn remember_and_recall_isolated_by_agent() {
         let db = db();
-        db.remember("a1", "run_fact", "a1 的记忆", 0.9, 1000, None).unwrap();
-        db.remember("a2", "run_fact", "a2 的记忆", 0.9, 1000, None).unwrap();
+        db.remember("a1", "run_fact", "a1 的记忆", 0.9, 1000, None)
+            .unwrap();
+        db.remember("a2", "run_fact", "a2 的记忆", 0.9, 1000, None)
+            .unwrap();
         let got = db.recall("a1", None, 10, 1100).unwrap();
         assert_eq!(got.len(), 1, "agent 隔离: a1 只看到 a1 的");
         assert_eq!(got[0].content, "a1 的记忆");
@@ -223,8 +225,10 @@ mod tests {
     #[test]
     fn topk_by_importance_decay() {
         let db = db();
-        db.remember("a", "run_fact", "旧的高价值", 0.95, 0, None).unwrap();
-        db.remember("a", "run_fact", "新的中价值", 0.6, 1000, None).unwrap();
+        db.remember("a", "run_fact", "旧的高价值", 0.95, 0, None)
+            .unwrap();
+        db.remember("a", "run_fact", "新的中价值", 0.6, 1000, None)
+            .unwrap();
         let top = db.recall("a", None, 2, 1000).unwrap();
         // 旧的衰减 (72h half-life 下 1000ms 内几乎不衰 —— 用 temporary 验证衰减)
         assert!(top[0].importance >= top[1].importance || top[0].created_at_ms == 1000);
@@ -233,9 +237,14 @@ mod tests {
     #[test]
     fn temporary_expires_swept() {
         let db = db();
-        db.remember("a", "temporary", "临时", 0.9, 1000, Some(10_000)).unwrap();
+        db.remember("a", "temporary", "临时", 0.9, 1000, Some(10_000))
+            .unwrap();
         assert_eq!(db.recall("a", None, 10, 5000).unwrap().len(), 1);
-        assert_eq!(db.recall("a", None, 10, 11_000).unwrap().len(), 0, "过期不可见");
+        assert_eq!(
+            db.recall("a", None, 10, 11_000).unwrap().len(),
+            0,
+            "过期不可见"
+        );
         assert_eq!(db.sweep_expired(11_000).unwrap(), 1);
         assert_eq!(db.count_for("a").unwrap(), 0);
     }
@@ -243,8 +252,10 @@ mod tests {
     #[test]
     fn substring_query_filters() {
         let db = db();
-        db.remember("a", "run_fact", "用户偏好暗色主题", 0.9, 1, None).unwrap();
-        db.remember("a", "run_fact", "今天天气不错", 0.9, 1, None).unwrap();
+        db.remember("a", "run_fact", "用户偏好暗色主题", 0.9, 1, None)
+            .unwrap();
+        db.remember("a", "run_fact", "今天天气不错", 0.9, 1, None)
+            .unwrap();
         let got = db.recall("a", Some("偏好"), 10, 2).unwrap();
         assert_eq!(got.len(), 1);
         assert!(got[0].content.contains("偏好"));
@@ -278,7 +289,8 @@ mod tests {
         let path = dir.join("memory.db");
         {
             let db = MemoryDb::open(path.to_str().unwrap()).unwrap();
-            db.remember("a", "decision", "持久化决策", 0.8, 1, None).unwrap();
+            db.remember("a", "decision", "持久化决策", 0.8, 1, None)
+                .unwrap();
         }
         // 重开 → 数据还在
         let db2 = MemoryDb::open(path.to_str().unwrap()).unwrap();

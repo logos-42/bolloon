@@ -58,18 +58,18 @@ pub fn clarity_of(
     let pending: Vec<String> = assistant_turns
         .iter()
         .flat_map(|t| t.lines())
-        .filter(|l| l.contains("待办") || l.contains("TODO") || l.contains("未决") || l.starts_with("- [ ]"))
+        .filter(|l| {
+            l.contains("待办") || l.contains("TODO") || l.contains("未决") || l.starts_with("- [ ]")
+        })
         .map(|l| l.chars().take(80).collect())
         .collect();
 
     // 下一步: 最近一条 assistant 轮次的"下一步/接下来"行
-    let next_step = assistant_turns
-        .last()
-        .and_then(|t| {
-            t.lines()
-                .find(|l| l.contains("下一步") || l.contains("接下来") || l.contains("next"))
-                .map(|l| l.chars().take(120).collect::<String>())
-        });
+    let next_step = assistant_turns.last().and_then(|t| {
+        t.lines()
+            .find(|l| l.contains("下一步") || l.contains("接下来") || l.contains("next"))
+            .map(|l| l.chars().take(120).collect::<String>())
+    });
 
     let blockers: Vec<String> = recoveries.iter().take(5).cloned().collect();
 
@@ -82,7 +82,10 @@ pub fn clarity_of(
     // goal 模式: 判据命中比例加成
     if !goal_criteria.is_empty() && !assistant_turns.is_empty() {
         let last = assistant_turns.last().unwrap();
-        let hit = goal_criteria.iter().filter(|c| last.contains(c.as_str())).count();
+        let hit = goal_criteria
+            .iter()
+            .filter(|c| last.contains(c.as_str()))
+            .count();
         let ratio = hit as f64 / goal_criteria.len() as f64;
         health = (health as f64 * (0.5 + 0.5 * ratio)) as i32;
     }
@@ -113,7 +116,10 @@ mod tests {
     fn events() -> Vec<(&'static str, &'static str)> {
         vec![
             ("user", "调研核聚变口径并写报告"),
-            ("assistant", "✅ 完成了来源检索 (6 条)\n下一步: 交叉核对口径"),
+            (
+                "assistant",
+                "✅ 完成了来源检索 (6 条)\n下一步: 交叉核对口径",
+            ),
             ("user", "继续"),
             (
                 "assistant",
@@ -129,7 +135,10 @@ mod tests {
         assert_eq!(c.done.len(), 2, "两条完成标记");
         assert_eq!(c.pending.len(), 1, "一条待办");
         assert!(c.pending[0].contains("补充第二个数据源"));
-        assert!(c.next_step.as_deref().unwrap().contains("写报告正文"), "取最近一轮的下一步");
+        assert!(
+            c.next_step.as_deref().unwrap().contains("写报告正文"),
+            "取最近一轮的下一步"
+        );
         assert!(c.health >= 90, "无阻塞健康度高: {}", c.health);
     }
 
@@ -146,7 +155,12 @@ mod tests {
     fn goal_criteria_scale_health() {
         let c_hit = clarity_of("s1", &events(), &["口径".into()], &[]);
         let c_miss = clarity_of("s1", &events(), &["完全没出现".into()], &[]);
-        assert!(c_hit.health > c_miss.health, "判据命中多 → 健康度高: {} vs {}", c_hit.health, c_miss.health);
+        assert!(
+            c_hit.health > c_miss.health,
+            "判据命中多 → 健康度高: {} vs {}",
+            c_hit.health,
+            c_miss.health
+        );
     }
 
     #[test]
@@ -162,6 +176,9 @@ mod tests {
     fn summary_serializable_for_button() {
         let c = clarity_of("s1", &events(), &[], &[]);
         let j = serde_json::to_string(&c).unwrap();
-        assert!(j.contains("goal") && j.contains("health"), "按钮 payload 可序列化");
+        assert!(
+            j.contains("goal") && j.contains("health"),
+            "按钮 payload 可序列化"
+        );
     }
 }

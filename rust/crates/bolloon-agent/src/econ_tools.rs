@@ -109,7 +109,11 @@ impl EconTools {
     }
 
     pub fn claim(&self, args: &serde_json::Value) -> ToolResult {
-        let want = args.get("calls").and_then(|v| v.as_u64()).unwrap_or(1).max(1) as u32;
+        let want = args
+            .get("calls")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1)
+            .max(1) as u32;
         let kind = args.get("intent_kind").and_then(|v| v.as_str());
         let note = args.get("note").and_then(|v| v.as_str()).unwrap_or("");
         let a = self.econ.allowance_for(&self.principal, kind);
@@ -160,7 +164,11 @@ mod tests {
     use bolloon_config::EconomicConfig;
 
     fn econ() -> Arc<ShadowEconomy> {
-        let cfg = EconomicConfig { enabled: true, metering_enabled: true, ..Default::default() };
+        let cfg = EconomicConfig {
+            enabled: true,
+            metering_enabled: true,
+            ..Default::default()
+        };
         Arc::new(ShadowEconomy::new(cfg, None))
     }
 
@@ -174,19 +182,33 @@ mod tests {
 
     #[test]
     fn probe_reports_pool_and_allowance_with_reasons() {
-        let t = EconTools { econ: econ(), principal: "agent-a".into(), group: Some("g1".into()) };
+        let t = EconTools {
+            econ: econ(),
+            principal: "agent-a".into(),
+            group: Some("g1".into()),
+        };
         let r = t.probe(&serde_json::json!({}));
         assert!(r.ok);
         let v: serde_json::Value = serde_json::from_str(&r.output).unwrap();
         assert_eq!(v["enabled"], serde_json::json!(true));
-        assert!(v["my_allowance"]["calls"].as_u64().unwrap() >= 5, "地板额度必须 >0");
-        assert!(!v["my_allowance"]["reasons"].as_array().unwrap().is_empty(), "额度必须给理由");
+        assert!(
+            v["my_allowance"]["calls"].as_u64().unwrap() >= 5,
+            "地板额度必须 >0"
+        );
+        assert!(
+            !v["my_allowance"]["reasons"].as_array().unwrap().is_empty(),
+            "额度必须给理由"
+        );
         assert_eq!(v["group_reply"]["default_when_large"], serde_json::json!(5));
     }
 
     #[test]
     fn claim_grants_when_within_allowance_and_queues_when_not() {
-        let t = EconTools { econ: econ(), principal: "agent-b".into(), group: None };
+        let t = EconTools {
+            econ: econ(),
+            principal: "agent-b".into(),
+            group: None,
+        };
         let ok1 = t.claim(&serde_json::json!({ "calls": 3 }));
         let v: serde_json::Value = serde_json::from_str(&ok1.output).unwrap();
         assert_eq!(v["granted"], serde_json::json!(true), "{v}");
@@ -197,12 +219,21 @@ mod tests {
         assert_eq!(v2["queued"], serde_json::json!(true), "{v2}");
         let why = v2["why"].as_str().unwrap_or("");
         assert!(why.contains("不封号"), "拒绝也要给善意出口: {why}");
-        assert!(v2["sponsor_hint"]["endpoint"].as_str().unwrap().contains("topup"));
+        assert!(
+            v2["sponsor_hint"]["endpoint"]
+                .as_str()
+                .unwrap()
+                .contains("topup")
+        );
     }
 
     #[test]
     fn unknown_tool_falls_through() {
-        let t = EconTools { econ: econ(), principal: "x".into(), group: None };
+        let t = EconTools {
+            econ: econ(),
+            principal: "x".into(),
+            group: None,
+        };
         assert!(try_execute(&t, &call("read_file", serde_json::json!({}))).is_none());
     }
 }

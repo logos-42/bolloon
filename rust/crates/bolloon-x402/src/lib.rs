@@ -6,17 +6,17 @@
 //!
 //! 判定路径不动钱; 私钥只从调用方注入, 不进任何输出。
 
+pub mod direct_payment;
+pub mod milestone;
 pub mod order_identity;
 pub mod paid_info;
-pub mod direct_payment;
-pub mod settlement_state;
 pub mod payment_recovery;
 pub mod seller_signing;
-pub mod milestone;
+pub mod settlement_state;
 pub mod wallet_tools;
+pub use direct_payment::*;
 pub use order_identity::*;
 pub use paid_info::*;
-pub use direct_payment::*;
-pub use settlement_state::*;
 pub use payment_recovery::*;
 pub use seller_signing::*;
+pub use settlement_state::*;

@@ -178,19 +178,25 @@ mod tests {
         assert_eq!(b.list().len(), 1);
         assert_eq!(b.get("main").unwrap().address, ADDR.to_lowercase());
         // 重复名拒
-        assert_eq!(b.create("main", ADDR, "base", 2).unwrap_err(), WalletError::Duplicate("main".into()));
+        assert_eq!(
+            b.create("main", ADDR, "base", 2).unwrap_err(),
+            WalletError::Duplicate("main".into())
+        );
     }
 
     #[test]
     fn flow_in_out_and_insufficient() {
         let mut b = WalletBook::new();
         b.create("main", ADDR, "base", 1).unwrap();
-        b.record_flow("main", FlowDirection::In, 10000, "充值", 2).unwrap();
+        b.record_flow("main", FlowDirection::In, 10000, "充值", 2)
+            .unwrap();
         assert_eq!(b.local_balance("main").unwrap(), 10000);
-        b.record_flow("main", FlowDirection::Out, 3000, "付款", 3).unwrap();
+        b.record_flow("main", FlowDirection::Out, 3000, "付款", 3)
+            .unwrap();
         assert_eq!(b.local_balance("main").unwrap(), 7000);
         assert_eq!(
-            b.record_flow("main", FlowDirection::Out, 99999, "超额", 4).unwrap_err(),
+            b.record_flow("main", FlowDirection::Out, 99999, "超额", 4)
+                .unwrap_err(),
             WalletError::InsufficientBalance(7000, 99999)
         );
         assert_eq!(b.local_balance("main").unwrap(), 7000, "失败流水不改余额");
@@ -200,7 +206,8 @@ mod tests {
     fn unknown_wallet_rejected() {
         let mut b = WalletBook::new();
         assert_eq!(
-            b.record_flow("ghost", FlowDirection::In, 1, "", 1).unwrap_err(),
+            b.record_flow("ghost", FlowDirection::In, 1, "", 1)
+                .unwrap_err(),
             WalletError::NotFound("ghost".into())
         );
     }
@@ -221,6 +228,10 @@ mod tests {
         // 诚实: 本地台账余额是台账事实, 不冒充链上
         let mut b = WalletBook::new();
         b.create("main", ADDR, "base", 1).unwrap();
-        assert_eq!(b.local_balance("main").unwrap(), 0, "没流水 = 台账 0 (不是链上 0)");
+        assert_eq!(
+            b.local_balance("main").unwrap(),
+            0,
+            "没流水 = 台账 0 (不是链上 0)"
+        );
     }
 }

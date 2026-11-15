@@ -100,7 +100,11 @@ mod tests {
     use super::*;
 
     fn item(name: &str, value: &str, hint: &str) -> ComplItem {
-        ComplItem { label: name.into(), value: value.into(), hint: Some(hint.into()) }
+        ComplItem {
+            label: name.into(),
+            value: value.into(),
+            hint: Some(hint.into()),
+        }
     }
 
     /// `/` 行 → Slash 模式, 查询串是 `/` 之后全部
@@ -155,7 +159,10 @@ mod tests {
     /// 筛候选: 大小写不敏感, 匹配 label (contains 语义)
     #[test]
     fn filter_is_case_insensitive() {
-        let items = vec![item("/Retry", "retry", "重试"), item("/Reset", "reset", "重置")];
+        let items = vec![
+            item("/Retry", "retry", "重试"),
+            item("/Reset", "reset", "重置"),
+        ];
         // "re" 同时命中 /retry 与 /reset
         let got = filter_items(&items, "re");
         assert_eq!(got.len(), 2);
@@ -200,6 +207,10 @@ mod tests {
         s.to_string()
     }
     fn buf_at(buf: String, start: usize) -> String {
-        buf[start..].chars().next().map(|c| c.to_string()).unwrap_or_default()
+        buf[start..]
+            .chars()
+            .next()
+            .map(|c| c.to_string())
+            .unwrap_or_default()
     }
 }

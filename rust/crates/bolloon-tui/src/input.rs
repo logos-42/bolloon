@@ -12,7 +12,7 @@
 //!   · `with_raw_suspended` —— 起 `$EDITOR` / `pbcopy` 前把终端还回去;
 //!   · `watch_interrupts` —— raw 模式下 `Ctrl+C` 不产生 SIGINT, 中断只能靠读键。
 
-use crate::compose::{render_input, resolve_action, Compose, EditAction};
+use crate::compose::{Compose, EditAction, render_input, resolve_action};
 use crate::select::{parse_keys, read_key_raw};
 use std::io::Write;
 use std::path::PathBuf;
@@ -51,7 +51,6 @@ pub(crate) fn test_feed_pending(bytes: &[u8]) {
 /** 清到屏末 (重画输入块的起点) */
 const ERASE_DOWN: &str = "\x1b[J";
 
-
 /// 输入块最多占几行 (再多就留尾部 + `… (+N 行)`), 下限 1
 pub const MAX_INPUT_LINES: usize = 12;
 
@@ -76,7 +75,10 @@ struct RawState {
     orig: Option<crate::term_compat::termios>,
 }
 
-static RAW: std::sync::Mutex<RawState> = std::sync::Mutex::new(RawState { depth: 0, orig: None });
+static RAW: std::sync::Mutex<RawState> = std::sync::Mutex::new(RawState {
+    depth: 0,
+    orig: None,
+});
 
 fn lock_raw() -> std::sync::MutexGuard<'static, RawState> {
     RAW.lock().unwrap_or_else(|e| e.into_inner())
@@ -93,10 +95,18 @@ fn apply_raw(on: bool, orig: &Option<crate::term_compat::termios>) -> bool {
                 // (真机: 用户消息框 `╭─ ✓ 已发送 ─╮` 的边框和正文一路右移)。
                 // 这是 eprintln 与「绝对行号绘制」都依赖的前提, 拆掉它就全歪。
                 t.c_oflag |= crate::term_compat::OPOST | crate::term_compat::ONLCR;
-                crate::term_compat::tcsetattr(crate::term_compat::STDIN_FILENO, crate::term_compat::TCSANOW, &t) == 0
+                crate::term_compat::tcsetattr(
+                    crate::term_compat::STDIN_FILENO,
+                    crate::term_compat::TCSANOW,
+                    &t,
+                ) == 0
             }
             (false, Some(base)) => {
-                crate::term_compat::tcsetattr(crate::term_compat::STDIN_FILENO, crate::term_compat::TCSANOW, base) == 0
+                crate::term_compat::tcsetattr(
+                    crate::term_compat::STDIN_FILENO,
+                    crate::term_compat::TCSANOW,
+                    base,
+                ) == 0
             }
             _ => false,
         }
@@ -271,20 +281,32 @@ pub fn watch_interrupts(cancel: Arc<AtomicBool>) -> InterruptWatch {
             push_pending(chunk);
         }
     });
-    InterruptWatch { stop, rx, handle: Some(handle) }
+    InterruptWatch {
+        stop,
+        rx,
+        handle: Some(handle),
+    }
 }
 
 /** 非 raw 模式的兜底: 一次读一行 (管道/重定向/没有终端时走这条) */
 fn read_line_plain() -> LineResult {
     let mut s = String::new();
     match std::io::stdin().read_line(&mut s) {
-        Ok(0) => LineResult { value: String::new(), eof: true, cancelled: false },
+        Ok(0) => LineResult {
+            value: String::new(),
+            eof: true,
+            cancelled: false,
+        },
         Ok(_) => LineResult {
             value: s.trim_end_matches(['\n', '\r']).to_string(),
             eof: false,
             cancelled: false,
         },
-        Err(_) => LineResult { value: String::new(), eof: true, cancelled: false },
+        Err(_) => LineResult {
+            value: String::new(),
+            eof: true,
+            cancelled: false,
+        },
     }
 }
 
@@ -299,12 +321,7 @@ pub fn ask_line(prompt: &str, history: &[String], masked: bool) -> LineResult {
 }
 
 /** 同 `ask_line`, 但接受一段**预置缓冲** (草稿/贴图重入时用) */
-pub fn ask_line_with(
-    prompt: &str,
-    history: &[String],
-    initial: &str,
-    masked: bool,
-) -> LineResult {
+pub fn ask_line_with(prompt: &str, history: &[String], initial: &str, masked: bool) -> LineResult {
     let mut guard = RawGuard::enable();
     if !guard.is_raw() {
         // 没有 raw mode (非 TTY) ⇒ 退化为读一行, 交互不降级成"卡住"
@@ -324,7 +341,11 @@ pub fn ask_line_with(
     loop {
         let Some(bytes) = read_key_raw() else {
             clear_block(drawn);
-            return LineResult { value: String::new(), eof: true, cancelled: false };
+            return LineResult {
+                value: String::new(),
+                eof: true,
+                cancelled: false,
+            };
         };
         if bytes.is_empty() {
             drawn = 0;
@@ -336,20 +357,36 @@ pub fn ask_line_with(
                 EditAction::Submit => {
                     clear_block(drawn);
                     let value = cx.buf().to_string();
-                    return LineResult { value, eof: false, cancelled: false };
+                    return LineResult {
+                        value,
+                        eof: false,
+                        cancelled: false,
+                    };
                 }
                 EditAction::Cancel => {
                     clear_block(drawn);
-                    return LineResult { value: String::new(), eof: false, cancelled: true };
+                    return LineResult {
+                        value: String::new(),
+                        eof: false,
+                        cancelled: true,
+                    };
                 }
                 EditAction::Eof => {
                     clear_block(drawn);
-                    return LineResult { value: String::new(), eof: true, cancelled: false };
+                    return LineResult {
+                        value: String::new(),
+                        eof: true,
+                        cancelled: false,
+                    };
                 }
                 // 向导里的 Ctrl+C 只当"取消这一步", 不替调用方退出整个流程
                 EditAction::Quit => {
                     clear_block(drawn);
-                    return LineResult { value: String::new(), eof: false, cancelled: true };
+                    return LineResult {
+                        value: String::new(),
+                        eof: false,
+                        cancelled: true,
+                    };
                 }
                 EditAction::Newline => {
                     if masked {
@@ -504,7 +541,11 @@ pub fn editor_cmd() -> String {
             }
         }
     }
-    if cfg!(windows) { "notepad".to_string() } else { "vi".to_string() }
+    if cfg!(windows) {
+        "notepad".to_string()
+    } else {
+        "vi".to_string()
+    }
 }
 
 /// 草稿文件 (`BOLLOON_DRAFT_FILE` 可覆盖, 便于测试/自定义位置)

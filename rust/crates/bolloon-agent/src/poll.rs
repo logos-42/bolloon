@@ -9,15 +9,13 @@ use tokio::time::sleep;
 pub const POLL_INTERVALS: [u64; 7] = [2, 4, 8, 10, 20, 100, 120];
 
 /// 轮询配置
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct PollConfig {
     pub max_retries: Option<u32>,
     pub verbose: bool,
     pub jitter: bool,
     pub once: bool,
 }
-
 
 impl PollConfig {
     pub fn max_retries(mut self, n: u32) -> Self {
@@ -62,24 +60,49 @@ where
     let max_attempts = config.max_retries;
 
     if config.once {
-        if config.verbose { println!("--- Attempt #{} ---", attempt); }
+        if config.verbose {
+            println!("--- Attempt #{} ---", attempt);
+        }
         match f().await {
-            Ok(()) => { if config.verbose { println!("✅ Command succeeded!"); } return PollResult::Success; }
-            Err(e) => { if config.verbose { println!("❌ Command failed: {}", e); } return PollResult::MaxRetriesExceeded; }
+            Ok(()) => {
+                if config.verbose {
+                    println!("✅ Command succeeded!");
+                }
+                return PollResult::Success;
+            }
+            Err(e) => {
+                if config.verbose {
+                    println!("❌ Command failed: {}", e);
+                }
+                return PollResult::MaxRetriesExceeded;
+            }
         }
     }
 
     loop {
-        if config.verbose { println!("--- Attempt #{} ---", attempt); }
+        if config.verbose {
+            println!("--- Attempt #{} ---", attempt);
+        }
 
         match f().await {
-            Ok(()) => { if config.verbose { println!("✅ Command succeeded!"); } return PollResult::Success; }
-            Err(e) => { if config.verbose { println!("❌ Command failed: {}", e); } }
+            Ok(()) => {
+                if config.verbose {
+                    println!("✅ Command succeeded!");
+                }
+                return PollResult::Success;
+            }
+            Err(e) => {
+                if config.verbose {
+                    println!("❌ Command failed: {}", e);
+                }
+            }
         }
 
         if let Some(max) = max_attempts {
             if attempt >= max {
-                if config.verbose { println!("❌ Max retries ({}) reached. Giving up.", max); }
+                if config.verbose {
+                    println!("❌ Max retries ({}) reached. Giving up.", max);
+                }
                 return PollResult::MaxRetriesExceeded;
             }
         }
@@ -93,13 +116,15 @@ where
             let min = raw_sleep * 3 / 4;
             let max = raw_sleep * 5 / 4;
             let range = max - min + 1;
-            
+
             min + (attempt as u64 * 7919) % range
         } else {
             raw_sleep
         };
 
-        if config.verbose { println!("Waiting {}s before next attempt...", sleep_ms); }
+        if config.verbose {
+            println!("Waiting {}s before next attempt...", sleep_ms);
+        }
 
         sleep(Duration::from_secs(sleep_ms)).await;
 
@@ -107,7 +132,6 @@ where
         attempt += 1;
     }
 }
-
 
 /// 等到某个 TCP 端口**真的可连** (用同一套退避序列 2/4/8/10/20/100/120 秒)。
 /// 用途: 「服务起来了再往下走」——CLI 启动 web、App 建窗口前、以及跨机对端探活。
@@ -167,7 +191,11 @@ pub async fn wait_http(url: &str, config: PollConfig) -> PollResult {
                 })
                 .await
                 .unwrap_or(false);
-                if ok { Ok(()) } else { Err(format!("{t} 还没就绪")) }
+                if ok {
+                    Ok(())
+                } else {
+                    Err(format!("{t} 还没就绪"))
+                }
             }
         },
         config,
@@ -201,9 +229,13 @@ mod tests {
     async fn test_poll_success_first_try() {
         let mut call_count = 0;
         let result = poll(
-            || { call_count += 1; async move { Ok(()) } },
+            || {
+                call_count += 1;
+                async move { Ok(()) }
+            },
             PollConfig::default().verbose(false),
-        ).await;
+        )
+        .await;
         assert_eq!(result, PollResult::Success);
         assert_eq!(call_count, 1);
     }
@@ -213,7 +245,8 @@ mod tests {
         let result = poll(
             || async { Err("always fails".to_string()) },
             PollConfig::default().max_retries(2).verbose(false),
-        ).await;
+        )
+        .await;
         assert_eq!(result, PollResult::MaxRetriesExceeded);
     }
 
@@ -228,7 +261,13 @@ mod tests {
         // 起一个真监听: 127.0.0.1:0 由内核分配, 再 poll 它 —— 必须第一次就 Success
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
-        tokio::spawn(async move { loop { if listener.accept().await.is_err() { break } } });
+        tokio::spawn(async move {
+            loop {
+                if listener.accept().await.is_err() {
+                    break;
+                }
+            }
+        });
         let r = wait_tcp(&addr, PollConfig::default().max_retries(2)).await;
         assert_eq!(r, PollResult::Success);
     }
@@ -245,7 +284,8 @@ mod tests {
         let result = poll(
             || async { Err("fails".to_string()) },
             PollConfig::default().once(true).verbose(false),
-        ).await;
+        )
+        .await;
         assert_eq!(result, PollResult::MaxRetriesExceeded);
     }
 }

@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::settlement_state::{derive_settlement_fact, SettlementFact, TxRecordInput};
+use crate::settlement_state::{SettlementFact, TxRecordInput, derive_settlement_fact};
 
 /// 恢复动作 (7 类)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,11 +74,17 @@ impl TransactionRecord {
 }
 
 /// 恢复决策 (纯函数, 对齐 TS planTransactionRecovery 的优先级顺序)
-pub fn plan_transaction_recovery(rec: &TransactionRecord, claim_held_by_other: bool) -> RecoveryPlan {
+pub fn plan_transaction_recovery(
+    rec: &TransactionRecord,
+    claim_held_by_other: bool,
+) -> RecoveryPlan {
     let fact = derive_settlement_fact(&rec.as_input());
     let evidence = rec.has_payment_evidence(fact);
     let base = (rec.transaction_id.clone(), fact);
-    let plan = |action: RecoveryAction, must_not_repay: bool, needs_responsibility: bool, reason: String| RecoveryPlan {
+    let plan = |action: RecoveryAction,
+                must_not_repay: bool,
+                needs_responsibility: bool,
+                reason: String| RecoveryPlan {
         transaction_id: base.0.clone(),
         action,
         must_not_repay,
@@ -90,13 +96,20 @@ pub fn plan_transaction_recovery(rec: &TransactionRecord, claim_held_by_other: b
     // 终态: 不再动手 (钱的事已经定了)
     if matches!(rec.status.as_str(), "verified" | "policy_denied" | "failed") {
         return plan(
-            if rec.status == "verified" { RecoveryAction::Complete } else { RecoveryAction::Closed },
+            if rec.status == "verified" {
+                RecoveryAction::Complete
+            } else {
+                RecoveryAction::Closed
+            },
             evidence,
             false,
             format!("终态 {}, 不再变化", rec.status),
         );
     }
-    if matches!(rec.status.as_str(), "delivery_failed" | "verification_failed") {
+    if matches!(
+        rec.status.as_str(),
+        "delivery_failed" | "verification_failed"
+    ) {
         return plan(
             RecoveryAction::Closed,
             true,
@@ -104,7 +117,11 @@ pub fn plan_transaction_recovery(rec: &TransactionRecord, claim_held_by_other: b
             format!(
                 "{}: 钱 {} 但交付/验真失败 → 不自动重付, 进追责/人工处理",
                 rec.status,
-                if fact == SettlementFact::Unpaid { "可能没付" } else { "已付/待确认" }
+                if fact == SettlementFact::Unpaid {
+                    "可能没付"
+                } else {
+                    "已付/待确认"
+                }
             ),
         );
     }
@@ -143,21 +160,35 @@ pub fn plan_transaction_recovery(rec: &TransactionRecord, claim_held_by_other: b
             RecoveryAction::RetryPayment,
             false,
             false,
-            format!("状态 {} 且结算事实 unpaid (确认没付过) → 可安全付款", rec.status),
+            format!(
+                "状态 {} 且结算事实 unpaid (确认没付过) → 可安全付款",
+                rec.status
+            ),
         );
     }
 
     // 有支付证据 → 继续推进交付/验真, 绝不重付
     if evidence {
         if rec.status == "delivered" {
-            return plan(RecoveryAction::Verify, true, false, "已交付 → 继续验真".into());
+            return plan(
+                RecoveryAction::Verify,
+                true,
+                false,
+                "已交付 → 继续验真".into(),
+            );
         }
-        if matches!(rec.status.as_str(), "paying" | "settled" | "payment_required") {
+        if matches!(
+            rec.status.as_str(),
+            "paying" | "settled" | "payment_required"
+        ) {
             return plan(
                 RecoveryAction::Deliver,
                 true,
                 false,
-                format!("结算事实 {} → 付款事实在手, 继续交付 (不重付)", fact.as_str()),
+                format!(
+                    "结算事实 {} → 付款事实在手, 继续交付 (不重付)",
+                    fact.as_str()
+                ),
             );
         }
     }
@@ -166,7 +197,11 @@ pub fn plan_transaction_recovery(rec: &TransactionRecord, claim_held_by_other: b
         RecoveryAction::Closed,
         evidence,
         false,
-        format!("状态 {} + 结算事实 {}: 没有可自动推进的动作 → 交人", rec.status, fact.as_str()),
+        format!(
+            "状态 {} + 结算事实 {}: 没有可自动推进的动作 → 交人",
+            rec.status,
+            fact.as_str()
+        ),
     )
 }
 
@@ -260,8 +295,14 @@ mod tests {
 
     #[test]
     fn terminal_states_frozen() {
-        assert_eq!(plan_transaction_recovery(&rec("policy_denied"), false).action, RecoveryAction::Closed);
-        assert_eq!(plan_transaction_recovery(&rec("failed"), false).action, RecoveryAction::Closed);
+        assert_eq!(
+            plan_transaction_recovery(&rec("policy_denied"), false).action,
+            RecoveryAction::Closed
+        );
+        assert_eq!(
+            plan_transaction_recovery(&rec("failed"), false).action,
+            RecoveryAction::Closed
+        );
     }
 
     #[test]

@@ -21,15 +21,13 @@ pub mod config_store;
 pub mod provider_catalog;
 pub mod provider_registry;
 pub mod runtime;
-pub mod secret_store;
 pub mod secret_file;
+pub mod secret_store;
 
-pub use config_store::{
-    active_resolved, resolve, LlmConfig, ProviderSettings, Resolved,
-};
+pub use config_store::{LlmConfig, ProviderSettings, Resolved, active_resolved, resolve};
 pub use provider_catalog::AuthKind;
 pub use provider_registry::{
-    list_builtin, list_catalog, list_with_catalog, Origin, Protocol, ProviderModel,
-    ProviderRegistryEntry,
+    Origin, Protocol, ProviderModel, ProviderRegistryEntry, list_builtin, list_catalog,
+    list_with_catalog,
 };
 pub use runtime::*;

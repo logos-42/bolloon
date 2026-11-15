@@ -11,7 +11,7 @@
 //! - **不吹能力**: 正文只写"怎么做", 不写"我已经能做什么"; 真能力仍由工具门决定。
 
 use crate::gap::{GapPath, GapReport};
-use crate::skills_runtime::{SkillCandidate, SkillEvolver, CandidateError, SKILL_BODY_MAX};
+use crate::skills_runtime::{CandidateError, SKILL_BODY_MAX, SkillCandidate, SkillEvolver};
 use crate::world::{Clarity, Intent, WantKind};
 
 /// 类别 → 中文标签 (用于技能命名; 未列出的用原字符串)
@@ -44,11 +44,15 @@ pub fn draft_skill(intent: &Intent, gap: &GapReport) -> SkillCandidate {
     let cat = cat_cn(intent);
     let want = want_cn(intent.want);
     let vague = matches!(intent.clarity, Clarity::Vague);
-    let paths: Vec<&str> = gap.paths.iter().map(|p| match p {
-        GapPath::Search => "检索",
-        GapPath::Install => "装/写能力",
-        GapPath::Delegate => "委托",
-    }).collect();
+    let paths: Vec<&str> = gap
+        .paths
+        .iter()
+        .map(|p| match p {
+            GapPath::Search => "检索",
+            GapPath::Install => "装/写能力",
+            GapPath::Delegate => "委托",
+        })
+        .collect();
 
     let name = format!("{cat}·{want}补能力法");
     let mut body = String::new();
@@ -111,7 +115,7 @@ pub fn promote_draft(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gap::{detect_gaps, CapabilityInventory};
+    use crate::gap::{CapabilityInventory, detect_gaps};
     use crate::world::classify_intent;
 
     fn intent_of(text: &str) -> Intent {
@@ -134,8 +138,15 @@ mod tests {
         let gap = detect_gaps(&it, &CapabilityInventory::default());
         let cand = draft_skill(&it, &gap);
         assert!(cand.name.contains("餐饮"), "名字应带类别: {}", cand.name);
-        assert!(cand.body.contains(intent_of("我想吃饭").id.as_str()) || cand.body.contains("intent-42"), "要有出处");
-        assert!(cand.body.contains("检索") && cand.body.contains("委托"), "要有补能力步骤");
+        assert!(
+            cand.body.contains(intent_of("我想吃饭").id.as_str())
+                || cand.body.contains("intent-42"),
+            "要有出处"
+        );
+        assert!(
+            cand.body.contains("检索") && cand.body.contains("委托"),
+            "要有补能力步骤"
+        );
         assert!(cand.body.contains("不编 URL"), "要有边界");
         assert!(cand.body.chars().count() <= SKILL_BODY_MAX);
         assert!(cand.source_run.starts_with("world-intent:"));
@@ -155,7 +166,10 @@ mod tests {
         let gap = detect_gaps(&it, &CapabilityInventory::default());
         let mut ev = SkillEvolver::new();
         let name = promote_draft(&mut ev, draft_skill(&it, &gap), 1).unwrap();
-        assert!(ev.registry.index_for_prompt().contains(&name), "装完下一轮索引可见");
+        assert!(
+            ev.registry.index_for_prompt().contains(&name),
+            "装完下一轮索引可见"
+        );
         // 同内容再写一次 → 不重复入库, 但如实告知
         let again = promote_draft(&mut ev, draft_skill(&it, &gap), 2).unwrap();
         assert!(again.contains("未重复写入"), "重复应如实: {again}");
@@ -166,7 +180,10 @@ mod tests {
     fn same_category_new_intent_keeps_history() {
         let mut ev = SkillEvolver::new();
         let a = intent_of("我想吃饭");
-        let b = Intent { id: "intent-99".into(), ..intent_of("想找人一起吃火锅") };
+        let b = Intent {
+            id: "intent-99".into(),
+            ..intent_of("想找人一起吃火锅")
+        };
         let ga = detect_gaps(&a, &CapabilityInventory::default());
         let gb = detect_gaps(&b, &CapabilityInventory::default());
         promote_draft(&mut ev, draft_skill(&a, &ga), 1000).unwrap();

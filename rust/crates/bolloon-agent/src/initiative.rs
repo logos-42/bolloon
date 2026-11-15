@@ -21,7 +21,10 @@ pub struct IdleWindow {
 impl Default for IdleWindow {
     fn default() -> Self {
         // 10 分钟没人说话 + 半小时内不重复出手
-        Self { idle_after_ms: 10 * 60_000, min_gap_ms: 30 * 60_000 }
+        Self {
+            idle_after_ms: 10 * 60_000,
+            min_gap_ms: 30 * 60_000,
+        }
     }
 }
 
@@ -98,7 +101,11 @@ mod tests {
     #[test]
     fn no_history_means_do_not_act() {
         let w = IdleWindow::default();
-        assert_eq!(decide(100 * M, 0, 0, w), Verdict::UserActive, "没记录用户活动 ⇒ 不抢着动");
+        assert_eq!(
+            decide(100 * M, 0, 0, w),
+            Verdict::UserActive,
+            "没记录用户活动 ⇒ 不抢着动"
+        );
     }
 
     #[test]

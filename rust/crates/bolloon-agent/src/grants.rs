@@ -121,7 +121,9 @@ impl GrantStore {
             "bins" | "bin" => Ok(&mut self.bins),
             "commands" | "command" => Ok(&mut self.commands),
             "paths" | "path" => Ok(&mut self.paths),
-            other => Err(format!("未知授权类型: {other}（tools|bins|commands|paths）")),
+            other => Err(format!(
+                "未知授权类型: {other}（tools|bins|commands|paths）"
+            )),
         }
     }
 
@@ -159,7 +161,10 @@ impl GrantStore {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.tools.is_empty() && self.bins.is_empty() && self.commands.is_empty() && self.paths.is_empty()
+        self.tools.is_empty()
+            && self.bins.is_empty()
+            && self.commands.is_empty()
+            && self.paths.is_empty()
     }
 }
 
@@ -242,10 +247,16 @@ mod tests {
         let back = GrantStore::load_from(&p);
         assert!(back.has_tool("shell"));
         assert!(back.allows_bin("python3"));
-        assert!(back.allows_command("git push origin main"), "前缀通配必须命中");
+        assert!(
+            back.allows_command("git push origin main"),
+            "前缀通配必须命中"
+        );
         assert!(!back.allows_command("git pushy"), "前缀不能误伤");
         assert!(back.allows_path("/tmp/workspace/sub/dir"));
-        assert!(!back.allows_path("/tmp/workspace2"), "目录前缀不能跨名字命中");
+        assert!(
+            !back.allows_path("/tmp/workspace2"),
+            "目录前缀不能跨名字命中"
+        );
 
         assert!(g.revoke("bins", "python3").unwrap());
         assert!(!g.allows_bin("python3"));

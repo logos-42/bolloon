@@ -70,7 +70,11 @@ impl RoomBus {
     pub fn thinking(&self, gid: &str) -> Vec<String> {
         self.inflight
             .lock()
-            .map(|m| m.get(gid).map(|s| s.iter().cloned().collect()).unwrap_or_default())
+            .map(|m| {
+                m.get(gid)
+                    .map(|s| s.iter().cloned().collect())
+                    .unwrap_or_default()
+            })
             .unwrap_or_default()
     }
 
@@ -123,7 +127,10 @@ impl RoomBus {
     /// 记录一次人类发言（重置沉默计时，避免自驱抢在人类前面）
     pub fn mark_human(&self, gid: &str) {
         if let Ok(mut m) = self.last_human_ms.lock() {
-            m.insert(gid.to_string(), chrono::Utc::now().timestamp_millis() as u64);
+            m.insert(
+                gid.to_string(),
+                chrono::Utc::now().timestamp_millis() as u64,
+            );
         }
     }
 
@@ -136,8 +143,12 @@ impl RoomBus {
 
     /// 抢一个 (群, 智能体) 的执行位; 已在跑则返回 false (同一条消息重复触发不会翻倍)
     fn begin(&self, gid: &str, agent: &str) -> bool {
-        let Ok(mut m) = self.inflight.lock() else { return false };
-        m.entry(gid.to_string()).or_default().insert(agent.to_string())
+        let Ok(mut m) = self.inflight.lock() else {
+            return false;
+        };
+        m.entry(gid.to_string())
+            .or_default()
+            .insert(agent.to_string())
     }
 
     fn end(&self, gid: &str, agent: &str) {
@@ -229,7 +240,11 @@ pub fn roster_from_ranked(ranked: &[String]) -> Roster {
         .take(FOREMEN_PER_GROUP)
         .cloned()
         .collect();
-    Roster { sheriff, leads, foremen }
+    Roster {
+        sheriff,
+        leads,
+        foremen,
+    }
 }
 
 /// 谁有权结束本场交流：**只有警长和小组长**（`Roster::leads`），领班与普通成员不行。
@@ -416,7 +431,7 @@ pub fn spawn_reports(
     intent_id: String,
 ) {
     // 2026-10-31 实测到的问题: 人类在「开场轮」还没跑完时说话, 忙的成员会被静默跳过 ⇒
-// 那句话只有 transcript 里有、却没人接。现在记下被跳过的人数, 没有人接就在 5s 后补一轮。
+    // 那句话只有 transcript 里有、却没人接。现在记下被跳过的人数, 没有人接就在 5s 后补一轮。
     let busy: Vec<AgentView> = targets
         .iter()
         .filter(|a| st.room_bus.is_thinking(&gid, &a.id))
@@ -515,15 +530,10 @@ pub fn spawn_reports(
             // 群里只放人话结论 —— 工具过程属于后台, 前端用阶段流光表达, 不刷群
             let clean = strip_tool_noise(&clean);
             if !clean.is_empty() {
-                if let Err(e) = st.groups.append(
-                    &gid,
-                    &st.identity,
-                    "report",
-                    &agent.id,
-                    &clean,
-                    None,
-                    now,
-                ) {
+                if let Err(e) =
+                    st.groups
+                        .append(&gid, &st.identity, "report", &agent.id, &clean, None, now)
+                {
                     tracing::warn!(group = %gid, agent = %agent.id, error = %e, "群汇报落块失败");
                 }
             }
@@ -669,7 +679,10 @@ pub fn spawn_reports(
                 let mut hit = 0usize;
                 for v in &vetoes {
                     for t in fs.room_tasks.iter_mut() {
-                        if t.group_id == gid && t.status == "proposed" && (&t.target == v || t.desc.contains(v.as_str())) {
+                        if t.group_id == gid
+                            && t.status == "proposed"
+                            && (&t.target == v || t.desc.contains(v.as_str()))
+                        {
                             t.status = "rejected".into();
                             hit += 1;
                         }
@@ -679,8 +692,13 @@ pub fn spawn_reports(
                     fs.save(&crate::server::data_dir());
                     drop(fs);
                     let _ = st.groups.append(
-                        &gid, &st.identity, "system", &agent.id,
-                        &format!("{}（警长）否掉了 {} 条待派提案。", agent.name, hit), None, now,
+                        &gid,
+                        &st.identity,
+                        "system",
+                        &agent.id,
+                        &format!("{}（警长）否掉了 {} 条待派提案。", agent.name, hit),
+                        None,
+                        now,
                     );
                 }
             }
@@ -806,12 +824,18 @@ async fn agent_turn(
         .unwrap_or_default();
     let names: HashMap<String, String> = {
         let fs = st.forge.lock().await;
-        fs.agents.iter().map(|a| (a.id.clone(), a.name.clone())).collect()
+        fs.agents
+            .iter()
+            .map(|a| (a.id.clone(), a.name.clone()))
+            .collect()
     };
     let pairs: Vec<(String, String)> = hist
         .iter()
         .map(|m| {
-            let who = names.get(&m.from).cloned().unwrap_or_else(|| short(&m.from));
+            let who = names
+                .get(&m.from)
+                .cloned()
+                .unwrap_or_else(|| short(&m.from));
             (who, m.text.clone())
         })
         .collect();
@@ -863,8 +887,8 @@ async fn agent_turn(
         tool_call_id: None,
         tool_calls: None,
         images: vec![],
-    reasoning_content: None,
-}];
+        reasoning_content: None,
+    }];
     // 2026-10-31 (leo: 群里说要跑 find 却没真的跑): 群内回合以前只调一次模型 ⇒ **只说不做**。
     // 现在按运行时设置走 harness + kernel loop：能真读文件、真跑命令、真的自纠多步。
     // 关掉 `runtime.tools` 才退回"纯发言"那条单次调用 (计量口径不变, 只是不执行)。
@@ -922,10 +946,13 @@ pub fn strip_tool_noise(text: &str) -> String {
             if let Some(b) = rest[a + 3..].find("```") {
                 let end = a + 3 + b + 3;
                 let block = &rest[a..end];
-                if (block.contains("tool_call") || block.contains("tool_use") || block.contains("\"arguments\""))
-                    && hit.map(|(s, _)| a < s).unwrap_or(true) {
-                        hit = Some((a, end));
-                    }
+                if (block.contains("tool_call")
+                    || block.contains("tool_use")
+                    || block.contains("\"arguments\""))
+                    && hit.map(|(s, _)| a < s).unwrap_or(true)
+                {
+                    hit = Some((a, end));
+                }
             }
         }
         match hit {
@@ -1005,7 +1032,11 @@ pub fn parse_control(text: &str) -> (String, bool, Vec<(String, String)>, Vec<St
 }
 
 fn short(s: &str) -> String {
-    if s.len() <= 18 { s.to_string() } else { format!("{}…", &s[..16]) }
+    if s.len() <= 18 {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..16])
+    }
 }
 
 #[cfg(test)]
@@ -1036,14 +1067,26 @@ mod tests {
         assert!(cap > 0);
         // 警长 / 人类命令：有多少派多少
         for idx in [0usize, 1, 5, 50] {
-            assert!(may_dispatch_directly(true, false, idx, cap), "警长第 {idx} 个要直派");
-            assert!(may_dispatch_directly(false, true, idx, cap), "人类命令第 {idx} 个要直派");
+            assert!(
+                may_dispatch_directly(true, false, idx, cap),
+                "警长第 {idx} 个要直派"
+            );
+            assert!(
+                may_dispatch_directly(false, true, idx, cap),
+                "人类命令第 {idx} 个要直派"
+            );
         }
         // 普通成员：前 cap 个直派，之后转提案
         for idx in 0..cap {
-            assert!(may_dispatch_directly(false, false, idx, cap), "成员第 {idx} 个应直派");
+            assert!(
+                may_dispatch_directly(false, false, idx, cap),
+                "成员第 {idx} 个应直派"
+            );
         }
-        assert!(!may_dispatch_directly(false, false, cap, cap), "超出上限应转提案");
+        assert!(
+            !may_dispatch_directly(false, false, cap, cap),
+            "超出上限应转提案"
+        );
         assert!(!may_dispatch_directly(false, false, cap + 7, cap));
     }
 
@@ -1062,19 +1105,17 @@ mod tests {
         assert!(t.starts_with("（任务分配·接力2）"));
         assert!(t.contains("小宝"));
         assert!(t.contains("编译通过"), "接力必须带上上一棒结论: {t}");
-        assert!(t.starts_with("（任务分配"), "接力触发要被 human_origin 判定排除");
+        assert!(
+            t.starts_with("（任务分配"),
+            "接力触发要被 human_origin 判定排除"
+        );
     }
 
     /// 群历史压缩：窗口内原文保留，窗口外压成摘要但不静默丢。
     #[test]
     fn transcript_compresses_old_messages_but_keeps_recent() {
         let pairs: Vec<(String, String)> = (0..30)
-            .map(|i| {
-                (
-                    "小宝".to_string(),
-                    format!("第{i}条正文{}", "x".repeat(80)),
-                )
-            })
+            .map(|i| ("小宝".to_string(), format!("第{i}条正文{}", "x".repeat(80))))
             .collect();
         let out = compress_transcript(&pairs, HISTORY_WINDOW, HISTORY_OLD_CHARS);
         assert!(out.contains("早期摘要·14 条已压缩"), "14 条被压: {out}");
@@ -1084,7 +1125,10 @@ mod tests {
         // 旧消息不许整段塞进上下文 —— 只对**被压缩的那一段**成立；
         // 最近 16 条是原文（按设计就是全文），所以只在摘要段里查。
         let head = out.split("[最近 ").next().unwrap_or("");
-        assert!(!head.contains(&"x".repeat(HISTORY_OLD_CHARS + 1)), "旧消息不许整段塞进上下文: {head}");
+        assert!(
+            !head.contains(&"x".repeat(HISTORY_OLD_CHARS + 1)),
+            "旧消息不许整段塞进上下文: {head}"
+        );
         // 条数不超窗口 ⇒ 一条都不压
         let small = compress_transcript(&pairs[..3], HISTORY_WINDOW, HISTORY_OLD_CHARS);
         assert!(!small.contains("已压缩"));
@@ -1114,10 +1158,16 @@ mod tests {
         );
         let mut done = t.clone();
         done.status = "dispatched".into();
-        assert!(!crate::native::should_auto_dispatch(&done, u64::MAX), "已派发不重复派");
+        assert!(
+            !crate::native::should_auto_dispatch(&done, u64::MAX),
+            "已派发不重复派"
+        );
         let mut rej = t;
         rej.status = "rejected".into();
-        assert!(!crate::native::should_auto_dispatch(&rej, u64::MAX), "被警长否掉的不执行");
+        assert!(
+            !crate::native::should_auto_dispatch(&rej, u64::MAX),
+            "被警长否掉的不执行"
+        );
     }
 
     /// 警长否决标记: 解析出来并从正文里去掉
@@ -1156,7 +1206,9 @@ mod tests {
     fn addressed_outside_roster_do_not_speak() {
         let ranked: Vec<String> = (0..40).map(|i| format!("a{i}")).collect();
         let roster = roster_from_ranked(&ranked);
-        let agents: Vec<AgentView> = (0..40).map(|i| agent(&format!("a{i}"), &format!("名字{i}"))).collect();
+        let agents: Vec<AgentView> = (0..40)
+            .map(|i| agent(&format!("a{i}"), &format!("名字{i}")))
+            .collect();
 
         // @ 一个名单外的 id（a30）
         let picked = elect_from_roster(&agents, &["a30".into()], &roster, 0, 5);
@@ -1182,15 +1234,29 @@ mod tests {
     fn reply_limit_follows_size_and_sheriff() {
         assert_eq!(reply_limit_for(3, None), 3, "小群：命中几个就几个");
         assert_eq!(reply_limit_for(10, None), 10, "刚好 10 人仍算小群");
-        assert_eq!(reply_limit_for(11, None), DEFAULT_REPLIES_WHEN_LARGE, ">10 默认 5");
+        assert_eq!(
+            reply_limit_for(11, None),
+            DEFAULT_REPLIES_WHEN_LARGE,
+            ">10 默认 5"
+        );
         assert_eq!(reply_limit_for(1000, None), 5, "再大也只 5 个接话");
         assert_eq!(reply_limit_for(1000, Some(7)), 7, "警长可放大/缩小");
-        assert_eq!(reply_limit_for(5, Some(2000)), MAX_ELECTED_AGENTS, "警长也不能越过产品上限");
+        assert_eq!(
+            reply_limit_for(5, Some(2000)),
+            MAX_ELECTED_AGENTS,
+            "警长也不能越过产品上限"
+        );
         assert_eq!(reply_limit_for(5, Some(0)), 5, "0 视为未设定, 回落默认");
 
         // 12 个成员都被 @：限 5 时只推 5 个（不刷屏、不炸成本）
         let many: Vec<AgentView> = (0..12).map(|i| agent(&format!("m{i}"), "小星")).collect();
-        let picked = elect_limited(&many, &["小星".to_string()], None, 0, reply_limit_for(12, None));
+        let picked = elect_limited(
+            &many,
+            &["小星".to_string()],
+            None,
+            0,
+            reply_limit_for(12, None),
+        );
         assert_eq!(picked.len(), 5);
     }
 
@@ -1266,15 +1332,13 @@ mod tests {
     /// 控制标记解析: terminate + task
     #[test]
     fn parse_control_markers() {
-        let (clean, term, tasks, _vetoes) =
-            parse_control("我觉得可以推进。[[terminate]]");
+        let (clean, term, tasks, _vetoes) = parse_control("我觉得可以推进。[[terminate]]");
         assert!(term);
         assert_eq!(clean, "我觉得可以推进。");
         assert!(tasks.is_empty());
 
-        let (clean, term, tasks, _vetoes) = parse_control(
-            "请你去查一下资料[[task:agent-002:调研竞品定价]]，我同步整理结论。",
-        );
+        let (clean, term, tasks, _vetoes) =
+            parse_control("请你去查一下资料[[task:agent-002:调研竞品定价]]，我同步整理结论。");
         assert!(!term);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].0, "agent-002");

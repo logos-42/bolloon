@@ -56,7 +56,10 @@ pub struct CompactionReport {
 ///
 /// 步骤: ① 首条截到 anchor 上限 ② 工具结果压首行 ③ 逐条截到 per-message 上限
 /// ④ 仍超预算 → 中段丢弃 (保首条+尾 40%), 丢弃处放摘要占位
-pub fn compact(messages: &[CompactionMessage], cfg: &CompactionConfig) -> (Vec<CompactionMessage>, CompactionReport) {
+pub fn compact(
+    messages: &[CompactionMessage],
+    cfg: &CompactionConfig,
+) -> (Vec<CompactionMessage>, CompactionReport) {
     let before: usize = messages.iter().map(|m| m.content.chars().count()).sum();
     let mut out: Vec<CompactionMessage> = Vec::new();
     let mut dropped = 0usize;
@@ -103,7 +106,10 @@ pub fn compact(messages: &[CompactionMessage], cfg: &CompactionConfig) -> (Vec<C
                 break; // 已到最小保留 (首条 + 占位 + 尾), 不再收
             }
             let kept: usize = out[0].content.chars().count()
-                + out[cut_end..].iter().map(|m| m.content.chars().count()).sum::<usize>()
+                + out[cut_end..]
+                    .iter()
+                    .map(|m| m.content.chars().count())
+                    .sum::<usize>()
                 + 60; // 占位条预估
             if kept <= cfg.budget_chars {
                 break;
@@ -118,8 +124,10 @@ pub fn compact(messages: &[CompactionMessage], cfg: &CompactionConfig) -> (Vec<C
             let mut summarized = Vec::new();
             summarized.push(out[0].clone());
             let dropped_n = cut_end - 1;
-            let dropped_chars: usize =
-                out[1..cut_end].iter().map(|m| m.content.chars().count()).sum();
+            let dropped_chars: usize = out[1..cut_end]
+                .iter()
+                .map(|m| m.content.chars().count())
+                .sum();
             summarized.push(CompactionMessage {
                 role: "system".into(),
                 content: format!(
@@ -168,16 +176,27 @@ mod tests {
     use super::*;
 
     fn msg(role: &str, content: &str) -> CompactionMessage {
-        CompactionMessage { role: role.into(), content: content.into(), is_tool_result: false }
+        CompactionMessage {
+            role: role.into(),
+            content: content.into(),
+            is_tool_result: false,
+        }
     }
 
     fn tool_result(content: &str) -> CompactionMessage {
-        CompactionMessage { role: "tool".into(), content: content.into(), is_tool_result: true }
+        CompactionMessage {
+            role: "tool".into(),
+            content: content.into(),
+            is_tool_result: true,
+        }
     }
 
     #[test]
     fn anchor_preserved_but_capped() {
-        let cfg = CompactionConfig { anchor_max_chars: 100, ..Default::default() };
+        let cfg = CompactionConfig {
+            anchor_max_chars: 100,
+            ..Default::default()
+        };
         let msgs = vec![msg("user", &"根".repeat(500))];
         let (out, report) = compact(&msgs, &cfg);
         assert!(out[0].content.chars().count() <= 100);
@@ -186,7 +205,10 @@ mod tests {
 
     #[test]
     fn tool_result_compressed_to_first_line() {
-        let cfg = CompactionConfig { tool_result_first_line_max: 20, ..Default::default() };
+        let cfg = CompactionConfig {
+            tool_result_first_line_max: 20,
+            ..Default::default()
+        };
         let msgs = vec![
             msg("user", "查一下"),
             tool_result("第一行结果\n第二行很长很长很长\n第三行更长更长更长"),
@@ -204,7 +226,10 @@ mod tests {
         };
         let mut msgs = vec![msg("user", "根意图: 做核聚变研究")];
         for i in 0..20 {
-            msgs.push(msg("assistant", &format!("中间消息 {i}: {}", "x".repeat(100))));
+            msgs.push(msg(
+                "assistant",
+                &format!("中间消息 {i}: {}", "x".repeat(100)),
+            ));
         }
         msgs.push(msg("user", "最后一轮问题"));
         let (out, report) = compact(&msgs, &cfg);
@@ -239,7 +264,10 @@ mod tests {
 
     #[test]
     fn report_transparent() {
-        let cfg = CompactionConfig { budget_chars: 100, ..Default::default() };
+        let cfg = CompactionConfig {
+            budget_chars: 100,
+            ..Default::default()
+        };
         let mut msgs = vec![msg("user", "根")];
         for i in 0..10 {
             msgs.push(msg("assistant", &format!("m{i}: {}", "y".repeat(80))));

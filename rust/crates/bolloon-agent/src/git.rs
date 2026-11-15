@@ -25,7 +25,10 @@ pub enum GitGuardError {
 }
 
 /// git 纪律守卫 (纯函数; 只管 git 子命令, 不替换 shell-guard)
-pub fn guard_git_command(args: &[String], user_explicitly_demanded: bool) -> Result<(), GitGuardError> {
+pub fn guard_git_command(
+    args: &[String],
+    user_explicitly_demanded: bool,
+) -> Result<(), GitGuardError> {
     let joined = args.join(" ");
     let lower = joined.to_lowercase();
     // git config 不改
@@ -43,11 +46,15 @@ pub fn guard_git_command(args: &[String], user_explicitly_demanded: bool) -> Res
             .filter(|a| !a.starts_with('-'))
             .map(|s| s.to_lowercase())
             .collect();
-        let protected = refspecs.iter().any(|r| r.contains("main") || r.contains("master"));
+        let protected = refspecs
+            .iter()
+            .any(|r| r.contains("main") || r.contains("master"));
         if protected || !user_explicitly_demanded {
-            return Err(GitGuardError::ForcePushProtected(
-                if protected { refspecs.join(" ") } else { "分支".into() },
-            ));
+            return Err(GitGuardError::ForcePushProtected(if protected {
+                refspecs.join(" ")
+            } else {
+                "分支".into()
+            }));
         }
     }
     // --no-verify
@@ -60,7 +67,8 @@ pub fn guard_git_command(args: &[String], user_explicitly_demanded: bool) -> Res
         return Err(GitGuardError::DestructiveNeedsExplicit);
     }
     if args.first().map(|s| s.as_str()) == Some("checkout")
-        && (args.contains(&"--.".to_string()) || (args.contains(&"--".to_string()) && args.contains(&".".to_string())))
+        && (args.contains(&"--.".to_string())
+            || (args.contains(&"--".to_string()) && args.contains(&".".to_string())))
         && !user_explicitly_demanded
     {
         return Err(GitGuardError::DestructiveNeedsExplicit);
@@ -108,14 +116,19 @@ pub fn parse_log_oneline(out: &str) -> Vec<CommitLine> {
             let mut it = l.splitn(2, ' ');
             let hash = it.next()?;
             let subject = it.next()?.to_string();
-            Some(CommitLine { hash: hash.into(), subject })
+            Some(CommitLine {
+                hash: hash.into(),
+                subject,
+            })
         })
         .collect()
 }
 
 /// commit message 风格校验 (本仓约定: `feat(scope): 中文一句话`)
 pub fn validate_commit_subject(subject: &str) -> Result<(), String> {
-    let re_prefixes = ["feat", "fix", "refactor", "docs", "test", "chore", "style", "perf"];
+    let re_prefixes = [
+        "feat", "fix", "refactor", "docs", "test", "chore", "style", "perf",
+    ];
     let Some((prefix, rest)) = subject.split_once('(') else {
         return Err(format!("缺 type(scope) 前缀: {subject}"));
     };
@@ -158,14 +171,25 @@ pub fn parse_diff_stat_summary(out: &str) -> Option<DiffStat> {
 fn extract_num_before(line: &str, word: &str) -> Option<usize> {
     let idx = line.find(word)?;
     let before = line[..idx].trim_end();
-    let num: String = before.chars().rev().take_while(|c| c.is_ascii_digit()).collect::<String>().chars().rev().collect();
+    let num: String = before
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
     num.parse().ok()
 }
 
 fn extract_num_after_word(line: &str, word: &str) -> Option<usize> {
     let idx = line.find(word)?;
     let after = &line[idx + word.len()..];
-    let num: String = after.chars().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit()).collect();
+    let num: String = after
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     num.parse().ok()
 }
 
@@ -200,25 +224,55 @@ mod tests {
         let out = " M src/main.rs\n?? new-file.rs\nA  added.rs\nD  gone.rs\n";
         let entries = parse_status_porcelain(out);
         assert_eq!(entries.len(), 4);
-        assert_eq!(entries[0], StatusEntry { x: ' ', y: 'M', path: "src/main.rs".into() });
-        assert_eq!(entries[1], StatusEntry { x: '?', y: '?', path: "new-file.rs".into() });
-        assert_eq!(entries[3], StatusEntry { x: 'D', y: ' ', path: "gone.rs".into() });
+        assert_eq!(
+            entries[0],
+            StatusEntry {
+                x: ' ',
+                y: 'M',
+                path: "src/main.rs".into()
+            }
+        );
+        assert_eq!(
+            entries[1],
+            StatusEntry {
+                x: '?',
+                y: '?',
+                path: "new-file.rs".into()
+            }
+        );
+        assert_eq!(
+            entries[3],
+            StatusEntry {
+                x: 'D',
+                y: ' ',
+                path: "gone.rs".into()
+            }
+        );
     }
 
     #[test]
     fn ahead_behind_parsed_from_branch_line() {
         assert_eq!(
             parse_ahead_behind("## main...origin/main [ahead 2, behind 1]"),
-            AheadBehind { ahead: 2, behind: 1 }
+            AheadBehind {
+                ahead: 2,
+                behind: 1
+            }
         );
         assert_eq!(
             parse_ahead_behind("## feat/x...origin/feat/x [ahead 5]"),
-            AheadBehind { ahead: 5, behind: 0 },
+            AheadBehind {
+                ahead: 5,
+                behind: 0
+            },
             "只领先不落后"
         );
         assert_eq!(
             parse_ahead_behind("## main...origin/main"),
-            AheadBehind { ahead: 0, behind: 0 },
+            AheadBehind {
+                ahead: 0,
+                behind: 0
+            },
             "无 ahead/behind 段 = 与上游同步"
         );
     }
@@ -235,21 +289,36 @@ mod tests {
     fn commit_style_validated() {
         assert!(validate_commit_subject("feat(rust): 双内核 kernel/harness").is_ok());
         assert!(validate_commit_subject("fix(web): 修群聊邀请反馈 (v0.2.X)").is_ok());
-        assert!(validate_commit_subject("random message").is_err(), "缺 type(scope)");
-        assert!(validate_commit_subject("hack(web): 改了").is_err(), "type 不在约定集");
+        assert!(
+            validate_commit_subject("random message").is_err(),
+            "缺 type(scope)"
+        );
+        assert!(
+            validate_commit_subject("hack(web): 改了").is_err(),
+            "type 不在约定集"
+        );
         assert!(validate_commit_subject("feat(): 空 scope").is_err());
-        assert!(validate_commit_subject("feat(web): english only").is_err(), "描述应中文");
+        assert!(
+            validate_commit_subject("feat(web): english only").is_err(),
+            "描述应中文"
+        );
     }
 
     #[test]
     fn force_push_main_always_denied() {
-        let args: Vec<String> = "push --force origin main".split(' ').map(String::from).collect();
+        let args: Vec<String> = "push --force origin main"
+            .split(' ')
+            .map(String::from)
+            .collect();
         // 即使"用户明确要求", main 也拒
         assert!(matches!(
             guard_git_command(&args, true),
             Err(GitGuardError::ForcePushProtected(t)) if t.contains("main")
         ));
-        let args2: Vec<String> = "push -f origin feature-x".split(' ').map(String::from).collect();
+        let args2: Vec<String> = "push -f origin feature-x"
+            .split(' ')
+            .map(String::from)
+            .collect();
         assert!(matches!(
             guard_git_command(&args2, false),
             Err(GitGuardError::ForcePushProtected(_))
@@ -260,12 +329,18 @@ mod tests {
 
     #[test]
     fn no_verify_denied_unless_explicit() {
-        let args: Vec<String> = "commit -m x --no-verify".split(' ').map(String::from).collect();
+        let args: Vec<String> = "commit -m x --no-verify"
+            .split(' ')
+            .map(String::from)
+            .collect();
         assert!(matches!(
             guard_git_command(&args, false),
             Err(GitGuardError::NoVerifySkipsHooks)
         ));
-        assert!(guard_git_command(&args, true).is_ok(), "用户显式要求 → 放行");
+        assert!(
+            guard_git_command(&args, true).is_ok(),
+            "用户显式要求 → 放行"
+        );
     }
 
     #[test]
@@ -281,16 +356,30 @@ mod tests {
 
     #[test]
     fn config_change_denied() {
-        let args: Vec<String> = "config user.email x@y".split(' ').map(String::from).collect();
-        assert!(matches!(guard_git_command(&args, true), Err(GitGuardError::NoConfigChange)));
+        let args: Vec<String> = "config user.email x@y"
+            .split(' ')
+            .map(String::from)
+            .collect();
+        assert!(matches!(
+            guard_git_command(&args, true),
+            Err(GitGuardError::NoConfigChange)
+        ));
     }
 
     #[test]
     fn safe_git_commands_pass() {
         assert!(guard_git_command(&["status".to_string()], false).is_ok());
-        assert!(guard_git_command(&["log".into(), "--oneline".into(), "-10".into()], false).is_ok());
+        assert!(
+            guard_git_command(&["log".into(), "--oneline".into(), "-10".into()], false).is_ok()
+        );
         assert!(guard_git_command(&["diff".into(), "--stat".into()], false).is_ok());
-        assert!(guard_git_command(&["commit".into(), "-m".into(), "feat(x): 信息".into()], false).is_ok());
+        assert!(
+            guard_git_command(
+                &["commit".into(), "-m".into(), "feat(x): 信息".into()],
+                false
+            )
+            .is_ok()
+        );
     }
 
     #[test]

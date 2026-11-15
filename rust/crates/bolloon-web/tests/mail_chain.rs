@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use bolloon_agent::home::BolloonHome;
 use bolloon_agent::mail::{
-    build_service, save_accounts, AccountConfig, AccountsFile, MailDraft, MailQuery, MailStore,
+    AccountConfig, AccountsFile, MailDraft, MailQuery, MailStore, build_service, save_accounts,
 };
 
 fn tmp_home(tag: &str) -> BolloonHome {
@@ -71,7 +71,9 @@ async fn mail_chain_end_to_end() {
     let home = tmp_home("e2e");
     save_accounts(
         &home,
-        &AccountsFile { accounts: vec![account("me@x.com")] },
+        &AccountsFile {
+            accounts: vec![account("me@x.com")],
+        },
     )
     .unwrap();
 
@@ -93,19 +95,31 @@ async fn mail_chain_end_to_end() {
         .collect();
     assert!(!outbox.is_empty(), "outbox 应有记录");
     let raw = std::fs::read_to_string(outbox[0]).unwrap();
-    assert!(raw.contains("\"really_sent\": false"), "不得谎称已外发: {raw}");
+    assert!(
+        raw.contains("\"really_sent\": false"),
+        "不得谎称已外发: {raw}"
+    );
     assert!(raw.contains("未真实外发"), "必须带人读说明: {raw}");
 
     // 3) 发件箱进索引, 可被搜到
     let hit = svc
-        .list(&MailQuery { keyword: Some("报价".into()), ..Default::default() })
+        .list(&MailQuery {
+            keyword: Some("报价".into()),
+            ..Default::default()
+        })
         .unwrap();
     assert_eq!(hit.len(), 1, "刚发的邮件应可检索");
 
     // 4) 硬拒: 多收件人 / 凭据正文
-    let e = svc.send(&draft(&["a@b.com", "c@d.com"], "hi")).await.unwrap_err();
+    let e = svc
+        .send(&draft(&["a@b.com", "c@d.com"], "hi"))
+        .await
+        .unwrap_err();
     assert_eq!(e.kind(), "batch_forbidden");
-    let e = svc.send(&draft(&["a@b.com"], "密码: hunter2")).await.unwrap_err();
+    let e = svc
+        .send(&draft(&["a@b.com"], "密码: hunter2"))
+        .await
+        .unwrap_err();
     assert_eq!(e.kind(), "forbidden_content");
 
     // 5) 磁盘无明文正文、无密码
@@ -115,8 +129,16 @@ async fn mail_chain_end_to_end() {
         let bytes = std::fs::read(f).unwrap_or_default();
         let text = String::from_utf8_lossy(&bytes);
         // 全文标记只可能在正文本体里 ⇒ 任何文件都不许出现
-        assert!(!text.contains("TAIL_MARKER_9f3a"), "磁盘出现正文明文: {}", f.display());
-        assert!(!text.contains("hunter2"), "磁盘出现密码明文: {}", f.display());
+        assert!(
+            !text.contains("TAIL_MARKER_9f3a"),
+            "磁盘出现正文明文: {}",
+            f.display()
+        );
+        assert!(
+            !text.contains("hunter2"),
+            "磁盘出现密码明文: {}",
+            f.display()
+        );
     }
 
     // 6) 重开 store 数据仍在
@@ -157,7 +179,9 @@ async fn no_adapter_never_fakes_success() {
     let home = tmp_home("noadapter");
     save_accounts(
         &home,
-        &AccountsFile { accounts: vec![account("me@x.com")] },
+        &AccountsFile {
+            accounts: vec![account("me@x.com")],
+        },
     )
     .unwrap();
     let svc = build_service(&home).unwrap();

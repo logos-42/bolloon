@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 
 use bolloon_p2p::identity::KeyPair;
 
-use crate::paid_info::{PaidInfoEnvelope, INFO_PROTOCOL};
+use crate::paid_info::{INFO_PROTOCOL, PaidInfoEnvelope};
 
 /// 协议名 (冻结)
 pub const SELLER_PROTOCOL: &str = "bolloon-x402-seller/1";
@@ -142,7 +142,8 @@ impl SellerPendingBook {
             return Err(SellerError::ContentHashMismatch);
         }
         // 签名信封 (receiptHash 纳入签名绑定)
-        let env = crate::paid_info::build_envelope(kp, &rec.item_id, content, &rec.receipt_hash, now_ms);
+        let env =
+            crate::paid_info::build_envelope(kp, &rec.item_id, content, &rec.receipt_hash, now_ms);
         // 守卫 3: 信封协议名必须是冻结的 info 协议 (别的协议混进来 → 拒签)
         if env.protocol != INFO_PROTOCOL {
             return Err(SellerError::ProtocolMismatch);
@@ -154,7 +155,11 @@ impl SellerPendingBook {
     }
 
     /// 出取件 token (一次性, 只读取件不重放 X-PAYMENT)
-    pub fn issue_pickup_token(&mut self, pending_id: &str, nonce: &str) -> Result<String, SellerError> {
+    pub fn issue_pickup_token(
+        &mut self,
+        pending_id: &str,
+        nonce: &str,
+    ) -> Result<String, SellerError> {
         if !self.pending.contains_key(pending_id) {
             return Err(SellerError::NotFound);
         }
@@ -171,7 +176,10 @@ impl SellerPendingBook {
         if self.used_tokens.contains(token) {
             return Err(SellerError::BadPickupToken);
         }
-        let pid = self.pickup_tokens.get(token).ok_or(SellerError::BadPickupToken)?;
+        let pid = self
+            .pickup_tokens
+            .get(token)
+            .ok_or(SellerError::BadPickupToken)?;
         self.used_tokens.insert(token.to_string());
         self.pending
             .get(pid)
@@ -189,7 +197,13 @@ impl SellerPendingBook {
 }
 
 /// 服务器侧认证签名: HMAC(method ‖ path ‖ ts ‖ nonce ‖ bodyHash), 先验签再记 nonce
-pub fn compute_auth_signature(secret: &str, method: &str, path: &str, ts_ms: u64, nonce: &str) -> String {
+pub fn compute_auth_signature(
+    secret: &str,
+    method: &str,
+    path: &str,
+    ts_ms: u64,
+    nonce: &str,
+) -> String {
     use hmac::{Hmac, Mac};
     type HmacSha256 = Hmac<Sha256>;
     let body_hash = Sha256::digest(b"");
@@ -228,15 +242,25 @@ mod tests {
         let err = book
             .receive_payment(None, "did:pi:seller", "0xtx", "item_1", "sha256:x", 1)
             .unwrap_err();
-        assert_eq!(err, SellerError::KeyNotPinned, "没钉公钥就拒收, 不是先信一次");
+        assert_eq!(
+            err,
+            SellerError::KeyNotPinned,
+            "没钉公钥就拒收, 不是先信一次"
+        );
     }
 
     #[test]
     fn idempotent_by_receipt_hash() {
         let mut book = SellerPendingBook::new();
         let ch = compute_content_hash(content());
-        let a = book.receive_payment(Some("did:pi:s"), "did:pi:seller", "0xtx", "item_1", &ch, 1).unwrap().clone();
-        let b = book.receive_payment(Some("did:pi:s"), "did:pi:seller", "0xtx", "item_1", &ch, 2).unwrap().clone();
+        let a = book
+            .receive_payment(Some("did:pi:s"), "did:pi:seller", "0xtx", "item_1", &ch, 1)
+            .unwrap()
+            .clone();
+        let b = book
+            .receive_payment(Some("did:pi:s"), "did:pi:seller", "0xtx", "item_1", &ch, 2)
+            .unwrap()
+            .clone();
         assert_eq!(a.pending_id, b.pending_id, "同 txHash+同 item = 同一条待办");
         assert_eq!(book.len(), 1);
         assert!(a.pending_id.starts_with("pnd_"));
@@ -246,18 +270,45 @@ mod tests {
     fn sign_guards_did_mismatch() {
         let mut book = SellerPendingBook::new();
         let ch = compute_content_hash(content());
-        book.receive_payment(Some("did:pi:s"), "did:pi:seller", "0xtx", "item_1", &ch, 1).unwrap();
+        book.receive_payment(Some("did:pi:s"), "did:pi:seller", "0xtx", "item_1", &ch, 1)
+            .unwrap();
         let impostor = kp(9);
-        let err = book.sign(&new_pending_id(&receipt_hash_of("0xtx", "item_1")), &impostor, content(), 2).unwrap_err();
-        assert_eq!(err, SellerError::DidMismatch, "本机 did ≠ 待办 providerDid → 拒签");
+        let err = book
+            .sign(
+                &new_pending_id(&receipt_hash_of("0xtx", "item_1")),
+                &impostor,
+                content(),
+                2,
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            SellerError::DidMismatch,
+            "本机 did ≠ 待办 providerDid → 拒签"
+        );
     }
 
     #[test]
     fn sign_guards_content_hash() {
         let seller = kp(1);
         let mut book = SellerPendingBook::new();
-        book.receive_payment(Some("did:pi:s"), seller.did.as_str(), "0xtx", "item_1", "sha256:deadbeef", 1).unwrap();
-        let err = book.sign(&new_pending_id(&receipt_hash_of("0xtx", "item_1")), &seller, content(), 2).unwrap_err();
+        book.receive_payment(
+            Some("did:pi:s"),
+            seller.did.as_str(),
+            "0xtx",
+            "item_1",
+            "sha256:deadbeef",
+            1,
+        )
+        .unwrap();
+        let err = book
+            .sign(
+                &new_pending_id(&receipt_hash_of("0xtx", "item_1")),
+                &seller,
+                content(),
+                2,
+            )
+            .unwrap_err();
         assert_eq!(err, SellerError::ContentHashMismatch, "内容对不上 → 拒签");
     }
 
@@ -266,7 +317,17 @@ mod tests {
         let seller = kp(1);
         let mut book = SellerPendingBook::new();
         let ch = compute_content_hash(content());
-        let rec = book.receive_payment(Some("did:pi:s"), seller.did.as_str(), "0xtx", "item_1", &ch, 1).unwrap().clone();
+        let rec = book
+            .receive_payment(
+                Some("did:pi:s"),
+                seller.did.as_str(),
+                "0xtx",
+                "item_1",
+                &ch,
+                1,
+            )
+            .unwrap()
+            .clone();
         let env = book.sign(&rec.pending_id, &seller, content(), 2).unwrap();
         assert_eq!(env.protocol, INFO_PROTOCOL);
         assert_eq!(env.content_hash, ch);
@@ -276,16 +337,26 @@ mod tests {
         let picked = book.pick_up(&token).unwrap();
         assert_eq!(picked.content, content());
         // token 一次性
-        assert_eq!(book.pick_up(&token).unwrap_err(), SellerError::BadPickupToken);
+        assert_eq!(
+            book.pick_up(&token).unwrap_err(),
+            SellerError::BadPickupToken
+        );
     }
 
     #[test]
     fn pickup_without_signature_not_found() {
         let mut book = SellerPendingBook::new();
         let ch = compute_content_hash(content());
-        let rec = book.receive_payment(Some("did:pi:s"), "did:pi:seller", "0xtx", "i", &ch, 1).unwrap().clone();
+        let rec = book
+            .receive_payment(Some("did:pi:s"), "did:pi:seller", "0xtx", "i", &ch, 1)
+            .unwrap()
+            .clone();
         let token = book.issue_pickup_token(&rec.pending_id, "n").unwrap();
-        assert_eq!(book.pick_up(&token).unwrap_err(), SellerError::NotFound, "没签的待办无信封可取");
+        assert_eq!(
+            book.pick_up(&token).unwrap_err(),
+            SellerError::NotFound,
+            "没签的待办无信封可取"
+        );
     }
 
     #[test]

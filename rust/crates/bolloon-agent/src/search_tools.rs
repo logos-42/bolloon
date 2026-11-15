@@ -7,9 +7,9 @@
 //!
 //! 权限: 只读（`EffectKind::Read`，默认允许）。
 
+use crate::tool_contract::{ErrorCode, error_evidence};
 use async_trait::async_trait;
 use bolloon_harness::{EffectKind, ToolCall, ToolDef, ToolExecutor, ToolResult};
-use crate::tool_contract::{ErrorCode, error_evidence};
 
 /// 单文件读取上限（超过就跳过，不读进内存）
 const MAX_FILE_BYTES: u64 = 1_000_000;
@@ -18,7 +18,15 @@ const MAX_HITS: usize = 100;
 /// 遍历目录/文件上限（防巨仓卡死）
 const MAX_WALK: usize = 20_000;
 
-const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", "dist", "build", ".next", "vendor"];
+const SKIP_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    "vendor",
+];
 
 /// 极简 glob（`*` / `?`，够用且无新依赖）
 pub fn glob_match(name: &str, pattern: &str) -> bool {
@@ -103,7 +111,9 @@ fn walk_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
         if out.len() >= MAX_WALK {
             break;
         }
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in rd.flatten() {
             let path = e.path();
             let Ok(ft) = e.file_type() else { continue };
@@ -145,7 +155,12 @@ impl ToolExecutor for SearchExecutor {
 
 async fn do_grep(call: ToolCall) -> ToolResult {
     let started = std::time::Instant::now();
-    let pattern = call.arguments.get("pattern").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let pattern = call
+        .arguments
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if pattern.is_empty() {
         return ToolResult {
             ok: false,
@@ -188,11 +203,15 @@ async fn do_grep(call: ToolCall) -> ToolResult {
         if hits.len() >= MAX_HITS {
             break;
         }
-        let Ok(meta) = std::fs::metadata(&f) else { continue };
+        let Ok(meta) = std::fs::metadata(&f) else {
+            continue;
+        };
         if meta.len() > MAX_FILE_BYTES {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(&f) else { continue };
+        let Ok(content) = std::fs::read_to_string(&f) else {
+            continue;
+        };
         if content.as_bytes().contains(&0) {
             continue; // 二进制
         }
@@ -219,19 +238,30 @@ async fn do_grep(call: ToolCall) -> ToolResult {
             format!(
                 "grep `{pattern}` 命中 {} 条{}:\n{}",
                 hits.len(),
-                if hits.len() >= MAX_HITS { format!("（已达上限 {MAX_HITS}）") } else { String::new() },
+                if hits.len() >= MAX_HITS {
+                    format!("（已达上限 {MAX_HITS}）")
+                } else {
+                    String::new()
+                },
                 hits.join("\n")
             )
         },
         elapsed_ms: started.elapsed().as_millis() as u64,
         verified: Some(true),
-        evidence: Some(serde_json::json!({ "pattern": pattern, "hits": hits.len(), "scanned": scanned })),
+        evidence: Some(
+            serde_json::json!({ "pattern": pattern, "hits": hits.len(), "scanned": scanned }),
+        ),
     }
 }
 
 async fn do_glob(call: ToolCall) -> ToolResult {
     let started = std::time::Instant::now();
-    let pattern = call.arguments.get("pattern").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let pattern = call
+        .arguments
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if pattern.is_empty() {
         return ToolResult {
             ok: false,
@@ -273,7 +303,11 @@ async fn do_glob(call: ToolCall) -> ToolResult {
         output: if matched.is_empty() {
             format!("glob `{pattern}` 无匹配")
         } else {
-            format!("glob `{pattern}` 命中 {} 个:\n{}", matched.len(), matched.join("\n"))
+            format!(
+                "glob `{pattern}` 命中 {} 个:\n{}",
+                matched.len(),
+                matched.join("\n")
+            )
         },
         elapsed_ms: started.elapsed().as_millis() as u64,
         verified: Some(true),
@@ -328,7 +362,11 @@ mod tests {
     use super::*;
 
     fn call(name: &str, args: serde_json::Value) -> ToolCall {
-        ToolCall { id: "c1".into(), name: name.into(), arguments: args }
+        ToolCall {
+            id: "c1".into(),
+            name: name.into(),
+            arguments: args,
+        }
     }
 
     fn tmpdir(tag: &str) -> std::path::PathBuf {
@@ -342,7 +380,10 @@ mod tests {
         let d = tmpdir("grep");
         std::fs::write(d.join("a.txt"), "alpha\nneedle here\nbeta").unwrap();
         let r = SearchExecutor
-            .execute(call("grep_files", serde_json::json!({ "pattern": "needle", "path": d.display().to_string() })))
+            .execute(call(
+                "grep_files",
+                serde_json::json!({ "pattern": "needle", "path": d.display().to_string() }),
+            ))
             .await;
         assert!(r.ok, "{}", r.output);
         assert!(r.output.contains("a.txt:2:needle here"), "{}", r.output);
@@ -354,9 +395,12 @@ mod tests {
         let d = tmpdir("grepci");
         std::fs::write(d.join("b.txt"), "NEEDLE").unwrap();
         let r = SearchExecutor
-            .execute(call("grep_files", serde_json::json!({
-                "pattern": "needle", "path": d.display().to_string(), "case_sensitive": false
-            })))
+            .execute(call(
+                "grep_files",
+                serde_json::json!({
+                    "pattern": "needle", "path": d.display().to_string(), "case_sensitive": false
+                }),
+            ))
             .await;
         assert!(r.ok);
         assert!(r.output.contains("b.txt:1:NEEDLE"), "{}", r.output);
@@ -369,7 +413,10 @@ mod tests {
         std::fs::write(d.join("x.rs"), "").unwrap();
         std::fs::write(d.join("y.txt"), "").unwrap();
         let r = SearchExecutor
-            .execute(call("glob_files", serde_json::json!({ "pattern": "*.rs", "path": d.display().to_string() })))
+            .execute(call(
+                "glob_files",
+                serde_json::json!({ "pattern": "*.rs", "path": d.display().to_string() }),
+            ))
             .await;
         assert!(r.ok);
         assert!(r.output.contains("x.rs"), "{}", r.output);
@@ -379,7 +426,9 @@ mod tests {
 
     #[tokio::test]
     async fn missing_pattern_rejected_at_entry() {
-        let r = SearchExecutor.execute(call("grep_files", serde_json::json!({}))).await;
+        let r = SearchExecutor
+            .execute(call("grep_files", serde_json::json!({})))
+            .await;
         assert!(!r.ok);
         assert!(r.output.contains("pattern 必填"), "{}", r.output);
     }

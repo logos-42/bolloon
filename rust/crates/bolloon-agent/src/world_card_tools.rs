@@ -33,7 +33,11 @@ pub fn world_card_tool_defs() -> Vec<ToolDef> {
 
 fn done(ok: bool, output: String) -> bolloon_harness::ToolResult {
     bolloon_harness::ToolResult {
-        ok, output, elapsed_ms: 0, verified: Some(ok), evidence: None,
+        ok,
+        output,
+        elapsed_ms: 0,
+        verified: Some(ok),
+        evidence: None,
     }
 }
 fn fail(msg: &str) -> bolloon_harness::ToolResult {
@@ -49,7 +53,11 @@ pub fn execute(call: &crate::ToolCall) -> bolloon_harness::ToolResult {
     if (kind != "music" && kind != "video") || title.is_empty() || url.is_empty() {
         return fail("缺 kind(music/video) / title / url");
     }
-    if !(url.starts_with("http://") || url.starts_with("https://") || url.starts_with("ipfs://") || url.starts_with("ipns://")) {
+    if !(url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("ipfs://")
+        || url.starts_with("ipns://"))
+    {
         return fail("url 只支持 http(s)/ipfs/ipns");
     }
     let mut body = serde_json::json!({
@@ -57,7 +65,12 @@ pub fn execute(call: &crate::ToolCall) -> bolloon_harness::ToolResult {
         "summary": a["summary"].as_str().unwrap_or(""),
     });
     if let Some(ly) = a["lyrics"].as_array() {
-        body["lyrics"] = serde_json::json!(ly.iter().filter_map(|v| v.as_str()).take(200).collect::<Vec<_>>());
+        body["lyrics"] = serde_json::json!(
+            ly.iter()
+                .filter_map(|v| v.as_str())
+                .take(200)
+                .collect::<Vec<_>>()
+        );
     }
     if let Some(p) = a["poster"].as_str().filter(|s| !s.is_empty()) {
         body["poster"] = serde_json::json!(p);
@@ -69,21 +82,37 @@ pub fn execute(call: &crate::ToolCall) -> bolloon_harness::ToolResult {
     if a["distribute"].as_bool() == Some(true) {
         body["distribute"] = serde_json::json!(true);
         if let Some(f) = a["friends"].as_array() {
-            body["friends"] = serde_json::json!(f.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>());
+            body["friends"] =
+                serde_json::json!(f.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>());
         }
     }
-    let port = std::env::var("BOLLOON_WEB_PORT").ok().and_then(|s| s.parse::<u16>().ok()).unwrap_or(54188);
+    let port = std::env::var("BOLLOON_WEB_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(54188);
     let endpoint = format!("http://127.0.0.1:{port}/api/world/cards/media");
     match ureq::post(&endpoint)
         .timeout(std::time::Duration::from_secs(10))
         .send_json(body)
     {
         Ok(resp) => {
-            let v: serde_json::Value = resp.into_json().unwrap_or(serde_json::json!({"ok": false, "error": "响应不是 JSON"}));
+            let v: serde_json::Value = resp
+                .into_json()
+                .unwrap_or(serde_json::json!({"ok": false, "error": "响应不是 JSON"}));
             if v["ok"] == serde_json::json!(true) {
-                done(true, format!("卡片 {} 已生成；分发 {} 位", v["id"].as_str().unwrap_or(""), v["shared"].as_u64().unwrap_or(0)))
+                done(
+                    true,
+                    format!(
+                        "卡片 {} 已生成；分发 {} 位",
+                        v["id"].as_str().unwrap_or(""),
+                        v["shared"].as_u64().unwrap_or(0)
+                    ),
+                )
             } else {
-                done(false, format!("生成被拒: {}", v["error"].as_str().unwrap_or("未知")))
+                done(
+                    false,
+                    format!("生成被拒: {}", v["error"].as_str().unwrap_or("未知")),
+                )
             }
         }
         Err(e) => done(false, format!("本机内嵌服务不可达 ({endpoint}): {e}")),

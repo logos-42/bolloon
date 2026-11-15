@@ -52,9 +52,7 @@ fn run_with_stdin(prog: &str, args: &[&str], input: &str) -> Result<String, Stri
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     no_console_window(&mut command);
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("调不起 {prog}: {e}"))?;
+    let mut child = command.spawn().map_err(|e| format!("调不起 {prog}: {e}"))?;
     if let Some(stdin) = child.stdin.as_mut() {
         stdin
             .write_all(input.as_bytes())
@@ -81,10 +79,7 @@ fn which(prog: &str) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     no_console_window(&mut command);
-    command
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    command.status().map(|s| s.success()).unwrap_or(false)
 }
 
 // ───────────────────────── macOS: 钥匙串 ─────────────────────────
@@ -294,15 +289,24 @@ type DefaultChain = crate::secret_file::ChainBackend<SecretServiceBackend>;
 
 #[cfg(target_os = "macos")]
 fn new_chain() -> DefaultChain {
-    crate::secret_file::ChainBackend::new(KeychainBackend, crate::secret_file::FileEncryptedBackend::new())
+    crate::secret_file::ChainBackend::new(
+        KeychainBackend,
+        crate::secret_file::FileEncryptedBackend::new(),
+    )
 }
 #[cfg(target_os = "windows")]
 fn new_chain() -> DefaultChain {
-    crate::secret_file::ChainBackend::new(DpapiBackend, crate::secret_file::FileEncryptedBackend::new())
+    crate::secret_file::ChainBackend::new(
+        DpapiBackend,
+        crate::secret_file::FileEncryptedBackend::new(),
+    )
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn new_chain() -> DefaultChain {
-    crate::secret_file::ChainBackend::new(SecretServiceBackend, crate::secret_file::FileEncryptedBackend::new())
+    crate::secret_file::ChainBackend::new(
+        SecretServiceBackend,
+        crate::secret_file::FileEncryptedBackend::new(),
+    )
 }
 
 /// 2026-11-06: 系统凭据库 + 加密文件兜底。App 里钥匙串被拒时 key 仍会持久化,

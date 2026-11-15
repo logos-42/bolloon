@@ -26,10 +26,19 @@ async fn diap_two_nodes_exchange_message_by_node_id_only() {
     // 只保留真实局域网 IP，过滤代理 fake-ip (198.18.0.0/15, 不可路由)
     let mut addrb = b.address_json();
     if let Some(arr) = addrb["addrs"].as_array() {
-        let keep: Vec<serde_json::Value> = arr.iter()
-            .filter(|v| v["Ip"].as_str().map(|s| !s.starts_with("198.18.")).unwrap_or(true))
-            .cloned().collect();
-        if !keep.is_empty() { addrb["addrs"] = serde_json::json!(keep); }
+        let keep: Vec<serde_json::Value> = arr
+            .iter()
+            .filter(|v| {
+                v["Ip"]
+                    .as_str()
+                    .map(|s| !s.starts_with("198.18."))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect();
+        if !keep.is_empty() {
+            addrb["addrs"] = serde_json::json!(keep);
+        }
     }
     a.send_to_addr(
         addrb,

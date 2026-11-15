@@ -7,7 +7,10 @@ pub enum ConfigChangeEvent {
     /// 新配置已原子生效。
     Applied(Arc<ConfigSnapshot>),
     /// 已回滚到指定历史版本 (snapshot 为新生成的当前快照, restored_from 指明来源版本)。
-    RolledBack { target: u64, snapshot: Arc<ConfigSnapshot> },
+    RolledBack {
+        target: u64,
+        snapshot: Arc<ConfigSnapshot>,
+    },
     /// 变更被拒绝 (含原因); 当前有效配置保持不变。
     Rejected { reason: String },
 }

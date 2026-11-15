@@ -12,14 +12,16 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::Deserialize;
 
 use crate::server::AppState;
 
 fn home() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn ocr_bin() -> PathBuf {
@@ -85,7 +87,11 @@ pub async fn vision(
 
     let text = match out {
         Err(_) => return Json(serde_json::json!({ "ok": false, "error": "OCR 超时 (30s)" })),
-        Ok(Err(e)) => return Json(serde_json::json!({ "ok": false, "error": format!("启动 OCR 失败: {e}") })),
+        Ok(Err(e)) => {
+            return Json(
+                serde_json::json!({ "ok": false, "error": format!("启动 OCR 失败: {e}") }),
+            );
+        }
         Ok(Ok(o)) => {
             if !o.status.success() {
                 let err = String::from_utf8_lossy(&o.stderr);
@@ -128,7 +134,7 @@ pub async fn vision(
                 "ok": true, "text": text, "intent": null, "confidence": 0.0,
                 "source": "llm-unavailable", "error": e,
                 "hint": "OCR 成功但模型不可用（检查 provider/key）；意图未预测，不冒充匹配成功"
-            }))
+            }));
         }
     };
 
@@ -188,9 +194,12 @@ fn parse_prediction(raw: &str) -> (String, f64, String) {
         }
     }
     // 模型没按 JSON 回：原文当意图用，但置信度 0，并标明未按格式回答
-    (cleaned.chars().take(12).collect::<String>(), 0.0, "模型未按 JSON 回答".into())
+    (
+        cleaned.chars().take(12).collect::<String>(),
+        0.0,
+        "模型未按 JSON 回答".into(),
+    )
 }
-
 
 /// 二维码解码（同一支 macOS Vision 助手，`--qr` 模式走条码检测）
 ///
@@ -215,7 +224,10 @@ pub async fn qr_decode(bytes: &[u8]) -> Result<String, String> {
 
     let out = tokio::time::timeout(
         Duration::from_secs(20),
-        tokio::process::Command::new(&bin).arg("--qr").arg(&img_path).output(),
+        tokio::process::Command::new(&bin)
+            .arg("--qr")
+            .arg(&img_path)
+            .output(),
     )
     .await;
     let _ = std::fs::remove_file(&img_path);

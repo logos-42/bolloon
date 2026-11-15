@@ -20,7 +20,12 @@ use crate::ha::RecoveryAction;
 
 /// 可恢复状态 (对齐 TS `RESUMABLE_STATUSES` 的子集, 与 Rust run 状态机对应的部分)。
 const RESUMABLE: &[&str] = &[
-    "recovering", "interrupted", "stalled", "paused", "needs_human", "awaiting_external",
+    "recovering",
+    "interrupted",
+    "stalled",
+    "paused",
+    "needs_human",
+    "awaiting_external",
 ];
 
 /// 孤儿对账结果 (对齐 TS `reconcileOrphans` 的返回)。
@@ -185,7 +190,10 @@ pub async fn prepare_resume(dir: &Path, run_id: &str) -> anyhow::Result<Option<R
         .iter()
         .filter(|s| {
             s["ok"].as_bool().unwrap_or(false)
-                && s["tool"].as_str().map(|t| !is_idempotent(t)).unwrap_or(false)
+                && s["tool"]
+                    .as_str()
+                    .map(|t| !is_idempotent(t))
+                    .unwrap_or(false)
         })
         .count();
     // nextAction: checkpoint.nextAction 能给指路就用, 否则默认"继续未完成的目标"
@@ -389,13 +397,19 @@ mod tests {
     async fn prepare_resume_marks_recovering_with_plan() {
         let dir = test_dir("resume").await;
         write_run(&dir, "r5", "interrupted", 999_999_999);
-        let plan = prepare_resume(&dir, "r5").await.unwrap().expect("应生成计划");
+        let plan = prepare_resume(&dir, "r5")
+            .await
+            .unwrap()
+            .expect("应生成计划");
         assert_eq!(plan.run_id, "r5");
         assert!(plan.next_action.contains("继续未完成的目标"));
 
-        let after: serde_json::Value =
-            serde_json::from_str(&tokio::fs::read_to_string(dir.join("r5.json")).await.unwrap())
-                .unwrap();
+        let after: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(dir.join("r5.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(after["status"], "recovering");
         assert_eq!(after["pid"], std::process::id());
         assert_eq!(after["recovery"].as_array().unwrap().len(), 1);
@@ -419,9 +433,12 @@ mod tests {
         let ok = rec.recover().await;
         assert!(ok, "接管孤儿应返回 true");
 
-        let after: serde_json::Value =
-            serde_json::from_str(&tokio::fs::read_to_string(dir.join("r7.json")).await.unwrap())
-                .unwrap();
+        let after: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(dir.join("r7.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(after["status"], "recovering");
         assert_eq!(after["pid"], std::process::id());
     }

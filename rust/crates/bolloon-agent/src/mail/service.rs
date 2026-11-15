@@ -182,7 +182,13 @@ impl MailService {
             match a.sync().await {
                 Ok(mut r) => {
                     // 把同步到的元数据落索引
-                    if let Ok(list) = a.list(MailQuery { limit: Some(500), ..Default::default() }).await {
+                    if let Ok(list) = a
+                        .list(MailQuery {
+                            limit: Some(500),
+                            ..Default::default()
+                        })
+                        .await
+                    {
                         for m in &list {
                             let _ = self.store.upsert_meta(m);
                         }
@@ -212,7 +218,12 @@ impl MailService {
             .get_meta(id)?
             .ok_or_else(|| MailServiceError::Store(format!("mail_not_found: {id}")))?;
         if let Some(text) = self.store.get_body(id)? {
-            return Ok(MailBody { meta, text, html: None, attachments: Vec::new() });
+            return Ok(MailBody {
+                meta,
+                text,
+                html: None,
+                attachments: Vec::new(),
+            });
         }
         let adapter = self.adapter(&meta.account)?;
         let body = adapter.read(id).await?;
@@ -336,7 +347,9 @@ mod tests {
     #[test]
     fn empty_body_is_refused() {
         assert_eq!(
-            check_send_guard(&draft(&["a@b.com"], "   ")).unwrap_err().kind(),
+            check_send_guard(&draft(&["a@b.com"], "   "))
+                .unwrap_err()
+                .kind(),
             "empty_content"
         );
     }
@@ -344,15 +357,21 @@ mod tests {
     #[test]
     fn credential_with_value_is_refused() {
         assert_eq!(
-            check_send_guard(&draft(&["a@b.com"], "密码: hunter2")).unwrap_err().kind(),
+            check_send_guard(&draft(&["a@b.com"], "密码: hunter2"))
+                .unwrap_err()
+                .kind(),
             "forbidden_content"
         );
         assert_eq!(
-            check_send_guard(&draft(&["a@b.com"], "验证码：123456")).unwrap_err().kind(),
+            check_send_guard(&draft(&["a@b.com"], "验证码：123456"))
+                .unwrap_err()
+                .kind(),
             "forbidden_content"
         );
         assert_eq!(
-            check_send_guard(&draft(&["a@b.com"], "private key = 0xdeadbeef")).unwrap_err().kind(),
+            check_send_guard(&draft(&["a@b.com"], "private key = 0xdeadbeef"))
+                .unwrap_err()
+                .kind(),
             "forbidden_content"
         );
     }

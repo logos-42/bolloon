@@ -6,10 +6,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{extract::State, Json};
-use serde_json::{json, Value};
+use axum::{Json, extract::State};
+use serde_json::{Value, json};
 
-use bolloon_agent::call::service::{calls_dir, CallService, MockCallPort};
+use bolloon_agent::call::service::{CallService, MockCallPort, calls_dir};
 use bolloon_agent::call::{CallEvent, CallTarget};
 use bolloon_agent::home::BolloonHome;
 
@@ -47,10 +47,16 @@ pub async fn dial(State(_st): State<AppState>, Json(req): Json<Value>) -> Reply 
     let Some(e164) = req.get("e164").and_then(|v| v.as_str()) else {
         return fail("bad_number", "缺少 e164");
     };
-    let reason = req.get("reason").and_then(|v| v.as_str()).unwrap_or_default();
+    let reason = req
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     let target = CallTarget {
         e164: e164.to_string(),
-        contact_id: req.get("contact_id").and_then(|v| v.as_str()).map(String::from),
+        contact_id: req
+            .get("contact_id")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         reason: reason.to_string(),
     };
 

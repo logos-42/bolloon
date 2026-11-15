@@ -15,7 +15,7 @@ use serde_json::json;
 use crate::belief::{
     BeliefKind, BeliefOrigin, BeliefStore, CommitmentStatus, Horizon, MAX_BELIEFS, MAX_COMMITMENTS,
 };
-use crate::tool_contract::{error_evidence, ErrorCode};
+use crate::tool_contract::{ErrorCode, error_evidence};
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -49,7 +49,13 @@ pub fn load_store() -> BeliefStore {
 }
 
 fn ok(output: String, evidence: serde_json::Value) -> ToolResult {
-    ToolResult { ok: true, output, elapsed_ms: 0, verified: Some(true), evidence: Some(evidence) }
+    ToolResult {
+        ok: true,
+        output,
+        elapsed_ms: 0,
+        verified: Some(true),
+        evidence: Some(evidence),
+    }
 }
 
 fn fail(code: ErrorCode, msg: &str) -> ToolResult {
@@ -86,12 +92,23 @@ async fn do_belief_set(call: ToolCall) -> ToolResult {
     let confidence = call.arguments.get("confidence").and_then(|v| v.as_f64());
     let evidence = str_arg(&call, "evidence");
     let mut store = load_store();
-    match store.upsert_belief(&statement, kind, origin, confidence, evidence.as_deref(), now_ms()) {
+    match store.upsert_belief(
+        &statement,
+        kind,
+        origin,
+        confidence,
+        evidence.as_deref(),
+        now_ms(),
+    ) {
         Ok((id, created)) => {
             if let Err(e) = persist(&store) {
                 return fail(ErrorCode::Internal, &e);
             }
-            let conf = store.beliefs.iter().find(|b| b.id == id).map(|b| b.confidence);
+            let conf = store
+                .beliefs
+                .iter()
+                .find(|b| b.id == id)
+                .map(|b| b.confidence);
             let live = store.live_beliefs().len();
             ok(
                 format!(
@@ -109,7 +126,10 @@ async fn do_belief_list(_call: ToolCall) -> ToolResult {
     let store = load_store();
     let live = store.live_beliefs();
     if live.is_empty() {
-        return ok("（还没有信念: 用 belief_set 立一条）".into(), json!({ "count": 0 }));
+        return ok(
+            "（还没有信念: 用 belief_set 立一条）".into(),
+            json!({ "count": 0 }),
+        );
     }
     let body = live
         .iter()
@@ -130,7 +150,10 @@ async fn do_belief_list(_call: ToolCall) -> ToolResult {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    ok(format!("{} 条活着的信念:\n{body}", live.len()), json!({ "count": live.len() }))
+    ok(
+        format!("{} 条活着的信念:\n{body}", live.len()),
+        json!({ "count": live.len() }),
+    )
 }
 
 async fn do_belief_retire(call: ToolCall) -> ToolResult {
@@ -158,9 +181,17 @@ async fn do_goal_set(call: ToolCall) -> ToolResult {
         Some(s) => s,
         None => return fail(ErrorCode::InvalidArgument, "goal_set: statement 必填"),
     };
-    let horizon = match str_arg(&call, "horizon").as_deref().and_then(Horizon::parse) {
+    let horizon = match str_arg(&call, "horizon")
+        .as_deref()
+        .and_then(Horizon::parse)
+    {
         Some(h) => h,
-        None => return fail(ErrorCode::InvalidArgument, "goal_set: horizon 必填 (short|long)"),
+        None => {
+            return fail(
+                ErrorCode::InvalidArgument,
+                "goal_set: horizon 必填 (short|long)",
+            );
+        }
     };
     let next_action = match str_arg(&call, "next_action") {
         Some(n) => n,
@@ -168,7 +199,7 @@ async fn do_goal_set(call: ToolCall) -> ToolResult {
             return fail(
                 ErrorCode::InvalidArgument,
                 "goal_set: next_action 必填 —— 没有下一步的是愿望, 不是目标",
-            )
+            );
         }
     };
     let why = str_arg(&call, "why");
@@ -211,7 +242,10 @@ async fn do_goal_list(_call: ToolCall) -> ToolResult {
     let store = load_store();
     let active = store.active_commitments();
     if active.is_empty() {
-        return ok("（还没有目标: 用 goal_set 立一个）".into(), json!({ "count": 0 }));
+        return ok(
+            "（还没有目标: 用 goal_set 立一个）".into(),
+            json!({ "count": 0 }),
+        );
     }
     let body = active
         .iter()
@@ -231,9 +265,17 @@ async fn do_goal_list(_call: ToolCall) -> ToolResult {
         .join("\n");
     let pick = store
         .pick_next(now_ms())
-        .map(|ch| format!("\n\n现在该做: {} → {} ({})", ch.statement, ch.next_action, ch.why))
+        .map(|ch| {
+            format!(
+                "\n\n现在该做: {} → {} ({})",
+                ch.statement, ch.next_action, ch.why
+            )
+        })
         .unwrap_or_default();
-    ok(format!("{} 个活着目标:\n{body}{pick}", active.len()), json!({ "count": active.len() }))
+    ok(
+        format!("{} 个活着目标:\n{body}{pick}", active.len()),
+        json!({ "count": active.len() }),
+    )
 }
 
 async fn do_goal_update(call: ToolCall) -> ToolResult {
@@ -248,7 +290,7 @@ async fn do_goal_update(call: ToolCall) -> ToolResult {
                 return fail(
                     ErrorCode::InvalidArgument,
                     "goal_update: status 只能是 open|doing|paused|done|dropped",
-                )
+                );
             }
         },
         None => None,
@@ -392,8 +434,10 @@ fn write_todo_once(next_action: &str, statement: &str, now_ms: u64) {
         .and_then(|s| serde_json::from_str::<crate::todo::TodoList>(&s).ok())
         .unwrap_or_default();
     let already = list.items.iter().any(|i| {
-        matches!(i.status, crate::todo::TodoStatus::Pending | crate::todo::TodoStatus::InProgress)
-            && (i.content == next_action || i.content.contains(statement))
+        matches!(
+            i.status,
+            crate::todo::TodoStatus::Pending | crate::todo::TodoStatus::InProgress
+        ) && (i.content == next_action || i.content.contains(statement))
     });
     if already {
         return;
@@ -536,7 +580,11 @@ mod tests {
     }
 
     fn call(name: &str, args: serde_json::Value) -> ToolCall {
-        ToolCall { id: "c1".into(), name: name.into(), arguments: args }
+        ToolCall {
+            id: "c1".into(),
+            name: name.into(),
+            arguments: args,
+        }
     }
 
     #[tokio::test]
@@ -549,7 +597,10 @@ mod tests {
             ))
             .await;
         assert!(r.ok, "{}", r.output);
-        let bid = r.evidence.as_ref().unwrap()["id"].as_str().unwrap().to_string();
+        let bid = r.evidence.as_ref().unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let g = BeliefExecutor
             .execute(call(
@@ -575,10 +626,16 @@ mod tests {
     async fn goal_set_without_next_action_is_rejected() {
         let _d = setup();
         let r = BeliefExecutor
-            .execute(call("goal_set", json!({ "statement": "变强", "horizon": "long" })))
+            .execute(call(
+                "goal_set",
+                json!({ "statement": "变强", "horizon": "long" }),
+            ))
             .await;
         assert!(!r.ok);
-        assert_eq!(r.evidence.as_ref().unwrap()["error"]["code"], "invalid_argument");
+        assert_eq!(
+            r.evidence.as_ref().unwrap()["error"]["code"],
+            "invalid_argument"
+        );
     }
 
     #[tokio::test]
@@ -590,7 +647,10 @@ mod tests {
                 json!({ "statement": "写测试", "horizon": "short", "next_action": "跑 cargo test" }),
             ))
             .await;
-        let gid = g.evidence.as_ref().unwrap()["id"].as_str().unwrap().to_string();
+        let gid = g.evidence.as_ref().unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let u = BeliefExecutor
             .execute(call("goal_update", json!({ "id": gid, "status": "done" })))
             .await;
@@ -634,7 +694,11 @@ mod tests {
     #[test]
     fn belief_tools_are_allowed_locally() {
         for d in belief_tool_defs() {
-            assert!(d.default_allowed, "{} 是 agent 自身状态, 应默认允许", d.name);
+            assert!(
+                d.default_allowed,
+                "{} 是 agent 自身状态, 应默认允许",
+                d.name
+            );
         }
     }
 }

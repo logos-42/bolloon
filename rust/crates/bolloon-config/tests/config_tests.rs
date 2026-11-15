@@ -197,7 +197,13 @@ async fn t10_remote_unavailable_fail_closed() {
     let mgr = ConfigManager::new(None);
     // 不可达地址 + 极短超时
     let r = mgr
-        .apply_remote("http://127.0.0.1:1/never", 200, ConfigAuth::System, "t", "r")
+        .apply_remote(
+            "http://127.0.0.1:1/never",
+            200,
+            ConfigAuth::System,
+            "t",
+            "r",
+        )
         .await;
     assert!(matches!(r, Err(ConfigError::RemoteUnavailable(_))));
     // 当前配置不变

@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use bolloon_harness::{EffectKind, ToolCall, ToolDef, ToolExecutor, ToolResult};
 use rusqlite::{Connection, OpenFlags};
 
-use crate::tool_contract::{error_evidence, ErrorCode};
+use crate::tool_contract::{ErrorCode, error_evidence};
 
 /// 默认行数上限
 pub const DEFAULT_LIMIT: usize = 50;
@@ -50,7 +50,10 @@ pub fn is_read_only_sql(sql: &str) -> Result<(), String> {
         "detach ", "pragma ", "vacuum ", "reindex ", "begin ", "commit ",
     ] {
         if lower.contains(bad) {
-            return Err(format!("语句里出现写/管理类关键字 `{}` —— 只读工具拒绝", bad.trim()));
+            return Err(format!(
+                "语句里出现写/管理类关键字 `{}` —— 只读工具拒绝",
+                bad.trim()
+            ));
         }
     }
     Ok(())
@@ -60,7 +63,11 @@ fn strip_leading_comments(sql: &str) -> &str {
     let mut s = sql.trim_start();
     loop {
         if let Some(rest) = s.strip_prefix("--") {
-            s = rest.split_once('\n').map(|(_, r)| r).unwrap_or("").trim_start();
+            s = rest
+                .split_once('\n')
+                .map(|(_, r)| r)
+                .unwrap_or("")
+                .trim_start();
             continue;
         }
         if s.starts_with("/*") {
@@ -112,7 +119,11 @@ fn now_ms() -> u64 {
 }
 
 /// 执行只读查询 (唯一的执行入口; 工具与 HTTP 端点共用)
-pub fn run_query(db_spec: &str, sql: &str, limit: Option<usize>) -> Result<serde_json::Value, String> {
+pub fn run_query(
+    db_spec: &str,
+    sql: &str,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
     is_read_only_sql(sql)?;
     let path = resolve_db(db_spec)?;
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
@@ -123,8 +134,14 @@ pub fn run_query(db_spec: &str, sql: &str, limit: Option<usize>) -> Result<serde
     )
     .map_err(|e| format!("打开库失败（只读）: {e}"))?;
     let _ = conn.busy_timeout(std::time::Duration::from_secs(3));
-    let mut stmt = conn.prepare(sql).map_err(|e| format!("SQL 解析失败: {e}"))?;
-    let cols: Vec<String> = stmt.column_names().into_iter().map(|c| c.to_string()).collect();
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| format!("SQL 解析失败: {e}"))?;
+    let cols: Vec<String> = stmt
+        .column_names()
+        .into_iter()
+        .map(|c| c.to_string())
+        .collect();
     let mut rows_out: Vec<Vec<String>> = Vec::new();
     let mut truncated = false;
     {
@@ -175,7 +192,10 @@ pub fn render(rep: &serde_json::Value) -> String {
     out.push('\n');
     if let Some(rows) = rep["rows"].as_array() {
         for r in rows {
-            let cells: Vec<&str> = r.as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect()).unwrap_or_default();
+            let cells: Vec<&str> = r
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
             out.push_str(&cells.join(" | "));
             out.push('\n');
         }
@@ -183,8 +203,15 @@ pub fn render(rep: &serde_json::Value) -> String {
     out.push_str(&format!(
         "({} 行{}{})\n",
         rep["row_count"].as_u64().unwrap_or(0),
-        if rep["truncated"].as_bool().unwrap_or(false) { "，已截断" } else { "" },
-        rep["elapsed_ms"].as_u64().map(|ms| format!("，{ms}ms")).unwrap_or_default()
+        if rep["truncated"].as_bool().unwrap_or(false) {
+            "，已截断"
+        } else {
+            ""
+        },
+        rep["elapsed_ms"]
+            .as_u64()
+            .map(|ms| format!("，{ms}ms"))
+            .unwrap_or_default()
     ));
     out
 }
@@ -214,9 +241,21 @@ pub struct SqlExecutor;
 impl ToolExecutor for SqlExecutor {
     async fn execute(&self, call: ToolCall) -> ToolResult {
         let started = std::time::Instant::now();
-        let sql = call.arguments.get("sql").and_then(|v| v.as_str()).unwrap_or("");
-        let db = call.arguments.get("db").and_then(|v| v.as_str()).unwrap_or("memory");
-        let limit = call.arguments.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let sql = call
+            .arguments
+            .get("sql")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let db = call
+            .arguments
+            .get("db")
+            .and_then(|v| v.as_str())
+            .unwrap_or("memory");
+        let limit = call
+            .arguments
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
         match run_query(db, sql, limit) {
             Ok(rep) => ToolResult {
                 ok: true,
@@ -276,11 +315,17 @@ mod tests {
         let p = dir.join("t.db");
         {
             let c = Connection::open(&p).unwrap();
-            c.execute_batch("CREATE TABLE t(a INTEGER); INSERT INTO t VALUES (1);").unwrap();
+            c.execute_batch("CREATE TABLE t(a INTEGER); INSERT INTO t VALUES (1);")
+                .unwrap();
         }
         let c = Connection::open_with_flags(&p, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-        assert!(c.execute("INSERT INTO t VALUES (2)", []).is_err(), "只读连接不许写");
-        let v: i64 = c.query_row("SELECT count(*) FROM t", [], |r| r.get(0)).unwrap();
+        assert!(
+            c.execute("INSERT INTO t VALUES (2)", []).is_err(),
+            "只读连接不许写"
+        );
+        let v: i64 = c
+            .query_row("SELECT count(*) FROM t", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(v, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }

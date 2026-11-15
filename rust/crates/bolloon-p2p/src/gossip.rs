@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 
 use bolloon_kernel::transport::{PeerInfo, Transport, TransportError, TransportMessage};
 
-use crate::envelope::{SignedEnvelope, EnvelopeError};
+use crate::envelope::{EnvelopeError, SignedEnvelope};
 use crate::identity::KeyPair;
 
 /// hub 收到的已验签信封回调载体
@@ -76,7 +76,11 @@ impl GossipNode {
     }
 
     /// 签名 + 广播给 hub 内其他所有节点 (投递侧验签)
-    pub async fn broadcast(&self, topic: &str, payload: serde_json::Value) -> Result<usize, EnvelopeError> {
+    pub async fn broadcast(
+        &self,
+        topic: &str,
+        payload: serde_json::Value,
+    ) -> Result<usize, EnvelopeError> {
         let env = SignedEnvelope::seal(
             &self.kp,
             topic,
@@ -130,7 +134,10 @@ impl GossipNode {
 impl Transport for GossipNode {
     async fn send(&self, msg: TransportMessage) -> Result<(), TransportError> {
         // 定向发送 = 只投给目标 peer
-        let to = msg.to.clone().ok_or(TransportError::PeerNotFound("(空)".into()))?;
+        let to = msg
+            .to
+            .clone()
+            .ok_or(TransportError::PeerNotFound("(空)".into()))?;
         let env = SignedEnvelope::seal(
             &self.kp,
             msg.topic.as_deref().unwrap_or("direct"),
@@ -217,7 +224,11 @@ mod tests {
         let env = SignedEnvelope::seal(&a.kp, "t", serde_json::json!({"x": 1}), 12345);
         assert!(b.deliver(env.clone()).await, "新 hash 首次收下");
         assert!(!b.deliver(env).await, "同 hash 重放必须去重");
-        assert_eq!(b.inbox().await.len(), 2, "广播 1 条 + 定向 1 条, 重放被去重");
+        assert_eq!(
+            b.inbox().await.len(),
+            2,
+            "广播 1 条 + 定向 1 条, 重放被去重"
+        );
     }
 
     #[tokio::test]

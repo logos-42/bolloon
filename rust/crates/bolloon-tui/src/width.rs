@@ -101,7 +101,11 @@ fn consume_escape(it: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
 
 /// 截断实现: 可见宽度记宽, ANSI 转义当 0 宽 (保留颜色), 超 `max` 加 `…`。
 fn truncate_impl(text: &str, max: usize, safe: bool) -> String {
-    let cur = if safe { disp_width_safe(text) } else { disp_width(text) };
+    let cur = if safe {
+        disp_width_safe(text)
+    } else {
+        disp_width(text)
+    };
     if cur <= max {
         return text.to_string();
     }
@@ -113,7 +117,11 @@ fn truncate_impl(text: &str, max: usize, safe: bool) -> String {
             out.push_str(&consume_escape(&mut it));
             continue;
         }
-        let cw = if safe { disp_width_safe_char(ch) } else { disp_width_char(ch) };
+        let cw = if safe {
+            disp_width_safe_char(ch)
+        } else {
+            disp_width_char(ch)
+        };
         if w + cw > max.saturating_sub(1) {
             break;
         }
@@ -204,7 +212,10 @@ const AMBIGUOUS_AS_WIDE: &[char] = &[
 /** 保守宽度: `disp_width` + Ambiguous 字符每个再加 1 列 */
 pub fn disp_width_safe(s: &str) -> usize {
     let plain = strip_ansi(s);
-    let extra = plain.chars().filter(|c| AMBIGUOUS_AS_WIDE.contains(c)).count();
+    let extra = plain
+        .chars()
+        .filter(|c| AMBIGUOUS_AS_WIDE.contains(c))
+        .count();
     // 必须量**剥掉 ANSI 之后**的正文: 带着转义序列量会把 `\x1b[38;2;…m` 当可见字符
     disp_width(&plain) + extra
 }
@@ -238,7 +249,6 @@ pub fn pad_to_width(s: &str, w: usize) -> String {
     }
     out
 }
-
 
 fn disp_width_safe_char(ch: char) -> usize {
     let base = if is_wide(ch) { 2 } else { 1 };
@@ -350,7 +360,10 @@ mod tests {
     /// 硬断: ANSI 序列是零宽原子 —— 不计宽、绝不拦腰截断
     #[test]
     fn hard_break_ansi_keeps_sequences_atomic() {
-        let styled = format!("{}中文很长的句子没有空格{}\x1b[38;5;208m再来一段{}\x1b[0m", "\x1b[1m", "\x1b[0m", "");
+        let styled = format!(
+            "{}中文很长的句子没有空格{}\x1b[38;5;208m再来一段{}\x1b[0m",
+            "\x1b[1m", "\x1b[0m", ""
+        );
         let parts = hard_break_ansi(&styled, 6);
         assert!(parts.len() > 1, "必须真的断开: {parts:?}");
         for p in &parts {
@@ -365,7 +378,10 @@ mod tests {
             let esc = p.matches('\x1b').count();
             let closed = p.matches("\x1b[0m").count() + p.matches('m').count();
             assert_eq!(esc, closed.min(esc), "半截转义序列: {p:?}");
-            assert!(!p.ends_with('\x1b') && !p.ends_with("\x1b["), "序列被截断在行尾: {p:?}");
+            assert!(
+                !p.ends_with('\x1b') && !p.ends_with("\x1b["),
+                "序列被截断在行尾: {p:?}"
+            );
         }
     }
 

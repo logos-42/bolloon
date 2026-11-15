@@ -253,12 +253,22 @@ pub fn load_from_with(dir: &Path, backend: &dyn SecretBackend) -> LlmConfig {
     let mut pending: Vec<(String, String, bool, String)> = Vec::new();
     for (id, p) in cfg.providers.iter() {
         if !p.api_key.trim().is_empty() {
-            pending.push((secret_store::account_for_provider(id), p.api_key.clone(), false, id.clone()));
+            pending.push((
+                secret_store::account_for_provider(id),
+                p.api_key.clone(),
+                false,
+                id.clone(),
+            ));
         }
     }
     for (id, p) in cfg.custom_providers.iter() {
         if !p.api_key.trim().is_empty() {
-            pending.push((secret_store::account_for_custom(id), p.api_key.clone(), true, id.clone()));
+            pending.push((
+                secret_store::account_for_custom(id),
+                p.api_key.clone(),
+                true,
+                id.clone(),
+            ));
         }
     }
     if !pending.is_empty() {
@@ -283,7 +293,9 @@ pub fn load_from_with(dir: &Path, backend: &dyn SecretBackend) -> LlmConfig {
         }
         for (is_custom, id) in &cleared {
             if *is_custom {
-                if let Some(p) = cfg.custom_providers.get_mut(id) { p.api_key.clear(); }
+                if let Some(p) = cfg.custom_providers.get_mut(id) {
+                    p.api_key.clear();
+                }
             } else if let Some(p) = cfg.providers.get_mut(id) {
                 p.api_key.clear();
             }
@@ -291,8 +303,12 @@ pub fn load_from_with(dir: &Path, backend: &dyn SecretBackend) -> LlmConfig {
         if !pending.is_empty() {
             // 落盘副本一律不带明文: 失败条目的 key 只活在本进程内存里
             let mut on_disk_only = cfg.clone();
-            for p in on_disk_only.providers.values_mut() { p.api_key.clear(); }
-            for p in on_disk_only.custom_providers.values_mut() { p.api_key.clear(); }
+            for p in on_disk_only.providers.values_mut() {
+                p.api_key.clear();
+            }
+            for p in on_disk_only.custom_providers.values_mut() {
+                p.api_key.clear();
+            }
             if let Err(e) = save_to_with(dir, &on_disk_only, backend) {
                 tracing::warn!(error = %e, "迁移后重写配置失败");
             }
@@ -369,7 +385,8 @@ fn scrub_plaintext_backups(dir: &Path) -> usize {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+                        let _ =
+                            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
                     }
                     if std::fs::rename(&tmp, &path).is_ok() {
                         cleaned += touched;
@@ -1279,8 +1296,7 @@ mod tests {
         let mem = MemBackend::failing();
         let loaded = load_from_with(&dir, &mem);
         assert_eq!(
-            loaded.custom_providers["ollama-cloud"].api_key,
-            "sk-test-not-real",
+            loaded.custom_providers["ollama-cloud"].api_key, "sk-test-not-real",
             "凭据库失败时 key 必须还活在内存里"
         );
         let r = resolve(&loaded, "ollama-cloud").expect("应能解析");

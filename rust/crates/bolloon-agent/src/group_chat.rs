@@ -79,11 +79,7 @@ impl Autopilot {
     /// 2. 被 @ 或含提问/请人做事信号
     /// 3. 未超每小时上限
     /// 4. 未在冷却期
-    pub async fn should_speak(
-        &self,
-        msg: &GroupMessage,
-        self_id: &str,
-    ) -> SpeakDecision {
+    pub async fn should_speak(&self, msg: &GroupMessage, self_id: &str) -> SpeakDecision {
         // 1. 幂等
         let mut seen = self.seen.lock().await;
         if seen.contains(&msg.id) {
@@ -245,10 +241,7 @@ mod tests {
     async fn idempotent_seen() {
         let ap = Autopilot::default();
         let m = msg("m4", "帮我一下", vec![]);
-        assert_eq!(
-            ap.should_speak(&m, "agent-1").await,
-            SpeakDecision::Speak
-        );
+        assert_eq!(ap.should_speak(&m, "agent-1").await, SpeakDecision::Speak);
         // 同一消息再来 → skip
         let d2 = ap.should_speak(&m, "agent-1").await;
         assert!(matches!(d2, SpeakDecision::Skip(SkipReason::AlreadySeen)));
@@ -282,7 +275,11 @@ mod tests {
         let long = "x".repeat(2000);
         let t = trim_for_speak(&long, 100);
         // 100 字符 = 49 头 + … + 50 尾（len() 是字节, '…' 占 3 字节 → 按字符数断言）
-        assert!(t.chars().count() <= 100, "裁剪后不应超上限, 实际 {}", t.chars().count());
+        assert!(
+            t.chars().count() <= 100,
+            "裁剪后不应超上限, 实际 {}",
+            t.chars().count()
+        );
         assert!(t.starts_with(&"x".repeat(49)), "应保留头部");
         assert!(t.ends_with(&"x".repeat(50)), "应保留尾部");
         assert!(t.contains('…'), "应有省略号");

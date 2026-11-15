@@ -34,7 +34,13 @@ fn panel_width(cols: usize) -> usize {
  * `max_rows` 是允许占用的最大行数 (含顶边框与状态行), 超出时正文**留尾**,
  * 被折掉的行数写在首行 `… (+N 行)`。
  */
-pub fn render_stream_frame(text: &str, title: &str, status: &str, cols: usize, max_rows: usize) -> Vec<String> {
+pub fn render_stream_frame(
+    text: &str,
+    title: &str,
+    status: &str,
+    cols: usize,
+    max_rows: usize,
+) -> Vec<String> {
     let width = panel_width(if cols > 0 { cols } else { term_width() });
     let inner = width.saturating_sub(4);
 
@@ -87,7 +93,6 @@ pub fn render_stream_frame(text: &str, title: &str, status: &str, cols: usize, m
     out
 }
 
-
 /// 流式预览的固定高度 (行): 顶边框 + 2 行正文 + 状态行。
 ///
 /// 为什么是常数: 变高就要"借行", 借来的行收尾时只能擦白 ⇒ 框与框之间出现大洞。
@@ -106,11 +111,7 @@ pub fn render_preview_frame(
     // 补/裁到**精确 rows 行**: 调用方按行号整块重画, 行数对不上就会串行
     while v.len() < rows {
         let inner = panel_width(if cols > 0 { cols } else { term_width() }).saturating_sub(4);
-        v.push(format!(
-            "│ {}{}│",
-            " ".repeat(inner),
-            ""
-        ));
+        v.push(format!("│ {}{}│", " ".repeat(inner), ""));
     }
     if v.len() > rows {
         v.truncate(rows);

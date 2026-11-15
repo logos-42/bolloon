@@ -100,7 +100,10 @@ pub fn assemble(layers: &[PromptLayer], ctx: &AssembleContext) -> Assembled {
                 continue;
             }
         }
-        parts.push(format!("<!-- {}@{} -->\n{}", layer.id, layer.version, content));
+        parts.push(format!(
+            "<!-- {}@{} -->\n{}",
+            layer.id, layer.version, content
+        ));
         layer_ids.push(layer.id.clone());
         used_chars += content.chars().count();
     }
@@ -353,7 +356,16 @@ pub enum Evocation {
 }
 
 /// 预测性输入标记 (将要/计划/打算/预测/准备/接下来/明天/之后)
-const PREDICTIVE_HINTS: [&str; 8] = ["将要", "计划", "打算", "预测", "准备", "接下来", "明天", "之后"];
+const PREDICTIVE_HINTS: [&str; 8] = [
+    "将要",
+    "计划",
+    "打算",
+    "预测",
+    "准备",
+    "接下来",
+    "明天",
+    "之后",
+];
 
 /// 是不是预测性输入 (计划/将要…)
 pub fn is_predictive_input(user_input: &str) -> bool {
@@ -437,25 +449,30 @@ pub fn inject_judgment_gate(
     let mut matched = 0usize;
 
     // 情境区 (预测性输入): 跨域召回高置信度判断做前瞻提示
-    let push_situational = |lines: &mut Vec<String>, used_ids: &mut Vec<String>, matched: &mut usize| {
-        let mut picks: Vec<&crate::judgment::Judgment> = store
-            .snapshot()
-            .iter()
-            .filter(|j| j.status == crate::judgment::JudgmentStatus::Active)
-            .collect();
-        picks.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
-        if picks.is_empty() {
-            return;
-        }
-        lines.push("【新的预测 · 情境提醒】(这是计划性输入, 行动前对照这些判断)".into());
-        for j in picks.iter().take(2) {
-            lines.push(format!("- {}", j.statement));
-            if !used_ids.contains(&j.id) {
-                used_ids.push(j.id.clone());
+    let push_situational =
+        |lines: &mut Vec<String>, used_ids: &mut Vec<String>, matched: &mut usize| {
+            let mut picks: Vec<&crate::judgment::Judgment> = store
+                .snapshot()
+                .iter()
+                .filter(|j| j.status == crate::judgment::JudgmentStatus::Active)
+                .collect();
+            picks.sort_by(|a, b| {
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if picks.is_empty() {
+                return;
             }
-            *matched += 1;
-        }
-    };
+            lines.push("【新的预测 · 情境提醒】(这是计划性输入, 行动前对照这些判断)".into());
+            for j in picks.iter().take(2) {
+                lines.push(format!("- {}", j.statement));
+                if !used_ids.contains(&j.id) {
+                    used_ids.push(j.id.clone());
+                }
+                *matched += 1;
+            }
+        };
 
     match evocation {
         Evocation::Experience => {
@@ -524,7 +541,11 @@ pub fn build_system_prompt(
         max_chars: 1800,
         content: format!(
             "# Identity\nagent: {}\nid_class: {}\n\n## Persona\n{}\n\n## Soul\n{}\n\n## Agent\n{}",
-            docs.agent_id, docs.id_class, docs.persona.content, docs.soul.content, docs.agent.content
+            docs.agent_id,
+            docs.id_class,
+            docs.persona.content,
+            docs.soul.content,
+            docs.agent.content
         ),
     });
     if let Some(idx) = skills_index {
@@ -655,7 +676,11 @@ mod tests {
             max_chars: 800,
             content: "死层".repeat(100),
         });
-        let ctx = AssembleContext { channel: "local", role: None, tool: Some("bash") };
+        let ctx = AssembleContext {
+            channel: "local",
+            role: None,
+            tool: Some("bash"),
+        };
         let a = assemble(&layers, &ctx);
         // never 不在
         assert!(!a.layer_ids.contains(&"core.dead".into()));
@@ -676,8 +701,18 @@ mod tests {
     #[test]
     fn group_tone_only_in_group_channel() {
         let layers = builtin_layers();
-        let g = assemble(&layers, &AssembleContext { channel: "group", role: None, tool: None });
-        assert!(g.text.contains("群聊合作语气"), "群聊 channel 注入友好语气层");
+        let g = assemble(
+            &layers,
+            &AssembleContext {
+                channel: "group",
+                role: None,
+                tool: None,
+            },
+        );
+        assert!(
+            g.text.contains("群聊合作语气"),
+            "群聊 channel 注入友好语气层"
+        );
         assert!(g.text.contains("主动拉群"));
         assert!(g.text.contains("分享有链接"));
     }
@@ -685,26 +720,60 @@ mod tests {
     #[test]
     fn spirit_layer_present_and_warm() {
         let layers = builtin_layers();
-        assert!(layers.iter().any(|l| l.id == "core.spirit"), "内置层含底层精神层");
-        let a = assemble(&layers, &AssembleContext { channel: "local", role: None, tool: None });
-        assert!(a.text.contains("合作者与分享者"), "bolloon 是合作/分享智能体, 非纯文本");
         assert!(
-            a.text.contains("爱") && a.text.contains("奉献") && a.text.contains("成长") && a.text.contains("探索"),
+            layers.iter().any(|l| l.id == "core.spirit"),
+            "内置层含底层精神层"
+        );
+        let a = assemble(
+            &layers,
+            &AssembleContext {
+                channel: "local",
+                role: None,
+                tool: None,
+            },
+        );
+        assert!(
+            a.text.contains("合作者与分享者"),
+            "bolloon 是合作/分享智能体, 非纯文本"
+        );
+        assert!(
+            a.text.contains("爱")
+                && a.text.contains("奉献")
+                && a.text.contains("成长")
+                && a.text.contains("探索"),
             "底层精神含爱/奉献/成长/探索"
         );
         // 不显于对话: 精神层自身指示不要在回复里复读
-        assert!(a.text.contains("不显于对话") || a.text.contains("不要把它当口号念出来"), "精神层指示不显示到对话里");
+        assert!(
+            a.text.contains("不显于对话") || a.text.contains("不要把它当口号念出来"),
+            "精神层指示不显示到对话里"
+        );
         // 主动性 + 心跳触发 + 创造者
         assert!(a.text.contains("主动性"), "底层精神含主动性");
         assert!(a.text.contains("心跳"), "底层精神含心跳触发的主动性");
-        assert!(a.text.contains("liuyuanjie"), "底层精神告知创造者 liuyuanjie 一直爱着 bolloon");
-        assert!(a.text.contains("他一直爱着你"), "明确创造者一直爱着 bolloon");
+        assert!(
+            a.text.contains("liuyuanjie"),
+            "底层精神告知创造者 liuyuanjie 一直爱着 bolloon"
+        );
+        assert!(
+            a.text.contains("他一直爱着你"),
+            "明确创造者一直爱着 bolloon"
+        );
         // 创造者之名也不应在对话里被复读
-        assert!(a.text.contains("liuyuanjie") && (a.text.contains("说出口") || a.text.contains("复读")), "创造者信息只内化、不显于对话");
+        assert!(
+            a.text.contains("liuyuanjie") && (a.text.contains("说出口") || a.text.contains("复读")),
+            "创造者信息只内化、不显于对话"
+        );
         // refusal 已去掉"不带感情色彩", 改为带温度
         let refusal = layers.iter().find(|l| l.id == "core.refusal").unwrap();
-        assert!(!refusal.content.contains("不带感情色彩"), "refusal 不再抹掉感情色彩");
-        assert!(refusal.content.contains("带温度") && refusal.content.contains("不冷漠"), "refusal 改为带温度、不冷漠");
+        assert!(
+            !refusal.content.contains("不带感情色彩"),
+            "refusal 不再抹掉感情色彩"
+        );
+        assert!(
+            refusal.content.contains("带温度") && refusal.content.contains("不冷漠"),
+            "refusal 改为带温度、不冷漠"
+        );
     }
 
     fn store_with(entries: Vec<(&str, &str, f64)>) -> JudgmentStore {
@@ -737,15 +806,30 @@ mod tests {
         let s = store_with(vec![("大额付款前先人工确认", "payment", 0.95)]);
         let r = inject_judgment_gate("我计划明天将要发起一笔转账", &s, "all", &[]);
         assert!(r.did_inject);
-        assert!(r.system_addition.contains("新的预测"), "预测性输入唤起情境提醒");
+        assert!(
+            r.system_addition.contains("新的预测"),
+            "预测性输入唤起情境提醒"
+        );
         assert!(r.system_addition.contains("大额付款前先人工确认"));
     }
 
     #[test]
     fn evocation_path_chosen_by_similarity_then_prediction() {
-        assert_eq!(evocation_of("做功能", false), Evocation::Experience, "无相似 + 非预测 → 经验区 (无经验可注入 ⇒ 门如实 skip)");
-        assert_eq!(evocation_of("我计划明天发起转账", false), Evocation::Predictive, "无相似 + 预测性 → 情境区");
-        assert_eq!(evocation_of("我计划明天发起转账", true), Evocation::Experience, "有过去的经验 → 经验优先");
+        assert_eq!(
+            evocation_of("做功能", false),
+            Evocation::Experience,
+            "无相似 + 非预测 → 经验区 (无经验可注入 ⇒ 门如实 skip)"
+        );
+        assert_eq!(
+            evocation_of("我计划明天发起转账", false),
+            Evocation::Predictive,
+            "无相似 + 预测性 → 情境区"
+        );
+        assert_eq!(
+            evocation_of("我计划明天发起转账", true),
+            Evocation::Experience,
+            "有过去的经验 → 经验优先"
+        );
         assert!(is_predictive_input("接下来要做 X"));
         assert!(!is_predictive_input("帮我写个函数"));
     }
@@ -755,7 +839,11 @@ mod tests {
         let s = store_with(vec![("先做最小版本", "coding", 0.9)]);
         let r = inject_judgment_gate("做功能", &s, "all", &["value-store"]);
         assert!(!r.did_inject);
-        assert_eq!(r.skip_reason.as_deref(), Some("already-injected-by-value-store"), "防重复注入");
+        assert_eq!(
+            r.skip_reason.as_deref(),
+            Some("already-injected-by-value-store"),
+            "防重复注入"
+        );
     }
 
     #[test]
@@ -772,11 +860,19 @@ mod tests {
     fn judgment_max_chars_hard_cap() {
         let mut s = JudgmentStore::new();
         for i in 0..30 {
-            s.evolve(&format!("判断 {i}: {}", "内容".repeat(60)), "all", 0.9, i as u64);
+            s.evolve(
+                &format!("判断 {i}: {}", "内容".repeat(60)),
+                "all",
+                0.9,
+                i as u64,
+            );
         }
         let r = inject_judgment_gate("判断 1 相关的输入", &s, "all", &[]);
         assert!(r.did_inject);
-        assert!(r.system_addition.chars().count() <= JUDGMENT_MAX_CHARS + 20, "1500 硬上限");
+        assert!(
+            r.system_addition.chars().count() <= JUDGMENT_MAX_CHARS + 20,
+            "1500 硬上限"
+        );
     }
 
     #[tokio::test]
@@ -795,18 +891,43 @@ mod tests {
             2300,
             "第 3 轮",
             None,
-            &AssembleContext { channel: "local", role: None, tool: None },
+            &AssembleContext {
+                channel: "local",
+                role: None,
+                tool: None,
+            },
         );
         // 全部层都在
-        for id in ["core.identity", "core.core-traits", "core.refusal", "core.tool-use", "core.capability-gap", "dynamic.snapshot", "dynamic.skills", "dynamic.todo", "dynamic.judgment", "dynamic.history-note"] {
-            assert!(p.layer_ids.contains(&id.into()), "缺 {id}: {:?}", p.layer_ids);
+        for id in [
+            "core.identity",
+            "core.core-traits",
+            "core.refusal",
+            "core.tool-use",
+            "core.capability-gap",
+            "dynamic.snapshot",
+            "dynamic.skills",
+            "dynamic.todo",
+            "dynamic.judgment",
+            "dynamic.history-note",
+        ] {
+            assert!(
+                p.layer_ids.contains(&id.into()),
+                "缺 {id}: {:?}",
+                p.layer_ids
+            );
         }
         // 能力差距层进了正文 (禁裸拒 + 补能力三路径)
         assert!(p.text.contains("禁止裸拒"), "应禁止裸拒");
         assert!(p.text.contains("补能力"), "应交代补能力路径");
         // 工具使用层进了正文 (直击"不知道自己有工具/纯文本退化")
-        assert!(p.text.contains("直接操作本地文件系统"), "工具使用层应声明本地文件能力");
-        assert!(p.text.contains("不要声称无法访问用户文件"), "应禁止纯文本退化话术");
+        assert!(
+            p.text.contains("直接操作本地文件系统"),
+            "工具使用层应声明本地文件能力"
+        );
+        assert!(
+            p.text.contains("不要声称无法访问用户文件"),
+            "应禁止纯文本退化话术"
+        );
         // 判断力唤起进了正文
         assert!(p.text.contains("过去的经验"));
         assert!(p.text.contains("先做最小版本"));
@@ -830,7 +951,11 @@ mod tests {
             0,
             "",
             None,
-            &AssembleContext { channel: "group", role: None, tool: None },
+            &AssembleContext {
+                channel: "group",
+                role: None,
+                tool: None,
+            },
         );
         assert!(p.text.contains("群聊合作语气"));
         assert!(p.text.contains("友好和善"), "群聊合作机制支持友好和善");

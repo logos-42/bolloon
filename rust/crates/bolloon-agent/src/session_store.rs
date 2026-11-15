@@ -61,7 +61,13 @@ impl SessionStore {
         let f = match std::fs::File::open(&self.path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok((vec![], LoadReport { events: 0, corrupted_lines: 0 }))
+                return Ok((
+                    vec![],
+                    LoadReport {
+                        events: 0,
+                        corrupted_lines: 0,
+                    },
+                ));
             }
             Err(e) => return Err(e),
         };
@@ -104,10 +110,8 @@ mod tests {
     use super::*;
 
     fn tmp_path(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "bolloon-session-test-{}-{tag}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("bolloon-session-test-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir.join("session.jsonl")
     }
@@ -117,18 +121,35 @@ mod tests {
         let path = tmp_path("roundtrip");
         let store = SessionStore::new(&path);
         store
-            .append(&SessionEvent::User { text: "你好".into() })
+            .append(&SessionEvent::User {
+                text: "你好".into(),
+            })
             .unwrap();
         store
-            .append(&SessionEvent::Assistant { text: "你好，我是 Bolloon".into() })
+            .append(&SessionEvent::Assistant {
+                text: "你好，我是 Bolloon".into(),
+            })
             .unwrap();
         store
-            .append(&SessionEvent::Meta { title: "测试会话".into() })
+            .append(&SessionEvent::Meta {
+                title: "测试会话".into(),
+            })
             .unwrap();
 
         let (events, report) = store.load().unwrap();
-        assert_eq!(report, LoadReport { events: 3, corrupted_lines: 0 });
-        assert_eq!(events[0], SessionEvent::User { text: "你好".into() });
+        assert_eq!(
+            report,
+            LoadReport {
+                events: 3,
+                corrupted_lines: 0
+            }
+        );
+        assert_eq!(
+            events[0],
+            SessionEvent::User {
+                text: "你好".into()
+            }
+        );
         assert_eq!(
             SessionStore::messages_of(&events),
             vec![
@@ -143,7 +164,11 @@ mod tests {
     fn append_only_file_has_one_json_per_line() {
         let path = tmp_path("format");
         let store = SessionStore::new(&path);
-        store.append(&SessionEvent::User { text: "a\nb".into() }).unwrap();
+        store
+            .append(&SessionEvent::User {
+                text: "a\nb".into(),
+            })
+            .unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content.lines().count(), 1, "换行必须被转义, 一行一事件");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -153,15 +178,22 @@ mod tests {
     fn corrupted_lines_skipped_not_fatal() {
         let path = tmp_path("corrupt");
         let store = SessionStore::new(&path);
-        store.append(&SessionEvent::User { text: "ok".into() }).unwrap();
+        store
+            .append(&SessionEvent::User { text: "ok".into() })
+            .unwrap();
         // 手工追加垃圾行 (模拟磁盘损坏/截断)
         {
-            let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
             writeln!(f, "{{{{not json").unwrap();
             writeln!(f).unwrap();
         }
         store
-            .append(&SessionEvent::Assistant { text: "fine".into() })
+            .append(&SessionEvent::Assistant {
+                text: "fine".into(),
+            })
             .unwrap();
         let (events, report) = store.load().unwrap();
         assert_eq!(events.len(), 2, "好事件全保留");
@@ -182,13 +214,17 @@ mod tests {
         // 决策 6: 恢复会话绝不自动恢复权限 —— load 面没有权限出口
         let path = tmp_path("noperm");
         let store = SessionStore::new(&path);
-        store.append(&SessionEvent::Meta { title: "x".into() }).unwrap();
+        store
+            .append(&SessionEvent::Meta { title: "x".into() })
+            .unwrap();
         let (events, _) = store.load().unwrap();
         // SessionEvent 枚举里不存在任何权限/授权变体 —— 编译期即冻结
         for ev in events {
             assert!(matches!(
                 ev,
-                SessionEvent::User { .. } | SessionEvent::Assistant { .. } | SessionEvent::Meta { .. }
+                SessionEvent::User { .. }
+                    | SessionEvent::Assistant { .. }
+                    | SessionEvent::Meta { .. }
             ));
         }
         let _ = std::fs::remove_dir_all(path.parent().unwrap());

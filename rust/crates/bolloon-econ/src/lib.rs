@@ -17,45 +17,45 @@ pub mod consciousness;
 pub mod contribution;
 pub mod economy;
 pub mod error;
-pub mod meter;
 pub mod immune;
+pub mod meter;
 pub mod price;
-pub mod reputation;
 pub mod provider;
+pub mod reputation;
 pub mod settlement;
 
 pub use allowance::{
-    copy_group_goodwill, daily_allowance, intent_multiplier, Allowance, AllowancePolicy,
-    AllowanceTier, PrincipalHistory,
+    Allowance, AllowancePolicy, AllowanceTier, PrincipalHistory, copy_group_goodwill,
+    daily_allowance, intent_multiplier,
 };
 pub use budget::{
     BudgetDecision, BudgetGuard, BudgetLimits, ExhaustionPolicy, IntentBudget, Payer, PayerKind,
     PrivacyPolicy,
 };
 pub use consciousness::{
-    assess as assess_consciousness, human_view as consciousness_human_view, HumanView, Need,
-    Permissions as ConsciousnessPermissions, Profile as ConsciousnessProfile, Signals, Stage,
+    HumanView, Need, Permissions as ConsciousnessPermissions, Profile as ConsciousnessProfile,
+    Signals, Stage, assess as assess_consciousness, human_view as consciousness_human_view,
 };
 pub use contribution::{
     Contribution, ContributionKind, ContributionLedger, ContributionState, ContributionTotals,
 };
 pub use economy::{CallCtx, EconomyReport, ShadowEconomy};
 pub use error::EconError;
+pub use immune::{AlarmKind, Assessment, ImmuneSystem, Policy as ImmunePolicy, Posture};
 pub use meter::{
     MeterEvent, MeterStatus, MeterTotals, RecordOutcome, ResourceKind, SCHEMA_VERSION, UsageMeter,
 };
-pub use immune::{AlarmKind, Assessment, ImmuneSystem, Policy as ImmunePolicy, Posture};
 pub use price::{PriceEntry, PriceTable, PriceVersion};
-pub use reputation::{
-    attestation_digest, build as build_reputation, detail_digest, goodwill_path, join_quota_by_age,
-    join_quota_for, quota_with_age, quota_with_usage, speech_flag, verify as verify_attestation,
-    JoinQuota, OffChainProfile, OnChainAttestation, SpeechFlag, JOIN_QUOTA_DAY5,
-    JOIN_QUOTA_MATURED, JOIN_QUOTA_MATURE_DAYS, JOIN_QUOTA_NEW_DAY, JOIN_QUOTA_PENALTY,
-    JOIN_QUOTA_RELAX_DAY,
-};
 pub use provider::{
     ModelCapability, ProviderKind, ProviderRegistry, ProviderSpec, ProviderStatus, RoutingDecision,
     RoutingPolicy, RoutingStrategy,
+};
+pub use reputation::{
+    JOIN_QUOTA_DAY5, JOIN_QUOTA_MATURE_DAYS, JOIN_QUOTA_MATURED, JOIN_QUOTA_NEW_DAY,
+    JOIN_QUOTA_PENALTY, JOIN_QUOTA_RELAX_DAY, JoinQuota, OffChainProfile, OnChainAttestation,
+    SpeechFlag, attestation_digest, build as build_reputation, detail_digest, goodwill_path,
+    join_quota_by_age, join_quota_for, quota_with_age, quota_with_usage, speech_flag,
+    verify as verify_attestation,
 };
 pub use settlement::{
     CostShare, PublicPool, SettleError, SettlementLedger, SettlementRecord, SettlementState,

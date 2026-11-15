@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::rand::{SecureRandom, SystemRandom};
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use sha2::{Digest, Sha256};
 
 use super::ports::{MailId, MailMeta, MailQuery};
@@ -72,12 +72,8 @@ impl ContentCipher {
             .fill(&mut nonce)
             .map_err(|e| format!("生成 nonce 失败: {e}"))?;
         let mut buf = plain.to_vec();
-        key.seal_in_place_append_tag(
-            Nonce::assume_unique_for_key(nonce),
-            Aad::empty(),
-            &mut buf,
-        )
-        .map_err(|e| format!("加密正文失败: {e}"))?;
+        key.seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), Aad::empty(), &mut buf)
+            .map_err(|e| format!("加密正文失败: {e}"))?;
         let mut out = nonce.to_vec();
         out.extend_from_slice(&buf);
         Ok(out)
@@ -102,7 +98,8 @@ impl ContentCipher {
 
 fn body_path(dir: &Path, id: &MailId) -> PathBuf {
     let d = Sha256::digest(id.as_str().as_bytes());
-    dir.join("bodies").join(format!("{}.enc", hex::encode(&d[..16])))
+    dir.join("bodies")
+        .join(format!("{}.enc", hex::encode(&d[..16])))
 }
 
 /// 本地邮件索引。先 `open`, 再读写; 打开失败即 `store_unreadable`(fail-closed)。
@@ -155,7 +152,11 @@ impl MailStore {
         .map_err(|e| format!("store_unreadable: 建表失败: {e}"))?;
 
         let cipher = ContentCipher::load_or_create(&dir)?;
-        Ok(Self { dir, conn: Mutex::new(conn), cipher })
+        Ok(Self {
+            dir,
+            conn: Mutex::new(conn),
+            cipher,
+        })
     }
 
     pub fn dir(&self) -> &Path {
@@ -409,9 +410,12 @@ mod tests {
     fn roundtrip_list_and_search() {
         let dir = tmp_dir("roundtrip");
         let s = MailStore::open(&dir).unwrap();
-        s.upsert_meta(&meta("me@x.com", "INBOX", 1, "报价单")).unwrap();
-        s.upsert_meta(&meta("me@x.com", "INBOX", 2, "会议纪要")).unwrap();
-        s.put_body(&MailId::new("me@x.com", "INBOX", 1), "正文 A").unwrap();
+        s.upsert_meta(&meta("me@x.com", "INBOX", 1, "报价单"))
+            .unwrap();
+        s.upsert_meta(&meta("me@x.com", "INBOX", 2, "会议纪要"))
+            .unwrap();
+        s.put_body(&MailId::new("me@x.com", "INBOX", 1), "正文 A")
+            .unwrap();
 
         assert_eq!(s.count().unwrap(), 2);
 
@@ -419,7 +423,10 @@ mod tests {
         assert_eq!(all.len(), 2);
 
         let hit = s
-            .list(&MailQuery { keyword: Some("报价".into()), ..Default::default() })
+            .list(&MailQuery {
+                keyword: Some("报价".into()),
+                ..Default::default()
+            })
             .unwrap();
         assert_eq!(hit.len(), 1);
         assert_eq!(hit[0].subject, "报价单");
@@ -445,7 +452,12 @@ mod tests {
         assert_eq!(got.subject, "改过");
         assert!(got.flags.iter().any(|f| f.contains("Seen")));
 
-        let unread = s.list(&MailQuery { unread_only: true, ..Default::default() }).unwrap();
+        let unread = s
+            .list(&MailQuery {
+                unread_only: true,
+                ..Default::default()
+            })
+            .unwrap();
         assert!(unread.is_empty(), "已读邮件不该出现在未读查询里");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -484,7 +496,10 @@ mod tests {
         std::fs::write(&p, raw).unwrap();
 
         let err = s.get_body(&id).unwrap_err();
-        assert!(err.contains("篡改") || err.contains("解密"), "篡改必须被 GCM tag 拒: {err}");
+        assert!(
+            err.contains("篡改") || err.contains("解密"),
+            "篡改必须被 GCM tag 拒: {err}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -520,7 +535,8 @@ mod tests {
         {
             let s = MailStore::open(&dir).unwrap();
             s.set_cursor("me@x.com", "INBOX", 1, 10).unwrap();
-            s.upsert_meta(&meta("me@x.com", "INBOX", 10, "重启前")).unwrap();
+            s.upsert_meta(&meta("me@x.com", "INBOX", 10, "重启前"))
+                .unwrap();
         }
         let s2 = MailStore::open(&dir).unwrap();
         assert_eq!(s2.get_cursor("me@x.com", "INBOX").unwrap(), Some((1, 10)));

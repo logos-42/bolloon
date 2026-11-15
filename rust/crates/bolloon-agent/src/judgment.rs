@@ -134,7 +134,13 @@ impl JudgmentStore {
     /// 相似 ≥ 0.8 → merge (文本并集) · 反向标记 → contradict · 其余 → 新增
     ///
     /// contradict 判定: 两条 statement 一方含否定词而另一方不含, 且字面相似度 ≥ 0.5
-    pub fn evolve(&mut self, statement: &str, domain: &str, confidence: f64, now_ms: u64) -> EvolveAction {
+    pub fn evolve(
+        &mut self,
+        statement: &str,
+        domain: &str,
+        confidence: f64,
+        now_ms: u64,
+    ) -> EvolveAction {
         let mut best: Option<(f64, usize)> = None;
         for (i, e) in self.entries.iter().enumerate() {
             if e.status != JudgmentStatus::Active {
@@ -149,15 +155,22 @@ impl JudgmentStore {
         if let Some((sim, idx)) = best {
             let existing = &self.entries[idx];
             let neg_new = CONTRADICT_HINTS.iter().any(|w| statement.contains(w));
-            let neg_old = CONTRADICT_HINTS.iter().any(|w| existing.statement.contains(w));
+            let neg_old = CONTRADICT_HINTS
+                .iter()
+                .any(|w| existing.statement.contains(w));
             if sim >= 0.5 && neg_new != neg_old {
-                return EvolveAction::Contradicted { with: existing.id.clone() };
+                return EvolveAction::Contradicted {
+                    with: existing.id.clone(),
+                };
             }
             if sim >= MERGE_THRESHOLD {
                 let merged = merge_text(&existing.statement, statement);
                 let id = existing.id.clone();
                 self.entries[idx].statement = merged.clone();
-                return EvolveAction::Merged { with: id, new_text: merged };
+                return EvolveAction::Merged {
+                    with: id,
+                    new_text: merged,
+                };
             }
         }
 
@@ -189,7 +202,11 @@ impl JudgmentStore {
         hits.sort_by(|a, b| {
             let dom_a = a.domain == domain;
             let dom_b = b.domain == domain;
-            dom_b.cmp(&dom_a).then(b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal))
+            dom_b.cmp(&dom_a).then(
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
         });
         hits.into_iter().take(top_n).collect()
     }
@@ -257,7 +274,12 @@ mod tests {
     #[test]
     fn evolve_merges_similar() {
         let mut s = store_with(vec![("先做最小版本再迭代，不要过度设计", "coding", 0.9)]);
-        let action = s.evolve("先做最小版本再迭代，不要过度设计（补充了成本考量）", "coding", 0.8, 1);
+        let action = s.evolve(
+            "先做最小版本再迭代，不要过度设计（补充了成本考量）",
+            "coding",
+            0.8,
+            1,
+        );
         assert!(matches!(action, EvolveAction::Merged { .. }), "{action:?}");
     }
 
@@ -273,15 +295,15 @@ mod tests {
     fn evolve_detects_contradiction() {
         let mut s = store_with(vec![("主动给用户发总结", "communication", 0.9)]);
         let action = s.evolve("不要主动给用户发总结", "communication", 0.9, 1);
-        assert!(matches!(action, EvolveAction::Contradicted { .. }), "反向必须标给用户, 不许静默 merge");
+        assert!(
+            matches!(action, EvolveAction::Contradicted { .. }),
+            "反向必须标给用户, 不许静默 merge"
+        );
     }
 
     #[test]
     fn gate_top_for_domain_prefers_exact() {
-        let s = store_with(vec![
-            ("通用判断", "all", 0.99),
-            ("编码判断", "coding", 0.5),
-        ]);
+        let s = store_with(vec![("通用判断", "all", 0.99), ("编码判断", "coding", 0.5)]);
         let picks = s.top_for_domain("coding", 2);
         assert_eq!(picks[0].statement, "编码判断", "精确域优先于 all 兜底");
     }
@@ -290,7 +312,10 @@ mod tests {
     fn gate_empty_domain_returns_none_hint() {
         let s = store_with(vec![("编码判断", "coding", 0.9)]);
         let picks = s.top_for_domain("research", 3);
-        assert!(JudgmentStore::build_hint("research", &picks).is_none(), "无命中不硬造 hint");
+        assert!(
+            JudgmentStore::build_hint("research", &picks).is_none(),
+            "无命中不硬造 hint"
+        );
     }
 
     #[test]

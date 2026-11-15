@@ -19,7 +19,11 @@ pub enum UpgradeStep {
     /// 真跑搜索 (query 取意图文本)
     Search { query: String },
     /// 公告板委托 (budget="0" = 悬赏待议, 意图里没有预算就不编)
-    Delegate { capability: String, digest: String, budget: String },
+    Delegate {
+        capability: String,
+        digest: String,
+        budget: String,
+    },
     /// 待安装 (如实: 本仓无安装源登记面, 只记录不假装装好)
     Install { note: String },
 }
@@ -39,7 +43,9 @@ pub fn plan_upgrade(intent: &Intent, gap: &GapReport) -> Vec<UpgradeStep> {
     let mut steps = Vec::new();
     for path in &gap.paths {
         match path {
-            GapPath::Search => steps.push(UpgradeStep::Search { query: intent.text.clone() }),
+            GapPath::Search => steps.push(UpgradeStep::Search {
+                query: intent.text.clone(),
+            }),
             GapPath::Delegate => steps.push(UpgradeStep::Delegate {
                 capability: intent.category.as_str().into(),
                 digest: intent.text.chars().take(60).collect(),
@@ -135,7 +141,7 @@ pub fn lesson_content(intent: &Intent, steps: &[UpgradeStep], outcome: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gap::{detect_gaps, CapabilityInventory};
+    use crate::gap::{CapabilityInventory, detect_gaps};
     use crate::world::classify_intent;
 
     fn intent_of(text: &str) -> Intent {
@@ -156,10 +162,21 @@ mod tests {
     fn plan_follows_gap_paths_in_order() {
         let intent = intent_of("我在杭州找后端开发的工作"); // work / links
         // 有搜索源 → 只有 Search
-        let gap = detect_gaps(&intent, &CapabilityInventory { has_web_search: true, ..Default::default() });
+        let gap = detect_gaps(
+            &intent,
+            &CapabilityInventory {
+                has_web_search: true,
+                ..Default::default()
+            },
+        );
         let plan = plan_upgrade(&intent, &gap);
         assert_eq!(plan.len(), 1);
-        assert_eq!(plan[0], UpgradeStep::Search { query: "我在杭州找后端开发的工作".into() });
+        assert_eq!(
+            plan[0],
+            UpgradeStep::Search {
+                query: "我在杭州找后端开发的工作".into()
+            }
+        );
 
         // 零能力 → Info/Links 缺失走 Install
         let gap2 = detect_gaps(&intent, &CapabilityInventory::default());
@@ -176,7 +193,11 @@ mod tests {
         let plan = plan_upgrade(&intent, &gap);
         assert_eq!(plan[0].kind(), "delegate");
         match &plan[0] {
-            UpgradeStep::Delegate { capability, digest, budget } => {
+            UpgradeStep::Delegate {
+                capability,
+                digest,
+                budget,
+            } => {
                 assert_eq!(capability, "travel");
                 assert!(digest.contains("酒店"));
                 assert_eq!(budget, "0", "意图无预算 ⇒ 0 (待议), 不编金额");

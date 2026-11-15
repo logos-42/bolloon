@@ -52,7 +52,10 @@ impl BeatSchedule {
     pub fn new(interval: Duration, phase: Duration) -> Self {
         let interval_ns = interval.as_nanos().max(1) as u64;
         let phase_ns = (phase.as_nanos() as u64) % interval_ns;
-        Self { interval_ns, phase_ns }
+        Self {
+            interval_ns,
+            phase_ns,
+        }
     }
 
     /// 两核标准错相位: A 相位 0, B 相位 interval/2。
@@ -77,7 +80,9 @@ impl BeatSchedule {
 }
 
 /// 栅栏令牌: 单调递增。写入 Run/事实时携带; 旧令牌写入作废 (防双主 / 陈旧核回写)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct FencingToken(pub u64);
 
 impl FencingToken {
@@ -485,7 +490,9 @@ pub fn spawn_kernel_ha(
 ///   两个独立进程各选一个核即可互维互保。
 /// - `BOLLOON_HA=both`: 同进程启 A+B 两核 (仅本地演示, 无进程级崩溃隔离)。
 /// - 未设置 / `0` / `off`: 不启 (默认关, 不影响现有行为)。
-pub fn spawn_kernel_ha_from_env(recovery: Arc<dyn RecoveryAction>) -> Vec<tokio::task::JoinHandle<()>> {
+pub fn spawn_kernel_ha_from_env(
+    recovery: Arc<dyn RecoveryAction>,
+) -> Vec<tokio::task::JoinHandle<()>> {
     let ha = std::env::var("BOLLOON_HA").unwrap_or_default();
     let ha_lc = ha.to_ascii_lowercase();
     if ha_lc.is_empty() || ha_lc == "0" || ha_lc == "off" {
@@ -528,7 +535,11 @@ mod tests {
     #[async_trait::async_trait]
     impl HeartbeatStore for MemStore {
         async fn write_beat(&self, beat: &Beat) -> bool {
-            let m = if beat.core == CoreId::A { &self.a } else { &self.b };
+            let m = if beat.core == CoreId::A {
+                &self.a
+            } else {
+                &self.b
+            };
             *m.lock().await = Some(beat.clone());
             true
         }
@@ -569,7 +580,12 @@ mod tests {
 
     #[tokio::test]
     async fn peer_alive_no_takeover() {
-        let arb = DualArbiter::new(CoreId::A, Duration::from_millis(100), Duration::from_millis(50), 90);
+        let arb = DualArbiter::new(
+            CoreId::A,
+            Duration::from_millis(100),
+            Duration::from_millis(50),
+            90,
+        );
         arb.observe_peer(Beat {
             core: CoreId::B,
             seq: 1,
@@ -586,7 +602,12 @@ mod tests {
 
     #[tokio::test]
     async fn peer_overloaded_defers() {
-        let arb = DualArbiter::new(CoreId::A, Duration::from_millis(100), Duration::from_millis(50), 80);
+        let arb = DualArbiter::new(
+            CoreId::A,
+            Duration::from_millis(100),
+            Duration::from_millis(50),
+            80,
+        );
         arb.observe_peer(Beat {
             core: CoreId::B,
             seq: 1,
@@ -603,7 +624,12 @@ mod tests {
 
     #[tokio::test]
     async fn stale_then_takeover_bumps_fence() {
-        let arb = DualArbiter::new(CoreId::A, Duration::from_millis(30), Duration::from_millis(40), 90);
+        let arb = DualArbiter::new(
+            CoreId::A,
+            Duration::from_millis(30),
+            Duration::from_millis(40),
+            90,
+        );
         // 对端最后一次心跳, 立刻过期
         arb.observe_peer(Beat {
             core: CoreId::B,
@@ -628,7 +654,12 @@ mod tests {
 
     #[tokio::test]
     async fn old_fence_replay_rejected() {
-        let arb = DualArbiter::new(CoreId::A, Duration::from_millis(100), Duration::from_millis(50), 90);
+        let arb = DualArbiter::new(
+            CoreId::A,
+            Duration::from_millis(100),
+            Duration::from_millis(50),
+            90,
+        );
         arb.observe_peer(Beat {
             core: CoreId::B,
             seq: 2,
@@ -653,10 +684,30 @@ mod tests {
     async fn two_cores_exchange_beats_via_store() {
         let store = Arc::new(MemStore::new());
         let (sa, sb) = BeatSchedule::staggered(Duration::from_millis(20));
-        let arb_a = DualArbiter::new(CoreId::A, Duration::from_millis(150), Duration::from_millis(50), 90);
-        let arb_b = DualArbiter::new(CoreId::B, Duration::from_millis(150), Duration::from_millis(50), 90);
-        let guard_a = DualGuard::new(arb_a.clone(), sa, store.clone(), Arc::new(crate::ha::NoopRecovery));
-        let guard_b = DualGuard::new(arb_b.clone(), sb, store.clone(), Arc::new(crate::ha::NoopRecovery));
+        let arb_a = DualArbiter::new(
+            CoreId::A,
+            Duration::from_millis(150),
+            Duration::from_millis(50),
+            90,
+        );
+        let arb_b = DualArbiter::new(
+            CoreId::B,
+            Duration::from_millis(150),
+            Duration::from_millis(50),
+            90,
+        );
+        let guard_a = DualGuard::new(
+            arb_a.clone(),
+            sa,
+            store.clone(),
+            Arc::new(crate::ha::NoopRecovery),
+        );
+        let guard_b = DualGuard::new(
+            arb_b.clone(),
+            sb,
+            store.clone(),
+            Arc::new(crate::ha::NoopRecovery),
+        );
         let h_a = tokio::spawn(guard_a.run());
         let h_b = tokio::spawn(guard_b.run());
 
@@ -687,8 +738,7 @@ mod tests {
         assert_eq!(read.fence, FencingToken(12));
         // 10s 前的心跳, 落盘读回后误差在亚秒级; 以秒粒度校验往返保真
         assert_eq!(
-            read
-                .received_at
+            read.received_at
                 .elapsed()
                 .unwrap_or(Duration::ZERO)
                 .as_secs(),

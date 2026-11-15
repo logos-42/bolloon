@@ -15,8 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-
-use bolloon_agent::dream::{dream, DreamInput, DreamReport};
+use bolloon_agent::dream::{DreamInput, DreamReport, dream};
 use bolloon_agent::judgment::JudgmentStore;
 use bolloon_agent::memory::{MemoryEntry, MemoryLayer, MemoryStore};
 use bolloon_agent::skills_runtime::SkillEvolver;
@@ -106,8 +105,12 @@ impl Learning {
             brief,
             tool_part
         );
-        self.memory
-            .remember(content, MemoryLayer::RunFact, if ok { 0.45 } else { 0.65 }, None);
+        self.memory.remember(
+            content,
+            MemoryLayer::RunFact,
+            if ok { 0.45 } else { 0.65 },
+            None,
+        );
         self.turns_since_dream += 1;
     }
 
@@ -123,10 +126,7 @@ impl Learning {
         }
         // 机器上**已有的**技能库 (Hermes/Claude/Codex + 项目内): 只放名字, 60 个封顶 ——
         // 全会话照抄 1374 个名字会把上下文吃掉, 而名字足够模型判断"该不该去读"。
-        let dirs = machine_skills(
-            self.memory_path.parent().unwrap_or(Path::new(".")),
-            2000,
-        );
+        let dirs = machine_skills(self.memory_path.parent().unwrap_or(Path::new(".")), 2000);
         if !dirs.is_empty() {
             let shown: Vec<&str> = dirs.iter().take(60).map(|s| s.as_str()).collect();
             skills.push_str(&format!(
@@ -168,12 +168,7 @@ impl Learning {
         let compose = |m: &str, j: &str, s: &str| format!("{s}{j}{m}");
         let mut out = compose(&memories, &judgments, &skills);
         if out.chars().count() > budget {
-            let short_mem = memories
-                .lines()
-                .take(1 + 3)
-                .collect::<Vec<_>>()
-                .join("\n")
-                + "\n";
+            let short_mem = memories.lines().take(1 + 3).collect::<Vec<_>>().join("\n") + "\n";
             out = compose(&short_mem, &judgments, &skills);
         }
         if out.chars().count() > budget {
@@ -257,10 +252,10 @@ pub fn machine_skills(home: &Path, cap: usize) -> Vec<String> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("/"));
     let mut roots: Vec<std::path::PathBuf> = vec![
-        home.join("skills"),                  // ~/.bolloon/skills (本仓自己的)
-        user_home.join(".hermes/skills"),     // Hermes 技能库
-        user_home.join(".claude/skills"),     // Claude Code
-        user_home.join(".codex/skills"),      // Codex
+        home.join("skills"),              // ~/.bolloon/skills (本仓自己的)
+        user_home.join(".hermes/skills"), // Hermes 技能库
+        user_home.join(".claude/skills"), // Claude Code
+        user_home.join(".codex/skills"),  // Codex
     ];
     if let Ok(cwd) = std::env::current_dir() {
         roots.push(cwd.join(".hermes/skills")); // 项目内的
@@ -277,7 +272,9 @@ pub fn machine_skills(home: &Path, cap: usize) -> Vec<String> {
             if out.len() >= cap {
                 break;
             }
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
+            };
             for e in rd.flatten() {
                 let p = e.path();
                 if !p.is_dir() {
@@ -348,7 +345,11 @@ mod tests {
         }
         let block = l.context_block("记忆", 600);
         assert!(!block.is_empty(), "有记忆就该有区块");
-        assert!(block.chars().count() <= 900, "预算要生效: {}", block.chars().count());
+        assert!(
+            block.chars().count() <= 900,
+            "预算要生效: {}",
+            block.chars().count()
+        );
     }
 
     #[test]

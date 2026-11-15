@@ -174,10 +174,7 @@ mod tests {
 
     #[tokio::test]
     async fn arbiter_transitions() {
-        let arb = Arc::new(HeartbeatArbiter::new(
-            "inst-1",
-            Duration::from_millis(100),
-        ));
+        let arb = Arc::new(HeartbeatArbiter::new("inst-1", Duration::from_millis(100)));
         assert_eq!(arb.evaluate().await, HeartbeatState::Passive);
 
         arb.observe(HeartbeatTick {
@@ -221,16 +218,9 @@ mod tests {
         let recovery = Arc::new(CountingRecovery {
             calls: AtomicU32::new(0),
         });
-        let arb = Arc::new(HeartbeatArbiter::new(
-            "inst-1",
-            Duration::from_millis(50),
-        ));
-        let guard = HeartbeatGuard::new(
-            arb.clone(),
-            recovery.clone(),
-            Duration::from_millis(20),
-            2,
-        );
+        let arb = Arc::new(HeartbeatArbiter::new("inst-1", Duration::from_millis(50)));
+        let guard =
+            HeartbeatGuard::new(arb.clone(), recovery.clone(), Duration::from_millis(20), 2);
 
         // 不喂心跳 → 一段时间后应执行过恢复
         let handle = tokio::spawn(guard.run());

@@ -44,9 +44,15 @@ impl ContextFingerprint {
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0);
-                    DocStat { mtime_ms, size: m.len() }
+                    DocStat {
+                        mtime_ms,
+                        size: m.len(),
+                    }
                 })
-                .unwrap_or(DocStat { mtime_ms: 0, size: 0 });
+                .unwrap_or(DocStat {
+                    mtime_ms: 0,
+                    size: 0,
+                });
             docs.insert(key, stat);
         }
         Self { docs }
@@ -91,7 +97,9 @@ impl InMemoryDocs {
     }
 
     pub fn fingerprint(&self) -> ContextFingerprint {
-        ContextFingerprint { docs: self.docs.clone() }
+        ContextFingerprint {
+            docs: self.docs.clone(),
+        }
     }
 }
 
@@ -101,7 +109,11 @@ impl InMemoryDocs {
 /// - `web`/`app`/`p2p`/`group`/其它: 全局优先 (跨端一致的 bolloon 身份), 项目内补充
 ///
 /// 文档改了下一轮生效 (见 `ContextFingerprint`); 这里只决定"按 channel 该优先读哪份"。
-pub fn identity_doc_paths(channel: &str, project_root: &Path, home: &Path) -> Vec<std::path::PathBuf> {
+pub fn identity_doc_paths(
+    channel: &str,
+    project_root: &Path,
+    home: &Path,
+) -> Vec<std::path::PathBuf> {
     let global = vec![
         home.join(".bolloon").join("persona").join("persona.json"),
         home.join(".bolloon").join("Bolloon.md"),

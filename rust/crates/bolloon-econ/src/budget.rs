@@ -55,7 +55,6 @@ pub enum ExhaustionPolicy {
     AskAuthorization,
 }
 
-
 /// 隐私策略: 哪些数据可以离开本机。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrivacyPolicy {
@@ -340,7 +339,10 @@ impl BudgetGuard {
             loop {
                 let next = cur.saturating_sub(back);
                 match self.spent_micro_usd.compare_exchange_weak(
-                    cur, next, Ordering::Relaxed, Ordering::Relaxed,
+                    cur,
+                    next,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
                 ) {
                     Ok(_) => break,
                     Err(c) => cur = c,

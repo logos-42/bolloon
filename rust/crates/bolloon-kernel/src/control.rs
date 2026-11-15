@@ -2,8 +2,8 @@
 //!
 //! 纯机制：不判业务，只维护三态状态机，供 ChannelActor / Agent 轮询。
 
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// 控制状态机
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,17 +63,20 @@ impl Control {
     }
 
     pub fn pause(&self) {
-        self.state.store(ControlState::Paused as u8, Ordering::Release);
+        self.state
+            .store(ControlState::Paused as u8, Ordering::Release);
         tracing::debug!("control: paused");
     }
 
     pub fn resume(&self) {
-        self.state.store(ControlState::Running as u8, Ordering::Release);
+        self.state
+            .store(ControlState::Running as u8, Ordering::Release);
         tracing::debug!("control: resumed");
     }
 
     pub fn abort(&self) {
-        self.state.store(ControlState::Aborted as u8, Ordering::Release);
+        self.state
+            .store(ControlState::Aborted as u8, Ordering::Release);
         tracing::debug!("control: aborted");
     }
 
@@ -176,8 +179,8 @@ mod tests {
 
     #[tokio::test]
     async fn actor_halts_when_paused() {
-        use crate::channel_actor::{ChannelActor, ChannelEvent, ChannelId};
         use crate::channel_actor::EventKind::UserMessage;
+        use crate::channel_actor::{ChannelActor, ChannelEvent, ChannelId};
 
         let ctrl = Arc::new(Control::new());
         let cnt = Arc::new(std::sync::atomic::AtomicUsize::new(0));

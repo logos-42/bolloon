@@ -48,7 +48,9 @@ impl MigrationChain {
                 .steps
                 .iter()
                 .find(|(from, _, _, _)| *from == v)
-                .ok_or_else(|| format!("没有从 schemaVersion {v} 出发的迁移步骤 (目标 {target})"))?;
+                .ok_or_else(|| {
+                    format!("没有从 schemaVersion {v} 出发的迁移步骤 (目标 {target})")
+                })?;
             let (from, to, name, f) = step;
             data = f(&data).map_err(|e| format!("迁移 {name} (v{from}→v{to}) 失败: {e}"))?;
             // 迁移函数自己负责写 schemaVersion; 这里强校验
@@ -140,14 +142,19 @@ mod tests {
     fn unknown_version_errors_honestly() {
         let data = serde_json::json!({ "schemaVersion": 99 });
         let err = chain().migrate_to(data, 100).unwrap_err();
-        assert!(err.contains("没有从 schemaVersion 99 出发"), "如实报错不跳步");
+        assert!(
+            err.contains("没有从 schemaVersion 99 出发"),
+            "如实报错不跳步"
+        );
     }
 
     #[test]
     fn step_failure_stops_chain() {
         let mut c = MigrationChain::new();
         c.register(1, 2, "坏步骤", |_| Err("故意失败".into()));
-        let err = c.migrate_to(serde_json::json!({"schemaVersion": 1}), 2).unwrap_err();
+        let err = c
+            .migrate_to(serde_json::json!({"schemaVersion": 1}), 2)
+            .unwrap_err();
         assert!(err.contains("故意失败"), "失败停在当前版本, 不假装成功");
     }
 

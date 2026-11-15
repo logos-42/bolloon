@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 // trait 必须在作用域里, 否则 `PublicKey::to_encoded_point` 报 E0599 —— 放在模块级,
 // 不要只放在 generate_evm 里 (别处再调就又踩一次)。
 use k256::elliptic_curve::sec1::ToEncodedPoint;
@@ -185,7 +185,10 @@ pub async fn bind_wallet(
         }));
     }
     let mut list = load(&agent_id);
-    if list.iter().any(|w| w.address.eq_ignore_ascii_case(&address)) {
+    if list
+        .iter()
+        .any(|w| w.address.eq_ignore_ascii_case(&address))
+    {
         return Json(serde_json::json!({ "error": "这个地址已经在这个智能体名下了" }));
     }
     let bound_now = list.iter().filter(|w| w.source == "bound").count();
@@ -229,7 +232,6 @@ pub async fn remove_wallet(
     Json(serde_json::json!({ "ok": true, "remaining": list.len() }))
 }
 
-
 /// 动态注入用: 把该智能体当前的钱包状态压成一小段拼进 system prompt。
 /// 每轮现读文件 —— 授权/创建后下一句对话里它就知道了, 不需要重启、不用记忆条目。
 pub fn prompt_block(agent_id: &str) -> String {
@@ -239,7 +241,11 @@ pub fn prompt_block(agent_id: &str) -> String {
     }
     let mut lines = Vec::new();
     for w in &list {
-        let kind = if w.source == "created" { "本机创建" } else { "已绑定" };
+        let kind = if w.source == "created" {
+            "本机创建"
+        } else {
+            "已绑定"
+        };
         let label = if w.label.is_empty() {
             String::new()
         } else {
@@ -275,7 +281,9 @@ mod tests {
     #[test]
     fn address_validation_rejects_private_keys_and_junk() {
         assert!(!is_evm_address("0x1234"));
-        assert!(!is_evm_address("0xZZZZdCF79055A8232670ebb1c8c664Dff4E70066"));
+        assert!(!is_evm_address(
+            "0xZZZZdCF79055A8232670ebb1c8c664Dff4E70066"
+        ));
         // 64 位十六进制 (私钥) 不是地址 —— 这条正是用户反馈的「收到的是私钥」
         assert!(!is_evm_address(&format!("0x{}", "a".repeat(64))));
         assert!(is_evm_address("0xb4e9dCF79055A8232670ebb1c8c664Dff4E70066"));

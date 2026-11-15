@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 
 use crate::AppState;
 
@@ -45,7 +45,9 @@ pub struct VerifyFile {
 }
 
 fn path() -> PathBuf {
-    crate::server::data_dir().join("verify").join("verified.json")
+    crate::server::data_dir()
+        .join("verify")
+        .join("verified.json")
 }
 
 fn load() -> VerifyFile {
@@ -136,11 +138,15 @@ pub async fn personhood(
             "error": "需要提供 proof（手机号/邮箱 ownership attestation）或邀请码，才能完成真人验证",
         }));
     };
-    let att: bolloon_p2p::attestation::OwnershipAttestation = match serde_json::from_value(proof.clone())
-    {
-        Ok(a) => a,
-        Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("proof 解析失败: {e}") })),
-    };
+    let att: bolloon_p2p::attestation::OwnershipAttestation =
+        match serde_json::from_value(proof.clone()) {
+            Ok(a) => a,
+            Err(e) => {
+                return Json(
+                    serde_json::json!({ "ok": false, "error": format!("proof 解析失败: {e}") }),
+                );
+            }
+        };
     let kind = att.statement.subject_kind;
     if !matches!(
         kind,

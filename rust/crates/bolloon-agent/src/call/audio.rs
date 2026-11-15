@@ -16,7 +16,11 @@ pub struct Pcm16 {
 
 impl Pcm16 {
     pub fn mono(sample_rate: u32, samples: Vec<i16>) -> Self {
-        Self { sample_rate, samples, channels: 1 }
+        Self {
+            sample_rate,
+            samples,
+            channels: 1,
+        }
     }
 
     pub fn frames(&self) -> usize {
@@ -107,8 +111,7 @@ pub fn parse_wav(bytes: &[u8]) -> Result<Pcm16, String> {
         pos = body + size + (size & 1);
     }
 
-    let (format, channels, sample_rate, bits) =
-        fmt.ok_or_else(|| "WAV 缺 fmt 块".to_string())?;
+    let (format, channels, sample_rate, bits) = fmt.ok_or_else(|| "WAV 缺 fmt 块".to_string())?;
     if format != 1 {
         return Err(format!("只支持 PCM(format=1)，当前 {format}"));
     }
@@ -125,7 +128,11 @@ pub fn parse_wav(bytes: &[u8]) -> Result<Pcm16, String> {
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
 
-    Ok(Pcm16 { sample_rate, samples, channels })
+    Ok(Pcm16 {
+        sample_rate,
+        samples,
+        channels,
+    })
 }
 
 /// 生成标准 44 字节头的 16-bit PCM WAV
@@ -182,7 +189,11 @@ pub fn resample(pcm: &Pcm16, target_rate: u32) -> Pcm16 {
             out.push(v.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16);
         }
     }
-    Pcm16 { sample_rate: target_rate, samples: out, channels: pcm.channels }
+    Pcm16 {
+        sample_rate: target_rate,
+        samples: out,
+        channels: pcm.channels,
+    }
 }
 
 /// VAD 配置（能量门限为归一化 RMS）
@@ -200,7 +211,12 @@ pub struct VadConfig {
 
 impl Default for VadConfig {
     fn default() -> Self {
-        Self { silence_rms: 0.012, min_speech_ms: 200, max_gap_ms: 400, frame_ms: 20 }
+        Self {
+            silence_rms: 0.012,
+            min_speech_ms: 200,
+            max_gap_ms: 400,
+            frame_ms: 20,
+        }
     }
 }
 
@@ -288,11 +304,13 @@ impl HalfDuplex {
     }
 
     pub fn begin_speaking(&self) {
-        self.speaking.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.speaking
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn end_speaking(&self) {
-        self.speaking.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.speaking
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn is_speaking(&self) -> bool {
@@ -343,7 +361,10 @@ mod tests {
     fn rejects_non_16bit_and_non_riff() {
         let mut bytes = encode_wav(&tone(8000, 10, 0.1));
         bytes[34] = 8; // bits = 8
-        assert!(parse_wav(&bytes).unwrap_err().contains("16-bit"), "只认 16-bit");
+        assert!(
+            parse_wav(&bytes).unwrap_err().contains("16-bit"),
+            "只认 16-bit"
+        );
 
         assert!(parse_wav(b"not a wav file at all..................").is_err());
     }
@@ -401,7 +422,10 @@ mod tests {
     fn barge_in_only_while_speaking() {
         let hd = HalfDuplex::new();
         let speech = tone(16000, 300, 0.6);
-        assert!(!hd.detect_barge_in(&speech, &VadConfig::default()), "没在播放就谈不上打断");
+        assert!(
+            !hd.detect_barge_in(&speech, &VadConfig::default()),
+            "没在播放就谈不上打断"
+        );
         hd.begin_speaking();
         assert!(hd.detect_barge_in(&speech, &VadConfig::default()));
         assert!(!hd.detect_barge_in(&silence(16000, 300), &VadConfig::default()));
@@ -409,7 +433,11 @@ mod tests {
 
     #[test]
     fn stereo_to_mono_averages() {
-        let pcm = Pcm16 { sample_rate: 8000, samples: vec![100, 300, -100, -300], channels: 2 };
+        let pcm = Pcm16 {
+            sample_rate: 8000,
+            samples: vec![100, 300, -100, -300],
+            channels: 2,
+        };
         let mono = pcm.to_mono();
         assert_eq!(mono.samples, vec![200, -200]);
     }

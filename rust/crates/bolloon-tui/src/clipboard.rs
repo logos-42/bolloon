@@ -17,7 +17,9 @@ use std::process::{Command, Stdio};
 
 /// 贴图落盘目录: `~/.bolloon/rust/paste` (与 history 同级, 走同一个 BolloonHome)
 pub fn paste_dir() -> PathBuf {
-    bolloon_agent::home::BolloonHome::resolve().root().join("paste")
+    bolloon_agent::home::BolloonHome::resolve()
+        .root()
+        .join("paste")
 }
 
 /// 一次贴图: 剪贴板 → 新 PNG 文件。失败给**人话**原因 (没有任何图片 / 命令都不可用)
@@ -214,7 +216,10 @@ pub fn copy_text(text: &str) -> Result<(), String> {
             Err(e) => tried.push(format!("{bin} ({e})")),
         }
     }
-    Err(format!("没有可用的剪贴板命令 (试过: {})", tried.join(" · ")))
+    Err(format!(
+        "没有可用的剪贴板命令 (试过: {})",
+        tried.join(" · ")
+    ))
 }
 
 fn pipe_stdin(bin: &str, args: &[&str], text: &str) -> Result<(), String> {
@@ -227,7 +232,8 @@ fn pipe_stdin(bin: &str, args: &[&str], text: &str) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("起不动: {e}"))?;
     if let Some(mut si) = child.stdin.take() {
-        si.write_all(text.as_bytes()).map_err(|e| format!("写 stdin 失败: {e}"))?;
+        si.write_all(text.as_bytes())
+            .map_err(|e| format!("写 stdin 失败: {e}"))?;
     }
     let st = child.wait().map_err(|e| format!("等待失败: {e}"))?;
     if !st.success() {
@@ -253,7 +259,10 @@ mod tests {
     use std::io::Write;
 
     fn tmp_dest(tag: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("bolloon-paste-test-{}-{tag}.png", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "bolloon-paste-test-{}-{tag}.png",
+            std::process::id()
+        ))
     }
 
     /// 真跑一次"命令 → 文件"这条链: 命令把 PNG 字节写到 stdout
@@ -297,7 +306,9 @@ mod tests {
     #[test]
     fn paste_dir_lives_under_bolloon_home() {
         let _g = crate::width::test_lock().lock().unwrap();
-        let root = bolloon_agent::home::BolloonHome::resolve().root().to_path_buf();
+        let root = bolloon_agent::home::BolloonHome::resolve()
+            .root()
+            .to_path_buf();
         assert_eq!(paste_dir(), root.join("paste"));
     }
 
@@ -319,7 +330,8 @@ mod tests {
     #[test]
     fn copy_text_pipes_to_command() {
         let _g = crate::width::test_lock().lock().unwrap();
-        let dest = std::env::temp_dir().join(format!("bolloon-copy-test-{}.txt", std::process::id()));
+        let dest =
+            std::env::temp_dir().join(format!("bolloon-copy-test-{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&dest);
 
         unsafe {

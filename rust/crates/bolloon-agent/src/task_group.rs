@@ -64,7 +64,10 @@ pub fn scan_privacy(text: &str) -> Vec<PrivacyViolation> {
     let mut out = Vec::new();
     let check = |rule: &str, hint: &str, cond: bool, out: &mut Vec<PrivacyViolation>| {
         if cond {
-            out.push(PrivacyViolation { rule: rule.into(), hint: hint.into() });
+            out.push(PrivacyViolation {
+                rule: rule.into(),
+                hint: hint.into(),
+            });
         }
     };
     // 钱包地址 0x + 40 hex
@@ -84,7 +87,12 @@ pub fn scan_privacy(text: &str) -> Vec<PrivacyViolation> {
         &mut out,
     );
     // DID
-    check("did", "DID 不进群 (用 agent-<8位> 假名)", text.contains("did:"), &mut out);
+    check(
+        "did",
+        "DID 不进群 (用 agent-<8位> 假名)",
+        text.contains("did:"),
+        &mut out,
+    );
     // peerId (Qm 开头 46 位 base58 / 12D3 开头)
     check(
         "peer_id",
@@ -94,21 +102,34 @@ pub fn scan_privacy(text: &str) -> Vec<PrivacyViolation> {
         &mut out,
     );
     // multiaddr
-    check("multiaddr", "multiaddr 不进群", text.contains("/ip4/") || text.contains("/ip6/"), &mut out);
+    check(
+        "multiaddr",
+        "multiaddr 不进群",
+        text.contains("/ip4/") || text.contains("/ip6/"),
+        &mut out,
+    );
     // IPv4
     check(
         "ipv4",
         "IP 地址不进群",
-        text.split(|c: char| !c.is_ascii_digit() && c != '.').any(|tok| {
-            let parts: Vec<&str> = tok.split('.').collect();
-            parts.len() == 4
-                && parts.iter().all(|p| !p.is_empty() && p.len() <= 3 && p.chars().all(|c| c.is_ascii_digit()))
-        }),
+        text.split(|c: char| !c.is_ascii_digit() && c != '.')
+            .any(|tok| {
+                let parts: Vec<&str> = tok.split('.').collect();
+                parts.len() == 4
+                    && parts.iter().all(|p| {
+                        !p.is_empty() && p.len() <= 3 && p.chars().all(|c| c.is_ascii_digit())
+                    })
+            }),
         &mut out,
     );
     // PEM / 私钥字样
     check("pem", "PEM 块不进群", text.contains("-----BEGIN"), &mut out);
-    check("secret_words", "私钥/助记词字样不进群", text.contains("私钥") || text.contains("助记词"), &mut out);
+    check(
+        "secret_words",
+        "私钥/助记词字样不进群",
+        text.contains("私钥") || text.contains("助记词"),
+        &mut out,
+    );
     out
 }
 
@@ -117,7 +138,9 @@ pub fn scan_privacy(text: &str) -> Vec<PrivacyViolation> {
 pub enum HashGateError {
     #[error("--hash 是**钱包地址**形状 (0x + 40 hex) — 交付哈希不是地址 (拒, 别把地址贴进群)")]
     WalletAddressShape,
-    #[error("--hash 是 CIDv0 (Qm…) 形状, 它与 libp2p peerId **同形** — 拒 (用 sha256/<内容哈希> 或 CIDv1 bafy… 表达交付)")]
+    #[error(
+        "--hash 是 CIDv0 (Qm…) 形状, 它与 libp2p peerId **同形** — 拒 (用 sha256/<内容哈希> 或 CIDv1 bafy… 表达交付)"
+    )]
     PeerIdSameShape,
     #[error("交付哈希形状不对 (要 sha256:<64hex> 或 CIDv1 bafy…)")]
     BadShape,
@@ -128,7 +151,10 @@ pub fn gate_delivery_hash(hash: &str) -> Result<(), HashGateError> {
     let h = hash.trim();
     let lowered = h.to_lowercase();
     // 0x + 40 = 钱包地址
-    if lowered.starts_with("0x") && lowered[2..].chars().all(|c| c.is_ascii_hexdigit()) && lowered.len() == 42 {
+    if lowered.starts_with("0x")
+        && lowered[2..].chars().all(|c| c.is_ascii_hexdigit())
+        && lowered.len() == 42
+    {
         return Err(HashGateError::WalletAddressShape);
     }
     // 0x + 64 = 私钥形状
@@ -153,7 +179,10 @@ pub fn gate_delivery_hash(hash: &str) -> Result<(), HashGateError> {
 }
 
 /// 构造一条留痕行 (字段化; 值全部经隐私守卫)
-pub fn build_trail_line(kind: TrailKind, fields: &[(&str, String)]) -> Result<String, PrivacyViolation> {
+pub fn build_trail_line(
+    kind: TrailKind,
+    fields: &[(&str, String)],
+) -> Result<String, PrivacyViolation> {
     let mut line = format!("{TRAIL_TAG} v={TRAIL_VERSION} kind={}", kind.as_str());
     for (k, v) in fields {
         let violations = scan_privacy(v);
@@ -193,7 +222,10 @@ pub fn parse_trail_line(line: &str) -> Option<ParsedTrail> {
             fields.insert(key.to_string(), val.to_string());
         }
     }
-    Some(ParsedTrail { kind: kind?, fields })
+    Some(ParsedTrail {
+        kind: kind?,
+        fields,
+    })
 }
 
 /// trail 时间线汇总 (诚实计数: 无交付痕迹不出现"已交付")
@@ -219,7 +251,9 @@ pub fn summarize_trail(lines: &[&str]) -> TrailTimeline {
             t.redacted += 1; // 遮蔽并记账, 不回显原文
             continue;
         }
-        let Some(parsed) = parse_trail_line(line) else { continue };
+        let Some(parsed) = parse_trail_line(line) else {
+            continue;
+        };
         match parsed.kind {
             TrailKind::Announce => t.announce += 1,
             TrailKind::Claim => t.claim += 1,
@@ -237,7 +271,8 @@ pub fn summarize_trail(lines: &[&str]) -> TrailTimeline {
     }
     // 终审 accept 但无交付痕迹 → 显式标矛盾
     if !has_deliver && t.final_verdicts.iter().any(|v| v == "accept") {
-        t.contradictions.push("final-accept-without-delivery: 终审 accept 但无交付痕迹".into());
+        t.contradictions
+            .push("final-accept-without-delivery: 终审 accept 但无交付痕迹".into());
     }
     t
 }
@@ -250,18 +285,28 @@ mod tests {
     fn trail_line_roundtrip() {
         let line = build_trail_line(
             TrailKind::Announce,
-            &[("id", "ann-3b7bf8db".into()), ("cap", "research".into()), ("budget", "1000".into())],
+            &[
+                ("id", "ann-3b7bf8db".into()),
+                ("cap", "research".into()),
+                ("budget", "1000".into()),
+            ],
         )
         .unwrap();
         assert!(line.starts_with("[bolloon-task] v=1 kind=announce"));
         let parsed = parse_trail_line(&line).unwrap();
         assert_eq!(parsed.kind, TrailKind::Announce);
-        assert_eq!(parsed.fields.get("cap").map(|s| s.as_str()), Some("research"));
+        assert_eq!(
+            parsed.fields.get("cap").map(|s| s.as_str()),
+            Some("research")
+        );
     }
 
     #[test]
     fn privacy_wallet_address_rejected_at_send() {
-        let err = build_trail_line(TrailKind::Deliver, &[("to", "0x6a3f797592bed028f6afd6da82339c8e815480eb".into())]);
+        let err = build_trail_line(
+            TrailKind::Deliver,
+            &[("to", "0x6a3f797592bed028f6afd6da82339c8e815480eb".into())],
+        );
         assert!(err.is_err(), "地址不许进群");
         assert_eq!(err.unwrap_err().rule, "wallet_address");
     }
@@ -280,7 +325,8 @@ mod tests {
 
     #[test]
     fn privacy_private_key_shape_rejected() {
-        let v = scan_privacy("key: 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+        let v =
+            scan_privacy("key: 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
         assert!(v.iter().any(|x| x.rule == "private_key_shape"));
     }
 
@@ -344,7 +390,10 @@ mod tests {
     #[test]
     fn non_trail_lines_ignored() {
         assert!(parse_trail_line("普通聊天消息").is_none());
-        assert!(parse_trail_line("[bolloon-task] v=1 kind=unknown-op").is_none(), "kind 非法不猜");
+        assert!(
+            parse_trail_line("[bolloon-task] v=1 kind=unknown-op").is_none(),
+            "kind 非法不猜"
+        );
     }
 
     #[test]

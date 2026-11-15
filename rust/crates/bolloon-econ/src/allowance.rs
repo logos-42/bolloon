@@ -141,7 +141,10 @@ pub fn daily_allowance(
     if h.successful_intents > 0 {
         let add = h.successful_intents.saturating_mul(p.per_success);
         calls = calls.saturating_add(add);
-        reasons.push(format!("成功意图 {} × {} = +{}", h.successful_intents, p.per_success, add));
+        reasons.push(format!(
+            "成功意图 {} × {} = +{}",
+            h.successful_intents, p.per_success, add
+        ));
         tier = AllowanceTier::Regular;
     }
 
@@ -157,7 +160,9 @@ pub fn daily_allowance(
 
     // ③ 贡献：已验收的条数 + 已到账的现金
     if h.verified_contributions > 0 || h.confirmed_cash_usd > 0.0 {
-        let by_count = h.verified_contributions.saturating_mul(p.per_verified_contribution);
+        let by_count = h
+            .verified_contributions
+            .saturating_mul(p.per_verified_contribution);
         let by_cash = (h.confirmed_cash_usd.max(0.0) * p.per_confirmed_usd as f64).round() as u32;
         calls = calls.saturating_add(by_count).saturating_add(by_cash);
         if by_count > 0 {
@@ -167,7 +172,10 @@ pub fn daily_allowance(
             ));
         }
         if by_cash > 0 {
-            reasons.push(format!("已到账 {:.2} USD × {} = +{}", h.confirmed_cash_usd, p.per_confirmed_usd, by_cash));
+            reasons.push(format!(
+                "已到账 {:.2} USD × {} = +{}",
+                h.confirmed_cash_usd, p.per_confirmed_usd, by_cash
+            ));
         }
         tier = AllowanceTier::Contributor;
         if h.successful_intents >= 10 && h.failed_intents <= h.successful_intents / 5 {
@@ -195,7 +203,11 @@ pub fn daily_allowance(
         tier = AllowanceTier::Throttled;
         throttled_note = Some(format!(
             "近期限流：被闸拦下 {} 次（阈值 {}），额度 {} → {}。地板 {} 次照给 —— 不封号、不下线，改好就恢复。",
-            h.blocked_attempts, p.abuse_threshold, before, calls.max(floor), floor
+            h.blocked_attempts,
+            p.abuse_threshold,
+            before,
+            calls.max(floor),
+            floor
         ));
         reasons.push(format!("白嫖衰减 ×{factor:.3}（{} → {}）", before, calls));
     }
@@ -238,12 +250,16 @@ pub fn copy_group_goodwill(
     if grant == 0 {
         return 0;
     }
-    beneficiary.calls = beneficiary.calls.saturating_add(grant).min(cap_calls.max(beneficiary.calls));
+    beneficiary.calls = beneficiary
+        .calls
+        .saturating_add(grant)
+        .min(cap_calls.max(beneficiary.calls));
     beneficiary.remaining = beneficiary.remaining.saturating_add(grant);
     beneficiary.copied_from_group = grant;
-    beneficiary
-        .reasons
-        .push(format!("群善意复制 +{grant}（{} 个成员未用完的额度 × {share:.0}%，上限 {cap_calls}）", members.len()));
+    beneficiary.reasons.push(format!(
+        "群善意复制 +{grant}（{} 个成员未用完的额度 × {share:.0}%，上限 {cap_calls}）",
+        members.len()
+    ));
     grant
 }
 
@@ -257,7 +273,13 @@ mod tests {
 
     #[test]
     fn newcomer_gets_base_and_never_zero() {
-        let a = daily_allowance("新来的", "2026-10-29", &hist(), &AllowancePolicy::default(), None);
+        let a = daily_allowance(
+            "新来的",
+            "2026-10-29",
+            &hist(),
+            &AllowancePolicy::default(),
+            None,
+        );
         assert_eq!(a.calls, 50);
         assert_eq!(a.tier, AllowanceTier::Newcomer);
         assert!(a.calls >= 5);
@@ -280,7 +302,12 @@ mod tests {
         };
         let a_good = daily_allowance("贡献者", "d", &good, &p, None);
         let a_bad = daily_allowance("白嫖", "d", &bad, &p, None);
-        assert!(a_good.calls > a_bad.calls, "善意必须比白嫖拿得多: {} vs {}", a_good.calls, a_bad.calls);
+        assert!(
+            a_good.calls > a_bad.calls,
+            "善意必须比白嫖拿得多: {} vs {}",
+            a_good.calls,
+            a_bad.calls
+        );
         assert_eq!(a_good.tier, AllowanceTier::Steward);
         assert_eq!(a_bad.tier, AllowanceTier::Throttled);
     }
@@ -295,11 +322,18 @@ mod tests {
                 ..Default::default()
             };
             let a = daily_allowance("极端白嫖", "d", &h, &p, None);
-            assert!(a.calls >= p.floor_calls, "不低于地板: blocked={blocked} ⇒ {}", a.calls);
+            assert!(
+                a.calls >= p.floor_calls,
+                "不低于地板: blocked={blocked} ⇒ {}",
+                a.calls
+            );
             assert!(a.calls > 0, "**永远不封号**: 地板必须 >0");
             assert!(a.calls <= prev, "越刷越少，不反弹: {blocked} ⇒ {}", a.calls);
             if blocked >= 10 {
-                assert_eq!(a.calls, p.floor_calls, "反复刷只能拿地板: blocked={blocked}");
+                assert_eq!(
+                    a.calls, p.floor_calls,
+                    "反复刷只能拿地板: blocked={blocked}"
+                );
                 assert!(a.throttled_note.as_deref().unwrap_or("").contains("不封号"));
             }
             prev = a.calls;
@@ -309,10 +343,18 @@ mod tests {
     #[test]
     fn intent_quality_raises_allowance() {
         let p = AllowancePolicy::default();
-        let h = PrincipalHistory { successful_intents: 5, ..Default::default() };
+        let h = PrincipalHistory {
+            successful_intents: 5,
+            ..Default::default()
+        };
         let chat = daily_allowance("u", "d", &h, &p, Some("chat"));
         let research = daily_allowance("u", "d", &h, &p, Some("research"));
-        assert!(research.calls > chat.calls, "做实事比闲聊额度高: {} vs {}", research.calls, chat.calls);
+        assert!(
+            research.calls > chat.calls,
+            "做实事比闲聊额度高: {} vs {}",
+            research.calls,
+            chat.calls
+        );
     }
 
     #[test]
@@ -320,16 +362,28 @@ mod tests {
         let p = AllowancePolicy::default();
         let mut human = daily_allowance("人类", "d", &hist(), &p, None);
         let before = human.calls;
-        let m1 = Allowance { remaining: 100, ..daily_allowance("a1", "d", &hist(), &p, None) };
-        let m2 = Allowance { remaining: 40, ..daily_allowance("a2", "d", &hist(), &p, None) };
-        let used_up = Allowance { remaining: 0, ..daily_allowance("a3", "d", &hist(), &p, None) };
+        let m1 = Allowance {
+            remaining: 100,
+            ..daily_allowance("a1", "d", &hist(), &p, None)
+        };
+        let m2 = Allowance {
+            remaining: 40,
+            ..daily_allowance("a2", "d", &hist(), &p, None)
+        };
+        let used_up = Allowance {
+            remaining: 0,
+            ..daily_allowance("a3", "d", &hist(), &p, None)
+        };
         let grant = copy_group_goodwill(&mut human, &[m1, m2, used_up.clone()], 0.5, 200);
         assert_eq!(grant, 70, "(100+40+0)×50%");
         assert_eq!(human.copied_from_group, 70);
         assert!(human.calls >= before);
         // 上限夹住
         let mut h2 = daily_allowance("人类2", "d", &hist(), &p, None);
-        let big = Allowance { remaining: 10_000, ..daily_allowance("b", "d", &hist(), &p, None) };
+        let big = Allowance {
+            remaining: 10_000,
+            ..daily_allowance("b", "d", &hist(), &p, None)
+        };
         assert_eq!(copy_group_goodwill(&mut h2, &[big], 1.0, 300), 300);
         // 没剩额度 ⇒ 复制不到东西
         let mut h3 = daily_allowance("人类3", "d", &hist(), &p, None);

@@ -44,12 +44,17 @@ pub struct HindsightSettings {
 
 impl HindsightSettings {
     /// 从配置段校验解析。`Err(原因)` = 配置有问题 (doctor 要逐字说清, 不猜)。
-    pub fn from_backend(cfg: &bolloon_llm::config_store::MemoryBackendSettings) -> Result<Self, String> {
+    pub fn from_backend(
+        cfg: &bolloon_llm::config_store::MemoryBackendSettings,
+    ) -> Result<Self, String> {
         if cfg.backend.is_empty() || cfg.backend == "local" {
             return Err("backend=local (外挂未启用)".into());
         }
         if cfg.backend != "hindsight" {
-            return Err(format!("未知 backend `{}` (只认 local / hindsight)", cfg.backend));
+            return Err(format!(
+                "未知 backend `{}` (只认 local / hindsight)",
+                cfg.backend
+            ));
         }
         let database_url = cfg
             .database_url
@@ -80,7 +85,8 @@ impl HindsightSettings {
         if matches!(embeddings_provider.as_str(), "local" | "onnx") {
             return Err(
                 "memory.embeddings.provider=local/onnx 在 Rust 版 hindsight 不支持 \
-                 (会明确报错); 离线请用 `hash`, 在线用 OpenAI 兼容端点".into(),
+                 (会明确报错); 离线请用 `hash`, 在线用 OpenAI 兼容端点"
+                    .into(),
             );
         }
         Ok(Self {
@@ -160,11 +166,22 @@ pub fn is_loopback_database_url(url: &str) -> bool {
 /// 合并本地行与外挂行: 本地在前 (真源优先), 外挂行加 `~` 前缀,
 /// 按规范化内容去重 (SQLite 已命中的不在外挂里重复出现), 总长截到预算内。
 /// 返回 (行, 外挂实际采用的条数)。
-pub fn merge_lines(local: &[String], remote: &[String], char_budget: usize) -> (Vec<String>, usize) {
+pub fn merge_lines(
+    local: &[String],
+    remote: &[String],
+    char_budget: usize,
+) -> (Vec<String>, usize) {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<String> = Vec::new();
     let mut used = 0usize;
-    let push = |text: String, raw: &str, is_remote: bool, out: &mut Vec<String>, used: &mut usize, seen: &mut std::collections::HashSet<String>, taken: &mut usize| -> bool {
+    let push = |text: String,
+                raw: &str,
+                is_remote: bool,
+                out: &mut Vec<String>,
+                used: &mut usize,
+                seen: &mut std::collections::HashSet<String>,
+                taken: &mut usize|
+     -> bool {
         // 去重键用**原始内容**: 外挂行的 `~` 前缀不能参与, 否则同内容两边各留一份
         let key = normalize_key(raw);
         if !key.is_empty() && !seen.insert(key) {
@@ -183,7 +200,15 @@ pub fn merge_lines(local: &[String], remote: &[String], char_budget: usize) -> (
     };
     let mut taken = 0usize;
     for line in local {
-        push(line.clone(), line, false, &mut out, &mut used, &mut seen, &mut taken);
+        push(
+            line.clone(),
+            line,
+            false,
+            &mut out,
+            &mut used,
+            &mut seen,
+            &mut taken,
+        );
     }
     for line in remote {
         let text = format!("~ {line}");
@@ -193,7 +218,10 @@ pub fn merge_lines(local: &[String], remote: &[String], char_budget: usize) -> (
 }
 
 fn normalize_key(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// 外挂记忆 (进程内引擎句柄, 懒连接)
@@ -210,17 +238,20 @@ impl HindsightMemory {
     /// 从整份 bolloon 配置构建。配置缺省/`local` ⇒ disabled (零行为)。
     pub fn from_llm_config(cfg: &bolloon_llm::config_store::LlmConfig) -> Self {
         let mut config_error: Option<String> = None;
-        let settings = cfg.memory.as_ref().and_then(|m| match HindsightSettings::from_backend(m) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::info!("hindsight 记忆外挂未启用: {e}");
-                if m.backend == "hindsight" {
-                    // 配置了但要启用失败: 原因留给 doctor, 不算错误只是降级
-                    config_error = Some(e);
+        let settings = cfg
+            .memory
+            .as_ref()
+            .and_then(|m| match HindsightSettings::from_backend(m) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    tracing::info!("hindsight 记忆外挂未启用: {e}");
+                    if m.backend == "hindsight" {
+                        // 配置了但要启用失败: 原因留给 doctor, 不算错误只是降级
+                        config_error = Some(e);
+                    }
+                    None
                 }
-                None
-            }
-        });
+            });
         Self {
             settings,
             handle: OnceCell::new(),
@@ -306,7 +337,10 @@ impl HindsightMemory {
             return (local_lines, None);
         }
         let Some(h) = self.handle().await else {
-            let e = self.last_error().await.unwrap_or_else(|| "外挂不可用".into());
+            let e = self
+                .last_error()
+                .await
+                .unwrap_or_else(|| "外挂不可用".into());
             return (local_lines, Some(e));
         };
         let bank = settings.bank_id(agent_id);
@@ -321,7 +355,11 @@ impl HindsightMemory {
                     .filter(|t| !t.is_empty())
                     .collect();
                 // 去掉外挂结果与本地行的逐字重复 (merge 里还会做规范化去重, 这里省预算)
-                remote.retain(|t| !local_lines.iter().any(|l| normalize_key(l) == normalize_key(t)));
+                remote.retain(|t| {
+                    !local_lines
+                        .iter()
+                        .any(|l| normalize_key(l) == normalize_key(t))
+                });
                 let (lines, taken) = merge_lines(&local_lines, &remote, char_budget);
                 if taken == 0 {
                     return (local_lines, None); // 外挂没补上任何东西 = 与纯本地等价
@@ -350,7 +388,9 @@ impl HindsightMemory {
         row: &MemoryRow,
         context: Option<&str>,
     ) {
-        let Some(settings) = self.settings.as_ref() else { return };
+        let Some(settings) = self.settings.as_ref() else {
+            return;
+        };
         if !settings.mirror_writes {
             return;
         }
@@ -359,13 +399,17 @@ impl HindsightMemory {
         let context = context.map(|s| s.to_string());
         let Some(h) = self.handle().await else { return };
         if let Err(e) = h.retain_text(&bank, content, context.as_deref()).await {
-            self.record_error(format!("hindsight retain 失败: {e}")).await;
+            self.record_error(format!("hindsight retain 失败: {e}"))
+                .await;
         }
     }
 
     /// mirror 是否会真正派发 (配置门; 供 remember 工具的 evidence 如实标注)
     pub fn mirror_enabled(&self) -> bool {
-        self.settings.as_ref().map(|s| s.mirror_writes).unwrap_or(false)
+        self.settings
+            .as_ref()
+            .map(|s| s.mirror_writes)
+            .unwrap_or(false)
     }
 }
 
@@ -390,21 +434,28 @@ mod tests {
         assert!(!mem.enabled());
         // 未启用 ⇒ 召回原样返回本地行, 不碰外挂
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let (lines, degraded) = rt.block_on(mem.recall_merged("a", "q", vec!["本地点".into()], 5, 900));
+        let (lines, degraded) =
+            rt.block_on(mem.recall_merged("a", "q", vec!["本地点".into()], 5, 900));
         assert_eq!(lines, vec!["本地点".to_string()]);
         assert!(degraded.is_none());
     }
 
     #[test]
     fn unknown_backend_rejected() {
-        let m = MemoryBackendSettings { backend: "redis".into(), ..Default::default() };
+        let m = MemoryBackendSettings {
+            backend: "redis".into(),
+            ..Default::default()
+        };
         assert!(settings_of(m).is_err());
     }
 
     #[test]
     fn hindsight_requires_llm_base_url_only_for_mirror() {
         // 缺省 mirrorWrites=true ⇒ 需要 baseUrl (retain 走 LLM)
-        let m = MemoryBackendSettings { backend: "hindsight".into(), ..Default::default() };
+        let m = MemoryBackendSettings {
+            backend: "hindsight".into(),
+            ..Default::default()
+        };
         let err = settings_of(m).unwrap_err();
         assert!(err.contains("baseUrl"), "实际: {err}");
         // recall-only (mirrorWrites=false): 0.1.1 懒 chat ⇒ 无 LLM 配置也合法
@@ -471,8 +522,12 @@ mod tests {
 
     #[test]
     fn loopback_parser() {
-        assert!(is_loopback_database_url("postgres://postgres:postgres@localhost:5432/hindsight"));
-        assert!(is_loopback_database_url("postgres://127.0.0.1:5432/hindsight"));
+        assert!(is_loopback_database_url(
+            "postgres://postgres:postgres@localhost:5432/hindsight"
+        ));
+        assert!(is_loopback_database_url(
+            "postgres://127.0.0.1:5432/hindsight"
+        ));
         assert!(!is_loopback_database_url("postgres://u:p@10.1.2.3:5432/db"));
         assert!(!is_loopback_database_url("sqlite://memory"));
         assert!(!is_loopback_database_url("not a url"));
@@ -482,17 +537,25 @@ mod tests {
     fn merge_dedups_and_local_first() {
         let local = vec!["用户偏好暗色主题".to_string()];
         let remote = vec![
-            "用户偏好暗色主题".to_string(),   // 与本地重复 → 丢弃
+            "用户偏好暗色主题".to_string(), // 与本地重复 → 丢弃
             "项目用 Rust 2021 edition".to_string(),
         ];
         let (lines, taken) = merge_lines(&local, &remote, 900);
-        assert_eq!(lines, vec!["用户偏好暗色主题".to_string(), "~ 项目用 Rust 2021 edition".to_string()]);
+        assert_eq!(
+            lines,
+            vec![
+                "用户偏好暗色主题".to_string(),
+                "~ 项目用 Rust 2021 edition".to_string()
+            ]
+        );
         assert_eq!(taken, 1);
     }
 
     #[test]
     fn merge_respects_char_budget() {
-        let local: Vec<String> = (0..10).map(|i| format!("本地记忆{i}——这里是一段比较长的内容用来占预算")).collect();
+        let local: Vec<String> = (0..10)
+            .map(|i| format!("本地记忆{i}——这里是一段比较长的内容用来占预算"))
+            .collect();
         let remote = vec!["外挂补充".to_string()];
         let (lines, taken) = merge_lines(&local, &remote, 80);
         assert!(taken == 0 || lines.iter().any(|l| l.starts_with("~ ")));

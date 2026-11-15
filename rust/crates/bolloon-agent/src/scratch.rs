@@ -7,8 +7,8 @@
 //! - `reconcile_scratch_runs` —— 孤儿 catch: 进程崩溃后未收尾的 run 标 `interrupted`。
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -427,7 +427,8 @@ mod tests {
         assert!(!res.killed);
         // 记录已落盘
         let rec: ScratchRunRecord =
-            serde_json::from_str(&std::fs::read_to_string(run_dir.join("run.json")).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(run_dir.join("run.json")).unwrap())
+                .unwrap();
         assert_eq!(rec.status, "done");
         assert_eq!(rec.exit_code, Some(0));
         // list 能拿到

@@ -10,7 +10,7 @@
 //!      (2026-10-19 leo: 「还有一些空回复的问题」); 这里是**唯一收口点**。
 //!   ② **几何不抖** —— 宽度一律 `min(term_width()-2, …)`, 宁可不显示艺术字也不让它被折行。
 
-use crate::boxart::{box_bottom, box_row, box_top, Align, RD, SQ};
+use crate::boxart::{Align, RD, SQ, box_bottom, box_row, box_top};
 use crate::markdown::md_inline;
 use crate::theme::{
     BOLD, C_ACCENT, C_BORDER_BRIGHT, C_DIM, C_ERROR, C_MUTED, C_OK, C_WARN, C_WHITE, RESET,
@@ -126,7 +126,10 @@ pub fn render_dashboard(opts: &DashboardOpts) -> String {
     use crate::brand::{pick_banner, robot_head};
 
     let show_brand = opts.brand.unwrap_or(true);
-    let title = opts.title.clone().unwrap_or_else(|| "Bolloon Agent · 仪表盘".to_string());
+    let title = opts
+        .title
+        .clone()
+        .unwrap_or_else(|| "Bolloon Agent · 仪表盘".to_string());
 
     // 艺术字**按可用内宽挑档** —— 装不下就降档, 绝不让它被终端折行
     let icon = robot_head();
@@ -151,9 +154,7 @@ pub fn render_dashboard(opts: &DashboardOpts) -> String {
         .rows
         .iter()
         .map(|r| {
-            disp_width(&r.label)
-                + r.detail.as_ref().map(|d| disp_width(d) + 2).unwrap_or(0)
-                + 4
+            disp_width(&r.label) + r.detail.as_ref().map(|d| disp_width(d) + 2).unwrap_or(0) + 4
         })
         .max()
         .unwrap_or(0);
@@ -188,7 +189,12 @@ pub fn render_dashboard(opts: &DashboardOpts) -> String {
             .as_ref()
             .map(|d| format!("  {C_DIM}{d}{RESET}"))
             .unwrap_or_default();
-        lines.push(box_row(&format!("{sym} {}{}", r.label, detail), width, Align::Left, SQ));
+        lines.push(box_row(
+            &format!("{sym} {}{}", r.label, detail),
+            width,
+            Align::Left,
+            SQ,
+        ));
     }
     lines.push(box_bottom(width, SQ));
     lines.join("\n")
@@ -205,7 +211,10 @@ pub fn render_dialog(opts: &DialogOpts) -> String {
     use crate::brand::{pick_banner, robot_head};
 
     let show_brand = opts.brand.unwrap_or(true);
-    let title = opts.title.clone().unwrap_or_else(|| "Bolloon Agent".to_string());
+    let title = opts
+        .title
+        .clone()
+        .unwrap_or_else(|| "Bolloon Agent".to_string());
     let icon = robot_head();
     let icon_w = icon.iter().map(|l| disp_width(l)).max().unwrap_or(1).max(1);
 
@@ -261,7 +270,10 @@ pub const DEFAULT_MAX_LINES: usize = 14;
 
 pub fn render_message_box(opts: &MessageBoxOpts) -> String {
     let color = opts.color.clone().unwrap_or_else(|| C_ACCENT.to_string());
-    let title = opts.title.clone().unwrap_or_else(|| "Bolloon Agent".to_string());
+    let title = opts
+        .title
+        .clone()
+        .unwrap_or_else(|| "Bolloon Agent".to_string());
     let max_lines = opts.max_lines.unwrap_or(0);
     let body_lines = wrap_text(&opts.body, 1000);
 
@@ -322,7 +334,12 @@ fn render_reference(
         width,
         RD,
     ));
-    lines.push(box_row(&format!("{C_DIM}{notice}{RESET}"), width, Align::Left, RD));
+    lines.push(box_row(
+        &format!("{C_DIM}{notice}{RESET}"),
+        width,
+        Align::Left,
+        RD,
+    ));
     if !preview.is_empty() {
         lines.push(box_row(
             &format!("{C_DIM}▏ {preview}{RESET}"),
@@ -458,7 +475,8 @@ pub fn colorize_diff(text: &str) -> String {
     use crate::theme::C_BLUE;
     text.lines()
         .map(|line| {
-            if line.starts_with("diff --git") || line.starts_with("---") || line.starts_with("+++") {
+            if line.starts_with("diff --git") || line.starts_with("---") || line.starts_with("+++")
+            {
                 format!("{C_DIM}{line}{RESET}")
             } else if line.starts_with("@@") {
                 format!("{C_BLUE}{line}{RESET}")
@@ -498,14 +516,24 @@ pub fn render_tool_call(v: &ToolCallView) -> String {
         None => String::new(),
     };
     if !arg_str.is_empty() {
-        rows.push(format!("参数: {}", truncate(&arg_str, w.saturating_sub(10))));
+        rows.push(format!(
+            "参数: {}",
+            truncate(&arg_str, w.saturating_sub(10))
+        ));
     }
-    let dur = v.duration_ms.map(|d| format!(" ({d}ms)")).unwrap_or_default();
+    let dur = v
+        .duration_ms
+        .map(|d| format!(" ({d}ms)"))
+        .unwrap_or_default();
     rows.push(format!(
         "状态: {sym} {}{dur}",
         if v.status == "ok" { "成功" } else { "失败" }
     ));
-    let body = if v.status == "ok" { v.output.as_deref() } else { v.error.as_deref() };
+    let body = if v.status == "ok" {
+        v.output.as_deref()
+    } else {
+        v.error.as_deref()
+    };
     if let Some(body) = body {
         if is_diff_output(body) {
             rows.push(colorize_diff(body));
@@ -549,13 +577,25 @@ pub fn render_diff_excerpt(output: &str, cols: usize, max: usize) -> Vec<String>
             break;
         }
         if l.starts_with("+++") || l.starts_with("---") {
-            out.push(format!("  {C_DIM}{}{RESET}", crate::width::truncate(l, cols)));
+            out.push(format!(
+                "  {C_DIM}{}{RESET}",
+                crate::width::truncate(l, cols)
+            ));
         } else if l.starts_with("@@") {
-            out.push(format!("  {C_WARN}{}{RESET}", crate::width::truncate(l, cols)));
+            out.push(format!(
+                "  {C_WARN}{}{RESET}",
+                crate::width::truncate(l, cols)
+            ));
         } else if let Some(rest) = l.strip_prefix('+') {
-            out.push(format!("  {C_OK}+{}{RESET}", crate::width::truncate(rest, cols.saturating_sub(3))));
+            out.push(format!(
+                "  {C_OK}+{}{RESET}",
+                crate::width::truncate(rest, cols.saturating_sub(3))
+            ));
         } else if let Some(rest) = l.strip_prefix('-') {
-            out.push(format!("  {C_WARN}-{}{RESET}", crate::width::truncate(rest, cols.saturating_sub(3))));
+            out.push(format!(
+                "  {C_WARN}-{}{RESET}",
+                crate::width::truncate(rest, cols.saturating_sub(3))
+            ));
         } else {
             out.push(format!("  {}", crate::width::truncate(l, cols)));
         }
@@ -599,16 +639,22 @@ mod tests {
     fn wrap_text_styled_cjk_keeps_ansi_atomic() {
         let styled = format!(
             "{}这是一段非常长的中文句子中间没有任何空格所以必然触发硬断{}结尾也要完整",
-            "\x1b[38;5;208m",
-            "\x1b[0m"
+            "\x1b[38;5;208m", "\x1b[0m"
         );
         let parts = wrap_text(&styled, 10);
         assert!(parts.len() > 1, "{parts:?}");
         for p in &parts {
             assert!(disp_width(p) <= 10, "行超宽: {p:?}");
-            assert!(!p.ends_with('\x1b') && !p.ends_with("\x1b["), "半截转义: {p:?}");
+            assert!(
+                !p.ends_with('\x1b') && !p.ends_with("\x1b["),
+                "半截转义: {p:?}"
+            );
         }
-        assert_eq!(strip_ansi(&parts.concat()), strip_ansi(&styled), "字符一个都不能丢");
+        assert_eq!(
+            strip_ansi(&parts.concat()),
+            strip_ansi(&styled),
+            "字符一个都不能丢"
+        );
     }
 
     /// 回复框: 样式化中文长内容下边框完整闭合、行宽一致、正文不出框
@@ -618,13 +664,16 @@ mod tests {
         crate::width::set_term_size(40, 24);
         let body = format!(
             "**加粗**开头{}然后是很长的中文内容没有空格必须自动换行`code`混排中文English mixed{}\n```\ncode block line\n```",
-            "\x1b[38;5;208m",
-            "\x1b[0m"
+            "\x1b[38;5;208m", "\x1b[0m"
         );
         let s = render_agent_message(&body);
         let lines: Vec<&str> = s.lines().collect();
         assert!(lines.len() >= 3, "顶+正文+底: {lines:?}");
-        assert!(strip_ansi(lines[0]).starts_with('╭'), "顶边框: {:?}", lines[0]);
+        assert!(
+            strip_ansi(lines[0]).starts_with('╭'),
+            "顶边框: {:?}",
+            lines[0]
+        );
         assert!(
             strip_ansi(lines.last().unwrap()).starts_with('╰'),
             "底边框: {:?}",
@@ -645,8 +694,16 @@ mod tests {
         let s = render_dashboard(&DashboardOpts {
             title: Some("Bolloon Agent · 仪表盘".into()),
             rows: vec![
-                DashRow { label: "身份".into(), status: Some("ok".into()), detail: Some("did:pi:…".into()) },
-                DashRow { label: "模型".into(), status: Some("pending".into()), detail: None },
+                DashRow {
+                    label: "身份".into(),
+                    status: Some("ok".into()),
+                    detail: Some("did:pi:…".into()),
+                },
+                DashRow {
+                    label: "模型".into(),
+                    status: Some("pending".into()),
+                    detail: None,
+                },
             ],
             brand: Some(false),
             width: Some(40),
@@ -686,7 +743,10 @@ mod tests {
 
     #[test]
     fn agent_message_is_not_compressed() {
-        let body = (0..40).map(|i| format!("第 {i} 行")).collect::<Vec<_>>().join("\n");
+        let body = (0..40)
+            .map(|i| format!("第 {i} 行"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let s = render_agent_message(&body);
         assert!(!s.contains("已压缩"), "智能体回复不压缩: {s:?}");
         assert!(s.contains("第 39 行"));
@@ -696,7 +756,10 @@ mod tests {
     #[test]
     fn long_user_message_collapses_to_reference() {
         let _g = crate::width::test_lock().lock().unwrap();
-        let body = (0..30).map(|i| format!("第 {i} 行")).collect::<Vec<_>>().join("\n");
+        let body = (0..30)
+            .map(|i| format!("第 {i} 行"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let s = render_user_message(&body);
         assert!(s.contains("已压缩 30 行"));
         assert!(s.contains("完整内容已发送给智能体"));
@@ -744,5 +807,4 @@ mod tests {
         assert!(is_diff_output("+ hello"));
         assert!(!is_diff_output("just text"));
     }
-
 }

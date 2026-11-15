@@ -145,7 +145,11 @@ impl SecretBackend for FileEncryptedBackend {
         nonce_bytes.copy_from_slice(&raw[..12]);
         let mut buf = raw[12..].to_vec();
         let plain = key
-            .open_in_place(Nonce::assume_unique_for_key(nonce_bytes), Aad::empty(), &mut buf)
+            .open_in_place(
+                Nonce::assume_unique_for_key(nonce_bytes),
+                Aad::empty(),
+                &mut buf,
+            )
             .ok()?;
         String::from_utf8(plain.to_vec()).ok()
     }

@@ -25,14 +25,22 @@ pub enum CommandClass {
 
 /// 只读命令首词 (白名单; 管道里出现任何非只读段 → 整条 Mutating)
 const READONLY_FIRST_WORDS: &[&str] = &[
-    "ls", "cat", "head", "tail", "grep", "rg", "find", "wc", "which", "whoami",
-    "pwd", "echo", "date", "file", "stat", "du", "df", "ps", "uname", "env",
-    "git", "cargo", "node", "python3", "npx", "rustc",
+    "ls", "cat", "head", "tail", "grep", "rg", "find", "wc", "which", "whoami", "pwd", "echo",
+    "date", "file", "stat", "du", "df", "ps", "uname", "env", "git", "cargo", "node", "python3",
+    "npx", "rustc",
 ];
 
 /// 只读 git 子命令 (git 本身可变更, 只读子命令白名单)
 const READONLY_GIT_SUBCOMMANDS: &[&str] = &[
-    "status", "log", "diff", "show", "branch", "remote", "rev-parse", "ls-files", "blame",
+    "status",
+    "log",
+    "diff",
+    "show",
+    "branch",
+    "remote",
+    "rev-parse",
+    "ls-files",
+    "blame",
 ];
 
 /// 分类 (纯函数; 管道/命令替换取最严分类)
@@ -45,7 +53,9 @@ pub fn classify_command(command: &str) -> CommandClass {
     // cd 出工作目录 → Dangerous (越权)
     for seg in cmd.split("&&").chain(cmd.split(';')).chain(cmd.split('|')) {
         let s = seg.trim();
-        if s.starts_with("cd ") && (s == "cd /" || s.starts_with("cd /etc") || s.starts_with("cd ~")) {
+        if s.starts_with("cd ")
+            && (s == "cd /" || s.starts_with("cd /etc") || s.starts_with("cd ~"))
+        {
             return CommandClass::Dangerous;
         }
     }
@@ -69,7 +79,9 @@ pub fn classify_command(command: &str) -> CommandClass {
 
 fn classify_single(seg: &str) -> CommandClass {
     let mut words = seg.split_whitespace();
-    let Some(first) = words.next() else { return CommandClass::Mutating };
+    let Some(first) = words.next() else {
+        return CommandClass::Mutating;
+    };
     // 带路径的 (./script.sh, /bin/x) 一律 Mutating
     if first.contains('/') {
         return CommandClass::Mutating;
@@ -79,8 +91,8 @@ fn classify_single(seg: &str) -> CommandClass {
         return CommandClass::Mutating;
     }
     match first {
-        "rm" | "mv" | "cp" | "mkdir" | "touch" | "chmod" | "chown" | "ln" | "kill"
-        | "npm" | "pip" | "brew" | "apt" | "sudo" => CommandClass::Mutating,
+        "rm" | "mv" | "cp" | "mkdir" | "touch" | "chmod" | "chown" | "ln" | "kill" | "npm"
+        | "pip" | "brew" | "apt" | "sudo" => CommandClass::Mutating,
         "git" => {
             let sub = words.next().unwrap_or("");
             if READONLY_GIT_SUBCOMMANDS.contains(&sub) {
@@ -181,11 +193,18 @@ pub async fn execute_terminal(
     let res = tokio::time::timeout(Duration::from_millis(req.timeout_ms), fut).await;
     let elapsed_ms = started.elapsed().as_millis() as u64;
     match res {
-        Err(_) => Err(TerminalError::TimedOut { timeout_ms: req.timeout_ms }),
+        Err(_) => Err(TerminalError::TimedOut {
+            timeout_ms: req.timeout_ms,
+        }),
         Ok(Err(e)) => Err(TerminalError::Dangerous(format!("执行失败: {e}"))),
         Ok(Ok((exit_ok, raw, _dur))) => {
             let (output, truncated) = truncate_output(&raw, TERMINAL_OUTPUT_MAX);
-            Ok(TerminalOutput { exit_ok, output, truncated, elapsed_ms })
+            Ok(TerminalOutput {
+                exit_ok,
+                output,
+                truncated,
+                elapsed_ms,
+            })
         }
     }
 }
@@ -198,35 +217,65 @@ mod tests {
     fn readonly_commands_classified() {
         assert_eq!(classify_command("ls -la"), CommandClass::ReadOnly);
         assert_eq!(classify_command("cat a.rs"), CommandClass::ReadOnly);
-        assert_eq!(classify_command("grep -rn todo src/"), CommandClass::ReadOnly);
+        assert_eq!(
+            classify_command("grep -rn todo src/"),
+            CommandClass::ReadOnly
+        );
         assert_eq!(classify_command("git status"), CommandClass::ReadOnly);
-        assert_eq!(classify_command("git log --oneline -10"), CommandClass::ReadOnly);
+        assert_eq!(
+            classify_command("git log --oneline -10"),
+            CommandClass::ReadOnly
+        );
         assert_eq!(classify_command("cargo test"), CommandClass::ReadOnly);
     }
 
     #[test]
     fn mutating_classified() {
         assert_eq!(classify_command("rm a.txt"), CommandClass::Mutating);
-        assert_eq!(classify_command("git commit -m x"), CommandClass::Mutating, "commit 是变更");
+        assert_eq!(
+            classify_command("git commit -m x"),
+            CommandClass::Mutating,
+            "commit 是变更"
+        );
         assert_eq!(classify_command("git push"), CommandClass::Mutating);
         assert_eq!(classify_command("npm install foo"), CommandClass::Mutating);
-        assert_eq!(classify_command("echo hi > f.txt"), CommandClass::Mutating, "重定向写盘");
-        assert_eq!(classify_command("./build.sh"), CommandClass::Mutating, "路径命令保守归 Mutating");
-        assert_eq!(classify_command("terraform apply"), CommandClass::Mutating, "未知命令保守");
+        assert_eq!(
+            classify_command("echo hi > f.txt"),
+            CommandClass::Mutating,
+            "重定向写盘"
+        );
+        assert_eq!(
+            classify_command("./build.sh"),
+            CommandClass::Mutating,
+            "路径命令保守归 Mutating"
+        );
+        assert_eq!(
+            classify_command("terraform apply"),
+            CommandClass::Mutating,
+            "未知命令保守"
+        );
     }
 
     #[test]
     fn dangerous_classified() {
         assert_eq!(classify_command("rm -rf /"), CommandClass::Dangerous);
         assert_eq!(classify_command("sudo rm x"), CommandClass::Dangerous);
-        assert_eq!(classify_command("cd /etc && cat shadow"), CommandClass::Dangerous, "越出工作目录");
+        assert_eq!(
+            classify_command("cd /etc && cat shadow"),
+            CommandClass::Dangerous,
+            "越出工作目录"
+        );
         assert_eq!(classify_command("cd ~ && ls"), CommandClass::Dangerous);
     }
 
     #[test]
     fn pipeline_takes_worst_class() {
         assert_eq!(classify_command("cat a | grep x"), CommandClass::ReadOnly);
-        assert_eq!(classify_command("cat a | grep x > out.txt"), CommandClass::Mutating, "管道里出现写盘");
+        assert_eq!(
+            classify_command("cat a | grep x > out.txt"),
+            CommandClass::Mutating,
+            "管道里出现写盘"
+        );
         assert_eq!(
             classify_command("ls && rm -rf /"),
             CommandClass::Dangerous,
@@ -242,7 +291,10 @@ mod tests {
             Err(TerminalError::NeedsPermission(_))
         ));
         assert!(gate("rm a.txt", true).is_ok());
-        assert!(matches!(gate("rm -rf /", true), Err(TerminalError::Dangerous(_))), "高危即使有 permission 也拒");
+        assert!(
+            matches!(gate("rm -rf /", true), Err(TerminalError::Dangerous(_))),
+            "高危即使有 permission 也拒"
+        );
     }
 
     #[test]
@@ -275,13 +327,20 @@ mod tests {
     impl TerminalExecutor for FakeExec {
         async fn run(&self, _req: &TerminalRequest) -> Result<(bool, String, Duration), String> {
             tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
-            Ok((true, self.output.clone(), Duration::from_millis(self.delay_ms)))
+            Ok((
+                true,
+                self.output.clone(),
+                Duration::from_millis(self.delay_ms),
+            ))
         }
     }
 
     #[tokio::test]
     async fn execute_end_to_end() {
-        let exec = FakeExec { delay_ms: 1, output: "hello world".into() };
+        let exec = FakeExec {
+            delay_ms: 1,
+            output: "hello world".into(),
+        };
         let req = TerminalRequest {
             command: "ls".into(),
             workdir: "/tmp".into(),
@@ -295,7 +354,10 @@ mod tests {
 
     #[tokio::test]
     async fn execute_timeout_reported() {
-        let exec = FakeExec { delay_ms: 500, output: String::new() };
+        let exec = FakeExec {
+            delay_ms: 500,
+            output: String::new(),
+        };
         let req = TerminalRequest {
             command: "ls".into(),
             workdir: "/tmp".into(),
@@ -309,7 +371,10 @@ mod tests {
 
     #[tokio::test]
     async fn execute_dangerous_rejected_before_spawn() {
-        let exec = FakeExec { delay_ms: 0, output: String::new() };
+        let exec = FakeExec {
+            delay_ms: 0,
+            output: String::new(),
+        };
         let req = TerminalRequest {
             command: "rm -rf /".into(),
             workdir: "/tmp".into(),

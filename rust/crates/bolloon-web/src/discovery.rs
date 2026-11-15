@@ -16,8 +16,8 @@
 
 use std::collections::BTreeMap;
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde_json::Value;
 
 use crate::server::AppState;
@@ -126,7 +126,8 @@ pub fn signed_record_for(st: &AppState, kind: &str, value: &str) -> Value {
         }
     };
     let sig = hex::encode(
-        st.identity.sign(signed_message_v2(&topic, &did, ts, &diap).as_bytes()),
+        st.identity
+            .sign(signed_message_v2(&topic, &did, ts, &diap).as_bytes()),
     );
     serde_json::json!({
         "v": 2, "kind": kind,
@@ -165,7 +166,9 @@ pub fn lookup_topic(topic: &str) -> Option<Value> {
 
 /// 按 kind + 明文查（本机 gossip 缓存）。
 pub fn lookup_for(kind: &str, value: &str) -> Option<Value> {
-    lookup_topic(&bolloon_agent::directory::discovery_topic_for_hex(kind, value))
+    lookup_topic(&bolloon_agent::directory::discovery_topic_for_hex(
+        kind, value,
+    ))
 }
 
 /// POST /api/discovery/announce-self {kind, value}
@@ -174,7 +177,11 @@ pub async fn remote_announce_self(
     State(st): State<AppState>,
     Json(req): Json<Value>,
 ) -> Json<Value> {
-    let kind = req["kind"].as_str().unwrap_or("phone").trim().to_ascii_lowercase();
+    let kind = req["kind"]
+        .as_str()
+        .unwrap_or("phone")
+        .trim()
+        .to_ascii_lowercase();
     let value = req["value"].as_str().unwrap_or_default().trim().to_string();
     if value.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 value" }));

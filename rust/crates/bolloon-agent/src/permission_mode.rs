@@ -61,7 +61,10 @@ mod tests {
 
     #[test]
     fn parses_ts_alias_and_defaults() {
-        assert_eq!(parse_mode(Some("bypassPermissions")), PermissionMode::Bypass);
+        assert_eq!(
+            parse_mode(Some("bypassPermissions")),
+            PermissionMode::Bypass
+        );
         assert_eq!(parse_mode(Some("bypass")), PermissionMode::Bypass);
         assert_eq!(parse_mode(Some("full")), PermissionMode::Bypass);
         assert_eq!(parse_mode(Some("default")), PermissionMode::Default);

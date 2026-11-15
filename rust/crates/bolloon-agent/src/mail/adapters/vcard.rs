@@ -14,7 +14,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::mail::ports::{ContactMeta, ContactQuery, ContactsPort, ImportReport, MailPortError, MailResult};
+use crate::mail::ports::{
+    ContactMeta, ContactQuery, ContactsPort, ImportReport, MailPortError, MailResult,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct ContactFile {
@@ -37,7 +39,11 @@ impl VcardCsvAdapter {
             .and_then(|s| s.to_str())
             .unwrap_or("contacts")
             .to_string();
-        Self { source, input, store: store_dir.into().join("contacts-import.json") }
+        Self {
+            source,
+            input,
+            store: store_dir.into().join("contacts-import.json"),
+        }
     }
 
     fn read_store(&self) -> Result<ContactFile, String> {
@@ -122,7 +128,11 @@ pub fn parse_vcard(text: &str) -> Vec<ContactMeta> {
                 if !name.trim().is_empty() || !phones.is_empty() || !emails.is_empty() {
                     out.push(ContactMeta {
                         id,
-                        name: if name.trim().is_empty() { "(未命名)".into() } else { name.trim().to_string() },
+                        name: if name.trim().is_empty() {
+                            "(未命名)".into()
+                        } else {
+                            name.trim().to_string()
+                        },
                         phones: phones.clone(),
                         emails: emails.clone(),
                         org: org.clone(),
@@ -136,14 +146,18 @@ pub fn parse_vcard(text: &str) -> Vec<ContactMeta> {
         if !in_card {
             continue;
         }
-        let Some((k, v)) = split_kv(line) else { continue };
+        let Some((k, v)) = split_kv(line) else {
+            continue;
+        };
         let ku = k.to_uppercase();
         if ku.starts_with("FN") || ku.starts_with("N") && !ku.starts_with("NOTE") {
             if name.trim().is_empty() {
                 // N 是 `姓;名;...`, 转成「名 姓」
                 let parts: Vec<&str> = v.split(';').collect();
                 if parts.len() >= 2 {
-                    name = format!("{} {}", parts[1].trim(), parts[0].trim()).trim().to_string();
+                    name = format!("{} {}", parts[1].trim(), parts[0].trim())
+                        .trim()
+                        .to_string();
                 } else {
                     name = v.replace(';', " ").trim().to_string();
                 }
@@ -172,7 +186,9 @@ pub fn parse_vcard(text: &str) -> Vec<ContactMeta> {
 
 pub fn parse_csv(text: &str) -> (Vec<ContactMeta>, usize) {
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
-    let Some(header) = lines.next() else { return (vec![], 0) };
+    let Some(header) = lines.next() else {
+        return (vec![], 0);
+    };
     let cols: Vec<String> = header.split(',').map(|s| s.trim().to_lowercase()).collect();
     let idx = |name: &str| cols.iter().position(|c| c == name);
     let (Some(ni), pi, ei, oi) = (idx("name"), idx("phone"), idx("email"), idx("org")) else {
@@ -203,7 +219,10 @@ pub fn parse_csv(text: &str) -> (Vec<ContactMeta>, usize) {
             .filter(|v| !v.is_empty())
             .into_iter()
             .collect();
-        let org = oi.and_then(|i| f.get(i)).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let org = oi
+            .and_then(|i| f.get(i))
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
         out.push(ContactMeta {
             id: contact_id(&name, &phones, &emails, None),
             name,
@@ -239,7 +258,7 @@ impl ContactsPort for VcardCsvAdapter {
                 return Err(MailPortError::new(
                     "unsupported_format",
                     format!("不支持的通讯录格式: .{other} (只认 .vcf / .csv)"),
-                ))
+                ));
             }
         };
 
@@ -307,7 +326,10 @@ pub fn load_imported(store_dir: &Path) -> Result<Vec<ContactMeta>, String> {
 /// 判断一个路径像不像通讯录文件(给 CLI / UI 做前置提示, 不猜内容)
 pub fn looks_like_contacts_file(p: &Path) -> bool {
     matches!(
-        p.extension().and_then(|s| s.to_str()).map(|s| s.to_lowercase()).as_deref(),
+        p.extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase())
+            .as_deref(),
         Some("vcf") | Some("vcard") | Some("csv")
     )
 }
@@ -371,7 +393,10 @@ mod tests {
         assert_eq!((r2.imported, r2.updated), (0, 1), "重复导入应更新不是新增");
 
         let hit = a
-            .list(ContactQuery { keyword: Some("赵".into()), limit: None })
+            .list(ContactQuery {
+                keyword: Some("赵".into()),
+                limit: None,
+            })
             .await
             .unwrap();
         assert_eq!(hit.len(), 1);

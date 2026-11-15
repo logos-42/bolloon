@@ -60,7 +60,15 @@ impl ImapSmtpAdapter {
         } else {
             cfg.from.trim().to_string()
         };
-        Ok(Self { account, imap_host, imap_port, smtp_host, smtp_port, user, from })
+        Ok(Self {
+            account,
+            imap_host,
+            imap_port,
+            smtp_host,
+            smtp_port,
+            user,
+            from,
+        })
     }
 
     fn password(&self) -> MailResult<String> {
@@ -70,7 +78,10 @@ impl ImapSmtpAdapter {
             .ok_or_else(|| {
                 MailPortError::new(
                     "provider_not_configured",
-                    format!("账号 {} 的密码不在凭据库（先写入 mail:<email> 再同步）", self.account),
+                    format!(
+                        "账号 {} 的密码不在凭据库（先写入 mail:<email> 再同步）",
+                        self.account
+                    ),
                 )
             })
     }
@@ -79,9 +90,9 @@ impl ImapSmtpAdapter {
         &self,
         pass: &str,
     ) -> MailResult<imap::Session<native_tls::TlsStream<std::net::TcpStream>>> {
-        let tls = native_tls::TlsConnector::builder()
-            .build()
-            .map_err(|e| MailPortError::new("provider_unreachable", format!("TLS 初始化失败: {e}")))?;
+        let tls = native_tls::TlsConnector::builder().build().map_err(|e| {
+            MailPortError::new("provider_unreachable", format!("TLS 初始化失败: {e}"))
+        })?;
         let client = imap::connect(
             (self.imap_host.as_str(), self.imap_port),
             &self.imap_host,
@@ -93,9 +104,9 @@ impl ImapSmtpAdapter {
                 format!("IMAP 连接 {}:{} 失败: {e}", self.imap_host, self.imap_port),
             )
         })?;
-        let session = client.login(&self.user, pass).map_err(|(e, _)| {
-            MailPortError::new("auth_failed", format!("IMAP 登录失败: {e}"))
-        })?;
+        let session = client
+            .login(&self.user, pass)
+            .map_err(|(e, _)| MailPortError::new("auth_failed", format!("IMAP 登录失败: {e}")))?;
         Ok(session)
     }
 
@@ -105,7 +116,10 @@ impl ImapSmtpAdapter {
         let mailbox = q.mailbox.clone().unwrap_or_else(|| "INBOX".into());
 
         session.select(&mailbox).map_err(|e| {
-            MailPortError::new("mailbox_unavailable", format!("选择邮箱夹 {mailbox} 失败: {e}"))
+            MailPortError::new(
+                "mailbox_unavailable",
+                format!("选择邮箱夹 {mailbox} 失败: {e}"),
+            )
         })?;
 
         let uids: HashSet<u32> = session
@@ -146,8 +160,7 @@ impl ImapSmtpAdapter {
                     .unwrap_or_default();
                 let ctype = header_value(header, "Content-Type").unwrap_or_default();
                 let date_ms = f.internal_date().map(|d| d.timestamp_millis()).unwrap_or(0);
-                let flags: Vec<String> =
-                    f.flags().iter().map(|x| format!("{x:?}")).collect();
+                let flags: Vec<String> = f.flags().iter().map(|x| format!("{x:?}")).collect();
                 out.push(MailMeta {
                     id: MailId::new(&self.account, &mailbox, uid),
                     account: self.account.clone(),
@@ -173,7 +186,10 @@ impl ImapSmtpAdapter {
         let pass = self.password()?;
         let mut session = self.imap_connect(&pass)?;
         session.select(&mailbox).map_err(|e| {
-            MailPortError::new("mailbox_unavailable", format!("选择邮箱夹 {mailbox} 失败: {e}"))
+            MailPortError::new(
+                "mailbox_unavailable",
+                format!("选择邮箱夹 {mailbox} 失败: {e}"),
+            )
         })?;
         let fetches = session
             .uid_fetch(
@@ -252,9 +268,7 @@ impl ImapSmtpAdapter {
         } else {
             lettre::SmtpTransport::starttls_relay(&self.smtp_host)
         }
-        .map_err(|e| {
-            MailPortError::new("provider_unreachable", format!("SMTP 初始化失败: {e}"))
-        })?;
+        .map_err(|e| MailPortError::new("provider_unreachable", format!("SMTP 初始化失败: {e}")))?;
 
         let mailer = transport
             .port(self.smtp_port)
@@ -277,7 +291,10 @@ impl ImapSmtpAdapter {
         for id in ids {
             let (mailbox, uid) = split_id(id, &self.account)?;
             session.select(&mailbox).map_err(|e| {
-                MailPortError::new("mailbox_unavailable", format!("选择邮箱夹 {mailbox} 失败: {e}"))
+                MailPortError::new(
+                    "mailbox_unavailable",
+                    format!("选择邮箱夹 {mailbox} 失败: {e}"),
+                )
             })?;
             session
                 .uid_store(uid.to_string(), "+FLAGS (\\Deleted)")
@@ -296,7 +313,10 @@ impl ImapSmtpAdapter {
         for id in ids {
             let (mailbox, uid) = split_id(id, &self.account)?;
             session.select(&mailbox).map_err(|e| {
-                MailPortError::new("mailbox_unavailable", format!("选择邮箱夹 {mailbox} 失败: {e}"))
+                MailPortError::new(
+                    "mailbox_unavailable",
+                    format!("选择邮箱夹 {mailbox} 失败: {e}"),
+                )
             })?;
             session
                 .uid_store(uid.to_string(), "+FLAGS (\\Seen)")
@@ -415,8 +435,6 @@ fn q_decode(s: &str) -> Vec<u8> {
     out
 }
 
-
-
 #[async_trait]
 impl MailPort for ImapSmtpAdapter {
     fn account_id(&self) -> &str {
@@ -517,7 +535,10 @@ mod tests {
     #[test]
     fn id_roundtrip_and_account_guard() {
         let id = MailId::new("me@x.com", "INBOX", 42);
-        assert_eq!(split_id(&id, "me@x.com").unwrap(), ("INBOX".to_string(), 42));
+        assert_eq!(
+            split_id(&id, "me@x.com").unwrap(),
+            ("INBOX".to_string(), 42)
+        );
         assert!(split_id(&id, "other@x.com").is_err(), "跨账号 id 必须拒");
     }
 

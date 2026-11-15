@@ -141,7 +141,10 @@ pub fn select_next_speaker(
 
 /// 推选主持（控麦权威）：**只从可主持角色里选**；无候选 ⇒ None（Advisor 不能主持）。
 pub fn elect_moderator(candidates: &[Candidate]) -> Option<String> {
-    let eligible: Vec<&Candidate> = candidates.iter().filter(|c| c.role.can_moderate()).collect();
+    let eligible: Vec<&Candidate> = candidates
+        .iter()
+        .filter(|c| c.role.can_moderate())
+        .collect();
     if eligible.is_empty() {
         return None;
     }
@@ -288,12 +291,11 @@ impl DeliberationHub {
     /// 注册成员（**幂等**：已存在则保留其 `last_spoke_ms`，不重置）。
     pub fn add_member(&self, id: &str, role: MemberRole) {
         let mut m = self.members.lock().unwrap();
-        m.entry(id.to_string())
-            .or_insert(Member {
-                id: id.to_string(),
-                role,
-                last_spoke_ms: 0,
-            });
+        m.entry(id.to_string()).or_insert(Member {
+            id: id.to_string(),
+            role,
+            last_spoke_ms: 0,
+        });
     }
 
     pub fn member_role(&self, id: &str) -> Option<MemberRole> {
@@ -432,7 +434,12 @@ impl DeliberationHub {
             if let Some(f) = &*self.emit.lock().unwrap() {
                 f(&speaker_id, seq);
             }
-            *self.last_spoke.lock().unwrap().entry(speaker_id.clone()).or_insert(0) = now_ms;
+            *self
+                .last_spoke
+                .lock()
+                .unwrap()
+                .entry(speaker_id.clone())
+                .or_insert(0) = now_ms;
             if let Some(m) = self.members.lock().unwrap().get_mut(&speaker_id) {
                 m.last_spoke_ms = now_ms;
             }
@@ -539,10 +546,30 @@ mod tests {
             cand("y", MemberRole::Internal, false, 0.0),
             cand("z", MemberRole::Internal, false, 0.0),
         ];
-        assert_eq!(select_next_speaker(&cands, ElectionMode::RoundRobin, 0).unwrap().0, "x");
-        assert_eq!(select_next_speaker(&cands, ElectionMode::RoundRobin, 1).unwrap().0, "y");
-        assert_eq!(select_next_speaker(&cands, ElectionMode::RoundRobin, 2).unwrap().0, "z");
-        assert_eq!(select_next_speaker(&cands, ElectionMode::RoundRobin, 3).unwrap().0, "x");
+        assert_eq!(
+            select_next_speaker(&cands, ElectionMode::RoundRobin, 0)
+                .unwrap()
+                .0,
+            "x"
+        );
+        assert_eq!(
+            select_next_speaker(&cands, ElectionMode::RoundRobin, 1)
+                .unwrap()
+                .0,
+            "y"
+        );
+        assert_eq!(
+            select_next_speaker(&cands, ElectionMode::RoundRobin, 2)
+                .unwrap()
+                .0,
+            "z"
+        );
+        assert_eq!(
+            select_next_speaker(&cands, ElectionMode::RoundRobin, 3)
+                .unwrap()
+                .0,
+            "x"
+        );
     }
 
     #[test]
@@ -596,8 +623,24 @@ mod tests {
     #[test]
     fn hub_dedup_one_processing_per_message() {
         let h = Arc::new(DeliberationHub::new(1000));
-        let d1 = h.ingest("m1", "u", &HashMap::new(), &[], 1, ElectionMode::MostRelevant, 0);
-        let d2 = h.ingest("m1", "u", &HashMap::new(), &[], 2, ElectionMode::MostRelevant, 0);
+        let d1 = h.ingest(
+            "m1",
+            "u",
+            &HashMap::new(),
+            &[],
+            1,
+            ElectionMode::MostRelevant,
+            0,
+        );
+        let d2 = h.ingest(
+            "m1",
+            "u",
+            &HashMap::new(),
+            &[],
+            2,
+            ElectionMode::MostRelevant,
+            0,
+        );
         assert!(!d1.duplicate);
         assert!(d2.duplicate); // 同一消息第二次 ⇒ 去重
     }
@@ -607,7 +650,15 @@ mod tests {
         let h = Arc::new(DeliberationHub::new(1000));
         let mut last = 0u64;
         for i in 0..50 {
-            let d = h.ingest(&format!("m{i}"), "u", &HashMap::new(), &[], i as u64, ElectionMode::MostRelevant, 0);
+            let d = h.ingest(
+                &format!("m{i}"),
+                "u",
+                &HashMap::new(),
+                &[],
+                i as u64,
+                ElectionMode::MostRelevant,
+                0,
+            );
             assert!(d.seq > last, "seq 必须严格递增");
             last = d.seq;
         }
@@ -619,13 +670,37 @@ mod tests {
         h.add_member("a", MemberRole::Internal);
         let mut rel = HashMap::new();
         rel.insert("a".to_string(), 1.0);
-        let d1 = h.ingest("m1", "u", &rel, &["a".to_string()], 1_000, ElectionMode::MostRelevant, 0);
+        let d1 = h.ingest(
+            "m1",
+            "u",
+            &rel,
+            &["a".to_string()],
+            1_000,
+            ElectionMode::MostRelevant,
+            0,
+        );
         assert!(d1.floor_granted && !d1.cooldown_blocked);
         // 同发言者 1ms 后再来一条 ⇒ 冷却拦下
-        let d2 = h.ingest("m2", "u", &rel, &["a".to_string()], 1_001, ElectionMode::MostRelevant, 0);
+        let d2 = h.ingest(
+            "m2",
+            "u",
+            &rel,
+            &["a".to_string()],
+            1_001,
+            ElectionMode::MostRelevant,
+            0,
+        );
         assert!(d2.cooldown_blocked);
         // 冷却窗口后 ⇒ 放行
-        let d3 = h.ingest("m3", "u", &rel, &["a".to_string()], 20_000, ElectionMode::MostRelevant, 0);
+        let d3 = h.ingest(
+            "m3",
+            "u",
+            &rel,
+            &["a".to_string()],
+            20_000,
+            ElectionMode::MostRelevant,
+            0,
+        );
         assert!(!d3.cooldown_blocked);
     }
 
@@ -635,7 +710,15 @@ mod tests {
         h.add_member("adv", MemberRole::Advisor);
         let mut rel = HashMap::new();
         rel.insert("adv".to_string(), 1.0);
-        let d = h.ingest("m1", "u", &rel, &["adv".to_string()], 1, ElectionMode::MostRelevant, 0);
+        let d = h.ingest(
+            "m1",
+            "u",
+            &rel,
+            &["adv".to_string()],
+            1,
+            ElectionMode::MostRelevant,
+            0,
+        );
         assert_eq!(d.speaker_id.as_deref(), Some("adv"));
         assert!(!d.can_command); // 外部顾问不可命令
     }
@@ -709,7 +792,15 @@ mod tests {
         h.add_member("a", MemberRole::Internal);
         let mut rel = HashMap::new();
         rel.insert("a".to_string(), 1.0);
-        let d = h.ingest("m1", "u", &rel, &["a".to_string()], 1, ElectionMode::MostRelevant, 0);
+        let d = h.ingest(
+            "m1",
+            "u",
+            &rel,
+            &["a".to_string()],
+            1,
+            ElectionMode::MostRelevant,
+            0,
+        );
         // 没有 emit 端口 ⇒ 决策照算（floor_granted），但不触发任何副作用（这里无端口，天然 fail-closed）
         assert!(d.floor_granted);
     }

@@ -218,7 +218,9 @@ impl AiOptimizer {
     /// 下一步候选值 (受硬边界与最大调整幅度双重约束)。
     fn next_value(&self, current: f64) -> Result<f64, OptimizeError> {
         let (lo, hi) = (LIMIT_LLM_RETRIES.0 as f64, LIMIT_LLM_RETRIES.1 as f64);
-        let step = (current * self.objective.max_adjustment_ratio).round().max(1.0);
+        let step = (current * self.objective.max_adjustment_ratio)
+            .round()
+            .max(1.0);
         let next = match self.response {
             ParamResponse::HigherHelps => current + step,
             ParamResponse::LowerHelps => current - step,
@@ -247,7 +249,11 @@ impl AiOptimizer {
             self.objective.metric,
             sample.value,
             sample.trust,
-            if self.objective.higher_is_better { "越大越好" } else { "越小越好" },
+            if self.objective.higher_is_better {
+                "越大越好"
+            } else {
+                "越小越好"
+            },
             TUNED_PARAM,
             match self.response {
                 ParamResponse::HigherHelps => "提高",

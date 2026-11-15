@@ -271,7 +271,6 @@ pub enum RoutingStrategy {
     CommunityFirst,
 }
 
-
 /// 路由请求 (由意图预算 + 请求者选择共同约束)。
 #[derive(Debug, Clone, Default)]
 pub struct RouteRequest {

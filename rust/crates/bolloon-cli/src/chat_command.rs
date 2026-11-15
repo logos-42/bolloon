@@ -65,7 +65,9 @@ pub struct PickRow {
 impl ChatSession {
     pub fn pick_title(&self, kind: PickKind) -> String {
         match kind {
-            PickKind::Model => "选择模型 (↑↓ / 滚轮 / 直接打序号 / Enter 确认 · Esc 取消)".to_string(),
+            PickKind::Model => {
+                "选择模型 (↑↓ / 滚轮 / 直接打序号 / Enter 确认 · Esc 取消)".to_string()
+            }
             PickKind::Channel => "选择渠道 (一渠道一历史, 互不串)".to_string(),
             PickKind::Sessions => "选择会话 (序号 / 标题 / 条数 · Enter 接上)".to_string(),
         }
@@ -88,7 +90,9 @@ impl ChatSession {
                 rows.push(PickRow {
                     value: "__configure__".to_string(),
                     label: "＋ 新增/配置一家 provider".to_string(),
-                    hint: Some("目录外的自家服务: bolloon model <id> --base-url … --model …".to_string()),
+                    hint: Some(
+                        "目录外的自家服务: bolloon model <id> --base-url … --model …".to_string(),
+                    ),
                 });
                 // ③ 全量目录 (内置 13 + 目录 200+): 已配置的排前面, 不再只列 usable()
                 let mut all = bolloon_llm::list_with_catalog();
@@ -174,14 +178,24 @@ impl ChatSession {
                     let entry = bolloon_llm::list_with_catalog()
                         .into_iter()
                         .find(|e| e.id == id);
-                    let Some(e) = entry else { return Err(format!("目录里没有 {id}")) };
+                    let Some(e) = entry else {
+                        return Err(format!("目录里没有 {id}"));
+                    };
                     let mut cfg = bolloon_llm::config_store::load();
                     bolloon_llm::config_store::apply_provider(
                         &mut cfg,
                         id,
                         None,
-                        if e.default_base_url.is_empty() { None } else { Some(e.default_base_url.as_str()) },
-                        if e.default_model.is_empty() { None } else { Some(e.default_model.as_str()) },
+                        if e.default_base_url.is_empty() {
+                            None
+                        } else {
+                            Some(e.default_base_url.as_str())
+                        },
+                        if e.default_model.is_empty() {
+                            None
+                        } else {
+                            Some(e.default_model.as_str())
+                        },
                     );
                     bolloon_llm::config_store::set_active(&mut cfg, id);
                     bolloon_llm::config_store::save(&cfg)
@@ -221,7 +235,11 @@ impl ChatSession {
             }
             PickKind::Sessions => match self.load_into(value) {
                 Ok(()) => Ok(vec![
-                    format!("已恢复会话「{}」 ({} 条消息)", self.title, self.messages.len()),
+                    format!(
+                        "已恢复会话「{}」 ({} 条消息)",
+                        self.title,
+                        self.messages.len()
+                    ),
                     format!("继续聊即可 —— 之前的上下文都在 (id {})", self.id),
                 ]),
                 Err(e) => Err(e),
@@ -351,11 +369,14 @@ impl Jobs {
      * 起一个后台会话: 独立上下文 (不带主会话历史), 结果写 `dir/<id>.md`。
      * 返回任务 id。**不阻塞**当前会话 —— 模型在后台跑, 人继续打字。
      */
-    pub fn spawn(&self, llm: Arc<LlmRuntime>, model: String, prompt: String, dir: PathBuf) -> String {
-        let id = format!(
-            "bg-{}",
-            chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f")
-        );
+    pub fn spawn(
+        &self,
+        llm: Arc<LlmRuntime>,
+        model: String,
+        prompt: String,
+        dir: PathBuf,
+    ) -> String {
+        let id = format!("bg-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f"));
         let head: String = prompt.chars().take(40).collect();
         let path = dir.join(format!("{id}.md"));
         let rec = Job {
@@ -364,7 +385,10 @@ impl Jobs {
             path: path.clone(),
             abort: None,
         };
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).push(rec);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(rec);
 
         let jobs_flag = JobFlag(Arc::clone(&self.inner));
         let id2 = id.clone();
@@ -379,8 +403,8 @@ impl Jobs {
                 tool_call_id: None,
                 tool_calls: None,
                 images: vec![],
-    reasoning_content: None,
-}];
+                reasoning_content: None,
+            }];
             let body = match llm
                 .generate("env", bolloon_llm::GenerateParams::new(&model, msgs))
                 .await
@@ -395,11 +419,21 @@ impl Jobs {
             if std::fs::create_dir_all(path2.parent().unwrap_or(Path::new("."))).is_ok() {
                 let _ = std::fs::write(&path2, &body);
             }
-            jobs_flag.set_by_path(&marker, if failed { JobStatus::Failed } else { JobStatus::Done });
+            jobs_flag.set_by_path(
+                &marker,
+                if failed {
+                    JobStatus::Failed
+                } else {
+                    JobStatus::Done
+                },
+            );
         });
         // 任务可能先于这行跑完 ⇒ 只在还 running 时挂 abort (挂不上也不影响正确性)
         let mut all = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(j) = all.iter_mut().find(|j| j.path == path && matches!(j.status, JobStatus::Running)) {
+        if let Some(j) = all
+            .iter_mut()
+            .find(|j| j.path == path && matches!(j.status, JobStatus::Running))
+        {
             j.abort = Some(handle.abort_handle());
         }
         id
@@ -539,7 +573,9 @@ pub struct ChatSession {
 impl ChatSession {
     /// 生产入口: `~/.bolloon/rust/chat`
     pub fn new(model: &str, channel: &str) -> Self {
-        let dir = bolloon_agent::home::BolloonHome::resolve().root().join("chat");
+        let dir = bolloon_agent::home::BolloonHome::resolve()
+            .root()
+            .join("chat");
         Self::with_dir(dir, model, channel)
     }
 
@@ -599,7 +635,10 @@ impl ChatSession {
     }
 
     pub fn chars(&self) -> usize {
-        self.messages.iter().map(|m| m.content.chars().count()).sum()
+        self.messages
+            .iter()
+            .map(|m| m.content.chars().count())
+            .sum()
     }
 
     /// 粗估 token (字符/4) —— **只是估算**, 输出里也这么写
@@ -628,7 +667,10 @@ impl ChatSession {
                 self.channel
             ),
             format!("继续    bolloon chat --resume {}", self.id),
-            format!("        (或进来后 /resume {} / /resume <序号> / /sessions 看全部)", self.id),
+            format!(
+                "        (或进来后 /resume {} / /resume <序号> / /sessions 看全部)",
+                self.id
+            ),
             format!("落盘    {}", self.path().display()),
         ]
     }
@@ -705,9 +747,10 @@ impl ChatSession {
     pub fn load_into(&mut self, key: &str) -> Result<(), String> {
         let key = key.trim();
         if let Some(p) = self.find(key) {
-            let raw = std::fs::read_to_string(&p).map_err(|e| format!("读 {} 失败: {e}", p.display()))?;
-            let parsed: Persisted =
-                serde_json::from_str(&raw).map_err(|e| format!("{} 不是合法会话文件: {e}", p.display()))?;
+            let raw =
+                std::fs::read_to_string(&p).map_err(|e| format!("读 {} 失败: {e}", p.display()))?;
+            let parsed: Persisted = serde_json::from_str(&raw)
+                .map_err(|e| format!("{} 不是合法会话文件: {e}", p.display()))?;
             self.id = parsed.id;
             self.title = parsed.title;
             self.title_custom = parsed.title_custom;
@@ -767,7 +810,10 @@ impl ChatSession {
         }
         // ④ id 前缀 (会话 id 很长, 手打不方便)
         if key.len() >= 6 {
-            if let Some((id, _, _)) = all.iter().find(|(id, _, _)| id.to_lowercase().starts_with(&want)) {
+            if let Some((id, _, _)) = all
+                .iter()
+                .find(|(id, _, _)| id.to_lowercase().starts_with(&want))
+            {
                 return Some(self.sessions_dir().join(format!("{id}.json")));
             }
         }
@@ -791,8 +837,12 @@ impl ChatSession {
             if p.extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
-            let Ok(raw) = std::fs::read_to_string(&p) else { continue };
-            let Ok(v) = serde_json::from_str::<Persisted>(&raw) else { continue };
+            let Ok(raw) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<Persisted>(&raw) else {
+                continue;
+            };
             out.push((v.created_ms, v.id, v.title, v.messages.len()));
         }
         out.sort_by_key(|r| std::cmp::Reverse(r.0));
@@ -865,8 +915,12 @@ impl ChatSession {
 
     /// loop 跑完一轮之后: 有 `--until` 就问一次模型是否满足 (满足即停)
     pub async fn after_loop_turn(&mut self, ctx: &ChatCtx<'_>) -> Vec<String> {
-        let Some(l) = self.loop_job.clone() else { return vec![] };
-        let Some(until) = l.until.clone() else { return vec![] };
+        let Some(l) = self.loop_job.clone() else {
+            return vec![];
+        };
+        let Some(until) = l.until.clone() else {
+            return vec![];
+        };
         let tail = self.transcript_for_llm(6, 2000);
         let ask = format!(
             "只回答 yes 或 no (小写, 不要别的字)。\n条件: {until}\n\n最近对话:\n{tail}\n\n条件满足了吗?"
@@ -878,8 +932,8 @@ impl ChatSession {
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-    reasoning_content: None,
-}];
+            reasoning_content: None,
+        }];
         match ctx
             .llm
             .generate("env", bolloon_llm::GenerateParams::new(&self.model, msgs))
@@ -891,10 +945,15 @@ impl ChatSession {
                     self.loop_job = None;
                     vec![format!("✓ loop 结束: 模型判定 --until「{until}」已满足")]
                 } else {
-                    vec![format!("… loop 继续: --until「{until}」未满足 (下一次 {}s 后)", l.interval_ms / 1000)]
+                    vec![format!(
+                        "… loop 继续: --until「{until}」未满足 (下一次 {}s 后)",
+                        l.interval_ms / 1000
+                    )]
                 }
             }
-            Err(e) => vec![format!("✗ loop 的 --until 判定失败: {e} (loop 暂停, /loop resume 恢复)")],
+            Err(e) => vec![format!(
+                "✗ loop 的 --until 判定失败: {e} (loop 暂停, /loop resume 恢复)"
+            )],
         }
     }
 
@@ -955,8 +1014,8 @@ impl ChatSession {
             tool_call_id: None,
             tool_calls: None,
             images,
-    reasoning_content: None,
-})
+            reasoning_content: None,
+        })
     }
 
     /// 给 LLM 看的对话摘录 (最多 `turns` 轮 / `max_chars` 字符, 从尾部取)
@@ -1015,7 +1074,9 @@ impl ChatSession {
                     format!("{}\n\n", args.trim())
                 };
                 match bolloon_tui::input::compose_in_editor(&seed) {
-                    Ok(text) if text.trim().is_empty() => Cmd::Say(vec!["草稿是空的 · 没有发送".to_string()]),
+                    Ok(text) if text.trim().is_empty() => {
+                        Cmd::Say(vec!["草稿是空的 · 没有发送".to_string()])
+                    }
                     Ok(text) => Cmd::Send(text),
                     Err(e) => Cmd::Say(vec![format!("✗ 打不开编辑器: {e}")]),
                 }
@@ -1068,7 +1129,10 @@ impl ChatSession {
                 } else {
                     self.channel = c.to_string();
                     let _ = self.save();
-                    Cmd::Say(vec![format!("渠道已切换到 {} (输入历史按渠道隔离)", self.channel)])
+                    Cmd::Say(vec![format!(
+                        "渠道已切换到 {} (输入历史按渠道隔离)",
+                        self.channel
+                    )])
                 }
             }
             "/compress" => Cmd::Say(self.compress_cmd(ctx, args).await),
@@ -1119,7 +1183,9 @@ impl ChatSession {
             "/copy" => Cmd::Say(self.copy_cmd(args)),
             "/paste" => Cmd::Say(self.paste_cmd()),
             "/image" => Cmd::Say(self.image_cmd(args)),
-            "/update" => Cmd::Update { install: args.trim() == "install" },
+            "/update" => Cmd::Update {
+                install: args.trim() == "install",
+            },
             "/version" | "/v" => Cmd::Say(vec![format!(
                 "bolloon {} (rust native) · tui {}",
                 env!("CARGO_PKG_VERSION"),
@@ -1161,7 +1227,9 @@ impl ChatSession {
             // ── 技能 ──
             "/skills" => Cmd::Say(skills_lines(&self.skills_path())),
             // 注册表里标了 Ready 但这里没接 ⇒ 明确报错 (宁可红, 不假装)
-            other => Cmd::Say(vec![format!("✗ {other} 标了可用但没接实现 (这是 bug, 请报)")]),
+            other => Cmd::Say(vec![format!(
+                "✗ {other} 标了可用但没接实现 (这是 bug, 请报)"
+            )]),
         }
     }
 
@@ -1201,7 +1269,7 @@ impl ChatSession {
                 let n = self.queue.len();
                 self.queue.clear();
                 let _ = self.save();
-                vec![format!("✓ 已清空队列 ({n} 条)") ]
+                vec![format!("✓ 已清空队列 ({n} 条)")]
             }
             "rm" => match rest.parse::<usize>() {
                 Ok(n) if n >= 1 && n <= self.queue.len() => {
@@ -1230,20 +1298,29 @@ impl ChatSession {
                 let a = it2.next().and_then(|s| s.parse::<usize>().ok());
                 let b = it2.next().and_then(|s| s.parse::<usize>().ok());
                 match (a, b) {
-                    (Some(a), Some(b)) if a >= 1 && a <= self.queue.len() && b >= 1 && b <= self.queue.len() => {
+                    (Some(a), Some(b))
+                        if a >= 1 && a <= self.queue.len() && b >= 1 && b <= self.queue.len() =>
+                    {
                         let item = self.queue.remove(a - 1).unwrap();
                         self.queue.insert(b - 1, item);
                         let _ = self.save();
                         vec![format!("✓ 已把第 {a} 条移到第 {b}")]
                     }
-                    _ => vec![format!("用法: /queue move A B (共 {} 条)", self.queue.len())],
+                    _ => vec![format!(
+                        "用法: /queue move A B (共 {} 条)",
+                        self.queue.len()
+                    )],
                 }
             }
             _ => {
                 // 整段当作要排队的内容 (支持多行)
                 self.queue.push_back(t.to_string());
                 let _ = self.save();
-                vec![format!("✓ 已排队 (第 {} 条, 轮末自动跑): {}", self.queue.len(), head(t, 50))]
+                vec![format!(
+                    "✓ 已排队 (第 {} 条, 轮末自动跑): {}",
+                    self.queue.len(),
+                    head(t, 50)
+                )]
             }
         }
     }
@@ -1251,9 +1328,10 @@ impl ChatSession {
     fn steer_cmd(&mut self, args: &str) -> Vec<String> {
         let t = args.trim();
         if t.is_empty() {
-            return vec![
-                format!("用法: /steer <消息> (下一轮前注入; 现有 {} 条)", self.steer.len()),
-            ];
+            return vec![format!(
+                "用法: /steer <消息> (下一轮前注入; 现有 {} 条)",
+                self.steer.len()
+            )];
         }
         self.steer.push(t.to_string());
         let _ = self.save();
@@ -1272,7 +1350,11 @@ impl ChatSession {
                 self.busy.label(),
                 self.queue.len(),
                 self.steer.len(),
-                if self.loop_job.is_some() { "有" } else { "无" }
+                if self.loop_job.is_some() {
+                    "有"
+                } else {
+                    "无"
+                }
             )];
         }
         match BusyMode::parse(t) {
@@ -1313,10 +1395,18 @@ impl ChatSession {
         }
         let jobs_dir = self.dir.join("jobs");
         let _ = std::fs::create_dir_all(&jobs_dir);
-        let id = ctx.jobs.spawn(Arc::clone(&ctx.llm), self.model.clone(), prompt.to_string(), jobs_dir);
+        let id = ctx.jobs.spawn(
+            Arc::clone(&ctx.llm),
+            self.model.clone(),
+            prompt.to_string(),
+            jobs_dir,
+        );
         vec![
             format!("✓ 后台任务 {id} 已启动 (模型 {})", self.model),
-            format!("  /agents 看进度 · 结果写到 {}", self.dir.join("jobs").join(format!("{id}.md")).display()),
+            format!(
+                "  /agents 看进度 · 结果写到 {}",
+                self.dir.join("jobs").join(format!("{id}.md")).display()
+            ),
         ]
     }
 
@@ -1341,7 +1431,11 @@ impl ChatSession {
         let focus = args.trim();
         let tail = self.transcript_for_llm(12, 8000);
         // 先把"侧重"拼好再进 format!: 嵌套 format! 做参数会多一层分配, 也更难读
-        let focus_line = if focus.is_empty() { String::new() } else { format!("侧重: {focus}\n") };
+        let focus_line = if focus.is_empty() {
+            String::new()
+        } else {
+            format!("侧重: {focus}\n")
+        };
         let ask = format!(
             "复盘以下对话, 提炼**最多 3 条**可复用经验 (给以后的会话用)。\n\
              要求: 每条一行, 一行就是一条完整经验, 不要编号不要寒暄不要解释格式。\n\
@@ -1354,8 +1448,8 @@ impl ChatSession {
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-    reasoning_content: None,
-}];
+            reasoning_content: None,
+        }];
         let res = match ctx
             .llm
             .generate("env", bolloon_llm::GenerateParams::new(&self.model, msgs))
@@ -1373,7 +1467,10 @@ impl ChatSession {
             .map(|s| s.to_string())
             .collect();
         if lessons.is_empty() {
-            return vec![format!("模型没提炼出可用经验 (原文: {})", head(&res.content, 80))];
+            return vec![format!(
+                "模型没提炼出可用经验 (原文: {})",
+                head(&res.content, 80)
+            )];
         }
         // 记忆: lesson 层 (真实落 sqlite)
         let mut saved = Vec::new();
@@ -1381,7 +1478,12 @@ impl ChatSession {
             self.memory_db_path.to_str().unwrap_or("memory.db"),
         ) {
             Ok(db) => db,
-            Err(e) => return vec![format!("✗ 打不开记忆库 {}: {e}", self.memory_db_path.display())],
+            Err(e) => {
+                return vec![format!(
+                    "✗ 打不开记忆库 {}: {e}",
+                    self.memory_db_path.display()
+                )];
+            }
         };
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         // 技能: distill → promote (用户显式 /refine = 批准)
@@ -1417,16 +1519,24 @@ impl ChatSession {
         let _rest = it.next().unwrap_or("").trim();
         match sub {
             "status" | "show" => match &self.loop_job {
-                None => vec!["(没有 loop; /loop [间隔] <prompt> [--times N] [--until 条件])".to_string()],
+                None => vec![
+                    "(没有 loop; /loop [间隔] <prompt> [--times N] [--until 条件])".to_string(),
+                ],
                 Some(l) => vec![
                     format!(
                         "loop: 每 {}s 跑一次 · 剩余 {} · {}",
                         l.interval_ms / 1000,
-                        l.runs_left.map(|n| n.to_string()).unwrap_or_else(|| "∞".into()),
+                        l.runs_left
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| "∞".into()),
                         if l.paused { "已暂停" } else { "运行中" }
                     ),
                     format!("  内容: {}", head(&l.prompt, 60)),
-                    if let Some(u) = &l.until { format!("  --until: {u}") } else { String::new() },
+                    if let Some(u) = &l.until {
+                        format!("  --until: {u}")
+                    } else {
+                        String::new()
+                    },
                 ]
                 .into_iter()
                 .filter(|s| !s.is_empty())
@@ -1507,7 +1617,9 @@ impl ChatSession {
                 vec![format!(
                     "✓ loop 已设: 每 {}s · 剩余 {} · 本轮结束就先跑",
                     l.interval_ms / 1000,
-                    l.runs_left.map(|n| n.to_string()).unwrap_or_else(|| "∞".into())
+                    l.runs_left
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "∞".into())
                 )]
             }
         }
@@ -1601,7 +1713,11 @@ impl ChatSession {
             _ => {
                 self.subgoals.push(t.to_string());
                 let _ = self.save();
-                vec![format!("✓ 已加子条件 ({}): {}", self.subgoals.len(), head(t, 50))]
+                vec![format!(
+                    "✓ 已加子条件 ({}): {}",
+                    self.subgoals.len(),
+                    head(t, 50)
+                )]
             }
         }
     }
@@ -1623,8 +1739,8 @@ impl ChatSession {
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-    reasoning_content: None,
-}];
+            reasoning_content: None,
+        }];
         match ctx
             .llm
             .generate("env", bolloon_llm::GenerateParams::new(&self.model, msgs))
@@ -1652,7 +1768,11 @@ impl ChatSession {
             "你是**独立的第三方审查者**, 与上面的对话无关。复查这段工作/讨论, 输出:\n\
              ① 做对了什么 (最多 3 条)\n② 风险与遗漏 (尽量具体, 引用原文)\n③ 下一步建议 (可执行)\n\
              不要寒暄。{}\n\n对话:\n{tail}",
-            if focus.is_empty() { String::new() } else { format!("审查重点: {focus}\n") }
+            if focus.is_empty() {
+                String::new()
+            } else {
+                format!("审查重点: {focus}\n")
+            }
         );
         let msgs = vec![ChatMessage {
             role: "user".into(),
@@ -1661,8 +1781,8 @@ impl ChatSession {
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-    reasoning_content: None,
-}];
+            reasoning_content: None,
+        }];
         match ctx
             .llm
             .generate("env", bolloon_llm::GenerateParams::new(&self.model, msgs))
@@ -1690,7 +1810,11 @@ impl ChatSession {
                 if p.is_file()
                     && matches!(
                         name.as_str(),
-                        "memory.db" | "memory.json" | "skills.json" | "judgments.json" | "task-board.json"
+                        "memory.db"
+                            | "memory.json"
+                            | "skills.json"
+                            | "judgments.json"
+                            | "task-board.json"
                     )
                 {
                     out.push(p);
@@ -1747,7 +1871,11 @@ impl ChatSession {
         all.sort_by(|a, b| b.cmp(a));
         let mut out = vec![format!("快照 {} 个 (新→旧):", all.len())];
         for (i, id) in all.iter().enumerate() {
-            out.push(format!("  {:>2}. {id}{}", i + 1, if i == 0 { "  ← 最新" } else { "" }));
+            out.push(format!(
+                "  {:>2}. {id}{}",
+                i + 1,
+                if i == 0 { "  ← 最新" } else { "" }
+            ));
         }
         out.push("恢复: /snapshot restore <id> 或 /rollback [N]".to_string());
         out
@@ -1778,7 +1906,11 @@ impl ChatSession {
         let id = format!(
             "{}{}",
             chrono::Utc::now().format("%Y%m%d-%H%M%S"),
-            if note.is_empty() { String::new() } else { format!("-{}", slug(note)) }
+            if note.is_empty() {
+                String::new()
+            } else {
+                format!("-{}", slug(note))
+            }
         );
         let dest = self.snapshot_dir().join(&id);
         if std::fs::create_dir_all(&dest).is_err() {
@@ -1822,9 +1954,13 @@ impl ChatSession {
                 all.len().saturating_sub(1)
             } else {
                 let n: usize = id.parse().map_err(|_| "编号得是数字".to_string())?;
-                all.len().checked_sub(n).ok_or_else(|| format!("只有 {} 个快照", all.len()))?
+                all.len()
+                    .checked_sub(n)
+                    .ok_or_else(|| format!("只有 {} 个快照", all.len()))?
             };
-            let Some(sid) = all.get(idx) else { return Err("没有快照可恢复".into()) };
+            let Some(sid) = all.get(idx) else {
+                return Err("没有快照可恢复".into());
+            };
             self.snapshot_dir().join(sid)
         } else {
             let p = self.snapshot_dir().join(id);
@@ -1833,7 +1969,12 @@ impl ChatSession {
             }
             p
         };
-        let mut out = vec![format!("✓ 已从 {} 恢复:", dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default())];
+        let mut out = vec![format!(
+            "✓ 已从 {} 恢复:",
+            dir.file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        )];
         // 收集快照里的文件 (相对路径)
         let mut stack = vec![dir.clone()];
         let mut restored = 0;
@@ -1906,14 +2047,22 @@ impl ChatSession {
                 }
                 vec![
                     format!("预览: 保留最近 {n} 轮 ⇒ 丢掉 {removed} 条, 留 {kept} 条"),
-                    format!("  估算 {} → {} tokens (**只是截断, 不摘要**)", self.est_tokens(), clone.est_tokens()),
+                    format!(
+                        "  估算 {} → {} tokens (**只是截断, 不摘要**)",
+                        self.est_tokens(),
+                        clone.est_tokens()
+                    ),
                 ]
             }
             "focus" => {
                 // /compress focus <topic> [--preview] — 模型摘要 (真压缩, 不是截断)
                 let rest: Vec<&str> = it.collect();
                 let preview = rest.iter().any(|t| *t == "--preview" || *t == "--dry-run");
-                let topic: Vec<&str> = rest.iter().filter(|t| !t.starts_with("--")).copied().collect();
+                let topic: Vec<&str> = rest
+                    .iter()
+                    .filter(|t| !t.starts_with("--"))
+                    .copied()
+                    .collect();
                 let topic = topic.join(" ");
                 let keep_turns = 2usize;
                 let user_idx: Vec<usize> = self
@@ -1927,11 +2076,23 @@ impl ChatSession {
                     return vec![format!("只有 {} 轮, 没有可摘要的历史", self.turns())];
                 }
                 let cut = user_idx[user_idx.len() - keep_turns];
-                let old_chars: usize = self.messages[..cut].iter().map(|m| m.content.chars().count()).sum();
+                let old_chars: usize = self.messages[..cut]
+                    .iter()
+                    .map(|m| m.content.chars().count())
+                    .sum();
                 if preview {
                     return vec![
-                        format!("预览: 摘要前 {cut} 条 ({old_chars} 字符), 保留最近 {keep_turns} 轮"),
-                        format!("  主题: {}", if topic.is_empty() { "(全文)".to_string() } else { topic.clone() }),
+                        format!(
+                            "预览: 摘要前 {cut} 条 ({old_chars} 字符), 保留最近 {keep_turns} 轮"
+                        ),
+                        format!(
+                            "  主题: {}",
+                            if topic.is_empty() {
+                                "(全文)".to_string()
+                            } else {
+                                topic.clone()
+                            }
+                        ),
                         "  (去掉 --preview 真跑; 摘要由模型生成, 替换掉旧消息)".to_string(),
                     ];
                 }
@@ -1939,7 +2100,11 @@ impl ChatSession {
                 let ask = format!(
                     "把以下对话压缩成一份**接续用的摘要**, 保留: 已定的结论/决定、未完成事项、重要数字与路径。\n\
                      主题: {}\n用第三人称, 200 字以内, 直接输出摘要本体。\n\n对话:\n{old}",
-                    if topic.is_empty() { "(无)".to_string() } else { topic.clone() }
+                    if topic.is_empty() {
+                        "(无)".to_string()
+                    } else {
+                        topic.clone()
+                    }
                 );
                 let msgs = vec![ChatMessage {
                     role: "user".into(),
@@ -1948,8 +2113,8 @@ impl ChatSession {
                     tool_call_id: None,
                     tool_calls: None,
                     images: vec![],
-    reasoning_content: None,
-}];
+                    reasoning_content: None,
+                }];
                 let res = match ctx
                     .llm
                     .generate("env", bolloon_llm::GenerateParams::new(&self.model, msgs))
@@ -1965,7 +2130,10 @@ impl ChatSession {
                 self.apply_summary(&res.content, keep_turns);
                 let _ = self.save();
                 vec![
-                    format!("✓ 已摘要压缩: 旧 {} 条 → 1 条摘要 (保留最近 {keep_turns} 轮)", cut),
+                    format!(
+                        "✓ 已摘要压缩: 旧 {} 条 → 1 条摘要 (保留最近 {keep_turns} 轮)",
+                        cut
+                    ),
                     format!("  估算 {} → {} tokens", before, self.est_tokens()),
                     format!("  摘要: {}", head(&res.content, 80)),
                 ]
@@ -1980,11 +2148,18 @@ impl ChatSession {
                 let (removed, kept) = self.compress(n);
                 let _ = self.save();
                 if removed == 0 {
-                    vec![format!("上下文只有 {} 轮, 没动 (保留最近 {n} 轮)", self.turns())]
+                    vec![format!(
+                        "上下文只有 {} 轮, 没动 (保留最近 {n} 轮)",
+                        self.turns()
+                    )]
                 } else {
                     vec![
                         format!("✓ 已截断: 丢 {removed} 条, 留 {kept} 条 (最近 {n} 轮)"),
-                        format!("  估算 {} → {} tokens · 这是**截断**不是摘要, 丢的内容不在了 (要摘要用 /compress focus <主题>)", before, self.est_tokens()),
+                        format!(
+                            "  估算 {} → {} tokens · 这是**截断**不是摘要, 丢的内容不在了 (要摘要用 /compress focus <主题>)",
+                            before,
+                            self.est_tokens()
+                        ),
                     ]
                 }
             }
@@ -2033,8 +2208,8 @@ impl ChatSession {
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-    reasoning_content: None,
-}];
+            reasoning_content: None,
+        }];
         next.extend(tail);
         self.messages = next;
     }
@@ -2044,11 +2219,20 @@ impl ChatSession {
         if self.messages.is_empty() {
             return vec!["(本会话还没有消息)".to_string()];
         }
-        let mut out = vec![format!("会话 {} · {} 条消息 / {} 轮", self.id, self.messages.len(), self.turns())];
+        let mut out = vec![format!(
+            "会话 {} · {} 条消息 / {} 轮",
+            self.id,
+            self.messages.len(),
+            self.turns()
+        )];
         for (i, m) in self.messages.iter().enumerate() {
             let who = if m.role == "user" { "你  " } else { "Agent" };
             let one = m.content.replace('\n', " ⏎ ");
-            out.push(format!("  {:>3}. {who}  {}", i + 1, bolloon_tui::input::fit_for_display(&one, 60)));
+            out.push(format!(
+                "  {:>3}. {who}  {}",
+                i + 1,
+                bolloon_tui::input::fit_for_display(&one, 60)
+            ));
         }
         out
     }
@@ -2076,7 +2260,11 @@ impl ChatSession {
         let Some(fmt) = it.next() else {
             return vec![
                 "用法: /save <json|md|html> [filename] [redact]".to_string(),
-                format!("当前会话: {} 条消息 / {} 轮", self.messages.len(), self.turns()),
+                format!(
+                    "当前会话: {} 条消息 / {} 轮",
+                    self.messages.len(),
+                    self.turns()
+                ),
             ];
         };
         let mut filename: Option<&str> = None;
@@ -2090,7 +2278,11 @@ impl ChatSession {
         match self.export(fmt, filename, redact) {
             Ok(p) => vec![
                 format!("✓ 已导出 {fmt} → {}", p.display()),
-                format!("  {} 条消息{}", self.messages.len(), if redact { " · 已脱敏" } else { "" }),
+                format!(
+                    "  {} 条消息{}",
+                    self.messages.len(),
+                    if redact { " · 已脱敏" } else { "" }
+                ),
             ],
             Err(e) => vec![format!("✗ {e}")],
         }
@@ -2132,16 +2324,32 @@ impl ChatSession {
                 self.turns(),
                 self.channel,
                 self.model,
-                if bolloon_llm::is_vision_model(&self.model) { " (视觉)" } else { " (纯文本)" }
+                if bolloon_llm::is_vision_model(&self.model) {
+                    " (视觉)"
+                } else {
+                    " (纯文本)"
+                }
             ),
-            format!("  上下文 ≈ {} 字符 ≈{} tokens (粗估 字符/4)", self.chars(), self.est_tokens()),
+            format!(
+                "  上下文 ≈ {} 字符 ≈{} tokens (粗估 字符/4)",
+                self.chars(),
+                self.est_tokens()
+            ),
             format!("  落盘 {}", self.path().display()),
         ];
         if !self.attachments.is_empty() {
-            out.push(format!("  待发附件 {} 个: {}", self.attachments.len(), self.attachments.join(", ")));
+            out.push(format!(
+                "  待发附件 {} 个: {}",
+                self.attachments.len(),
+                self.attachments.join(", ")
+            ));
         }
         if let Some(g) = &self.goal {
-            out.push(format!("  目标{}: {}", if self.goal_paused { "(暂停)" } else { "" }, head(g, 50)));
+            out.push(format!(
+                "  目标{}: {}",
+                if self.goal_paused { "(暂停)" } else { "" },
+                head(g, 50)
+            ));
         }
         if !self.queue.is_empty() || !self.steer.is_empty() {
             out.push(format!(
@@ -2149,7 +2357,11 @@ impl ChatSession {
                 self.busy.label(),
                 self.queue.len(),
                 self.steer.len(),
-                if self.loop_job.is_some() { "有" } else { "无" }
+                if self.loop_job.is_some() {
+                    "有"
+                } else {
+                    "无"
+                }
             ));
         }
         out
@@ -2174,7 +2386,11 @@ impl ChatSession {
         if all {
             out.push("  逐条:".to_string());
             for (i, m) in self.messages.iter().enumerate() {
-                let img = if m.images.is_empty() { String::new() } else { format!(" +{}图", m.images.len()) };
+                let img = if m.images.is_empty() {
+                    String::new()
+                } else {
+                    format!(" +{}图", m.images.len())
+                };
                 out.push(format!(
                     "   {:>3}. {:<9} {:>6} 字符{}  {}",
                     i + 1,
@@ -2202,16 +2418,24 @@ impl ChatSession {
 
     fn copy_cmd(&self, args: &str) -> Vec<String> {
         let n: usize = args.trim().parse().unwrap_or(1);
-        let replies: Vec<&ChatMessage> = self.messages.iter().filter(|m| m.role != "user").collect();
+        let replies: Vec<&ChatMessage> =
+            self.messages.iter().filter(|m| m.role != "user").collect();
         if replies.is_empty() {
             return vec!["(还没有回复可复制)".to_string()];
         }
         if n == 0 || n > replies.len() {
-            return vec![format!("只有 {} 条回复 (范围 1–{})", replies.len(), replies.len())];
+            return vec![format!(
+                "只有 {} 条回复 (范围 1–{})",
+                replies.len(),
+                replies.len()
+            )];
         }
         let target = replies[replies.len() - n];
         match bolloon_tui::clipboard::copy_text(&target.content) {
-            Ok(()) => vec![format!("✓ 已复制倒数第 {n} 条回复 ({} 字符) 到剪贴板", target.content.chars().count())],
+            Ok(()) => vec![format!(
+                "✓ 已复制倒数第 {n} 条回复 ({} 字符) 到剪贴板",
+                target.content.chars().count()
+            )],
             Err(e) => vec![format!("✗ 复制失败: {e}")],
         }
     }
@@ -2222,9 +2446,15 @@ impl ChatSession {
                 self.attachments.push(p.display().to_string());
                 vec![
                     format!("✓ 已附加图片 {}", p.display()),
-                    format!("  下一条消息会带上像素 (共 {} 个附件; 模型 {})",
+                    format!(
+                        "  下一条消息会带上像素 (共 {} 个附件; 模型 {})",
                         self.attachments.len(),
-                        if bolloon_llm::is_vision_model(&self.model) { "支持视觉" } else { "⚠ 纯文本, 发送会被拦" }),
+                        if bolloon_llm::is_vision_model(&self.model) {
+                            "支持视觉"
+                        } else {
+                            "⚠ 纯文本, 发送会被拦"
+                        }
+                    ),
                 ]
             }
             Err(e) => vec![format!("✗ 贴图失败: {e}")],
@@ -2243,7 +2473,10 @@ impl ChatSession {
         self.attachments.push(path.to_string());
         vec![
             format!("✓ 已附加 {path}"),
-            format!("  下一条消息会带上像素 (共 {} 个附件)", self.attachments.len()),
+            format!(
+                "  下一条消息会带上像素 (共 {} 个附件)",
+                self.attachments.len()
+            ),
         ]
     }
 }
@@ -2306,7 +2539,12 @@ impl ChatSession {
     }
 
     /// `/save` — 导出 (json/md/html), `redact` 时把疑似秘密的行打码
-    pub fn export(&self, fmt: &str, filename: Option<&str>, redact: bool) -> Result<PathBuf, String> {
+    pub fn export(
+        &self,
+        fmt: &str,
+        filename: Option<&str>,
+        redact: bool,
+    ) -> Result<PathBuf, String> {
         let (ext, body) = match fmt {
             "json" => ("json", self.export_json(redact)),
             "md" | "markdown" => ("md", self.export_md(redact)),
@@ -2327,7 +2565,8 @@ impl ChatSession {
                 std::fs::create_dir_all(parent).map_err(|e| format!("建目录失败: {e}"))?;
             }
         }
-        std::fs::write(&path, body.as_bytes()).map_err(|e| format!("写 {} 失败: {e}", path.display()))?;
+        std::fs::write(&path, body.as_bytes())
+            .map_err(|e| format!("写 {} 失败: {e}", path.display()))?;
         Ok(path)
     }
 
@@ -2363,7 +2602,14 @@ impl ChatSession {
     }
 
     fn export_md(&self, redact: bool) -> String {
-        let mut out = format!("# {}\n\n", if self.title.is_empty() { &self.id } else { &self.title });
+        let mut out = format!(
+            "# {}\n\n",
+            if self.title.is_empty() {
+                &self.id
+            } else {
+                &self.title
+            }
+        );
         out.push_str(&format!(
             "- 会话 `{}`\n- 模型 `{}` · 渠道 `{}`\n- 消息 {} 条 / {} 轮\n\n---\n\n",
             self.id,
@@ -2374,8 +2620,15 @@ impl ChatSession {
         ));
         for m in &self.messages {
             let who = if m.role == "user" { "你" } else { "Agent" };
-            let img = if m.images.is_empty() { String::new() } else { format!(" *(+{} 图)*", m.images.len()) };
-            out.push_str(&format!("**{who}**{img}\n\n{}\n\n", self.body_of(m, redact)));
+            let img = if m.images.is_empty() {
+                String::new()
+            } else {
+                format!(" *(+{} 图)*", m.images.len())
+            };
+            out.push_str(&format!(
+                "**{who}**{img}\n\n{}\n\n",
+                self.body_of(m, redact)
+            ));
         }
         out
     }
@@ -2390,12 +2643,20 @@ impl ChatSession {
         );
         out.push_str(&format!(
             "<h1>{}</h1><p>会话 <code>{}</code> · 模型 <code>{}</code></p>",
-            esc(if self.title.is_empty() { &self.id } else { &self.title }),
+            esc(if self.title.is_empty() {
+                &self.id
+            } else {
+                &self.title
+            }),
             esc(&self.id),
             esc(&self.model)
         ));
         for m in &self.messages {
-            let (cls, who) = if m.role == "user" { ("u", "你") } else { ("a", "Agent") };
+            let (cls, who) = if m.role == "user" {
+                ("u", "你")
+            } else {
+                ("a", "Agent")
+            };
             out.push_str(&format!(
                 "<div class=\"{cls}\">{who}</div><pre>{}</pre>",
                 esc(&self.body_of(m, redact))
@@ -2414,7 +2675,10 @@ fn help_cmd(ctx: &ChatCtx<'_>, skills_path: &Path, args: &str) -> Vec<String> {
     if a.is_empty() {
         let mut out = slash::help_lines(None);
         out.push(String::new());
-        out.push(format!("后台任务在跑: {} (用 /agents 看)", ctx.jobs.running()));
+        out.push(format!(
+            "后台任务在跑: {} (用 /agents 看)",
+            ctx.jobs.running()
+        ));
         return out;
     }
     if let Some(sp) = slash::find(a) {
@@ -2427,7 +2691,9 @@ fn help_cmd(ctx: &ChatCtx<'_>, skills_path: &Path, args: &str) -> Vec<String> {
 // 纪律: 只读本机真实数据 / 复用已有模块; 没有数据源就如实说明, 不编造余额/群组/卡片。
 
 fn home_root() -> std::path::PathBuf {
-    bolloon_agent::home::BolloonHome::resolve().root().to_path_buf()
+    bolloon_agent::home::BolloonHome::resolve()
+        .root()
+        .to_path_buf()
 }
 
 /// 当前智能体默认值: `BOLLOON_AGENT` 优先, 否则 `bolloon`
@@ -2443,7 +2709,9 @@ fn default_agent_id() -> String {
 /// 从 web 的 native-state.json 里取智能体的 DID (TUI 与网页同一份真源)
 fn did_of(agent: &str) -> Option<String> {
     let v = read_json(&home_root().join("native-state.json"));
-    v["agents"].as_array()?.iter()
+    v["agents"]
+        .as_array()?
+        .iter()
         .find(|a| a["id"].as_str() == Some(agent))
         .and_then(|a| a["did"].as_str())
         .map(String::from)
@@ -2451,14 +2719,21 @@ fn did_of(agent: &str) -> Option<String> {
 
 fn agents_from_state() -> Vec<(String, String, String)> {
     let v = read_json(&home_root().join("native-state.json"));
-    v["agents"].as_array().map(|arr| {
-        arr.iter().filter_map(|a| {
-            let id = a["id"].as_str()?.to_string();
-            Some((id,
-                  a["name"].as_str().unwrap_or("").to_string(),
-                  a["did"].as_str().unwrap_or("").to_string()))
-        }).collect()
-    }).unwrap_or_default()
+    v["agents"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| {
+                    let id = a["id"].as_str()?.to_string();
+                    Some((
+                        id,
+                        a["name"].as_str().unwrap_or("").to_string(),
+                        a["did"].as_str().unwrap_or("").to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn read_json(path: &std::path::Path) -> serde_json::Value {
@@ -2497,12 +2772,17 @@ fn did_lines(agent: &str, args: &str) -> Vec<String> {
 /// `/wallet` —— **当前智能体绑定的钱包地址** (不是本机用户的余额页)
 fn wallet_lines(agent: &str, args: &str) -> Vec<String> {
     let p = home_root().join("agents").join(agent).join("wallets.json");
-    let mut out = vec![format!("智能体: {agent}"), format!("钱包表 {}", p.display())];
+    let mut out = vec![
+        format!("智能体: {agent}"),
+        format!("钱包表 {}", p.display()),
+    ];
     let v = read_json(&p);
     let rows: Vec<serde_json::Value> = if v.is_array() {
         v.as_array().cloned().unwrap_or_default()
     } else if v.is_object() {
-        v.as_object().map(|m| m.values().cloned().collect()).unwrap_or_default()
+        v.as_object()
+            .map(|m| m.values().cloned().collect())
+            .unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -2512,7 +2792,10 @@ fn wallet_lines(agent: &str, args: &str) -> Vec<String> {
     }
     let mut first = String::new();
     for w in &rows {
-        let chain = w["chain"].as_str().or_else(|| w["network"].as_str()).unwrap_or("?");
+        let chain = w["chain"]
+            .as_str()
+            .or_else(|| w["network"].as_str())
+            .unwrap_or("?");
         let addr = w["address"].as_str().unwrap_or("?");
         let bal = match &w["balance"] {
             serde_json::Value::String(s) => s.clone(),
@@ -2554,8 +2837,11 @@ fn work_lines() -> Vec<String> {
         claims
     ));
     for a in anns.iter().rev().take(3) {
-        let title = a["title"].as_str().or_else(|| a["text"].as_str())
-            .or_else(|| a["task"].as_str()).unwrap_or("(无标题)");
+        let title = a["title"]
+            .as_str()
+            .or_else(|| a["text"].as_str())
+            .or_else(|| a["task"].as_str())
+            .unwrap_or("(无标题)");
         out.push(format!("  · {title}"));
     }
     out
@@ -2572,7 +2858,9 @@ fn world_lines() -> Vec<String> {
     let mut out = vec![format!("最近世界交互 ({}):", p.display())];
     let mut shown = 0;
     for line in txt.lines().rev().take(8) {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
         out.push(format!(
             "  [{}] {} {}",
             v["event"].as_str().unwrap_or("?"),
@@ -2593,8 +2881,11 @@ fn group_lines() -> Vec<String> {
     let v = read_json(&p);
     let mut out = vec![format!("群组索引 {}", p.display())];
     let ids: Vec<String> = if v.is_array() {
-        v.as_array().unwrap().iter()
-            .filter_map(|x| x["id"].as_str().map(String::from)).collect()
+        v.as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|x| x["id"].as_str().map(String::from))
+            .collect()
     } else if v.is_object() {
         v.as_object().unwrap().keys().cloned().collect()
     } else {
@@ -2674,7 +2965,7 @@ fn ipns_lines(agent: &str, args: &str) -> Vec<String> {
 /// 没配账号时零副作用直接告知(不在首启/测试里凭空建目录)。
 async fn mail_lines(args: &str) -> Vec<String> {
     use bolloon_agent::mail::{
-        delete_mail_password, MailDraft, MailId, MailQuery, accounts_path, build_service,
+        MailDraft, MailId, MailQuery, accounts_path, build_service, delete_mail_password,
         set_mail_password,
     };
 
@@ -2799,7 +3090,9 @@ async fn mail_lines(args: &str) -> Vec<String> {
                 return vec!["✗ 密码不能为空".into()];
             }
             match set_mail_password(&email, &pwd) {
-                Ok(()) => vec![format!("✓ 已保存 {email} 的密码到本机凭据库 (macOS 钥匙串 / Windows DPAPI / Linux Secret Service)")],
+                Ok(()) => vec![format!(
+                    "✓ 已保存 {email} 的密码到本机凭据库 (macOS 钥匙串 / Windows DPAPI / Linux Secret Service)"
+                )],
                 Err(e) => vec![format!("✗ 保存失败: {e}")],
             }
         }
@@ -2810,7 +3103,9 @@ async fn mail_lines(args: &str) -> Vec<String> {
 /// `/contacts` — 通讯录导入(vCard/CSV)与查询, 直连 crate, 本地文件。
 async fn contacts_lines(args: &str) -> Vec<String> {
     use bolloon_agent::mail::ContactsPort;
-    use bolloon_agent::mail::adapters::vcard::{VcardCsvAdapter, load_imported, looks_like_contacts_file};
+    use bolloon_agent::mail::adapters::vcard::{
+        VcardCsvAdapter, load_imported, looks_like_contacts_file,
+    };
 
     let home = bolloon_agent::home::BolloonHome::resolve();
     let usage = "用法: /contacts [import <file.vcf|file.csv>|list [关键词]]";
@@ -2962,13 +3257,20 @@ async fn web_fetch_lines(args: &str) -> Vec<String> {
 /// 技能库清单 (`/skills` 与 `/help skills` 共用; 读 `SkillEvolver` 的 skills.json)
 fn skills_lines(path: &Path) -> Vec<String> {
     if !path.exists() {
-        return vec![format!("(还没有技能库 {}; 用 /refine 或 bolloon dream 积累)", path.display())];
+        return vec![format!(
+            "(还没有技能库 {}; 用 /refine 或 bolloon dream 积累)",
+            path.display()
+        )];
     }
     let ev = bolloon_agent::skills_runtime::SkillEvolver::load_json(path);
     if ev.registry.is_empty() {
         return vec![format!("(技能库是空的: {})", path.display())];
     }
-    let mut out = vec![format!("已装技能 {} 条 (来自 {}):", ev.registry.len(), path.display())];
+    let mut out = vec![format!(
+        "已装技能 {} 条 (来自 {}):",
+        ev.registry.len(),
+        path.display()
+    )];
     for line in ev.registry.index_for_prompt().lines() {
         out.push(format!("  {line}"));
     }
@@ -2983,7 +3285,15 @@ fn config_lines() -> Vec<String> {
         Some(r) => vec![
             format!("provider {}", r.id),
             format!("protocol {}", r.protocol.as_str()),
-            format!("model    {}{}", r.model, if bolloon_llm::is_vision_model(&r.model) { " (视觉)" } else { "" }),
+            format!(
+                "model    {}{}",
+                r.model,
+                if bolloon_llm::is_vision_model(&r.model) {
+                    " (视觉)"
+                } else {
+                    ""
+                }
+            ),
             format!("base_url {}", r.base_url),
             format!("api_key  {} (不显示明文)", r.auth_ref()),
             format!("配置文件 {} (0600)", path.display()),
@@ -2992,14 +3302,23 @@ fn config_lines() -> Vec<String> {
         None => {
             let provider = std::env::var("BOLLOON_PROVIDER").unwrap_or_else(|_| "(未选)".into());
             let model = std::env::var("BOLLOON_MODEL").unwrap_or_else(|_| "deepseek-chat".into());
-            let base = std::env::var("BOLLOON_BASE_URL").unwrap_or_else(|_| "(provider 自带)".into());
-            let has_key =
-                std::env::var("BOLLOON_API_KEY").map(|k| !k.trim().is_empty()).unwrap_or(false);
+            let base =
+                std::env::var("BOLLOON_BASE_URL").unwrap_or_else(|_| "(provider 自带)".into());
+            let has_key = std::env::var("BOLLOON_API_KEY")
+                .map(|k| !k.trim().is_empty())
+                .unwrap_or(false);
             vec![
                 format!("provider {provider} (配置里没有可用家)"),
                 format!("model    {model}"),
                 format!("base_url {base}"),
-                format!("api_key  {}", if has_key { "有 (env, 不显示)" } else { "没有" }),
+                format!(
+                    "api_key  {}",
+                    if has_key {
+                        "有 (env, 不显示)"
+                    } else {
+                        "没有"
+                    }
+                ),
                 format!("配置文件 {} (空)", path.display()),
                 "先跑 `bolloon model` 选一家并填 key (200+ 家可选)".to_string(),
             ]
@@ -3016,7 +3335,9 @@ fn git_diff(args: &str) -> Vec<String> {
             "--stat" => stat = true,
             "staged" => mode = "staged",
             "all" => mode = "all",
-            "session" => return vec!["✗ session 模式不记文件改动, 用 /diff 或 /diff all".to_string()],
+            "session" => {
+                return vec!["✗ session 模式不记文件改动, 用 /diff 或 /diff all".to_string()];
+            }
             other => paths.push(other),
         }
     }
@@ -3091,7 +3412,10 @@ fn git_worktree(args: &str) -> Vec<String> {
             let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
             let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
             if !o.status.success() {
-                return vec![format!("✗ git worktree 失败: {}", if err.is_empty() { out } else { err })];
+                return vec![format!(
+                    "✗ git worktree 失败: {}",
+                    if err.is_empty() { out } else { err }
+                )];
             }
             if out.is_empty() {
                 vec!["(没有 worktree)".to_string()]
@@ -3191,11 +3515,14 @@ pub fn image_data_url(path: &Path) -> Result<String, String> {
             return Err(format!(
                 "{path:?} 不是认识的图片格式 ({:?}; 只支持 png/jpg/webp/gif)",
                 other
-            ))
+            ));
         }
     };
     let bytes = std::fs::read(path).map_err(|e| format!("读 {path:?} 失败: {e}"))?;
-    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 /// 默认标题 = **语义占位**, 不是时间戳。
@@ -3238,7 +3565,9 @@ fn new_id(now_ms: u128) -> String {
 }
 
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn write_0600(path: &Path, body: &[u8]) -> std::io::Result<()> {
@@ -3291,7 +3620,10 @@ mod tests {
             }],
             1,
         ));
-        ChatCtx { llm, jobs: jobs_ref() }
+        ChatCtx {
+            llm,
+            jobs: jobs_ref(),
+        }
     }
 
     fn jobs_ref() -> &'static Jobs {
@@ -3306,8 +3638,8 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-    reasoning_content: None,
-});
+            reasoning_content: None,
+        });
     }
 
     async fn run(s: &mut ChatSession, cmd: &str, args: &str) -> Cmd {
@@ -3359,7 +3691,10 @@ mod tests {
         push(&mut s, "assistant", "半截回复");
         let cmd = run(&mut s, "/retry", "").await;
         assert_eq!(cmd, Cmd::Send("问题".into()));
-        assert!(s.messages.is_empty(), "重发前要把这条也摘掉 (由发送逻辑重新入列)");
+        assert!(
+            s.messages.is_empty(),
+            "重发前要把这条也摘掉 (由发送逻辑重新入列)"
+        );
         cleanup(&s);
     }
 
@@ -3417,7 +3752,9 @@ mod tests {
             push(&mut s, "assistant", &format!("结论{i}"));
         }
         let ctx = ChatCtx { llm, jobs: &jobs };
-        let out = s.exec(&ctx, slash::find("/compress").unwrap(), "focus 支付方案").await;
+        let out = s
+            .exec(&ctx, slash::find("/compress").unwrap(), "focus 支付方案")
+            .await;
         server.abort();
         let text = format!("{out:?}");
         assert!(text.contains("已摘要压缩"), "{text}");
@@ -3526,7 +3863,9 @@ mod tests {
     #[tokio::test]
     async fn title_show_and_set() {
         let mut s = sess();
-        assert!(matches!(run(&mut s, "/title", "").await, Cmd::Say(ref v) if v[0].contains("当前标题")));
+        assert!(
+            matches!(run(&mut s, "/title", "").await, Cmd::Say(ref v) if v[0].contains("当前标题"))
+        );
         let _ = run(&mut s, "/title", "新名字").await;
         assert_eq!(s.title, "新名字");
         cleanup(&s);
@@ -3553,7 +3892,11 @@ mod tests {
         s.attachments.push(png.display().to_string());
         let m = s.build_user_message("看这张").unwrap();
         assert_eq!(m.images.len(), 1);
-        assert!(m.images[0].starts_with("data:image/png;base64,"), "{}", m.images[0]);
+        assert!(
+            m.images[0].starts_with("data:image/png;base64,"),
+            "{}",
+            m.images[0]
+        );
         // base64 可解回原字节
         use base64::Engine as _;
         let raw = base64::engine::general_purpose::STANDARD
@@ -3591,7 +3934,11 @@ mod tests {
         let _ = run(&mut s, "/goal", "把支付跑通").await;
         let _ = run(&mut s, "/subgoal", "先过 x402").await;
         let m = s.build_user_message("继续").unwrap();
-        assert!(m.content.starts_with("【当前目标】把支付跑通"), "{}", m.content);
+        assert!(
+            m.content.starts_with("【当前目标】把支付跑通"),
+            "{}",
+            m.content
+        );
         assert!(m.content.contains("1. 先过 x402"));
         let _ = run(&mut s, "/goal", "pause").await;
         let m2 = s.build_user_message("继续").unwrap();
@@ -3606,7 +3953,10 @@ mod tests {
         let _ = run(&mut s, "/queue", "第一件事").await;
         let _ = run(&mut s, "/queue", "第二件事").await;
         let listed = format!("{:?}", run(&mut s, "/queue", "list").await);
-        assert!(listed.contains("第一件事") && listed.contains("第二件事"), "{listed}");
+        assert!(
+            listed.contains("第一件事") && listed.contains("第二件事"),
+            "{listed}"
+        );
         let _ = run(&mut s, "/queue", "edit 1 改成别的").await;
         assert_eq!(s.queue[0], "改成别的");
         let _ = run(&mut s, "/queue", "move 2 1").await;
@@ -3639,8 +3989,14 @@ mod tests {
         let _ = run(&mut s, "/queue", "又一件").await;
         let _ = run(&mut s, "/steer", "又一插话").await;
         let _ = run(&mut s, "/busy", "queue").await;
-        assert!(matches!(s.next_scheduled(now_ms()), Some(Scheduled::Queue(_))));
-        assert!(matches!(s.next_scheduled(now_ms()), Some(Scheduled::Steer(_))));
+        assert!(matches!(
+            s.next_scheduled(now_ms()),
+            Some(Scheduled::Queue(_))
+        ));
+        assert!(matches!(
+            s.next_scheduled(now_ms()),
+            Some(Scheduled::Steer(_))
+        ));
         // interrupt: 全停 (东西还在, 不消费)
         let _ = run(&mut s, "/queue", "再一件").await;
         let _ = run(&mut s, "/busy", "interrupt").await;
@@ -3699,14 +4055,23 @@ mod tests {
 
         // 改坏原文件 → restore → 恢复
         std::fs::write(home.join("skills.json"), b"broken").unwrap();
-        let out = format!("{:?}", run(&mut s, "/snapshot", &format!("restore {}", snaps[0])).await);
+        let out = format!(
+            "{:?}",
+            run(&mut s, "/snapshot", &format!("restore {}", snaps[0])).await
+        );
         assert!(out.contains("已从"), "{out}");
-        assert_eq!(std::fs::read(home.join("skills.json")).unwrap(), b"{\"v\":1}");
+        assert_eq!(
+            std::fs::read(home.join("skills.json")).unwrap(),
+            b"{\"v\":1}"
+        );
 
         // /rollback 1 = 恢复最新
         std::fs::write(home.join("skills.json"), b"broken2").unwrap();
         let _ = run(&mut s, "/rollback", "1").await;
-        assert_eq!(std::fs::read(home.join("skills.json")).unwrap(), b"{\"v\":1}");
+        assert_eq!(
+            std::fs::read(home.join("skills.json")).unwrap(),
+            b"{\"v\":1}"
+        );
 
         // prune: 只造 1 个, 不该删
         let out = format!("{:?}", run(&mut s, "/snapshot", "prune").await);
@@ -3726,7 +4091,9 @@ mod tests {
         assert!(out.contains("空"), "{out}");
         // 放一条真技能 (走 promote, 与 dream 同一条路)
         let mut ev = bolloon_agent::skills_runtime::SkillEvolver::new();
-        let cand = ev.distill("先做最小版本\n大而全首版从未按时交付", "run-1").unwrap();
+        let cand = ev
+            .distill("先做最小版本\n大而全首版从未按时交付", "run-1")
+            .unwrap();
         ev.promote(&cand, 1).unwrap();
         ev.save_json(&sp).unwrap();
         let out = format!("{:?}", run(&mut s, "/skills", "").await);
@@ -3751,7 +4118,12 @@ mod tests {
             1,
         ));
         let dir = std::env::temp_dir().join(format!("bolloon-jobs-{}", std::process::id()));
-        let id = jobs.spawn(Arc::clone(&llm), "m".into(), "后台跑一件事".into(), dir.clone());
+        let id = jobs.spawn(
+            Arc::clone(&llm),
+            "m".into(),
+            "后台跑一件事".into(),
+            dir.clone(),
+        );
         assert!(id.starts_with("bg-"));
         // 等任务失败落盘 (连不上, 很快)
         for _ in 0..50 {
@@ -3776,10 +4148,20 @@ mod tests {
     fn model_picker_lists_full_catalog_and_configure_entry() {
         let s = sess();
         let rows = s.pick_rows(PickKind::Model);
-        assert!(rows.len() >= 200, "模型选择只有 {} 行 (应含全量目录 200+)", rows.len());
-        assert!(rows.iter().any(|r| r.value == "__configure__"), "缺「新增/配置」入口");
         assert!(
-            rows.iter().filter(|r| r.value.starts_with("provider:")).count() >= 190,
+            rows.len() >= 200,
+            "模型选择只有 {} 行 (应含全量目录 200+)",
+            rows.len()
+        );
+        assert!(
+            rows.iter().any(|r| r.value == "__configure__"),
+            "缺「新增/配置」入口"
+        );
+        assert!(
+            rows.iter()
+                .filter(|r| r.value.starts_with("provider:"))
+                .count()
+                >= 190,
             "provider 行太少"
         );
         assert!(rows.iter().any(|r| r.value == s.model), "当前模型行不能丢");

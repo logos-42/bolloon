@@ -78,9 +78,11 @@ impl Dht {
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(120)))
             .build();
 
-        let listen_on: Multiaddr = format!("/ip4/0.0.0.0/tcp/{port}").parse()
+        let listen_on: Multiaddr = format!("/ip4/0.0.0.0/tcp/{port}")
+            .parse()
             .map_err(|e| format!("DHT 监听地址: {e}"))?;
-        swarm.listen_on(listen_on.clone())
+        swarm
+            .listen_on(listen_on.clone())
             .map_err(|e| format!("DHT listen: {e}"))?;
         // 每个 bolloon 节点都是完整 DHT 节点：client 模式不存记录，PUT 会找不到落点。
         swarm.behaviour_mut().kad.set_mode(Some(kad::Mode::Server));
@@ -188,11 +190,14 @@ impl Dht {
 
     pub async fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
-        self.cmd.send(Cmd::Put { key, value, tx })
+        self.cmd
+            .send(Cmd::Put { key, value, tx })
             .map_err(|_| "DHT 任务已退出".to_string())?;
         match tokio::time::timeout(Duration::from_secs(6), rx).await {
             Ok(Ok(true)) => Ok(()),
-            Ok(Ok(false)) => Err("DHT put_record 未达 Quorum（没有可用 bootstrap 节点？）".to_string()),
+            Ok(Ok(false)) => {
+                Err("DHT put_record 未达 Quorum（没有可用 bootstrap 节点？）".to_string())
+            }
             Ok(Err(_)) => Err("DHT put 通道关闭".to_string()),
             Err(_) => Err("DHT put 超时".to_string()),
         }

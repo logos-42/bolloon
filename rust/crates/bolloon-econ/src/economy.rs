@@ -562,7 +562,11 @@ impl ShadowEconomy {
     }
 
     /// 今天这个主体有多少额度（含理由），以及已用/剩余。
-    pub fn allowance_for(&self, principal: &str, intent_kind: Option<&str>) -> crate::allowance::Allowance {
+    pub fn allowance_for(
+        &self,
+        principal: &str,
+        intent_kind: Option<&str>,
+    ) -> crate::allowance::Allowance {
         self.roll_day();
         let day = self.day.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let h = self.history_for(principal);
@@ -636,7 +640,12 @@ impl ShadowEconomy {
     /// **调用前**：全局日闸 + 意图闸，原子预留。返回判定（enforce 下拦，shadow 下只记）。
     ///
     /// 顺序：先日闸（跨意图），再意图闸（本意图）。任一触顶都**不预留**，直接返回该判定。
-    pub fn begin_model_call(&self, ctx: &CallCtx, provider: &str, est_cost: Option<f64>) -> BudgetDecision {
+    pub fn begin_model_call(
+        &self,
+        ctx: &CallCtx,
+        provider: &str,
+        est_cost: Option<f64>,
+    ) -> BudgetDecision {
         if !self.metering() {
             return BudgetDecision::Allow;
         }
@@ -690,7 +699,10 @@ impl ShadowEconomy {
                         ),
                     };
                     {
-                        let mut m = self.principal_used.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut m = self
+                            .principal_used
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
                         *m.entry(format!("blocked:{principal}")).or_insert(0) += 1;
                     }
                     self.note_block(ctx, &d);
@@ -698,10 +710,13 @@ impl ShadowEconomy {
                 }
             }
             // 日闸通过 ⇒ 当场占一个名额
-            let d = self.guard_for_ctx(ctx).try_reserve_model_call(provider, est_cost);
+            let d = self
+                .guard_for_ctx(ctx)
+                .try_reserve_model_call(provider, est_cost);
             if d.is_block() {
                 self.note_block(ctx, &d);
-                self.guard_for_ctx(ctx).note_would_block(d.rule().unwrap_or("unknown"), d.detail().unwrap_or(""));
+                self.guard_for_ctx(ctx)
+                    .note_would_block(d.rule().unwrap_or("unknown"), d.detail().unwrap_or(""));
                 return d;
             }
             self.day_calls.fetch_add(1, Ordering::Relaxed);
@@ -711,7 +726,10 @@ impl ShadowEconomy {
                 } else {
                     ctx.requester.clone()
                 };
-                let mut m = self.principal_used.lock().unwrap_or_else(|e| e.into_inner());
+                let mut m = self
+                    .principal_used
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 *m.entry(principal).or_insert(0) += 1;
             }
             if let Some(c) = est_cost {
@@ -761,7 +779,10 @@ impl ShadowEconomy {
                 loop {
                     let next = cur.saturating_sub(back);
                     match self.day_micro_usd.compare_exchange_weak(
-                        cur, next, Ordering::Relaxed, Ordering::Relaxed,
+                        cur,
+                        next,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
                     ) {
                         Ok(_) => break,
                         Err(c) => cur = c,
@@ -777,7 +798,17 @@ impl ShadowEconomy {
         }
         self.guard_for_ctx(ctx)
             .reconcile_model_call(reserved_cost, actual);
-        self.on_model_call_record(ctx, provider, model, tokens_in, tokens_out, actual, status, elapsed_ms, extra_evidence)
+        self.on_model_call_record(
+            ctx,
+            provider,
+            model,
+            tokens_in,
+            tokens_out,
+            actual,
+            status,
+            elapsed_ms,
+            extra_evidence,
+        )
     }
 
     /// 内部：只记账不再做预算判定（判定已在 begin 阶段做完）

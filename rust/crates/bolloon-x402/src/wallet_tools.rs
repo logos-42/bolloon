@@ -197,10 +197,7 @@ pub fn is_secret_leaked(kp: &KeyPair, output: &str) -> bool {
     let seed = kp.secret_bytes();
     let hex_full = hex::encode(seed);
     let b58 = bolloon_p2p::b58_encode(&seed);
-    let hex_halves = [
-        hex::encode(&seed[..16]),
-        hex::encode(&seed[16..]),
-    ];
+    let hex_halves = [hex::encode(&seed[..16]), hex::encode(&seed[16..])];
     output.contains(&hex_full)
         || output.contains(&b58)
         || hex_halves.iter().any(|h| output.contains(h.as_str()))
@@ -238,25 +235,42 @@ mod tests {
         assert_eq!(auth["payload"]["value"], "5000");
         assert!(auth["signature"].as_str().unwrap().len() > 40);
         // 链上发任务
-        let task = w.publish_task_onchain("复核核聚变口径", 20_000, "0xescrow", 2000).unwrap();
+        let task = w
+            .publish_task_onchain("复核核聚变口径", 20_000, "0xescrow", 2000)
+            .unwrap();
         assert_eq!(task["kind"], "task.publishOnContract");
         assert_eq!(task["payload"]["budget"], "20000");
-        assert!(task["payload"]["task_id"].as_str().unwrap().starts_with("task-"));
+        assert!(
+            task["payload"]["task_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("task-")
+        );
         // 购买
-        let buy = w.purchase("info_efficode_spec_pack", "0xbbb", 10_000, 0, 3000).unwrap();
+        let buy = w
+            .purchase("info_efficode_spec_pack", "0xbbb", 10_000, 0, 3000)
+            .unwrap();
         assert_eq!(buy["kind"], "x402.purchase");
         assert_eq!(buy["payment"]["payload"]["to"], "0xbbb");
         // BOL1 nonce 在支付 payload 里 (买的是哪件可自证)
         let nonce = buy["payment"]["payload"]["nonce"].as_str().unwrap();
-        assert!(nonce.starts_with("0x424f4c31"), "nonce 是 BOL1 形状: {nonce}");
+        assert!(
+            nonce.starts_with("0x424f4c31"),
+            "nonce 是 BOL1 形状: {nonce}"
+        );
     }
 
     #[test]
     fn wallet_guards() {
         let mut w = wallet();
-        assert_eq!(w.transfer_with_authorization("0xa", 0, 1, 2, 0, "i").unwrap_err(), WalletError::ZeroAmount);
         assert_eq!(
-            w.transfer_with_authorization("0xa", 1, 5000, 1000, 0, "i").unwrap_err(),
+            w.transfer_with_authorization("0xa", 0, 1, 2, 0, "i")
+                .unwrap_err(),
+            WalletError::ZeroAmount
+        );
+        assert_eq!(
+            w.transfer_with_authorization("0xa", 1, 5000, 1000, 0, "i")
+                .unwrap_err(),
             WalletError::BadWindow
         );
         // 超额
@@ -269,7 +283,9 @@ mod tests {
             WalletError::EmptyBudget
         );
         // 转账后台账扣减
-        let _ = w.transfer_with_authorization("0xa", 5_000, 1, 2, 0, "i").unwrap();
+        let _ = w
+            .transfer_with_authorization("0xa", 5_000, 1, 2, 0, "i")
+            .unwrap();
         assert_eq!(w.balance(), 95_000);
     }
 
@@ -283,17 +299,18 @@ mod tests {
             serde_json::json!({ "address": w.address() }),
             serde_json::json!({ "balance": w.balance() }),
             serde_json::json!({ "sig": w.sign_message("m") }),
-            w.transfer_with_authorization("0xa", 100, 1, 99_999, 0, "i").unwrap(),
+            w.transfer_with_authorization("0xa", 100, 1, 99_999, 0, "i")
+                .unwrap(),
             w.publish_task_onchain("t", 200, "0xe", 1).unwrap(),
             w.purchase("item", "0xb", 300, 0, 1).unwrap(),
         ];
         for (i, o) in outputs.iter().enumerate() {
             let s = o.to_string();
+            assert!(!is_secret_leaked(&kp, &s), "输出 #{i} 泄露了私钥: {s}");
             assert!(
-                !is_secret_leaked(&kp, &s),
-                "输出 #{i} 泄露了私钥: {s}"
+                !s.to_lowercase().contains("private_key"),
+                "输出 #{i} 有 private_key 字段"
             );
-            assert!(!s.to_lowercase().contains("private_key"), "输出 #{i} 有 private_key 字段");
             assert!(!s.to_lowercase().contains("seed"), "输出 #{i} 有 seed 字段");
         }
         // Debug 格式也扫

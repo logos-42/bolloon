@@ -65,8 +65,9 @@ pub fn accounts_path(home: &BolloonHome) -> PathBuf {
 pub fn load_accounts(home: &BolloonHome) -> Result<AccountsFile, String> {
     let p = accounts_path(home);
     match std::fs::read_to_string(&p) {
-        Ok(s) => serde_json::from_str(&s)
-            .map_err(|e| format!("{p:?} 解析失败(不是合法 JSON): {e}")),
+        Ok(s) => {
+            serde_json::from_str(&s).map_err(|e| format!("{p:?} 解析失败(不是合法 JSON): {e}"))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AccountsFile::default()),
         Err(e) => Err(format!("读 {p:?} 失败: {e}")),
     }
@@ -127,8 +128,10 @@ pub fn build_service(home: &BolloonHome) -> Result<MailService, String> {
 /// 把 IMAP/SMTP 密码写进本机凭据后端（键 `mail:<email>`，与账号元数据分离）。
 /// 失败 ⇒ 返回人话原因，调用方据此中止，不静默退回明文。
 pub fn set_mail_password(email: &str, password: &str) -> Result<(), String> {
-    bolloon_llm::secret_store::default_backend()
-        .put(&bolloon_llm::secret_store::account_for_mail(email), password)
+    bolloon_llm::secret_store::default_backend().put(
+        &bolloon_llm::secret_store::account_for_mail(email),
+        password,
+    )
 }
 
 /// 删除某邮箱的密码（换密码 / 撤销账号时用）。

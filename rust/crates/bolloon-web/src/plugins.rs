@@ -12,8 +12,8 @@
 use std::collections::HashMap;
 
 use axum::{
-    extract::{Query, State},
     Json,
+    extract::{Query, State},
 };
 use base64::Engine;
 
@@ -107,10 +107,28 @@ async fn promote_plugin(
 
 /// POST /api/plugins/create { name, description?, body }
 /// 手动新建一个插件（智能体自动生成的走做梦/补能力那条路，不经过这里）。
-pub async fn create(State(st): State<AppState>, Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
-    let name = req.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-    let description = req.get("description").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-    let body = req.get("body").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+pub async fn create(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let name = req
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let description = req
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let body = req
+        .get("body")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     match promote_plugin(&st, name, description, body, "user-create").await {
         Ok(n) => Json(serde_json::json!({ "ok": true, "name": n, "note": "已创建并加入插件栏" })),
         Err(e) => err(&e),
@@ -147,8 +165,15 @@ pub async fn share(
 }
 
 /// POST /api/plugins/import { blob } → 用分享串安装插件
-pub async fn import(State(st): State<AppState>, Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
-    let blob = req.get("blob").and_then(|v| v.as_str()).unwrap_or("").trim();
+pub async fn import(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let blob = req
+        .get("blob")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
     if blob.is_empty() {
         return err("请粘贴插件分享串");
     }
@@ -170,8 +195,16 @@ pub async fn import(State(st): State<AppState>, Json(req): Json<serde_json::Valu
 }
 
 /// POST /api/plugins/remove { name }
-pub async fn remove(State(st): State<AppState>, Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
-    let name = req.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+pub async fn remove(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let name = req
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if name.is_empty() {
         return err("缺少 name");
     }

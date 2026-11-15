@@ -20,7 +20,7 @@
 //!   rows-1       键位提示 (hint)    ← 固定行
 //!   ```
 
-use crate::scroll::{apply_scroll, resolve_normal_key, NormalAction, NormalCtx, RawKey};
+use crate::scroll::{NormalAction, NormalCtx, RawKey, apply_scroll, resolve_normal_key};
 use crate::width::{disp_width_safe, term_height, term_width, truncate_safe};
 
 /// 正文区上方留出的固定行数 (分隔 + 状态 + 输入 + 提示)
@@ -108,7 +108,10 @@ impl Screen {
     pub fn on_key(&mut self, key: &RawKey, input_ch: char) {
         let act = resolve_normal_key(
             key,
-            &NormalCtx { scrollable: self.scrollable(), input: input_ch },
+            &NormalCtx {
+                scrollable: self.scrollable(),
+                input: input_ch,
+            },
         );
         let page = self.body_height().max(1);
         let m = apply_scroll(act, self.scroll_top, page, self.max_top());
@@ -145,12 +148,18 @@ impl Screen {
         // 分隔线取 `cols-1`: **绝不写正好等于终端宽的行** (那会触发终端自动折行)
         out.push(rule(self.cols.saturating_sub(1)));
         // 空行也要占一格: 内容为空的行若是空串, 拼出来的帧会**少一行** ⇒ "帧高恒定" 就不成立了
-        out.push(nonempty(truncate_safe(&self.status, self.cols.saturating_sub(1))));
+        out.push(nonempty(truncate_safe(
+            &self.status,
+            self.cols.saturating_sub(1),
+        )));
         out.push(truncate_safe(
             &format!("› {}", self.input),
             self.cols.saturating_sub(1),
         ));
-        out.push(nonempty(truncate_safe(&self.hint, self.cols.saturating_sub(1))));
+        out.push(nonempty(truncate_safe(
+            &self.hint,
+            self.cols.saturating_sub(1),
+        )));
 
         out.join("\n")
     }
@@ -168,11 +177,7 @@ impl Screen {
 
 /** 空行补一个空格 —— 让"帧高恒定"这条不变量在状态/提示为空时也成立 */
 fn nonempty(s: String) -> String {
-    if s.is_empty() {
-        " ".to_string()
-    } else {
-        s
-    }
+    if s.is_empty() { " ".to_string() } else { s }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,7 +241,11 @@ mod tests {
             for i in 0..200 {
                 s.push(&format!("第 {i} 行"));
             }
-            assert_eq!(s.render().lines().count(), rows, "正文 200 行后帧高仍须 = {rows}");
+            assert_eq!(
+                s.render().lines().count(),
+                rows,
+                "正文 200 行后帧高仍须 = {rows}"
+            );
         }
     }
 
@@ -248,7 +257,12 @@ mod tests {
         for i in 0..100 {
             s.push(&format!("第 {i} 行"));
         }
-        let after = s.render().lines().nth(s.fixed_line_numbers().input).unwrap().to_string();
+        let after = s
+            .render()
+            .lines()
+            .nth(s.fixed_line_numbers().input)
+            .unwrap()
+            .to_string();
         assert_eq!(s.fixed_line_numbers().input, 22);
         assert!(after.contains("我在打字"));
     }
@@ -263,7 +277,15 @@ mod tests {
         s.push("正文一行");
         let frame = s.render();
         let lines: Vec<&str> = frame.lines().collect();
-        assert_eq!(s.fixed_line_numbers(), FixedLines { rule: 20, status: 21, input: 22, hint: 23 });
+        assert_eq!(
+            s.fixed_line_numbers(),
+            FixedLines {
+                rule: 20,
+                status: 21,
+                input: 22,
+                hint: 23
+            }
+        );
         assert!(lines[20].starts_with('─'), "{:?}", lines[20]);
         assert!(lines[21].contains("⚙ 0"));
         assert!(lines[22].contains("› hi"));
@@ -280,7 +302,13 @@ mod tests {
         assert!(s.stick(), "默认贴底跟随");
         assert_eq!(s.scroll_top(), s.max_top());
 
-        s.on_key(&RawKey { ctrl: true, ..Default::default() }, 'u');
+        s.on_key(
+            &RawKey {
+                ctrl: true,
+                ..Default::default()
+            },
+            'u',
+        );
         assert!(!s.stick(), "上滚 ⇒ 暂停跟随");
         assert!(s.scroll_top() < s.max_top());
 
@@ -295,7 +323,13 @@ mod tests {
         let mut s = screen(24, 60);
         s.push("只有一行");
         assert!(!s.scrollable());
-        s.on_key(&RawKey { ctrl: true, ..Default::default() }, 'u');
+        s.on_key(
+            &RawKey {
+                ctrl: true,
+                ..Default::default()
+            },
+            'u',
+        );
         assert_eq!(s.scroll_top(), 0);
         assert!(s.stick());
     }

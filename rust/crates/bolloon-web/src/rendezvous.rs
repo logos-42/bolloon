@@ -136,7 +136,11 @@ mod tests {
         assert!(base().is_none());
         // 关键: 不设 env 时绝不默认连 bolloon.cn / Cloudflare
         unsafe { std::env::remove_var("BOLLOON_RENDEZVOUS") };
-        assert_eq!(base().as_deref(), Some(DEFAULT_BASE), "未设置=兜底模式, 但只在去中心化失败后才用");
+        assert_eq!(
+            base().as_deref(),
+            Some(DEFAULT_BASE),
+            "未设置=兜底模式, 但只在去中心化失败后才用"
+        );
         unsafe { std::env::set_var("BOLLOON_RENDEZVOUS", "https://edge.example") };
         assert_eq!(base().as_deref(), Some("https://edge.example"));
         unsafe { std::env::remove_var("BOLLOON_RENDEZVOUS") };

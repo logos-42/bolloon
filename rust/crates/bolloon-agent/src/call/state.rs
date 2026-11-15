@@ -93,9 +93,10 @@ pub fn reduce(
     disclosure: &str,
 ) -> (CallState, Vec<CallEffect>) {
     match (state, event) {
-        (CallState::Idle, CallEvent::DialRequested) => {
-            (CallState::Dialing, vec![CallEffect::Log("dial_requested".into())])
-        }
+        (CallState::Idle, CallEvent::DialRequested) => (
+            CallState::Dialing,
+            vec![CallEffect::Log("dial_requested".into())],
+        ),
         (CallState::Dialing, CallEvent::Ringing) => {
             (CallState::Ringing, vec![CallEffect::Log("ringing".into())])
         }
@@ -103,7 +104,9 @@ pub fn reduce(
             // 跳过 Ringing 也要在接通时立刻声明身份
             if disclosure.trim().is_empty() {
                 return (
-                    CallState::Failed { error: "missing_disclosure".into() },
+                    CallState::Failed {
+                        error: "missing_disclosure".into(),
+                    },
                     vec![CallEffect::Hangup],
                 );
             }
@@ -119,7 +122,9 @@ pub fn reduce(
         (CallState::Ringing, CallEvent::Answered) => {
             if disclosure.trim().is_empty() {
                 return (
-                    CallState::Failed { error: "missing_disclosure".into() },
+                    CallState::Failed {
+                        error: "missing_disclosure".into(),
+                    },
                     vec![CallEffect::Hangup],
                 );
             }
@@ -144,7 +149,9 @@ pub fn reduce(
             if k == "0" {
                 // 0 = 转人工
                 (
-                    CallState::Completed { reason: "transferred_to_human".into() },
+                    CallState::Completed {
+                        reason: "transferred_to_human".into(),
+                    },
                     vec![
                         CallEffect::Speak("正在为你转接人工，请稍候。".into()),
                         CallEffect::Hangup,
@@ -154,7 +161,9 @@ pub fn reduce(
             } else if k == "2" {
                 // 2 = 拒绝
                 (
-                    CallState::Completed { reason: "declined".into() },
+                    CallState::Completed {
+                        reason: "declined".into(),
+                    },
                     vec![
                         CallEffect::Speak("好的，不再打扰。".into()),
                         CallEffect::Hangup,
@@ -163,17 +172,23 @@ pub fn reduce(
                 )
             } else {
                 (
-                    CallState::InProgress { turns: turns.saturating_add(1) },
+                    CallState::InProgress {
+                        turns: turns.saturating_add(1),
+                    },
                     vec![CallEffect::Log(format!("dtmf:{k}")), CallEffect::Listen],
                 )
             }
         }
         (CallState::InProgress { .. }, CallEvent::Hangup { by }) => (
-            CallState::Completed { reason: format!("hangup_by_{by}") },
+            CallState::Completed {
+                reason: format!("hangup_by_{by}"),
+            },
             vec![CallEffect::Log("hangup".into())],
         ),
         (CallState::Dialing | CallState::Ringing, CallEvent::Hangup { by }) => (
-            CallState::Completed { reason: format!("hangup_before_answer_by_{by}") },
+            CallState::Completed {
+                reason: format!("hangup_before_answer_by_{by}"),
+            },
             vec![CallEffect::Log("hangup_before_answer".into())],
         ),
         (_, CallEvent::Error(e)) => (
@@ -193,7 +208,11 @@ mod tests {
     use crate::call::CallId;
 
     fn target(e164: &str, reason: &str) -> CallTarget {
-        CallTarget { e164: e164.into(), contact_id: None, reason: reason.into() }
+        CallTarget {
+            e164: e164.into(),
+            contact_id: None,
+            reason: reason.into(),
+        }
     }
 
     fn rec(e164: &str, reason: &str) -> CallRecord {
@@ -202,7 +221,9 @@ mod tests {
             target_e164: e164.into(),
             contact_id: None,
             reason: "x".into(),
-            state: CallState::Completed { reason: reason.into() },
+            state: CallState::Completed {
+                reason: reason.into(),
+            },
             timeline: vec![],
             started_ms: 0,
             ended_ms: None,
@@ -221,15 +242,21 @@ mod tests {
     fn dial_requires_reason_number_and_disclosure() {
         let d = "你好，我是 AI 助手。";
         assert_eq!(
-            check_dial(&target("+8613800138000", ""), &[], d).unwrap_err().kind(),
+            check_dial(&target("+8613800138000", ""), &[], d)
+                .unwrap_err()
+                .kind(),
             "missing_reason"
         );
         assert_eq!(
-            check_dial(&target("13800138000", "确认收货"), &[], d).unwrap_err().kind(),
+            check_dial(&target("13800138000", "确认收货"), &[], d)
+                .unwrap_err()
+                .kind(),
             "bad_number"
         );
         assert_eq!(
-            check_dial(&target("+8613800138000", "确认收货"), &[], "").unwrap_err().kind(),
+            check_dial(&target("+8613800138000", "确认收货"), &[], "")
+                .unwrap_err()
+                .kind(),
             "missing_disclosure"
         );
         assert!(check_dial(&target("+8613800138000", "确认收货"), &[], d).is_ok());
@@ -255,7 +282,11 @@ mod tests {
         let d = "你好，我是 AI 助手，这通电话是为确认收货。";
         let (s, eff) = reduce(&CallState::Dialing, &CallEvent::Answered, d);
         assert_eq!(s, CallState::InProgress { turns: 0 });
-        assert_eq!(eff[0], CallEffect::Speak(d.to_string()), "第一条必须播报 AI 身份");
+        assert_eq!(
+            eff[0],
+            CallEffect::Speak(d.to_string()),
+            "第一条必须播报 AI 身份"
+        );
         assert!(eff.iter().any(|e| matches!(e, CallEffect::Listen)));
     }
 
@@ -268,11 +299,19 @@ mod tests {
 
     #[test]
     fn dtmf_two_declines_and_zero_transfers() {
-        let (s, eff) = reduce(&CallState::InProgress { turns: 1 }, &CallEvent::PeerDtmf("2".into()), "d");
+        let (s, eff) = reduce(
+            &CallState::InProgress { turns: 1 },
+            &CallEvent::PeerDtmf("2".into()),
+            "d",
+        );
         assert!(matches!(s, CallState::Completed { .. }));
         assert!(eff.iter().any(|e| matches!(e, CallEffect::Hangup)));
 
-        let (s2, eff2) = reduce(&CallState::InProgress { turns: 1 }, &CallEvent::PeerDtmf("0".into()), "d");
+        let (s2, eff2) = reduce(
+            &CallState::InProgress { turns: 1 },
+            &CallEvent::PeerDtmf("0".into()),
+            "d",
+        );
         assert!(matches!(s2, CallState::Completed { reason } if reason.contains("human")));
         assert!(eff2.iter().any(|e| matches!(e, CallEffect::Hangup)));
     }
@@ -289,7 +328,9 @@ mod tests {
 
     #[test]
     fn terminal_state_is_sticky() {
-        let done = CallState::Completed { reason: "declined".into() };
+        let done = CallState::Completed {
+            reason: "declined".into(),
+        };
         let (s, eff) = reduce(&done, &CallEvent::Answered, "d");
         assert_eq!(s, done);
         assert!(eff.is_empty(), "终态不应再产生副作用");
@@ -297,7 +338,16 @@ mod tests {
 
     #[test]
     fn error_moves_to_failed() {
-        let (s, _) = reduce(&CallState::Dialing, &CallEvent::Error("carrier_unreachable".into()), "d");
-        assert_eq!(s, CallState::Failed { error: "carrier_unreachable".into() });
+        let (s, _) = reduce(
+            &CallState::Dialing,
+            &CallEvent::Error("carrier_unreachable".into()),
+            "d",
+        );
+        assert_eq!(
+            s,
+            CallState::Failed {
+                error: "carrier_unreachable".into()
+            }
+        );
     }
 }

@@ -25,7 +25,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 /// 信念条数上限 (超了拒绝写入, 让人先退休旧的 — 不是静默丢弃)
@@ -189,7 +189,10 @@ impl CommitmentStatus {
 
     /// 还活着 (参与排序/注入)
     pub fn is_active(self) -> bool {
-        matches!(self, CommitmentStatus::Open | CommitmentStatus::Doing | CommitmentStatus::Paused)
+        matches!(
+            self,
+            CommitmentStatus::Open | CommitmentStatus::Doing | CommitmentStatus::Paused
+        )
     }
 }
 
@@ -245,7 +248,12 @@ fn store_version() -> String {
 
 impl Default for BeliefStore {
     fn default() -> Self {
-        Self { version: store_version(), beliefs: Vec::new(), commitments: Vec::new(), next_seq: 0 }
+        Self {
+            version: store_version(),
+            beliefs: Vec::new(),
+            commitments: Vec::new(),
+            next_seq: 0,
+        }
     }
 }
 
@@ -356,7 +364,11 @@ impl BeliefStore {
             },
         };
         let key = normalize(s);
-        if let Some(b) = self.beliefs.iter_mut().find(|b| normalize(&b.statement) == key) {
+        if let Some(b) = self
+            .beliefs
+            .iter_mut()
+            .find(|b| normalize(&b.statement) == key)
+        {
             // 置信度只升不降 (要降就 retire 重立 — 免得悄悄改自己的判断)
             b.confidence = b.confidence.max(conf);
             b.updated_ms = now_ms;
@@ -447,7 +459,11 @@ impl BeliefStore {
             return Err(BeliefError::MissingNextAction);
         }
         let key = normalize(s);
-        if let Some(c) = self.commitments.iter_mut().find(|c| normalize(&c.statement) == key) {
+        if let Some(c) = self
+            .commitments
+            .iter_mut()
+            .find(|c| normalize(&c.statement) == key)
+        {
             c.horizon = horizon;
             c.next_action = nxt.to_string();
             if let Some(w) = why.map(str::trim).filter(|w| !w.is_empty()) {
@@ -484,7 +500,11 @@ impl BeliefStore {
             c.updated_ms = now_ms;
             return Ok((c.id.clone(), false));
         }
-        let active = self.commitments.iter().filter(|c| c.status.is_active()).count();
+        let active = self
+            .commitments
+            .iter()
+            .filter(|c| c.status.is_active())
+            .count();
         if active >= MAX_COMMITMENTS {
             return Err(BeliefError::CommitmentsFull);
         }
@@ -503,7 +523,9 @@ impl BeliefStore {
             status: CommitmentStatus::Open,
             progress: 0,
             due_ms,
-            parent_belief: parent_belief.filter(|p| !p.trim().is_empty()).map(str::to_string),
+            parent_belief: parent_belief
+                .filter(|p| !p.trim().is_empty())
+                .map(str::to_string),
             evidence: Vec::new(),
             created_ms: now_ms,
             updated_ms: now_ms,
@@ -548,7 +570,10 @@ impl BeliefStore {
 
     /// 活着的目标
     pub fn active_commitments(&self) -> Vec<&Commitment> {
-        self.commitments.iter().filter(|c| c.status.is_active()).collect()
+        self.commitments
+            .iter()
+            .filter(|c| c.status.is_active())
+            .collect()
     }
 }
 
@@ -697,8 +722,22 @@ fn load_from_conn(conn: &Connection) -> rusqlite::Result<BeliefStore> {
         ))
     })?;
     for row in rows {
-        let (id, statement, horizon, why, next_action, status, progress, due, parent, evidence, created, updated) = row?;
-        let (Some(horizon), Some(status)) = (Horizon::parse(&horizon), CommitmentStatus::parse(&status))
+        let (
+            id,
+            statement,
+            horizon,
+            why,
+            next_action,
+            status,
+            progress,
+            due,
+            parent,
+            evidence,
+            created,
+            updated,
+        ) = row?;
+        let (Some(horizon), Some(status)) =
+            (Horizon::parse(&horizon), CommitmentStatus::parse(&status))
         else {
             tracing::warn!(commitment_id = %id, "信念库: 目标行枚举值认不出, 跳过 (不冒充)");
             continue;
@@ -776,7 +815,10 @@ fn save_to_conn(conn: &mut Connection, store: &BeliefStore) -> rusqlite::Result<
             ],
         )?;
     }
-    for (k, v) in [("version", store.version.clone()), ("next_seq", store.next_seq.to_string())] {
+    for (k, v) in [
+        ("version", store.version.clone()),
+        ("next_seq", store.next_seq.to_string()),
+    ] {
         tx.execute(
             "INSERT INTO belief_meta(key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -798,8 +840,16 @@ fn unique_tmp(path: &Path) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("state.json");
-    path.with_file_name(format!("{base}.{}.{}.{}.tmp", std::process::id(), nanos, seq))
+    let base = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("state.json");
+    path.with_file_name(format!(
+        "{base}.{}.{}.{}.tmp",
+        std::process::id(),
+        nanos,
+        seq
+    ))
 }
 
 /// 文本归一 (忽略大小写与首尾空白, 用于"同一句"判定)
@@ -822,7 +872,11 @@ pub fn similarity(a: &str, b: &str) -> f64 {
     let ga = bigrams(a);
     let gb = bigrams(b);
     if ga.is_empty() || gb.is_empty() {
-        return if normalize(a) == normalize(b) { 1.0 } else { 0.0 };
+        return if normalize(a) == normalize(b) {
+            1.0
+        } else {
+            0.0
+        };
     }
     let inter = ga.intersection(&gb).count() as f64;
     let union = ga.union(&gb).count() as f64;
@@ -834,7 +888,27 @@ fn bigrams(s: &str) -> std::collections::HashSet<(char, char)> {
     let chars: Vec<char> = s
         .chars()
         .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
-        .filter(|c| !matches!(c, '：' | '，' | '。' | '、' | '；' | '！' | '？' | '“' | '”' | '（' | '）' | '→' | '「' | '」' | '·' | '…' | '—'))
+        .filter(|c| {
+            !matches!(
+                c,
+                '：' | '，'
+                    | '。'
+                    | '、'
+                    | '；'
+                    | '！'
+                    | '？'
+                    | '“'
+                    | '”'
+                    | '（'
+                    | '）'
+                    | '→'
+                    | '「'
+                    | '」'
+                    | '·'
+                    | '…'
+                    | '—'
+            )
+        })
         .collect();
     chars.windows(2).map(|w| (w[0], w[1])).collect()
 }
@@ -941,9 +1015,17 @@ impl BeliefStore {
                 next_action: c.next_action.clone(),
                 horizon: c.horizon,
                 score,
-                why: if why.is_empty() { "没有更强理由, 轮到一个".into() } else { why.join(" / ") },
+                why: if why.is_empty() {
+                    "没有更强理由, 轮到一个".into()
+                } else {
+                    why.join(" / ")
+                },
             };
-            if best.as_ref().map(|b| choice.score > b.score).unwrap_or(true) {
+            if best
+                .as_ref()
+                .map(|b| choice.score > b.score)
+                .unwrap_or(true)
+            {
                 best = Some(choice);
             }
         }
@@ -972,7 +1054,10 @@ impl BeliefStore {
                     continue;
                 }
                 let (conf, ev) = (self.beliefs[j].confidence, self.beliefs[j].evidence.clone());
-                let (jid, jstmt) = (self.beliefs[j].id.clone(), self.beliefs[j].statement.clone());
+                let (jid, jstmt) = (
+                    self.beliefs[j].id.clone(),
+                    self.beliefs[j].statement.clone(),
+                );
                 let keeper = &mut self.beliefs[i];
                 keeper.confidence = keeper.confidence.max(conf);
                 for e in ev {
@@ -998,8 +1083,10 @@ impl BeliefStore {
             for j in (i + 1)..self.commitments.len() {
                 if !self.commitments[j].status.is_active()
                     || self.commitments[i].horizon != self.commitments[j].horizon
-                    || similarity(&self.commitments[i].statement, &self.commitments[j].statement)
-                        < SIMILAR_THRESHOLD
+                    || similarity(
+                        &self.commitments[i].statement,
+                        &self.commitments[j].statement,
+                    ) < SIMILAR_THRESHOLD
                 {
                     continue;
                 }
@@ -1140,7 +1227,9 @@ impl BeliefStore {
                 let mine = serde_json::from_str::<serde_json::Value>(&raw)
                     .ok()
                     .and_then(|v| {
-                        v.get("createdBy").and_then(|x| x.as_str()).map(|s| s.starts_with("agent"))
+                        v.get("createdBy")
+                            .and_then(|x| x.as_str())
+                            .map(|s| s.starts_with("agent"))
                     })
                     .unwrap_or(false);
                 if !mine {
@@ -1222,7 +1311,13 @@ beliefs/goals 各最多 5 条, 每条 statement 不超过 60 字 (写长了会�
         u.push_str("(空)\n");
     } else {
         for b in live {
-            u.push_str(&format!("- [{}] {} (置信 {:.2}, {})\n", b.id, b.statement, b.confidence, b.kind.as_str()));
+            u.push_str(&format!(
+                "- [{}] {} (置信 {:.2}, {})\n",
+                b.id,
+                b.statement,
+                b.confidence,
+                b.kind.as_str()
+            ));
         }
     }
     u.push_str("\n## 我现在的目标\n");
@@ -1341,7 +1436,11 @@ fn apply_doc_parts(
         }
     }
     for b in beliefs.iter().take(REFLECTION_MAX_NEW) {
-        let kind = b.kind.as_deref().and_then(BeliefKind::parse).unwrap_or(BeliefKind::World);
+        let kind = b
+            .kind
+            .as_deref()
+            .and_then(BeliefKind::parse)
+            .unwrap_or(BeliefKind::World);
         match store.upsert_belief(
             &b.statement,
             kind,
@@ -1441,7 +1540,14 @@ mod tests {
     fn same_statement_merges_not_duplicates() {
         let mut s = store();
         let (id1, created1) = s
-            .upsert_belief("  我容易在长回复里跑偏, 先给结论更稳 ", BeliefKind::SelfModel, BeliefOrigin::OwnerStated, Some(0.9), Some("主人也说"), 2_000)
+            .upsert_belief(
+                "  我容易在长回复里跑偏, 先给结论更稳 ",
+                BeliefKind::SelfModel,
+                BeliefOrigin::OwnerStated,
+                Some(0.9),
+                Some("主人也说"),
+                2_000,
+            )
             .unwrap();
         assert!(!created1, "同一句要合并");
         assert_eq!(s.live_beliefs().len(), 1);
@@ -1515,8 +1621,15 @@ mod tests {
 
         assert_eq!(s.merge_similar(3_000), 2, "一条信念 + 一条目标被合并");
         assert_eq!(s.live_beliefs().len(), 1);
-        assert_eq!(s.active_commitments().len(), 1, "重复目标 drop 掉, 不参与排序");
-        assert!(s.beliefs.iter().any(|b| b.id == "b-99-echo" && b.retired), "留痕不删");
+        assert_eq!(
+            s.active_commitments().len(),
+            1,
+            "重复目标 drop 掉, 不参与排序"
+        );
+        assert!(
+            s.beliefs.iter().any(|b| b.id == "b-99-echo" && b.retired),
+            "留痕不删"
+        );
         assert_eq!(s.merge_similar(4_000), 0, "幂等: 再合并一次无事可做");
     }
 
@@ -1546,23 +1659,43 @@ mod tests {
         )
         .unwrap();
 
-        let backed = s.pick_next_belief_backed(2_000).expect("有信念支撑的目标该被挑出");
+        let backed = s
+            .pick_next_belief_backed(2_000)
+            .expect("有信念支撑的目标该被挑出");
         assert_eq!(backed.commitment_id, s.commitments[0].id.clone());
-        assert!(backed.why.contains("由信念"), "理由要讲清是哪条信念: {}", backed.why);
+        assert!(
+            backed.why.contains("由信念"),
+            "理由要讲清是哪条信念: {}",
+            backed.why
+        );
         assert_eq!(s.belief_backed_count(), 1);
 
         // 信念退休 ⇒ 那条目标也就没有根据了, 主动性不许再拿它出手
         let bid2 = s.beliefs[0].id.clone();
         s.retire_belief(&bid2, 3_000).unwrap();
-        assert!(s.pick_next_belief_backed(4_000).is_none(), "信念没了 ⇒ 不许凭无根据的目标动手");
-        assert!(s.pick_next(4_000).is_some(), "但普通排序还能看到它 (不是删掉)");
+        assert!(
+            s.pick_next_belief_backed(4_000).is_none(),
+            "信念没了 ⇒ 不许凭无根据的目标动手"
+        );
+        assert!(
+            s.pick_next(4_000).is_some(),
+            "但普通排序还能看到它 (不是删掉)"
+        );
     }
 
     #[test]
     fn commitment_without_next_action_is_rejected() {
         let mut s = store();
         let e = s
-            .upsert_commitment("把信念层接进 prompt", Horizon::Short, None, "  ", None, None, 1)
+            .upsert_commitment(
+                "把信念层接进 prompt",
+                Horizon::Short,
+                None,
+                "  ",
+                None,
+                None,
+                1,
+            )
             .unwrap_err();
         assert_eq!(e, BeliefError::MissingNextAction);
     }
@@ -1571,9 +1704,26 @@ mod tests {
     fn pick_next_prefers_overdue_short_goal() {
         let mut s = store();
         let (short_id, _) = s
-            .upsert_commitment("线上编译过一遍", Horizon::Short, None, "cargo build", Some(500), None, 1)
+            .upsert_commitment(
+                "线上编译过一遍",
+                Horizon::Short,
+                None,
+                "cargo build",
+                Some(500),
+                None,
+                1,
+            )
             .unwrap();
-        s.upsert_commitment("写一版年度总结", Horizon::Long, None, "先列提纲", None, None, 1).unwrap();
+        s.upsert_commitment(
+            "写一版年度总结",
+            Horizon::Long,
+            None,
+            "先列提纲",
+            None,
+            None,
+            1,
+        )
+        .unwrap();
         let ch = s.pick_next(10_000).expect("有目标就该挑出一个");
         assert_eq!(ch.commitment_id, short_id);
         assert!(ch.why.contains("短期"));
@@ -1584,10 +1734,35 @@ mod tests {
     fn doing_goal_beats_fresh_short_goal() {
         let mut s = store();
         let (doing, _) = s
-            .upsert_commitment("继续修 rust.yml", Horizon::Short, None, "跑测试", None, None, 1)
+            .upsert_commitment(
+                "继续修 rust.yml",
+                Horizon::Short,
+                None,
+                "跑测试",
+                None,
+                None,
+                1,
+            )
             .unwrap();
-        s.upsert_commitment("顺手写周报", Horizon::Short, None, "打开文档", None, None, 1).unwrap();
-        s.update_commitment(&doing, Some(CommitmentStatus::Doing), None, Some(30), None, 2).unwrap();
+        s.upsert_commitment(
+            "顺手写周报",
+            Horizon::Short,
+            None,
+            "打开文档",
+            None,
+            None,
+            1,
+        )
+        .unwrap();
+        s.update_commitment(
+            &doing,
+            Some(CommitmentStatus::Doing),
+            None,
+            Some(30),
+            None,
+            2,
+        )
+        .unwrap();
         let ch = s.pick_next(3).unwrap();
         assert_eq!(ch.commitment_id, doing);
     }
@@ -1598,7 +1773,8 @@ mod tests {
         let (id, _) = s
             .upsert_commitment("等 CI 回话", Horizon::Short, None, "看结果", None, None, 1)
             .unwrap();
-        s.update_commitment(&id, Some(CommitmentStatus::Paused), None, None, None, 2).unwrap();
+        s.update_commitment(&id, Some(CommitmentStatus::Paused), None, None, None, 2)
+            .unwrap();
         assert!(s.pick_next(3).is_none(), "暂停的目标不该被心跳拉起来");
     }
 
@@ -1610,7 +1786,10 @@ mod tests {
         assert!(before.contains("先给结论更稳"));
         s.retire_belief(&bid, 3).unwrap();
         let after = s.render(4000);
-        assert!(!after.contains("先给结论更稳"), "退休的信念不再注入: {after}");
+        assert!(
+            !after.contains("先给结论更稳"),
+            "退休的信念不再注入: {after}"
+        );
     }
 
     #[test]
@@ -1621,10 +1800,26 @@ mod tests {
     #[test]
     fn render_has_sections_and_respects_budget() {
         let mut s = store();
-        s.upsert_commitment("线上编译过一遍", Horizon::Short, Some("b-1 支撑"), "cargo build", None, None, 1)
-            .unwrap();
-        s.upsert_commitment("把信念层做成可复用的", Horizon::Long, None, "先写接口", None, None, 1)
-            .unwrap();
+        s.upsert_commitment(
+            "线上编译过一遍",
+            Horizon::Short,
+            Some("b-1 支撑"),
+            "cargo build",
+            None,
+            None,
+            1,
+        )
+        .unwrap();
+        s.upsert_commitment(
+            "把信念层做成可复用的",
+            Horizon::Long,
+            None,
+            "先写接口",
+            None,
+            None,
+            1,
+        )
+        .unwrap();
         let text = s.render(4000);
         assert!(text.contains("## 信念"));
         assert!(text.contains("## 短期目标"));
@@ -1640,13 +1835,17 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("beliefs.db");
         let mut s = store();
-        s.upsert_commitment("落盘一致", Horizon::Short, None, "写测试", None, None, 1).unwrap();
+        s.upsert_commitment("落盘一致", Horizon::Short, None, "写测试", None, None, 1)
+            .unwrap();
         s.save(&path).unwrap();
         let back = BeliefStore::load(&path);
         assert_eq!(back.beliefs.len(), s.beliefs.len());
         assert_eq!(back.commitments.len(), 1);
         assert_eq!(back.commitments[0].next_action, "写测试");
-        assert_eq!(back.commitments, s.commitments, "目标能原样读回 (含证据/next_action)");
+        assert_eq!(
+            back.commitments, s.commitments,
+            "目标能原样读回 (含证据/next_action)"
+        );
         let mut ids_back: Vec<&str> = back.beliefs.iter().map(|b| b.id.as_str()).collect();
         let mut ids_src: Vec<&str> = s.beliefs.iter().map(|b| b.id.as_str()).collect();
         ids_back.sort();
@@ -1664,7 +1863,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::create_dir_all(&dir);
         let mut old = store();
-        old.upsert_commitment("老目标", Horizon::Long, None, "下一步", None, None, 1).unwrap();
+        old.upsert_commitment("老目标", Horizon::Long, None, "下一步", None, None, 1)
+            .unwrap();
         let json = dir.join("beliefs.json");
         std::fs::write(&json, serde_json::to_string_pretty(&old).unwrap()).unwrap();
 
@@ -1694,7 +1894,14 @@ mod tests {
     fn confidence_out_of_range_is_rejected() {
         let mut s = BeliefStore::default();
         let e = s
-            .upsert_belief("x", BeliefKind::World, BeliefOrigin::Inferred, Some(1.5), None, 1)
+            .upsert_belief(
+                "x",
+                BeliefKind::World,
+                BeliefOrigin::Inferred,
+                Some(1.5),
+                None,
+                1,
+            )
             .unwrap_err();
         assert!(matches!(e, BeliefError::BadConfidence(_)));
     }
@@ -1705,7 +1912,15 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let mut s = BeliefStore::default();
         let (gid, _) = s
-            .upsert_commitment("让主动性有内容", Horizon::Long, Some("信念 b-1"), "接内省", None, None, 1_793_756_100_000)
+            .upsert_commitment(
+                "让主动性有内容",
+                Horizon::Long,
+                Some("信念 b-1"),
+                "接内省",
+                None,
+                None,
+                1_793_756_100_000,
+            )
             .unwrap();
         let n = s.sync_goal_files(&dir, 1_793_756_100_000).unwrap();
         assert_eq!(n, 1);
@@ -1713,15 +1928,24 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["goalId"], gid.as_str());
         assert_eq!(v["objective"], "让主动性有内容");
-        assert_eq!(v["createdBy"], "agent", "项目 goal 体系里要能看出这是 agent 自己立的");
+        assert_eq!(
+            v["createdBy"], "agent",
+            "项目 goal 体系里要能看出这是 agent 自己立的"
+        );
         assert_eq!(v["horizon"], "long");
         assert_eq!(v["status"], "open");
-        assert!(v["continuation"]["nextAction"].as_str().unwrap().contains("接内省"));
+        assert!(
+            v["continuation"]["nextAction"]
+                .as_str()
+                .unwrap()
+                .contains("接内省")
+        );
     }
 
     #[test]
     fn sync_goal_files_never_overwrites_others_goal() {
-        let dir = std::env::temp_dir().join(format!("bolloon_goalsync_keep_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("bolloon_goalsync_keep_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let mut s = BeliefStore::default();
         let (gid, _) = s
@@ -1742,8 +1966,16 @@ mod tests {
     #[test]
     fn reflection_prompt_carries_current_state_and_facts() {
         let mut s = store();
-        s.upsert_commitment("把信念层做完", Horizon::Short, None, "跑测试", None, None, 1)
-            .unwrap();
+        s.upsert_commitment(
+            "把信念层做完",
+            Horizon::Short,
+            None,
+            "跑测试",
+            None,
+            None,
+            1,
+        )
+        .unwrap();
         let (system, user) = reflection_prompt(&s, 1_000, &["编译通过 (cargo check)".into()]);
         assert!(system.contains("JSON"));
         assert!(user.contains("先给结论更稳"), "要带上现有信念: {user}");
@@ -1789,14 +2021,26 @@ mod tests {
 {"statement":"主动出手要有目标","kind":"self","confidence":0.75,"evidence":"g-11"},{"statement":"半截的这条", "kind":"self", "evidence":"#;
         let r = apply_reflection(&mut s, raw, 100).expect("截断也要能抢救出前面完整条目");
         assert!(r.beliefs_written >= 2, "至少救回两条: {:?}", r);
-        assert!(s.live_beliefs().iter().any(|b| b.statement.contains("判断与理由")));
-        assert!(!s.live_beliefs().iter().any(|b| b.statement.contains("半截的这条")), "残缺条目不写入");
+        assert!(
+            s.live_beliefs()
+                .iter()
+                .any(|b| b.statement.contains("判断与理由"))
+        );
+        assert!(
+            !s.live_beliefs()
+                .iter()
+                .any(|b| b.statement.contains("半截的这条")),
+            "残缺条目不写入"
+        );
     }
 
     #[test]
     fn apply_reflection_without_json_fails_loudly() {
         let mut s = BeliefStore::default();
-        assert!(apply_reflection(&mut s, "我觉得应该更努力", 1).is_err(), "解析不出就报错, 不许假成功");
+        assert!(
+            apply_reflection(&mut s, "我觉得应该更努力", 1).is_err(),
+            "解析不出就报错, 不许假成功"
+        );
     }
 
     /// 回归 (2026-11-06): 信念/目标很多、prompt 预算很紧时,

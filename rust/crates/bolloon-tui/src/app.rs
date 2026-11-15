@@ -43,9 +43,9 @@ use std::io::Write;
 use std::time::Instant;
 
 use crate::completion::{
-    apply as apply_compl, detect as detect_compl, filter_items, ComplItem, ComplKind,
+    ComplItem, ComplKind, apply as apply_compl, detect as detect_compl, filter_items,
 };
-use crate::compose::{editor_row, resolve_action, Compose, EditAction};
+use crate::compose::{Compose, EditAction, editor_row, resolve_action};
 use crate::select::{parse_keys, read_key_raw};
 use crate::theme::{C_ACCENT, C_BORDER_BRIGHT, C_DIM, C_MUTED, C_WARN, RESET};
 use crate::width::{
@@ -516,7 +516,13 @@ impl Chrome {
                 truncate_safe(PLACEHOLDER, cells.saturating_sub(disp_width(PROMPT)))
             );
         }
-        editor_row(PROMPT, self.compose.buf(), self.compose.cursor(), cells, true)
+        editor_row(
+            PROMPT,
+            self.compose.buf(),
+            self.compose.cursor(),
+            cells,
+            true,
+        )
     }
 
     /// 分隔线 (模型栏上方那一条) —— 满宽实线, 但绝不写满整宽
@@ -772,7 +778,10 @@ impl Chrome {
                         // 只要候选里**有**和当前输入逐字相同的命令就提交:
                         // 否则 `/agent` 会被前缀候选 `/agents` 抢走 (输入被打断)。
                         let exact_slash = matches!(&self.compl, Some((ComplKind::Slash, _, _)))
-                            && self.items.iter().any(|it| buf_trim == format!("/{}", it.value));
+                            && self
+                                .items
+                                .iter()
+                                .any(|it| buf_trim == format!("/{}", it.value));
                         if self.compl.is_some() && !exact_slash {
                             self.accept(source);
                             self.dismissed = true;
@@ -908,13 +917,7 @@ impl Chrome {
     fn accept(&mut self, source: &ComplSource) {
         if let Some((k, start, q)) = &self.compl {
             if let Some(it) = self.items.get(self.sel) {
-                let new = apply_compl(
-                    self.compose.buf(),
-                    *k,
-                    *start,
-                    q.chars().count(),
-                    &it.value,
-                );
+                let new = apply_compl(self.compose.buf(), *k, *start, q.chars().count(), &it.value);
                 self.compose.set_buf(&new);
             }
         }
@@ -1030,7 +1033,11 @@ mod tests {
         let src: &dyn Fn(ComplKind, &str) -> Vec<ComplItem> = &|_kind, _q| Vec::new();
         let outcome = c.read_compose(&[], "", src);
         assert!(matches!(&outcome, InputOutcome::Line(t) if t.as_str() == "hello"));
-        assert_eq!(c.input(), "", "提交后缓冲必须为空, 否则生成期会被反复画回输入框");
+        assert_eq!(
+            c.input(),
+            "",
+            "提交后缓冲必须为空, 否则生成期会被反复画回输入框"
+        );
         assert!(crate::input::take_pending().is_empty());
     }
 
@@ -1043,7 +1050,11 @@ mod tests {
         crate::input::test_feed_pending(b"/help\r");
         let mut c = Chrome::new(30, 100);
         let src: &dyn Fn(ComplKind, &str) -> Vec<ComplItem> = &|_k, _q| {
-            vec![ComplItem { label: "/help".into(), value: "help".into(), hint: None }]
+            vec![ComplItem {
+                label: "/help".into(),
+                value: "help".into(),
+                hint: None,
+            }]
         };
         let outcome = c.read_compose(&[], "", src);
         assert!(
@@ -1062,8 +1073,16 @@ mod tests {
         let mut c = Chrome::new(30, 100);
         let src: &dyn Fn(ComplKind, &str) -> Vec<ComplItem> = &|_k, _q| {
             vec![
-                ComplItem { label: "/agent".into(), value: "agent".into(), hint: None },
-                ComplItem { label: "/agents".into(), value: "agents".into(), hint: None },
+                ComplItem {
+                    label: "/agent".into(),
+                    value: "agent".into(),
+                    hint: None,
+                },
+                ComplItem {
+                    label: "/agents".into(),
+                    value: "agents".into(),
+                    hint: None,
+                },
             ]
         };
         let outcome = c.read_compose(&[], "", src);
@@ -1077,7 +1096,10 @@ mod tests {
     fn block_is_always_five_lines() {
         let c = Chrome::new(30, 100);
         assert_eq!(c.render_block().len(), RESERVED_LINES);
-        assert_eq!(RESERVED_LINES, 5, "运行状态行 1 + 输入 1 + 分隔/模型/指标 3");
+        assert_eq!(
+            RESERVED_LINES, 5,
+            "运行状态行 1 + 输入 1 + 分隔/模型/指标 3"
+        );
     }
 
     /// 帧高恒定的**机器判据**: 不管缓冲多长/状态多满, 都是 RESERVED_LINES 行
@@ -1127,7 +1149,10 @@ mod tests {
                 .iter()
                 .filter(|l| crate::width::strip_ansi(l).contains('─'))
                 .count();
-            assert_eq!(rules, baseline, "第 {i} 次输入后横线条数变了: {rules} vs {baseline}");
+            assert_eq!(
+                rules, baseline,
+                "第 {i} 次输入后横线条数变了: {rules} vs {baseline}"
+            );
         }
     }
 
@@ -1214,7 +1239,11 @@ mod tests {
         };
         let raw = c.render_block()[3].clone();
         let plain = crate::width::strip_ansi(&raw);
-        assert_eq!(disp_width(&plain), c.cells(), "模型行必须占满整行宽: {plain:?}");
+        assert_eq!(
+            disp_width(&plain),
+            c.cells(),
+            "模型行必须占满整行宽: {plain:?}"
+        );
         assert!(plain.starts_with("◉ kimi-k3"), "{plain}");
         assert!(plain.contains("@default"), "{plain}");
         assert!(plain.contains("ctx 3k"), "用量是真的就显示: {plain}");
@@ -1257,7 +1286,10 @@ mod tests {
         c.status.ctx_limit = 1_000_000;
         let known = crate::width::strip_ansi(&c.status.render_model_row(140));
         assert!(known.contains("303k/1M"), "{known}");
-        assert!(known.contains('█') && known.contains('░'), "容量已知就画条: {known}");
+        assert!(
+            known.contains('█') && known.contains('░'),
+            "容量已知就画条: {known}"
+        );
         assert!(known.contains("30%"), "{known}");
     }
 
@@ -1311,7 +1343,10 @@ mod tests {
         };
         let line = crate::width::strip_ansi(&c.status_line());
         assert!(line.contains("42 字"), "有字数就报字数: {line}");
-        assert!(line.starts_with("──"), "状态行要有 Hermes 那种起头线: {line}");
+        assert!(
+            line.starts_with("──"),
+            "状态行要有 Hermes 那种起头线: {line}"
+        );
     }
 
     /// 空输入给引导文案, 有内容立刻消失

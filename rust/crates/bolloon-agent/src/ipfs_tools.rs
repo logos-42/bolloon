@@ -122,7 +122,9 @@ pub fn ipfs_tool_defs() -> Vec<ToolDef> {
 fn ipfs_bin() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("BOLLOON_IPFS_BIN") {
         let p = std::path::PathBuf::from(p);
-        if p.is_file() { return Some(p); }
+        if p.is_file() {
+            return Some(p);
+        }
     }
     let mut cands: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(path) = std::env::var("PATH") {

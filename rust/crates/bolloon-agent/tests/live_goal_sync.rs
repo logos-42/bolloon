@@ -12,7 +12,11 @@ fn unique_dir() -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("bolloon_live_goal_sync_{}_{}", std::process::id(), now))
+    std::env::temp_dir().join(format!(
+        "bolloon_live_goal_sync_{}_{}",
+        std::process::id(),
+        now
+    ))
 }
 
 #[test]

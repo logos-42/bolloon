@@ -8,8 +8,8 @@
 //! 5. 工具名出网前净化（^[a-zA-Z0-9_-]+$，不含 `.`）
 
 use std::collections::HashMap;
-use std::time::Duration;
-use std::sync::Mutex; // 并发闸计数器: 同步锁 (凭证 Drop 里要能立刻归还, 不能 await)
+use std::sync::Mutex;
+use std::time::Duration; // 并发闸计数器: 同步锁 (凭证 Drop 里要能立刻归还, 不能 await)
 
 use crate::config_store::Resolved;
 use crate::provider_registry::Protocol;
@@ -195,10 +195,7 @@ impl ConcurrencyGate {
     async fn acquire(&self, key: &str) -> GatePermit<'_> {
         loop {
             {
-                let mut map = self
-                    .in_flight
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                let mut map = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
                 let n = map.entry(key.to_string()).or_insert(0);
                 if *n < self.max {
                     *n += 1;
@@ -240,7 +237,10 @@ impl LlmRuntime {
             providers: providers
                 .into_iter()
                 .map(|p| {
-                    let slot = ProviderSlot { cfg: p, protocol: Protocol::OpenAiCompatible };
+                    let slot = ProviderSlot {
+                        cfg: p,
+                        protocol: Protocol::OpenAiCompatible,
+                    };
                     (slot.cfg.id.clone(), slot)
                 })
                 .collect(),
@@ -255,7 +255,8 @@ impl LlmRuntime {
 
     /// 注册/替换 provider 并指定协议分支
     pub fn add_provider_with(&mut self, cfg: ProviderConfig, protocol: Protocol) {
-        self.providers.insert(cfg.id.clone(), ProviderSlot { cfg, protocol });
+        self.providers
+            .insert(cfg.id.clone(), ProviderSlot { cfg, protocol });
     }
 
     /// 从解析好的配置注册（协议、基址、key、模型一条带过来）
@@ -318,7 +319,10 @@ impl LlmRuntime {
                 let mut p1 = params.clone();
                 fill_missing_reasoning(&mut p1.messages);
                 result = match self.do_generate(slot, &p1).await {
-                    Err(LlmError::Http { status: 400, body: b2 }) if b2.contains("reasoning_content") => {
+                    Err(LlmError::Http {
+                        status: 400,
+                        body: b2,
+                    }) if b2.contains("reasoning_content") => {
                         // ② 仍被拒: 本次把工具协议摊平成纯文本轨迹 (语义保留, 不再要求思维链)
                         tracing::warn!(
                             provider = %slot.cfg.id,
@@ -348,7 +352,8 @@ impl LlmRuntime {
         params: GenerateParams,
         on_delta: impl FnMut(&str),
     ) -> Result<GenerateResult, LlmError> {
-        self.generate_streaming_full(provider_id, params, |_| {}, on_delta).await
+        self.generate_streaming_full(provider_id, params, |_| {}, on_delta)
+            .await
     }
 
     /// 流式生成 + **思维链增量**回调: 思考模式下 `reasoning_content` 走 `on_thought`,
@@ -383,7 +388,11 @@ impl LlmRuntime {
                 result = self
                     .do_generate_stream(slot, &p1, &mut on_thought, &mut on_delta)
                     .await;
-                if let Err(LlmError::Http { status: 400, body: b2 }) = &result {
+                if let Err(LlmError::Http {
+                    status: 400,
+                    body: b2,
+                }) = &result
+                {
                     if b2.contains("reasoning_content") {
                         tracing::warn!(
                             provider = %slot.cfg.id,
@@ -420,13 +429,18 @@ impl LlmRuntime {
         let max_retries: u32 = 2;
         let mut attempt: u32 = 0;
         let resp = loop {
-            let r = req.try_clone().expect("请求必须可克隆").send().await.map_err(|e| {
-                if e.is_timeout() {
-                    LlmError::Timeout
-                } else {
-                    LlmError::Network(e.to_string())
-                }
-            })?;
+            let r = req
+                .try_clone()
+                .expect("请求必须可克隆")
+                .send()
+                .await
+                .map_err(|e| {
+                    if e.is_timeout() {
+                        LlmError::Timeout
+                    } else {
+                        LlmError::Network(e.to_string())
+                    }
+                })?;
             let st = r.status();
             if (st.as_u16() == 429 || st.as_u16() >= 500) && attempt < max_retries {
                 attempt += 1;
@@ -696,7 +710,10 @@ impl StreamAccumulator {
                     self.tool_calls.push(ToolCallMsg {
                         id: String::new(),
                         call_type: "function".into(),
-                        function: FunctionCall { name: String::new(), arguments: String::new() },
+                        function: FunctionCall {
+                            name: String::new(),
+                            arguments: String::new(),
+                        },
                     });
                 }
                 let slot = &mut self.tool_calls[idx];
@@ -764,7 +781,11 @@ fn anthropic_request(
             system.push_str(&m.content);
             continue;
         }
-        let role = if m.role == "assistant" { "assistant" } else { "user" };
+        let role = if m.role == "assistant" {
+            "assistant"
+        } else {
+            "user"
+        };
         msgs.push(serde_json::json!({ "role": role, "content": m.content }));
     }
     let mut body = serde_json::json!({
@@ -814,7 +835,11 @@ fn gemini_request(
             system.push_str(&m.content);
             continue;
         }
-        let role = if m.role == "assistant" { "model" } else { "user" };
+        let role = if m.role == "assistant" {
+            "model"
+        } else {
+            "user"
+        };
         contents.push(serde_json::json!({
             "role": role,
             "parts": [{ "text": m.content }],
@@ -869,7 +894,12 @@ fn ollama_request(
     });
     // Ollama Cloud (2026-11-06): 带 api_key 时加 Bearer; 本机 Ollama 无 key ⇒ headers 仍为空
     let mut headers: Vec<(String, String)> = Vec::new();
-    if let Some(k) = cfg.api_key.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(k) = cfg
+        .api_key
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         headers.push(("Authorization".into(), format!("Bearer {k}")));
     }
     (url, headers, body)
@@ -897,7 +927,11 @@ fn message_shapes(msgs: &[ChatMessage]) -> String {
                 .as_ref()
                 .map(|r| r.chars().count().to_string())
                 .unwrap_or_else(|| "None".to_string());
-            format!("{i}:{}/tc={tc}/rc={rc}/len={}", m.role, m.content.chars().count())
+            format!(
+                "{i}:{}/tc={tc}/rc={rc}/len={}",
+                m.role,
+                m.content.chars().count()
+            )
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -1018,11 +1052,33 @@ pub fn messages_payload(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
 pub fn is_vision_model(model: &str) -> bool {
     let m = model.to_ascii_lowercase();
     const PREFIXES: &[&str] = &[
-        "gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-5", "o3", "o4-", "chatgpt-4o",
-        "claude-3", "claude-sonnet", "claude-opus", "claude-haiku",
-        "gemini", "qwen-vl", "qwen2-vl", "qwen2.5-vl", "glm-4v", "glm-4.5v", "glm-4.6v",
-        "grok-2-vision", "grok-4", "pixtral", "llama-3.2-90b", "llama-3.2-11b", "llama-4",
-        "mistral-small-3.1", "doubao-1.5-vision", "kimi-latest",
+        "gpt-4o",
+        "gpt-4.1",
+        "gpt-4-turbo",
+        "gpt-5",
+        "o3",
+        "o4-",
+        "chatgpt-4o",
+        "claude-3",
+        "claude-sonnet",
+        "claude-opus",
+        "claude-haiku",
+        "gemini",
+        "qwen-vl",
+        "qwen2-vl",
+        "qwen2.5-vl",
+        "glm-4v",
+        "glm-4.5v",
+        "glm-4.6v",
+        "grok-2-vision",
+        "grok-4",
+        "pixtral",
+        "llama-3.2-90b",
+        "llama-3.2-11b",
+        "llama-4",
+        "mistral-small-3.1",
+        "doubao-1.5-vision",
+        "kimi-latest",
     ];
     PREFIXES.iter().any(|p| m.starts_with(p))
 }
@@ -1070,7 +1126,11 @@ fn parse_openai_response(v: serde_json::Value, model: &str) -> Result<GenerateRe
             arr.iter()
                 .filter_map(|tc| {
                     let id = tc.get("id")?.as_str()?.to_string();
-                    let call_type = tc.get("type").and_then(|t| t.as_str()).unwrap_or("function").to_string();
+                    let call_type = tc
+                        .get("type")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("function")
+                        .to_string();
                     let function = tc.get("function")?;
                     let name = function.get("name")?.as_str()?.to_string();
                     let arguments = function
@@ -1131,8 +1191,16 @@ fn parse_anthropic_response(v: serde_json::Value, model: &str) -> Result<Generat
                 }
             }
             "tool_use" => {
-                let id = b.get("id").and_then(|s| s.as_str()).unwrap_or("tool").to_string();
-                let name = b.get("name").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                let id = b
+                    .get("id")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("tool")
+                    .to_string();
+                let name = b
+                    .get("name")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let arguments = b
                     .get("input")
                     .map(|i| i.to_string())
@@ -1155,10 +1223,7 @@ fn parse_anthropic_response(v: serde_json::Value, model: &str) -> Result<Generat
         .get("usage")
         .map(|u| Usage {
             prompt_tokens: u.get("input_tokens").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
-            completion_tokens: u
-                .get("output_tokens")
-                .and_then(|n| n.as_u64())
-                .unwrap_or(0) as u32,
+            completion_tokens: u.get("output_tokens").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
         })
         .unwrap_or_default();
     Ok(GenerateResult {
@@ -1193,7 +1258,11 @@ fn parse_gemini_response(v: serde_json::Value, model: &str) -> Result<GenerateRe
         }
         if let Some(fc) = p.get("functionCall") {
             idx += 1;
-            let name = fc.get("name").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let name = fc
+                .get("name")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
             let arguments = fc
                 .get("args")
                 .map(|a| a.to_string())
@@ -1213,7 +1282,10 @@ fn parse_gemini_response(v: serde_json::Value, model: &str) -> Result<GenerateRe
     let usage = v
         .get("usageMetadata")
         .map(|u| Usage {
-            prompt_tokens: u.get("promptTokenCount").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+            prompt_tokens: u
+                .get("promptTokenCount")
+                .and_then(|n| n.as_u64())
+                .unwrap_or(0) as u32,
             completion_tokens: u
                 .get("candidatesTokenCount")
                 .and_then(|n| n.as_u64())
@@ -1277,7 +1349,10 @@ fn parse_ollama_response(v: serde_json::Value, model: &str) -> Result<GenerateRe
         "stop".to_string()
     };
     let usage = Usage {
-        prompt_tokens: v.get("prompt_eval_count").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+        prompt_tokens: v
+            .get("prompt_eval_count")
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0) as u32,
         completion_tokens: v.get("eval_count").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
     };
     Ok(GenerateResult {
@@ -1329,7 +1404,11 @@ mod tests {
     #[test]
     fn sse_buffer_splits_events_across_chunks() {
         let mut sse = SseBuffer::default();
-        assert_eq!(sse.push("data: {\"a\":1}\n\ndata: {\"b"), vec!["{\"a\":1}"], "完整行立即出, 半行等拼齐");
+        assert_eq!(
+            sse.push("data: {\"a\":1}\n\ndata: {\"b"),
+            vec!["{\"a\":1}"],
+            "完整行立即出, 半行等拼齐"
+        );
         let events = sse.push("\":2}\n\ndata: [DONE]\n\n");
         assert_eq!(events, vec!["{\"b\":2}", "[DONE]"]);
     }
@@ -1342,7 +1421,11 @@ mod tests {
         let (t0, d0) = acc.feed_full(&serde_json::json!({
             "choices": [{"delta": {"reasoning_content": "先看"}}]
         }));
-        assert_eq!((t0.as_str(), d0.as_str()), ("先看", ""), "思考帧只有想法, 不能冒充正文");
+        assert_eq!(
+            (t0.as_str(), d0.as_str()),
+            ("先看", ""),
+            "思考帧只有想法, 不能冒充正文"
+        );
         let (t1, d1) = acc.feed_full(&serde_json::json!({
             "choices": [{"delta": {"content": "你"}}]
         }));
@@ -1368,14 +1451,21 @@ mod tests {
         assert_eq!(d2, "好");
         let r = acc.finish("m1");
         assert_eq!(r.content, "你好");
-        assert_eq!(r.reasoning_content.as_deref(), Some("先看"), "思维链必须累积并可回传");
+        assert_eq!(
+            r.reasoning_content.as_deref(),
+            Some("先看"),
+            "思维链必须累积并可回传"
+        );
         assert_eq!(r.finish_reason, "tool_calls");
         assert_eq!(r.usage.prompt_tokens, 10);
         assert_eq!(r.tool_calls.len(), 1);
         let tc = &r.tool_calls[0];
         assert_eq!(tc.id, "call_1");
         assert_eq!(tc.function.name, "read_file");
-        assert_eq!(tc.function.arguments, "{\"path\":\"a.txt\"}", "参数片段必须拼合");
+        assert_eq!(
+            tc.function.arguments, "{\"path\":\"a.txt\"}",
+            "参数片段必须拼合"
+        );
     }
 
     /// 出站边界: assistant 带 tool_calls 且思维链为 None ⇒ 必须补成空串字段
@@ -1386,14 +1476,24 @@ mod tests {
         m.tool_calls = Some(vec![ToolCallMsg {
             id: "c1".into(),
             call_type: "function".into(),
-            function: FunctionCall { name: "read_file".into(), arguments: "{}".into() },
+            function: FunctionCall {
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            },
         }]);
         m.reasoning_content = None;
         let v = messages_payload(&[m]);
-        assert_eq!(v[0]["reasoning_content"], serde_json::json!(""), "缺字段就必须补空串");
+        assert_eq!(
+            v[0]["reasoning_content"],
+            serde_json::json!(""),
+            "缺字段就必须补空串"
+        );
         // 纯文本消息不补 (不必要地发字段也不是错, 但别乱加)
         let plain = messages_payload(&[msg("assistant", "hi")]);
-        assert!(plain[0].get("reasoning_content").is_none(), "无 tool_calls 不补");
+        assert!(
+            plain[0].get("reasoning_content").is_none(),
+            "无 tool_calls 不补"
+        );
     }
 
     /// 流式请求体: stream 必须是 true, 其余与一次性请求同构
@@ -1430,7 +1530,10 @@ mod tests {
     #[test]
     fn payload_with_images_uses_vision_array() {
         let mut m = msg("user", "看图");
-        m.images = vec!["data:image/png;base64,AAAA".into(), "data:image/jpeg;base64,BBBB".into()];
+        m.images = vec![
+            "data:image/png;base64,AAAA".into(),
+            "data:image/jpeg;base64,BBBB".into(),
+        ];
         let v = messages_payload(&[m]);
         let content = v[0]["content"].as_array().unwrap();
         assert_eq!(content.len(), 3, "1 段文本 + 2 张图");
@@ -1438,7 +1541,10 @@ mod tests {
         assert_eq!(content[0]["text"], "看图");
         assert_eq!(content[1]["type"], "image_url");
         assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,AAAA");
-        assert_eq!(content[2]["image_url"]["url"], "data:image/jpeg;base64,BBBB");
+        assert_eq!(
+            content[2]["image_url"]["url"],
+            "data:image/jpeg;base64,BBBB"
+        );
         assert_eq!(v[0]["role"], "user");
     }
 
@@ -1446,7 +1552,10 @@ mod tests {
     #[test]
     fn vision_gate_blocks_unknown_models() {
         assert!(check_vision("deepseek-chat", 0).is_ok(), "没图永远放行");
-        assert!(check_vision("deepseek-chat", 1).is_err(), "默认纯文本模型拦下");
+        assert!(
+            check_vision("deepseek-chat", 1).is_err(),
+            "默认纯文本模型拦下"
+        );
         assert!(check_vision("deepseek-chat", 2).is_err());
         let e = check_vision("deepseek-chat", 1).unwrap_err();
         assert!(e.contains("BOLLOON_VISION"), "错误里要给强制开关: {e}");
@@ -1502,10 +1611,12 @@ mod tests {
         assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,AAAA");
     }
 
-
     #[test]
     fn sanitize_rejects_dot() {
-        assert_eq!(sanitize_tool_name("contact.list_authorized"), "contact_list_authorized");
+        assert_eq!(
+            sanitize_tool_name("contact.list_authorized"),
+            "contact_list_authorized"
+        );
         assert_eq!(sanitize_tool_name("read_file"), "read_file");
         assert_eq!(sanitize_tool_name("a.b.c"), "a_b_c");
         // 超长截断
@@ -1569,15 +1680,25 @@ mod tests {
             tool_calls: Some(vec![ToolCallMsg {
                 id: "call_1".into(),
                 call_type: "function".into(),
-                function: FunctionCall { name: "read_file".into(), arguments: "{}".into() },
+                function: FunctionCall {
+                    name: "read_file".into(),
+                    arguments: "{}".into(),
+                },
             }]),
             reasoning_content: None,
         };
         let mut msgs = vec![base.clone()];
         fill_missing_reasoning(&mut msgs);
-        assert_eq!(msgs[0].reasoning_content.as_deref(), Some(""), "缺的补成空串");
+        assert_eq!(
+            msgs[0].reasoning_content.as_deref(),
+            Some(""),
+            "缺的补成空串"
+        );
         // 已有思维链不覆盖 (DeepSeek 要求原样传回)
-        let mut keep = vec![ChatMessage { reasoning_content: Some("想过了".into()), ..base.clone() }];
+        let mut keep = vec![ChatMessage {
+            reasoning_content: Some("想过了".into()),
+            ..base.clone()
+        }];
         fill_missing_reasoning(&mut keep);
         assert_eq!(keep[0].reasoning_content.as_deref(), Some("想过了"));
 
@@ -1594,7 +1715,10 @@ mod tests {
             },
         ];
         flatten_tool_protocol(&mut flat);
-        assert!(flat.iter().all(|m| m.tool_calls.is_none() && m.tool_call_id.is_none()));
+        assert!(
+            flat.iter()
+                .all(|m| m.tool_calls.is_none() && m.tool_call_id.is_none())
+        );
         assert!(flat[0].content.contains("read_file"), "工具名要留在轨迹里");
         assert_eq!(flat[1].role, "user");
         assert!(flat[1].content.contains("hello"), "工具结果要留在轨迹里");
@@ -1631,7 +1755,10 @@ mod tests {
             assert!(timed_out.is_err(), "前提: 这个 future 确实被超时丢弃");
         }
         let got = tokio::time::timeout(Duration::from_millis(400), gate.acquire("k")).await;
-        assert!(got.is_ok(), "丢弃的 future 必须归还槽位, 否则并发闸会被永久锁死");
+        assert!(
+            got.is_ok(),
+            "丢弃的 future 必须归还槽位, 否则并发闸会被永久锁死"
+        );
     }
 
     #[tokio::test]
@@ -1662,19 +1789,25 @@ mod tests {
         let err = rt
             .generate(
                 "mock",
-                GenerateParams::new("m", vec![ChatMessage {
-                    role: "user".into(),
-                    content: "hi".into(),
-                    name: None,
-                    tool_call_id: None,
-                    images: vec![],
-                    tool_calls: None,
-    reasoning_content: None,
-}]),
+                GenerateParams::new(
+                    "m",
+                    vec![ChatMessage {
+                        role: "user".into(),
+                        content: "hi".into(),
+                        name: None,
+                        tool_call_id: None,
+                        images: vec![],
+                        tool_calls: None,
+                        reasoning_content: None,
+                    }],
+                ),
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, LlmError::Http { status: 400, .. }), "400 不应重试: {err:?}");
+        assert!(
+            matches!(err, LlmError::Http { status: 400, .. }),
+            "400 不应重试: {err:?}"
+        );
         server.abort();
     }
 
@@ -1716,15 +1849,18 @@ mod tests {
         let r = rt
             .generate(
                 "mock429",
-                GenerateParams::new("m", vec![ChatMessage {
-                    role: "user".into(),
-                    content: "hi".into(),
-                    name: None,
-                    tool_call_id: None,
-                    images: vec![],
-                    tool_calls: None,
-    reasoning_content: None,
-}]),
+                GenerateParams::new(
+                    "m",
+                    vec![ChatMessage {
+                        role: "user".into(),
+                        content: "hi".into(),
+                        name: None,
+                        tool_call_id: None,
+                        images: vec![],
+                        tool_calls: None,
+                        reasoning_content: None,
+                    }],
+                ),
             )
             .await
             .expect("429 退避后应成功");
@@ -1773,17 +1909,25 @@ mod tests {
             "claude-sonnet-5",
             vec![msg("system", "你是 bolloon"), msg("user", "你好")],
         );
-        let (url, headers, body) =
-            anthropic_request(&cfg("anthropic", "https://api.anthropic.com/v1", Some("sk-a")), &p)
-                .unwrap();
+        let (url, headers, body) = anthropic_request(
+            &cfg("anthropic", "https://api.anthropic.com/v1", Some("sk-a")),
+            &p,
+        )
+        .unwrap();
         assert_eq!(url, "https://api.anthropic.com/v1/messages");
         assert!(headers.iter().any(|(k, v)| k == "x-api-key" && v == "sk-a"));
         assert!(
-            headers.iter().any(|(k, v)| k == "anthropic-version" && v == "2023-06-01"),
+            headers
+                .iter()
+                .any(|(k, v)| k == "anthropic-version" && v == "2023-06-01"),
             "Anthropic 必须带版本头"
         );
         assert_eq!(body["system"], "你是 bolloon", "system 抬到顶层");
-        assert_eq!(body["messages"].as_array().unwrap().len(), 1, "system 不再占消息位");
+        assert_eq!(
+            body["messages"].as_array().unwrap().len(),
+            1,
+            "system 不再占消息位"
+        );
         assert_eq!(body["messages"][0]["role"], "user");
         // 没 key → 明确报错 (不是发出去再 401)
         let err = anthropic_request(&cfg("anthropic", "https://api.anthropic.com/v1", None), &p);
@@ -1794,7 +1938,11 @@ mod tests {
     fn gemini_request_builds_generate_content_url() {
         let p = GenerateParams::new("gemini-3.5-flash", vec![msg("user", "hi")]);
         let (url, headers, body) = gemini_request(
-            &cfg("gemini", "https://generativelanguage.googleapis.com/v1beta", Some("k")),
+            &cfg(
+                "gemini",
+                "https://generativelanguage.googleapis.com/v1beta",
+                Some("k"),
+            ),
             &p,
         )
         .unwrap();
@@ -1814,7 +1962,11 @@ mod tests {
             ollama_request(&cfg("ollama", "http://localhost:11434", None), &p);
         assert_eq!(url, "http://localhost:11434/api/chat");
         assert!(headers.is_empty());
-        assert_eq!(body["stream"], serde_json::json!(false), "非流式才是一次性结果");
+        assert_eq!(
+            body["stream"],
+            serde_json::json!(false),
+            "非流式才是一次性结果"
+        );
         assert!(body["options"]["num_predict"].is_number());
     }
 
@@ -1896,15 +2048,27 @@ mod tests {
             Protocol::Anthropic,
         );
         let res = rt
-            .generate("anthropic", GenerateParams::new("claude-sonnet-5", vec![msg("user", "hi")]))
+            .generate(
+                "anthropic",
+                GenerateParams::new("claude-sonnet-5", vec![msg("user", "hi")]),
+            )
             .await
             .unwrap();
         assert_eq!(res.content, "来自 anthropic");
 
         let raw = server.await.unwrap();
-        assert!(raw.starts_with("POST /v1/messages"), "路径要是 /messages: {raw}");
-        assert!(raw.to_lowercase().contains("x-api-key: sk-a"), "要带 x-api-key");
-        assert!(raw.to_lowercase().contains("anthropic-version"), "要带版本头");
+        assert!(
+            raw.starts_with("POST /v1/messages"),
+            "路径要是 /messages: {raw}"
+        );
+        assert!(
+            raw.to_lowercase().contains("x-api-key: sk-a"),
+            "要带 x-api-key"
+        );
+        assert!(
+            raw.to_lowercase().contains("anthropic-version"),
+            "要带版本头"
+        );
     }
 
     /// from_config: 配置解析出来的家带着正确协议进 runtime

@@ -13,12 +13,7 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn unique_dir(prefix: &str) -> PathBuf {
     let n = SEQ.fetch_add(1, Ordering::SeqCst);
-    let d = std::env::temp_dir().join(format!(
-        "bolloon_{}_{}_{}",
-        prefix,
-        std::process::id(),
-        n
-    ));
+    let d = std::env::temp_dir().join(format!("bolloon_{}_{}_{}", prefix, std::process::id(), n));
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::create_dir_all(&d);
     d

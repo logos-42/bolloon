@@ -61,9 +61,9 @@ pub mod logbus;
 pub mod markdown;
 pub mod panel;
 pub mod screen;
-pub mod stream;
 pub mod scroll;
 pub mod select;
+pub mod stream;
 pub mod theme;
 pub mod trace;
 pub mod width;
@@ -80,9 +80,8 @@ pub mod width;
 pub mod term_compat {
     #[cfg(unix)]
     pub use libc::{
-        cfmakeraw, c_int, c_void, isatty, poll, pollfd, read, signal, sighandler_t,
-        tcgetattr, tcsetattr, termios, ONLCR, OPOST, POLLIN, SIGWINCH, STDIN_FILENO,
-        STDOUT_FILENO, TCSANOW,
+        ONLCR, OPOST, POLLIN, SIGWINCH, STDIN_FILENO, STDOUT_FILENO, TCSANOW, c_int, c_void,
+        cfmakeraw, isatty, poll, pollfd, read, sighandler_t, signal, tcgetattr, tcsetattr, termios,
     };
 
     #[cfg(windows)]
@@ -144,7 +143,11 @@ pub mod term_compat {
     /// 轮询在 Windows 一律「没数据」，但必须先睡一会儿，否则中断监听线程会空转吃满 CPU。
     #[cfg(windows)]
     pub unsafe fn poll(_fds: *mut pollfd, _nfds: u64, timeout_ms: c_int) -> c_int {
-        let ms = if timeout_ms > 0 { (timeout_ms as u64).min(100) } else { 10 };
+        let ms = if timeout_ms > 0 {
+            (timeout_ms as u64).min(100)
+        } else {
+            10
+        };
         std::thread::sleep(std::time::Duration::from_millis(ms));
         -1
     }
@@ -158,17 +161,15 @@ pub mod term_compat {
     }
 }
 
-pub use app::{
-    Activity, Chrome, ComplSource, InputOutcome, StatusBar, TurnStats, RESERVED_LINES,
-};
-pub use brand::{print_banner, render_startup_dashboard, DashboardData};
+pub use app::{Activity, Chrome, ComplSource, InputOutcome, RESERVED_LINES, StatusBar, TurnStats};
+pub use brand::{DashboardData, print_banner, render_startup_dashboard};
 pub use completion::{ComplItem, ComplKind};
 pub use history::{append_input_history, load_input_history};
 pub use input::{ask_line, ask_line_with, ask_masked, hold_raw_mode, watch_interrupts};
-pub use loading::{LoadingTui, LOADING_FRAMES};
+pub use loading::{LOADING_FRAMES, LoadingTui};
 pub use logbus::{LogEvent, LogLevel, TuiGuard};
 pub use panel::{render_agent_message, render_dashboard, render_dialog, render_user_message};
 pub use screen::Screen;
-pub use stream::{render_preview_frame, STREAM_ROWS};
-pub use select::{tui_select, SelectOptions, TuiChoice};
+pub use select::{SelectOptions, TuiChoice, tui_select};
+pub use stream::{STREAM_ROWS, render_preview_frame};
 pub use theme::color_enabled;

@@ -34,8 +34,7 @@ pub const EIP3009_AUTHORIZATION_USED_TOPIC0: &str =
 pub const EIP712_DOMAIN_TYPEHASH_STR: &str =
     "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)";
 /// EIP-3009 授权结构类型串
-pub const EIP3009_TYPEHASH_STR: &str =
-    "TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)";
+pub const EIP3009_TYPEHASH_STR: &str = "TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)";
 
 /// `DOMAIN_SEPARATOR()` selector
 pub const SELECTOR_DOMAIN_SEPARATOR: &str = "3644e515";
@@ -130,7 +129,7 @@ pub fn decode_order_nonce(nonce: &str) -> DecodedOrderNonce {
             return shell_detail(format!(
                 "nonce 形状不对 (要 32 字节 hex): {}",
                 raw.chars().take(42).collect::<String>()
-            ))
+            ));
         }
     };
     let tag_hex = hex::encode(&bytes[..ORDER_TAG_BYTES]);
@@ -145,9 +144,11 @@ pub fn decode_order_nonce(nonce: &str) -> DecodedOrderNonce {
             ),
         };
     }
-    let order_seq = u32::from_be_bytes(bytes[ORDER_TAG_BYTES..ORDER_TAG_BYTES + ORDER_SEQ_BYTES]
-        .try_into()
-        .expect("4 bytes"));
+    let order_seq = u32::from_be_bytes(
+        bytes[ORDER_TAG_BYTES..ORDER_TAG_BYTES + ORDER_SEQ_BYTES]
+            .try_into()
+            .expect("4 bytes"),
+    );
     let item_id_hash = hex::encode(&bytes[ORDER_TAG_BYTES + ORDER_SEQ_BYTES..]);
     let detail = format!(
         "BOL1 订单标识: orderSeq={order_seq}, itemIdHash={}…",
@@ -282,17 +283,26 @@ mod tests {
     #[test]
     fn match_nonce_self_attested_and_negative() {
         let n = compute_order_nonce("item_a", 7).unwrap();
-        assert!(match_order_nonce(&n, "item_a", 7), "本店 item 复算命中 = 自证");
+        assert!(
+            match_order_nonce(&n, "item_a", 7),
+            "本店 item 复算命中 = 自证"
+        );
         assert!(!match_order_nonce(&n, "item_b", 7), "换 item 不命中");
         assert!(!match_order_nonce(&n, "item_a", 8), "换 seq 不命中");
-        assert!(!match_order_nonce("0xdeadbeef", "item_a", 7), "非 BOL1 不命中");
+        assert!(
+            !match_order_nonce("0xdeadbeef", "item_a", 7),
+            "非 BOL1 不命中"
+        );
     }
 
     #[test]
     fn same_item_different_seq_gives_different_nonce() {
         let a = compute_order_nonce("item", 0).unwrap();
         let b = compute_order_nonce("item", 1).unwrap();
-        assert_ne!(a, b, "同件换 seq 必须换 nonce (链上 (authorizer,nonce) 唯一)");
+        assert_ne!(
+            a, b,
+            "同件换 seq 必须换 nonce (链上 (authorizer,nonce) 唯一)"
+        );
     }
 
     /// ★ 真链对表锚: USDC (Base) DOMAIN_SEPARATOR
@@ -310,7 +320,10 @@ mod tests {
     #[test]
     fn eip712_wrong_name_diverges() {
         let ds = eip712_domain_separator("USDC", "2", 8453, &USDC_BASE_CONTRACT);
-        assert_ne!(ds, USDC_BASE_DOMAIN_SEPARATOR, "用符号当 name 必然对不上真链");
+        assert_ne!(
+            ds, USDC_BASE_DOMAIN_SEPARATOR,
+            "用符号当 name 必然对不上真链"
+        );
     }
 
     #[test]

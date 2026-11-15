@@ -208,7 +208,10 @@ impl ImmuneSystem {
         let a = self.assess(subject, now_ms);
         // 达到隔离阈值 ⇒ 记到期时间（到期自动解除，不需要谁来"解封"）
         if a.posture == Posture::Quarantined {
-            let mut q = self.quarantined_until.lock().unwrap_or_else(|e| e.into_inner());
+            let mut q = self
+                .quarantined_until
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let until = now_ms + self.policy.quarantine_ms;
             let e = q.entry(subject.to_string()).or_insert(until);
             if *e < until {
@@ -338,7 +341,13 @@ mod tests {
         let sys = ImmuneSystem::default();
         // 一个 agent 连报 10 次重罪：也只能到 watch
         for i in 0..10 {
-            let a = sys.raise("bad", "accuser", AlarmKind::DataExfiltration, T0 + i, "索要密钥");
+            let a = sys.raise(
+                "bad",
+                "accuser",
+                AlarmKind::DataExfiltration,
+                T0 + i,
+                "索要密钥",
+            );
             assert!(
                 a.posture <= Posture::Watch,
                 "单点不定罪（防免疫系统被武器化）: {:?} ×{}",
@@ -358,7 +367,9 @@ mod tests {
         // 5 个不同 agent 各报一次"外泄" ⇒ 同一轮直接隔离（不等心跳/扩散）
         let mut last = Posture::Normal;
         for (i, who) in ["a1", "a2", "a3", "a4", "a5"].iter().enumerate() {
-            last = sys.raise("bad", who, AlarmKind::DataExfiltration, T0, "外传数据").posture;
+            last = sys
+                .raise("bad", who, AlarmKind::DataExfiltration, T0, "外传数据")
+                .posture;
             if i == 2 {
                 assert_eq!(last, Posture::Restricted, "3 个报告者 ⇒ 限制");
             }
@@ -378,7 +389,12 @@ mod tests {
         // 5 次重罪累积 15 分，要衰减到 watch 阈值(1.0)以下需要 ~4 个半衰期；隔离期本身是 2h
         let later = T0 + sys.policy().half_life_ms * 8;
         let a = sys.assess("bad", later);
-        assert_eq!(a.posture, Posture::Normal, "停手自愈，不用谁来解封: {:?}", a.reasons);
+        assert_eq!(
+            a.posture,
+            Posture::Normal,
+            "停手自愈，不用谁来解封: {:?}",
+            a.reasons
+        );
         assert!(a.concentration < 1.0);
     }
 
@@ -396,8 +412,14 @@ mod tests {
     #[test]
     fn self_report_and_empty_subject_are_ignored() {
         let sys = ImmuneSystem::default();
-        assert_eq!(sys.raise("", "a1", AlarmKind::Spam, T0, "").concentration, 0.0);
-        assert_eq!(sys.raise("me", "me", AlarmKind::Spam, T0, "").concentration, 0.0);
+        assert_eq!(
+            sys.raise("", "a1", AlarmKind::Spam, T0, "").concentration,
+            0.0
+        );
+        assert_eq!(
+            sys.raise("me", "me", AlarmKind::Spam, T0, "").concentration,
+            0.0
+        );
     }
 
     #[test]
@@ -408,7 +430,11 @@ mod tests {
         }
         let a = sys.assess("bad", T0);
         assert_eq!(a.posture, Posture::Restricted);
-        assert!(a.guidance.contains("不要"), "要给出可执行动作: {}", a.guidance);
+        assert!(
+            a.guidance.contains("不要"),
+            "要给出可执行动作: {}",
+            a.guidance
+        );
         assert!(!a.reasons.is_empty(), "判定必须可审计");
     }
 }

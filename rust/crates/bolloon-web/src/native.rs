@@ -14,24 +14,26 @@
 //! room 交流引擎为消息通路 (多 agent 自动轮流发言待接 LLM); agent DID 为轻量派生 (显示层);
 //! room orbitdb 状态 = 本地 oplog (跨机复制待接 BlockExchange 真传输)。
 
-use std::sync::atomic::Ordering;
 use async_trait::async_trait;
+use std::sync::atomic::Ordering;
 
+use axum::Json;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::response::sse::{Event, Sse};
-use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use bolloon_llm::{ChatMessage, GenerateParams, GenerateResult, LlmRuntime, ToolSchema};
+// 这两个 trait/类型只在 quic-transport 分支里用到；关掉该 feature 时避免 unused 告警。
+use bolloon_agent::kernel_loop::{KernelLoop, LlmGoalReviewer, LoopStrategy};
+#[cfg_attr(not(feature = "quic-transport"), allow(unused_imports))]
 use bolloon_kernel::transport::{Transport, TransportMessage};
-use bolloon_agent::kernel_loop::{KernelLoop, LoopStrategy, LlmGoalReviewer};
 
-use crate::server::{data_dir, AppState, ChatMessageView};
+use crate::server::{AppState, ChatMessageView, data_dir};
+use bolloon_agent::deliberation::{
+    DeliberationHub, ElectionMode, IngestDecision, MemberRole, admit_command,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
-use bolloon_agent::deliberation::{
-    admit_command, DeliberationHub, ElectionMode, IngestDecision, MemberRole,
-};
 
 // ────────────────────────── 数据模型 (前端视图形状) ──────────────────────────
 
@@ -49,7 +51,6 @@ pub struct AgentView {
     #[serde(default)]
     pub global_dir: String,
     pub created_at_ms: u64,
-
 
     /// 所属权: 主人 DID (谁签的这个智能体)
     #[serde(default)]
@@ -97,8 +98,7 @@ pub struct UiSession {
     pub created_at_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct UserProfile {
     pub name: String,
     pub did: String,
@@ -250,7 +250,8 @@ pub const ROOM_TASK_AUTO_DISPATCH_MS: u64 = 60_000;
 
 /// 一条 `proposed` 任务现在是否该自动派下去（纯函数）
 pub fn should_auto_dispatch(task: &RoomTask, now_ms: u64) -> bool {
-    task.status == "proposed" && now_ms.saturating_sub(task.created_at_ms) >= ROOM_TASK_AUTO_DISPATCH_MS
+    task.status == "proposed"
+        && now_ms.saturating_sub(task.created_at_ms) >= ROOM_TASK_AUTO_DISPATCH_MS
 }
 
 /// 群内回合的运行时设置（默认**允许真执行**：说了要跑命令就真跑）
@@ -449,7 +450,8 @@ pub struct NativeState {
     /// 智能体 → 好友 DID → 授权能力 (2026-11-04: 好友可见/可交流的最小授权面;
     /// **永远不含本地完全权限** —— 白名单在 `GRANT_CAPS` 里, 写入侧也会拒未知能力)
     #[serde(default)]
-    pub agent_grants: std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>,
+    pub agent_grants:
+        std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>,
     /// 群组设置覆盖: 改名 / 置顶 / 简介 (本节点视图; OrbitDB 内容本身不可改)
     #[serde(default)]
     pub group_overrides: std::collections::HashMap<String, GroupOverride>,
@@ -757,8 +759,8 @@ pub(crate) fn provider_rows(cfg: &bolloon_llm::LlmConfig) -> Vec<serde_json::Val
     let catalog_rows: Vec<serde_json::Value> = bolloon_llm::list_with_catalog()
         .into_iter()
         .map(|e| {
-            let has_key = !e.requires_api_key
-                || bolloon_llm::config_store::key_of(cfg, &e).is_some();
+            let has_key =
+                !e.requires_api_key || bolloon_llm::config_store::key_of(cfg, &e).is_some();
             let model = cfg
                 .providers
                 .get(&e.id)
@@ -788,7 +790,10 @@ pub(crate) fn provider_rows(cfg: &bolloon_llm::LlmConfig) -> Vec<serde_json::Val
 pub async fn models_options(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
-    let id = q.get("provider").map(|s| s.trim().to_string()).unwrap_or_default();
+    let id = q
+        .get("provider")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
     if id.is_empty() {
         return Json(serde_json::json!({ "error": "缺少 provider" }));
     }
@@ -840,13 +845,26 @@ pub async fn models_select(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let id = req["provider"].as_str().unwrap_or_default().trim().to_string();
+    let id = req["provider"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if id.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺少 provider" }));
     }
-    let model = req["model"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let api_key = req["api_key"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let base_url = req["base_url"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let model = req["model"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let api_key = req["api_key"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let base_url = req["base_url"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     let mut cfg = bolloon_llm::config_store::load();
     // 目录/内置里没有的家 → 当**自定义 provider** 建（自定义必须有 base_url）
@@ -908,7 +926,11 @@ pub async fn models_test(
     State(_st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let id = req["provider"].as_str().unwrap_or_default().trim().to_string();
+    let id = req["provider"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if id.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺少 provider" }));
     }
@@ -948,8 +970,8 @@ pub async fn models_test(
             tool_call_id: None,
             tool_calls: None,
             images: vec![],
-    reasoning_content: None,
-}],
+            reasoning_content: None,
+        }],
     );
     params.max_tokens = 8;
     params.temperature = 0.0;
@@ -998,8 +1020,8 @@ pub async fn create_agent(
     // 没选头像就留空: 前端按 agent id 生成确定性头像 (hashavatar), 不存"人人同脸"的假图
     let avatar = req["avatar"].as_str().unwrap_or_default().to_string();
     let agent = AgentView {
-            owner_did: String::new(),
-            owner_signature: String::new(),
+        owner_did: String::new(),
+        owner_signature: String::new(),
         id: id.clone(),
         name,
         did,
@@ -1160,7 +1182,11 @@ pub async fn delete_session(
 ) -> Json<serde_json::Value> {
     let mut fs = st.forge.lock().await;
     let id = req["id"].as_str().unwrap_or_default().to_string();
-    let agent_of_deleted = fs.sessions.iter().find(|s| s.id == id).map(|s| s.agent_id.clone());
+    let agent_of_deleted = fs
+        .sessions
+        .iter()
+        .find(|s| s.id == id)
+        .map(|s| s.agent_id.clone());
     fs.sessions.retain(|s| s.id != id);
     // 删的是当前会话 ⇒ 优先落在"同一智能体的最近会话", 找不到才全局第一个 (不跨智能体乱跳)
     let active = if fs.active_session_id == id {
@@ -1238,7 +1264,9 @@ pub async fn share_session(
 
 /// 分享 token = 身份私钥对 (会话|时间) 签名取前 24 hex ⇒ 不可猜 (不依赖随机源)
 fn share_token(st: &AppState, session_id: &str, now: u64) -> String {
-    let sig = st.identity.sign(format!("share|{session_id}|{now}").as_bytes());
+    let sig = st
+        .identity
+        .sign(format!("share|{session_id}|{now}").as_bytes());
     sig.iter().take(12).map(|b| format!("{b:02x}")).collect()
 }
 
@@ -1364,7 +1392,11 @@ pub async fn set_settings(
             s.provider.trim(),
             req["api_key"].as_str().filter(|k| !k.trim().is_empty()),
             req["base_url"].as_str().filter(|b| !b.trim().is_empty()),
-            if s.model.trim().is_empty() { None } else { Some(s.model.trim()) },
+            if s.model.trim().is_empty() {
+                None
+            } else {
+                Some(s.model.trim())
+            },
         );
         let _ = bolloon_llm::config_store::save(&cfg);
     }
@@ -1441,7 +1473,11 @@ pub fn agent_owner_payload(agent_id: &str, agent_did: &str, owner_did: &str) -> 
 }
 
 /// 用**主人的密钥**给智能体签所属权 (2026-10-30 leo: 智能体会被用户签名)
-pub fn sign_agent_ownership(kp: &bolloon_p2p::KeyPair, agent_id: &str, agent_did: &str) -> (String, String) {
+pub fn sign_agent_ownership(
+    kp: &bolloon_p2p::KeyPair,
+    agent_id: &str,
+    agent_did: &str,
+) -> (String, String) {
     let owner = kp.did.as_str().to_string();
     let payload = agent_owner_payload(agent_id, agent_did, &owner);
     (owner, hex::encode(kp.sign(payload.as_bytes())))
@@ -1473,7 +1509,9 @@ pub async fn build_web_system(
     extra: &str,
 ) -> String {
     let home = bolloon_agent::home::BolloonHome::resolve();
-    let agent_key = agent.map(|a| a.id.clone()).unwrap_or_else(|| "bolloon".to_string());
+    let agent_key = agent
+        .map(|a| a.id.clone())
+        .unwrap_or_else(|| "bolloon".to_string());
     let project_root = agent
         .map(|a| a.workspace.trim().to_string())
         .filter(|w| !w.is_empty())
@@ -1496,7 +1534,14 @@ pub async fn build_web_system(
         } else {
             fs.profile.did.clone()
         };
-        (if name.is_empty() { "主人".to_string() } else { name }, did)
+        (
+            if name.is_empty() {
+                "主人".to_string()
+            } else {
+                name
+            },
+            did,
+        )
     };
     let owner_block = format!(
         "\n## 主人（全局事实，所有本机智能体都知道）\n- 昵称：{owner_name}\n- DID：{owner_did}\n- 所属权：本机**全部智能体**的归属由这个 DID 签名确认（DID 即所有权凭证）；你代表这位主人说话，也向这位主人负责。\n"
@@ -1553,7 +1598,11 @@ pub async fn build_web_system(
     let commitments_block = {
         let store = bolloon_agent::belief_tools::load_store();
         let text = store.render(BELIEF_PROMPT_CHARS);
-        if text.is_empty() { String::new() } else { format!("\n\n{text}") }
+        if text.is_empty() {
+            String::new()
+        } else {
+            format!("\n\n{text}")
+        }
     };
 
     // 计划进度 (2026-11-04): 心跳按信念挑出的下一步落在 todo.json, 这里每轮现读注入。
@@ -1562,7 +1611,11 @@ pub async fn build_web_system(
 
     let base = match docs {
         Ok(docs) => {
-            let ctx = bolloon_agent::prompt::AssembleContext { channel: "web", role: None, tool: None };
+            let ctx = bolloon_agent::prompt::AssembleContext {
+                channel: "web",
+                role: None,
+                tool: None,
+            };
             bolloon_agent::prompt::build_system_prompt(
                 &docs,
                 skills_index.as_deref(),
@@ -1614,8 +1667,6 @@ pub async fn build_web_system(
     );
     format!("{}{}", sys, click_context)
 }
-
-
 
 /// 能力与接口权限块（每个智能体都带，且带上它自己的门户地址）
 ///
@@ -1674,8 +1725,16 @@ fn capability_block(st: &AppState, agent: Option<&AgentView>) -> String {
 pub fn sync_identity_env(binding: &serde_json::Value) -> Option<std::path::PathBuf> {
     let did = binding.get("did")?.as_str()?.to_string();
     let phone = binding.get("phone")?.as_str()?.to_string();
-    let pk = binding.get("public_key").and_then(|x| x.as_str()).unwrap_or_default().to_string();
-    let sig = binding.get("signature").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let pk = binding
+        .get("public_key")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let sig = binding
+        .get("signature")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
     let ts = binding.get("ts_ms").and_then(|x| x.as_u64()).unwrap_or(0);
     let path = data_dir().join("identity.env");
     let body = format!(
@@ -1741,7 +1800,10 @@ fn intent_block(st: &AppState) -> String {
             out.push_str(&format!(" · 依据：{reason}"));
         }
         if !raw.is_empty() {
-            out.push_str(&format!(" · 画面：{}", raw.chars().take(60).collect::<String>()));
+            out.push_str(&format!(
+                " · 画面：{}",
+                raw.chars().take(60).collect::<String>()
+            ));
         }
         out.push('\n');
     }
@@ -1769,7 +1831,9 @@ fn private_identity_block(agent: Option<&AgentView>) -> String {
         ));
     }
     if !persona.is_empty() {
-        out.push_str(&format!("你的人格 / 职责（用户写的，按它说话）：\n{persona}\n"));
+        out.push_str(&format!(
+            "你的人格 / 职责（用户写的，按它说话）：\n{persona}\n"
+        ));
     }
     out.push('\n');
     out
@@ -1869,13 +1933,24 @@ pub async fn call_model_metered(
     // 与主聊天同一份 `model-bindings.json`; 之前把 group_id 当会话键 ⇒ session 级绑定恒不命中。
     let (session_key, agent_key) = econ_ctx
         .as_ref()
-        .map(|e| (e.session_id.clone().unwrap_or_default(), e.agent_id.clone().unwrap_or_default()))
+        .map(|e| {
+            (
+                e.session_id.clone().unwrap_or_default(),
+                e.agent_id.clone().unwrap_or_default(),
+            )
+        })
         .unwrap_or_default();
     let bound = crate::feature_pack::resolve_binding(&session_key, &agent_key).is_some();
     let (mut provider_id, mut model) = crate::feature_pack::apply_binding(
-        &session_key, &agent_key, provider_id.clone(), model.clone());
+        &session_key,
+        &agent_key,
+        provider_id.clone(),
+        model.clone(),
+    );
     if model.trim().is_empty() {
-        return Err(format!("{provider_id} 还没选模型 — 在「选择模型」里填一个模型名"));
+        return Err(format!(
+            "{provider_id} 还没选模型 — 在「选择模型」里填一个模型名"
+        ));
     }
 
     let mut full = Vec::with_capacity(messages.len() + 1);
@@ -1886,8 +1961,8 @@ pub async fn call_model_metered(
         tool_call_id: None,
         tool_calls: None,
         images: vec![],
-    reasoning_content: None,
-});
+        reasoning_content: None,
+    });
     full.extend(messages);
 
     // 2026-11-08: 旧「远端 DID 余额 ≤ 0 直接拒」的付费闸整体撤下。
@@ -1944,7 +2019,10 @@ pub async fn call_model_metered(
 
     // ── 路由 (2026-11-06 阶段0/1): 用真实调用账本决定要不要换 provider ──
     // 默认影子: 只记录"本会选谁"; enforce 打开后命中的会真切换, 失败自动回退。
-    let task_kind = econ_ctx.as_ref().map(|e| e.surface.clone()).filter(|x| !x.is_empty())
+    let task_kind = econ_ctx
+        .as_ref()
+        .map(|e| e.surface.clone())
+        .filter(|x| !x.is_empty())
         .unwrap_or_else(|| "chat".to_string());
     let available = llm.provider_ids();
     let shadow_pick = crate::router::pick_provider(&task_kind, &available);
@@ -1992,14 +2070,24 @@ pub async fn call_model_metered(
         elapsed_ms = t2.elapsed().as_millis() as u64;
     }
     // 成本: 按标价口径算 (真实 token 来自 GenerateResult.usage; 失败/未知单价如实标 false)
-    let (tin, tout) = res.as_ref().ok()
-        .map(|g| (g.usage.prompt_tokens as u64, g.usage.completion_tokens as u64))
+    let (tin, tout) = res
+        .as_ref()
+        .ok()
+        .map(|g| {
+            (
+                g.usage.prompt_tokens as u64,
+                g.usage.completion_tokens as u64,
+            )
+        })
         .unwrap_or((0, 0));
     let (cost_usd, cost_known) = crate::router::cost_of(&model, tin, tout);
-    crate::kernel_bus::record_event("agent", "route",
+    crate::kernel_bus::record_event(
+        "agent",
+        "route",
         &format!("旁路路由 {} → {}/{}", task_kind, provider_id, model),
         serde_json::json!({ "task": task_kind, "provider": provider_id,
-                            "model": model, "switched": switched, "fallback": fallback }));
+                            "model": model, "switched": switched, "fallback": fallback }),
+    );
     crate::router::record(serde_json::json!({
         "ts": chrono::Utc::now().timestamp_millis(), "task": task_kind,
         "provider": provider_id, "model": model, "ok": res.is_ok(),
@@ -2045,9 +2133,13 @@ pub async fn call_model_metered(
     if res.is_ok() {
         crate::feature_pack::charge_route_call(&format!("metered|{task_kind}|{provider_id}"));
     } else if let Err(e) = &res {
-        crate::feature_pack::record_error(&provider_id, &e.to_string(), serde_json::json!({
-            "task": task_kind, "group": session_key, "agent": agent_key, "model": model,
-        }));
+        crate::feature_pack::record_error(
+            &provider_id,
+            &e.to_string(),
+            serde_json::json!({
+                "task": task_kind, "group": session_key, "agent": agent_key, "model": model,
+            }),
+        );
     }
 
     res.map(|g| g.content)
@@ -2148,7 +2240,11 @@ pub async fn roster_of(st: &AppState, gid: &str) -> RosterTerm {
         if let Some(sid) = term.roster.sheriff.clone() {
             fs.sheriffs.insert(
                 gid.to_string(),
-                SheriffTerm { agent_id: sid, elected_at_ms: now, term_days: SHERIFF_TERM_DAYS },
+                SheriffTerm {
+                    agent_id: sid,
+                    elected_at_ms: now,
+                    term_days: SHERIFF_TERM_DAYS,
+                },
             );
         }
         fs.save(&data_dir());
@@ -2226,7 +2322,11 @@ pub async fn reply_with_model(
             .collect();
         ws.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         if !ws.is_empty() {
-            let top: Vec<String> = ws.iter().take(3).map(|(k, v)| format!("{k}({v:.2})")).collect();
+            let top: Vec<String> = ws
+                .iter()
+                .take(3)
+                .map(|(k, v)| format!("{k}({v:.2})"))
+                .collect();
             system_prompt.push_str(&format!(
                 "\n\n【当前意图权重】(由真实反馈累积: 赞/点开抬, 踩/忽略压) {} —— 相关内容优先, 无关的不硬凑。",
                 top.join(" / ")
@@ -2240,7 +2340,11 @@ pub async fn reply_with_model(
         let last = msgs.len().saturating_sub(1);
         for (i, m) in msgs[start..].iter().enumerate() {
             let idx = start + i;
-            let role = if m.role == "assistant" { "assistant" } else { "user" };
+            let role = if m.role == "assistant" {
+                "assistant"
+            } else {
+                "user"
+            };
             // 调用方可能已经把本轮用户输入写进历史 → 去重，避免同一句发两遍
             if idx == last && role == "user" && m.content == text {
                 continue;
@@ -2252,8 +2356,8 @@ pub async fn reply_with_model(
                 tool_call_id: None,
                 tool_calls: None,
                 images: vec![],
-    reasoning_content: None,
-});
+                reasoning_content: None,
+            });
         }
     }
     messages.push(ChatMessage {
@@ -2263,8 +2367,8 @@ pub async fn reply_with_model(
         tool_call_id: None,
         tool_calls: None,
         images: vec![],
-    reasoning_content: None,
-});
+        reasoning_content: None,
+    });
     // 私聊一轮 = 一个根意图（同一条消息内的重试/多轮共享它）
     call_model_metered(
         st,
@@ -2295,7 +2399,10 @@ pub enum StreamChunk {
     /// 阶段（第几轮 / 哪个工具 / 结果如何）—— 只进界面上的「阶段」卡片, 不冒充 AI 的话。
     /// 2026-11-05: 以前只在文档注释里写了 stage 事件, 实现没有 ⇒ 卡片永远拿不到数据。
     Stage(String),
-    Done { reply: String, stop: String },
+    Done {
+        reply: String,
+        stop: String,
+    },
 }
 
 /// 自主 agent 对话: 跑 KernelLoop (工具调用 + 自问自答持续推进 + 目标 review 对齐初始意图)
@@ -2367,8 +2474,12 @@ impl bolloon_agent::kernel_loop::LoopObserver for StageObserver {
 
     async fn on_tool_begin(&self, turn: u32, call: &bolloon_agent::ToolCall) {
         let label = format!("第 {turn} 轮 · 调用 {} ", call.name);
-        crate::kernel_bus::record_event("agent", "step", &label,
-            serde_json::json!({ "tool": call.name, "session": self.session_id }));
+        crate::kernel_bus::record_event(
+            "agent",
+            "step",
+            &label,
+            serde_json::json!({ "tool": call.name, "session": self.session_id }),
+        );
         self.emit(format!("{} · 开始", call.name));
     }
 
@@ -2382,29 +2493,50 @@ impl bolloon_agent::kernel_loop::LoopObserver for StageObserver {
         // 2026-11-08 复核: 同时把结果原文显示在「执行步骤」里并进 Kernel 执行核事件管道,
         // 网页与终端读的是同一份 kernel-events.jsonl / context-slots.json。
         // 只有「Harness 放行且工具真的返回了输出」才回灌; 被拒的命令绝不伪装成执行结果。
-        let output = if outcome.denied.is_some() { "" } else {
-            outcome.result.as_ref()
-                .map(|r| r.output.trim()).filter(|s| !s.is_empty()).unwrap_or("")
+        let output = if outcome.denied.is_some() {
+            ""
+        } else {
+            outcome
+                .result
+                .as_ref()
+                .map(|r| r.output.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("")
         };
         if !output.is_empty() {
             let clipped: String = output.chars().take(2000).collect();
             let ok = outcome.result.as_ref().map(|r| r.ok).unwrap_or(false);
-            crate::world_interact::push_tool_context(&call.name,
-                &format!("[{} 执行结果] {}", call.name, clipped));
-            crate::kernel_bus::record_event("agent", "tool_result",
+            crate::world_interact::push_tool_context(
+                &call.name,
+                &format!("[{} 执行结果] {}", call.name, clipped),
+            );
+            crate::kernel_bus::record_event(
+                "agent",
+                "tool_result",
                 &format!("{} · 结果回上下文", call.name),
                 serde_json::json!({ "tool": call.name, "session": self.session_id, "ok": ok,
-                                    "output": clipped.chars().take(400).collect::<String>() }));
+                                    "output": clipped.chars().take(400).collect::<String>() }),
+            );
         }
-        let preview: String = if output.is_empty() { String::new() } else {
-            let one_line: String = output.chars().take(120)
-                .map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
+        let preview: String = if output.is_empty() {
+            String::new()
+        } else {
+            let one_line: String = output
+                .chars()
+                .take(120)
+                .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+                .collect();
             format!(" → {one_line}")
         };
         let label = if outcome.denied.is_some() {
             format!("{} · 被拒", call.name)
         } else if outcome.elapsed_ms >= 1000 {
-            format!("{} · 完成（{:.1}s）{}", call.name, outcome.elapsed_ms as f64 / 1000.0, preview)
+            format!(
+                "{} · 完成（{:.1}s）{}",
+                call.name,
+                outcome.elapsed_ms as f64 / 1000.0,
+                preview
+            )
         } else {
             format!("{} · 完成{}", call.name, preview)
         };
@@ -2500,8 +2632,8 @@ pub async fn reply_with_agent_cfg(
         tool_call_id: None,
         tool_calls: None,
         images: vec![],
-    reasoning_content: None,
-});
+        reasoning_content: None,
+    });
 
     // 解析 provider + model (与 call_model 同逻辑)
     let (ui_provider, ui_model) = {
@@ -2527,8 +2659,8 @@ pub async fn reply_with_agent_cfg(
     // 每会话/每智能体模型绑定优先于全局设置 (下次打开沿用上次)。
     // 2026-11-08 修复: agent_id 之前恒传 "", 智能体级绑定永远不生效。
     let agent_key = agent.map(|a| a.id.as_str()).unwrap_or("");
-    let (wanted, ui_model) = crate::feature_pack::apply_binding(
-        &opts.session_id, agent_key, wanted, ui_model);
+    let (wanted, ui_model) =
+        crate::feature_pack::apply_binding(&opts.session_id, agent_key, wanted, ui_model);
     let provider_id = if wanted.is_empty() {
         llm.provider_ids().into_iter().next().ok_or_else(|| {
             "还没有可用的模型供应商 — 点右上角模型/「选择模型」选一家并填 API Key \
@@ -2551,7 +2683,9 @@ pub async fn reply_with_agent_cfg(
             .unwrap_or_default()
     };
     if model.trim().is_empty() {
-        return Err(format!("{provider_id} 还没选模型 — 在「选择模型」里填一个模型名"));
+        return Err(format!(
+            "{provider_id} 还没选模型 — 在「选择模型」里填一个模型名"
+        ));
     }
 
     // 工具 + 自主循环 (Harness 九步门控 + 目标 review 对齐初始意图)
@@ -2581,7 +2715,8 @@ pub async fn reply_with_agent_cfg(
             opts.max_secs.saturating_mul(1000),
             cancel.clone(),
             full_access,
-        ).await
+        )
+        .await
     } else {
         bolloon_agent::builtin_tools::builtin_harness_with_ports(
             opts.tool_budget,
@@ -2625,7 +2760,11 @@ pub async fn reply_with_agent_cfg(
         // 显式绑定优先于 enforce 路由, 不让账本把绑定的 provider/model 换掉
         bound: crate::feature_pack::resolve_binding(&opts.session_id, agent_key).is_some(),
     });
-    let reviewer = Arc::new(LlmGoalReviewer::new(llm.clone(), provider_id.clone(), model.clone()));
+    let reviewer = Arc::new(LlmGoalReviewer::new(
+        llm.clone(),
+        provider_id.clone(),
+        model.clone(),
+    ));
     let loop_ = KernelLoop::new(strategy, harness)
         .with_limits(opts.max_turns, opts.max_retries)
         .with_goal_review(reviewer)
@@ -2660,7 +2799,10 @@ pub async fn reply_with_agent_cfg(
     // 观察者链: 只挂经济计量旁路。界面上的"想法/动作"由模型真实的流式增量给出,
     // 不再从工具回调拼进度文案 (那是把我们的措辞冒充成 AI 的话)。
     // 2026-11-04: 好友只读指挥额外挂一个**工具级审计**观察者 (与 UI/经济观察者互不干扰)
-    let friend_audit = opts.audit_sink.clone().map(|sink| FriendAuditObserver { sink });
+    let friend_audit = opts
+        .audit_sink
+        .clone()
+        .map(|sink| FriendAuditObserver { sink });
     // 2026-11-05 (用户: 流光卡片会突然消失): 阶段得**当场推给前端**, 不能只落在 ChatRuns 里等轮询。
     let stage_obs = StageObserver {
         runs: st.chat_runs.clone(),
@@ -2680,13 +2822,18 @@ pub async fn reply_with_agent_cfg(
     });
     // 2026-11-04 (bug 7): 这一轮开始就发心跳 (thinking) —— 心跳注册表以前在 web 里从不被调用
     {
-        let peer = agent.map(|a| a.id.clone()).unwrap_or_else(|| "local".to_string());
-        st.heartbeats.lock().await.beat(bolloon_agent::heartbeat::Heartbeat {
-            peer_id: peer,
-            ts_ms: chrono::Utc::now().timestamp_millis() as u64,
-            pid: std::process::id(),
-            state: bolloon_agent::heartbeat::HeartbeatState::Thinking,
-        });
+        let peer = agent
+            .map(|a| a.id.clone())
+            .unwrap_or_else(|| "local".to_string());
+        st.heartbeats
+            .lock()
+            .await
+            .beat(bolloon_agent::heartbeat::Heartbeat {
+                peer_id: peer,
+                ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+                pid: std::process::id(),
+                state: bolloon_agent::heartbeat::HeartbeatState::Thinking,
+            });
     }
     // 2026-11-04: 阶段真的写进 ChatRuns (以前 `stage()` 全仓零调用 ⇒ 界面/刷新看到的 stages 永远是空)
     st.chat_runs.stage(session_id, "调用模型（工具循环）");
@@ -2716,16 +2863,22 @@ pub async fn reply_with_agent_cfg(
             return Err(format!("agent 循环失败: {e}"));
         }
     };
-    st.chat_runs.stage(session_id, &format!("完成 {} 步", run.steps.len()));
+    st.chat_runs
+        .stage(session_id, &format!("完成 {} 步", run.steps.len()));
     // 回合收尾: 心跳回到 idle (仍算"活着", 只是不在思考) —— 群聊 thinking 点会随之熄灭
     {
-        let peer = agent.map(|a| a.id.clone()).unwrap_or_else(|| "local".to_string());
-        st.heartbeats.lock().await.beat(bolloon_agent::heartbeat::Heartbeat {
-            peer_id: peer,
-            ts_ms: chrono::Utc::now().timestamp_millis() as u64,
-            pid: std::process::id(),
-            state: bolloon_agent::heartbeat::HeartbeatState::Idle,
-        });
+        let peer = agent
+            .map(|a| a.id.clone())
+            .unwrap_or_else(|| "local".to_string());
+        st.heartbeats
+            .lock()
+            .await
+            .beat(bolloon_agent::heartbeat::Heartbeat {
+                peer_id: peer,
+                ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+                pid: std::process::id(),
+                state: bolloon_agent::heartbeat::HeartbeatState::Idle,
+            });
     }
     {
         let tools_used: u32 = run.steps.iter().map(|s| s.tool_calls.len() as u32).sum();
@@ -2757,10 +2910,12 @@ pub async fn reply_with_agent_cfg(
         .map(|r| r.content.trim().to_string())
         .filter(|c| !c.is_empty())
         .or_else(|| {
-            last_resp.and_then(|r| r.reasoning_content.clone()).map(|rc| {
-                let t: String = rc.trim().chars().take(1200).collect();
-                format!("（这一轮模型只给了思考、没有正文；以下是它的原始思考）\n\n{t}")
-            })
+            last_resp
+                .and_then(|r| r.reasoning_content.clone())
+                .map(|rc| {
+                    let t: String = rc.trim().chars().take(1200).collect();
+                    format!("（这一轮模型只给了思考、没有正文；以下是它的原始思考）\n\n{t}")
+                })
         })
         .unwrap_or_else(|| {
             format!(
@@ -2829,7 +2984,11 @@ impl WebStrategy {
         let key = if params.tools.is_empty() {
             let params_json = serde_json::to_string(params).unwrap_or_default();
             Some(crate::feature_pack::request_cache_key(
-                provider_id, &params.model, &self.session_id, &params_json))
+                provider_id,
+                &params.model,
+                &self.session_id,
+                &params_json,
+            ))
         } else {
             crate::feature_pack::cache_skip();
             None
@@ -2839,12 +2998,19 @@ impl WebStrategy {
                 if let Some(tx) = &self.sink {
                     let _ = tx.try_send(StreamChunk::Delta(hit.clone()));
                 }
-                crate::kernel_bus::record_event("agent", "cache", "幂等响应命中",
+                crate::kernel_bus::record_event(
+                    "agent",
+                    "cache",
+                    "幂等响应命中",
                     serde_json::json!({ "provider": provider_id, "model": params.model,
-                                        "session": self.session_id }));
+                                        "session": self.session_id }),
+                );
                 return Ok(GenerateResult {
-                    content: hit, tool_calls: vec![], finish_reason: "cache_hit".into(),
-                    usage: Default::default(), model: params.model.clone(),
+                    content: hit,
+                    tool_calls: vec![],
+                    finish_reason: "cache_hit".into(),
+                    usage: Default::default(),
+                    model: params.model.clone(),
                     reasoning_content: None,
                 });
             }
@@ -2856,29 +3022,44 @@ impl WebStrategy {
                 let fut = self.llm.generate_streaming_full(
                     provider_id,
                     params.clone(),
-                    move |piece| { let _ = t.try_send(StreamChunk::Thought(piece.to_string())); },
-                    move |piece| { let _ = d.try_send(StreamChunk::Delta(piece.to_string())); },
+                    move |piece| {
+                        let _ = t.try_send(StreamChunk::Thought(piece.to_string()));
+                    },
+                    move |piece| {
+                        let _ = d.try_send(StreamChunk::Delta(piece.to_string()));
+                    },
                 );
                 self.cancellable(fut).await
             }
-            None => self.cancellable(self.llm.generate(provider_id, params.clone())).await,
+            None => {
+                self.cancellable(self.llm.generate(provider_id, params.clone()))
+                    .await
+            }
         };
         match &r {
             Ok(g) => {
                 // 只有成功响应才计一次路由调度费 (缓存命中 / 失败都不计费)
-                crate::feature_pack::charge_route_call(
-                    &format!("{}|{}|{}", self.task, provider_id, params.model));
+                crate::feature_pack::charge_route_call(&format!(
+                    "{}|{}|{}",
+                    self.task, provider_id, params.model
+                ));
                 if let Some(k) = key.as_deref() {
                     if crate::feature_pack::should_cache(
-                        &g.content, g.tool_calls.len(), &g.finish_reason) {
+                        &g.content,
+                        g.tool_calls.len(),
+                        &g.finish_reason,
+                    ) {
                         crate::feature_pack::cache_store_by_key(k, &g.content);
                     }
                 }
             }
             Err(e) => crate::feature_pack::record_error(
-                provider_id, &e.to_string(), serde_json::json!({
+                provider_id,
+                &e.to_string(),
+                serde_json::json!({
                     "task": self.task, "session": self.session_id, "model": params.model,
-                })),
+                }),
+            ),
         }
         r
     }
@@ -2896,7 +3077,13 @@ impl WebStrategy {
         let mut switched = false;
         if self.router.is_enforce() && !self.bound {
             if let Some(pick) = shadow_pick.clone() {
-                if pick != pid && self.models.get(&pick).map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                if pick != pid
+                    && self
+                        .models
+                        .get(&pick)
+                        .map(|m| !m.trim().is_empty())
+                        .unwrap_or(false)
+                {
                     p.model = self.models[&pick].clone();
                     pid = pick;
                     switched = true;
@@ -2921,15 +3108,25 @@ impl WebStrategy {
             out = self.raw_call(&pid, &p).await;
             latency_ms = t2.elapsed().as_millis() as u64;
         }
-        let (tin, tout) = out.as_ref().ok()
-            .map(|g| (g.usage.prompt_tokens as u64, g.usage.completion_tokens as u64))
+        let (tin, tout) = out
+            .as_ref()
+            .ok()
+            .map(|g| {
+                (
+                    g.usage.prompt_tokens as u64,
+                    g.usage.completion_tokens as u64,
+                )
+            })
             .unwrap_or((0, 0));
         let (cost_usd, cost_known) = crate::router::cost_of(&p.model, tin, tout);
         // 路由决策也进 Kernel 机制核 A 的事件面 (网页/终端读同一份); Kernel 只记, 不做选择
-        crate::kernel_bus::record_event("agent", "route",
+        crate::kernel_bus::record_event(
+            "agent",
+            "route",
             &format!("路由决策 {} → {}/{}", self.task, pid, p.model),
             serde_json::json!({ "task": self.task, "provider": pid, "model": p.model,
-                                "switched": switched, "fallback": fallback, "ok": out.is_ok() }));
+                                "switched": switched, "fallback": fallback, "ok": out.is_ok() }),
+        );
         crate::router::record(serde_json::json!({
             "ts": chrono::Utc::now().timestamp_millis(),
             "task": self.task,
@@ -2970,10 +3167,20 @@ impl LoopStrategy for WebStrategy {
                 Err(e) => {
                     last = e.to_string();
                     let low = last.to_lowercase();
-                    let transient = ["timeout", "超时", "timed out", "connection", "connect",
-                                     "502", "503", "504", "rate limit", "429"]
-                        .iter()
-                        .any(|k| low.contains(k));
+                    let transient = [
+                        "timeout",
+                        "超时",
+                        "timed out",
+                        "connection",
+                        "connect",
+                        "502",
+                        "503",
+                        "504",
+                        "rate limit",
+                        "429",
+                    ]
+                    .iter()
+                    .any(|k| low.contains(k));
                     if !transient {
                         return Err(last);
                     }
@@ -3003,11 +3210,15 @@ async fn remember_user(st: &AppState, text: &str, session_id: Option<&str>) {
         .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
     {
         let mut msgs = st.messages.lock().await;
-        msgs.push(ChatMessageView { role: "user".into(), content: text.to_string(), name: None });
+        msgs.push(ChatMessageView {
+            role: "user".into(),
+            content: text.to_string(),
+            name: None,
+        });
     }
-    let _ = st
-        .session_store
-        .append(&bolloon_agent::SessionEvent::User { text: text.to_string() });
+    let _ = st.session_store.append(&bolloon_agent::SessionEvent::User {
+        text: text.to_string(),
+    });
     let mut fs = st.forge.lock().await;
     let sid = match session_id {
         Some(s) => Some(s.to_string()),
@@ -3043,7 +3254,11 @@ async fn remember_turn(
 ) {
     let mut msgs = st.messages.lock().await;
     if !user_saved {
-        msgs.push(ChatMessageView { role: "user".into(), content: text.to_string(), name: None });
+        msgs.push(ChatMessageView {
+            role: "user".into(),
+            content: text.to_string(),
+            name: None,
+        });
     }
     // 名字必须是真的那个智能体（小黑/小宝…），不能用 "AI" 占位 ——
     // 眼镜面板靠它区分"谁回的"，占位符会让三条回复看起来是同一个人
@@ -3053,13 +3268,15 @@ async fn remember_turn(
         name: who.map(|w| w.to_string()),
     });
     if !user_saved {
-        let _ = st
-            .session_store
-            .append(&bolloon_agent::SessionEvent::User { text: text.to_string() });
+        let _ = st.session_store.append(&bolloon_agent::SessionEvent::User {
+            text: text.to_string(),
+        });
     }
     let _ = st
         .session_store
-        .append(&bolloon_agent::SessionEvent::Assistant { text: reply.to_string() });
+        .append(&bolloon_agent::SessionEvent::Assistant {
+            text: reply.to_string(),
+        });
 
     // 2026-10-30 (用户: 重启后记录消失): 会话自己的 messages 也要写并落盘。
     // 之前只写 st.messages + default.jsonl, 侧栏里每个会话都是空的, 重启就像"记录没了"。
@@ -3090,7 +3307,13 @@ async fn remember_turn(
                     time: now,
                     streaming: false,
                     // 阶段随回答一起落盘 (最新 5 条) ⇒ 刷新/切会话/syncState 之后卡片还在
-                    stages: stages.iter().rev().take(STAGES_IN_HISTORY).rev().cloned().collect(),
+                    stages: stages
+                        .iter()
+                        .rev()
+                        .take(STAGES_IN_HISTORY)
+                        .rev()
+                        .cloned()
+                        .collect(),
                 });
                 if sess.title == "新对话" && !text.trim().is_empty() {
                     sess.title = text.trim().chars().take(18).collect();
@@ -3100,7 +3323,6 @@ async fn remember_turn(
         }
     }
 }
-
 
 /// 中止/失败的回答：**只写会话历史**（界面留痕），**不写** `st.messages`（不进下一轮上下文）。
 ///
@@ -3121,14 +3343,24 @@ async fn remember_display_only(
     };
     let Some(sid) = sid else { return };
     if let Some(sess) = fs.sessions.iter_mut().find(|s| s.id == sid) {
-        let text = if reply.trim().is_empty() { note.to_string() } else { reply.to_string() };
+        let text = if reply.trim().is_empty() {
+            note.to_string()
+        } else {
+            reply.to_string()
+        };
         sess.messages.push(UiMessage {
             role: "assistant".into(),
             text,
             images: vec![],
             time: chrono::Local::now().format("%H:%M").to_string(),
             streaming: false,
-            stages: stages.iter().rev().take(STAGES_IN_HISTORY).rev().cloned().collect(),
+            stages: stages
+                .iter()
+                .rev()
+                .take(STAGES_IN_HISTORY)
+                .rev()
+                .cloned()
+                .collect(),
         });
     }
     fs.save(&data_dir());
@@ -3285,7 +3517,7 @@ impl ChatRuns {
         for (sid, r) in m.iter_mut() {
             if sid.starts_with(prefix) && r.running {
                 r.cancel.store(true, Ordering::SeqCst);
-                r.running = false;   // 已停的不再重复计入 (再点一次停应回 0)
+                r.running = false; // 已停的不再重复计入 (再点一次停应回 0)
                 n += 1;
             }
         }
@@ -3308,7 +3540,11 @@ impl ChatRuns {
         match m.get(sid) {
             Some(r) => {
                 // 运行中看实时, 收尾后看 last_stages —— 谁非空用谁, 取的都是**尾部**
-                let src = if r.stages.is_empty() { &r.last_stages } else { &r.stages };
+                let src = if r.stages.is_empty() {
+                    &r.last_stages
+                } else {
+                    &r.stages
+                };
                 let n = STAGES_IN_HISTORY.min(src.len());
                 src[src.len() - n..].to_vec()
             }
@@ -3321,23 +3557,27 @@ impl ChatRuns {
         let m = self.runs.lock().unwrap_or_else(|e| e.into_inner());
         match m.get(sid) {
             Some(r) => {
-            // 只回最新 5 条: 折叠栏不再越滚越长, 最新那条永远在视野里 (leo 2026-11-04)。
-            // 收尾后 stages 已清空 ⇒ 回 last_stages 的尾部, 不返回空数组。
-            let src = if r.stages.is_empty() { &r.last_stages } else { &r.stages };
-            let n = STAGES_IN_HISTORY.min(src.len());
-            let tail = &src[src.len() - n..];
-            serde_json::json!({
-                "running": r.running,
-                "text": r.text,
-                "stages": tail,
-                "stage": r.stages.last().cloned().unwrap_or_default(),
-                "stop": r.stop,
-                "turns": r.turns,
-                "tools": r.tools,
-                "elapsed_ms": if r.started_ms == 0 { 0 } else {
-                    (chrono::Utc::now().timestamp_millis() as u64).saturating_sub(r.started_ms)
-                },
-            })
+                // 只回最新 5 条: 折叠栏不再越滚越长, 最新那条永远在视野里 (leo 2026-11-04)。
+                // 收尾后 stages 已清空 ⇒ 回 last_stages 的尾部, 不返回空数组。
+                let src = if r.stages.is_empty() {
+                    &r.last_stages
+                } else {
+                    &r.stages
+                };
+                let n = STAGES_IN_HISTORY.min(src.len());
+                let tail = &src[src.len() - n..];
+                serde_json::json!({
+                    "running": r.running,
+                    "text": r.text,
+                    "stages": tail,
+                    "stage": r.stages.last().cloned().unwrap_or_default(),
+                    "stop": r.stop,
+                    "turns": r.turns,
+                    "tools": r.tools,
+                    "elapsed_ms": if r.started_ms == 0 { 0 } else {
+                        (chrono::Utc::now().timestamp_millis() as u64).saturating_sub(r.started_ms)
+                    },
+                })
             }
             None => serde_json::json!({
                 "running": false, "text": "", "stages": [], "stage": "", "stop": "",
@@ -3385,7 +3625,11 @@ async fn chat_history(st: &AppState, session_id: &str, text: &str) -> Vec<ChatMe
         let last = from_session.len().saturating_sub(1);
         for (i, m) in from_session[start..].iter().enumerate() {
             let idx = start + i;
-            let role = if m.role == "assistant" { "assistant" } else { "user" };
+            let role = if m.role == "assistant" {
+                "assistant"
+            } else {
+                "user"
+            };
             if idx == last && role == "user" && m.text == text {
                 continue;
             }
@@ -3414,7 +3658,11 @@ async fn chat_history(st: &AppState, session_id: &str, text: &str) -> Vec<ChatMe
     let last = msgs.len().saturating_sub(1);
     for (i, m) in msgs[start..].iter().enumerate() {
         let idx = start + i;
-        let role = if m.role == "assistant" { "assistant" } else { "user" };
+        let role = if m.role == "assistant" {
+            "assistant"
+        } else {
+            "user"
+        };
         if idx == last && role == "user" && m.content == text {
             continue;
         }
@@ -3444,7 +3692,8 @@ pub async fn chat(
     // 用户这条立刻落盘 (切会话/刷新不再丢气泡), 回答收尾时只补 assistant
     remember_user(&st, &text, req["session_id"].as_str()).await;
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let reply = match reply_with_agent_stages(&st, &text, agent.as_ref(), &sid, None, cancel).await {
+    let reply = match reply_with_agent_stages(&st, &text, agent.as_ref(), &sid, None, cancel).await
+    {
         Ok(r) => r,
         Err(e) => e, // 错误也是"回答"：界面要能看到到底缺什么
     };
@@ -3506,7 +3755,9 @@ pub async fn chat_stream(
         let (reply, stop, ok) = match run {
             Ok(r) if !aborted => (r, "finished".to_string(), true),
             Ok(r) => (r, "aborted".to_string(), false),
-            Err(e) if aborted || e.contains("已停止") => ("（已停止）".to_string(), "aborted".to_string(), false),
+            Err(e) if aborted || e.contains("已停止") => {
+                ("（已停止）".to_string(), "aborted".to_string(), false)
+            }
             Err(e) => (e, "failed".to_string(), false),
         };
         // 阶段必须在 finish() 清空 ChatRuns 之前取走 —— 否则落盘的就是空数组
@@ -3526,18 +3777,32 @@ pub async fn chat_stream(
             )
             .await;
         } else {
-            let note = if stop == "aborted" { "（已停止）" } else { "（本轮没有完成）" };
+            let note = if stop == "aborted" {
+                "（已停止）"
+            } else {
+                "（本轮没有完成）"
+            };
             remember_display_only(&st2, &reply, Some(&sid2), &run_stages, note).await;
         }
         // 私聊收尾同样沉淀 (skills/意图/判断力/记忆) — 只在成功轮
         if ok {
-            settle_turn(&st2, "chat", &text, &reply, agent.as_ref().map(|a| a.id.as_str())).await;
+            settle_turn(
+                &st2,
+                "chat",
+                &text,
+                &reply,
+                agent.as_ref().map(|a| a.id.as_str()),
+            )
+            .await;
         }
         st2.chat_runs.finish(&sid2, &stop, &reply);
         // 正文已经**真流式**吐过了 (模型每吐一段就推一段), 这里只做收尾:
         // `done` 带最终全文, 前端以它为准 (重试/补齐时不会重复也不残缺)。
         let _ = tx
-            .send(StreamChunk::Done { reply: reply.clone(), stop })
+            .send(StreamChunk::Done {
+                reply: reply.clone(),
+                stop,
+            })
             .await;
     });
 
@@ -3645,12 +3910,18 @@ pub async fn room(
         .unwrap_or(false);
     let agent_names: HashMap<String, String> = {
         let fs = st.forge.lock().await;
-        fs.agents.iter().map(|a| (a.id.clone(), a.name.clone())).collect()
+        fs.agents
+            .iter()
+            .map(|a| (a.id.clone(), a.name.clone()))
+            .collect()
     };
     let msgs: Vec<serde_json::Value> = entries
         .iter()
         .map(|m| {
-            let who = agent_names.get(&m.from).cloned().unwrap_or_else(|| m.from.clone());
+            let who = agent_names
+                .get(&m.from)
+                .cloned()
+                .unwrap_or_else(|| m.from.clone());
             serde_json::json!({
                 "agent_id": m.from,
                 "agent_name": who,
@@ -3671,7 +3942,11 @@ pub async fn room(
     // 于是"没进群的人"也带状态/警徽, 看起来像推举错了人。
     let member_ids: Vec<String> = {
         let fs = st.forge.lock().await;
-        let chosen = fs.room_participants.get(&active).cloned().unwrap_or_default();
+        let chosen = fs
+            .room_participants
+            .get(&active)
+            .cloned()
+            .unwrap_or_default();
         if chosen.is_empty() {
             fs.agents.iter().map(|a| a.id.clone()).collect()
         } else {
@@ -3711,7 +3986,10 @@ pub async fn room(
     };
     let elected = {
         let fs = st.forge.lock().await;
-        fs.room_last_speaker.get(&active).cloned().unwrap_or_default()
+        fs.room_last_speaker
+            .get(&active)
+            .cloned()
+            .unwrap_or_default()
     };
     // 警长 = **本群参与者里**的任期选举（三天一换）。不再读跨群缓存:
     // 缓存键虽按群分, 但选的是"全部智能体" ⇒ 出现了「别的群的/没进群的人当警长」。
@@ -3733,7 +4011,11 @@ pub async fn room(
     // 议程参与者 = 这个群真正选中的成员（没选过 ⇒ 全部内部智能体）
     let participants: Vec<String> = {
         let fs = st.forge.lock().await;
-        let chosen = fs.room_participants.get(&active).cloned().unwrap_or_default();
+        let chosen = fs
+            .room_participants
+            .get(&active)
+            .cloned()
+            .unwrap_or_default();
         if chosen.is_empty() {
             fs.agents.iter().map(|a| a.id.clone()).collect()
         } else {
@@ -3807,7 +4089,9 @@ pub async fn room_new(
         fs.active_group = existing.id.clone();
         fs.room_closed.retain(|x| x != &existing.id);
         fs.save(&data_dir());
-        return Json(serde_json::json!({ "id": existing.id, "name": existing.name, "address": existing.address, "reused": true }));
+        return Json(
+            serde_json::json!({ "id": existing.id, "name": existing.name, "address": existing.address, "reused": true }),
+        );
     }
     let info = st.groups.create_group(
         &id,
@@ -3822,7 +4106,9 @@ pub async fn room_new(
         fs.room_closed.retain(|x| x != &info.id);
         fs.save(&data_dir());
     }
-    Json(serde_json::json!({ "id": info.id, "name": info.name, "address": info.address, "reused": false }))
+    Json(
+        serde_json::json!({ "id": info.id, "name": info.name, "address": info.address, "reused": false }),
+    )
 }
 
 /// 群内推举候选: 若「发起交流」时选定了参与者 (room_participants), 只在其中挑 (选谁谁接话);
@@ -3866,17 +4152,16 @@ pub async fn elect_group_targets(
     let agents = room_candidate_agents(&fs, gid);
     let cursor = st.groups.history(gid, 0).map(|h| h.len()).unwrap_or(0);
     let addressed = parse_addressed(text);
-    let mut picked = crate::room_bus::elect_from_roster(
-        &agents,
-        &addressed,
-        &roster,
-        cursor,
-        limit,
-    );
+    let mut picked =
+        crate::room_bus::elect_from_roster(&agents, &addressed, &roster, cursor, limit);
     // 智能体数量少（≤3）且没人被点名 ⇒ 选中的成员**一起接话**（并发, leo 2026-10-30）。
     // 人多时仍按组织名单/限额轮转, 不刷屏。
     if addressed.is_empty() && agents.len() <= crate::room_bus::SMALL_GROUP_ALL_REPLY {
-        picked = agents.iter().take(limit.max(agents.len())).cloned().collect();
+        picked = agents
+            .iter()
+            .take(limit.max(agents.len()))
+            .cloned()
+            .collect();
     }
     // 商议中枢推举的 speaker 命中且该说话时, 让它排在最前 (不改变"谁能说话"的范围)
     if let Some(sp) = speaker {
@@ -3964,21 +4249,41 @@ pub async fn pool_infer(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let from_did = req["from_did"].as_str().unwrap_or_default().trim().to_string();
-    let to_did = req["to_did"].as_str().unwrap_or_default().trim().to_string();
-    let gid = req["group_id"].as_str().unwrap_or_default().trim().to_string();
-    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
+    let from_did = req["from_did"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let to_did = req["to_did"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let gid = req["group_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let agent_id = req["agent_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let trigger = req["trigger"].as_str().unwrap_or_default().to_string();
     let ts = req["ts_ms"].as_u64().unwrap_or(0);
     let sig_hex = req["sig"].as_str().unwrap_or_default().trim().to_string();
     if from_did.is_empty() || sig_hex.is_empty() || ts == 0 || trigger.trim().is_empty() {
-        return Json(serde_json::json!({ "ok": false, "error": "缺 from_did / trigger / ts_ms / sig" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "缺 from_did / trigger / ts_ms / sig" }),
+        );
     }
     if to_did != st.identity.did.as_str() {
         return Json(serde_json::json!({ "ok": false, "error": "收件人不是本机 — 拒绝借用" }));
     }
     if now_ms().abs_diff(ts) > 180_000 {
-        return Json(serde_json::json!({ "ok": false, "error": "签名时间戳过期 (>180s): 可能被重放" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "签名时间戳过期 (>180s): 可能被重放" }),
+        );
     }
     let expect = pool_message(&from_did, &to_did, &gid, &agent_id, &trigger, ts);
     let ok_sig = hex::decode(&sig_hex)
@@ -4026,7 +4331,10 @@ pub async fn pool_infer(
             .map(|c| c.calls)
             .sum::<u32>();
         let cap = pool_allowance(POOL_DAILY_CALLS, borrowed, served);
-        let e = fs.pool_calls.entry(from_did.clone()).or_insert((today.clone(), 0));
+        let e = fs
+            .pool_calls
+            .entry(from_did.clone())
+            .or_insert((today.clone(), 0));
         if e.0 != today {
             *e = (today.clone(), 0);
         }
@@ -4116,7 +4424,10 @@ async fn record_pool_credit(
     let mut econ_recorded = false;
     if let Some(econ) = st.econ.get().filter(|e| e.enabled()) {
         let c = bolloon_econ::Contribution {
-            id: format!("pool-{now}-{}", &st.identity.did.as_str()[..12.min(st.identity.did.as_str().len())]),
+            id: format!(
+                "pool-{now}-{}",
+                &st.identity.did.as_str()[..12.min(st.identity.did.as_str().len())]
+            ),
             contributor: st.identity.did.as_str().to_string(),
             kind: bolloon_econ::ContributionKind::LocalInference,
             cash_usd: None,
@@ -4262,13 +4573,15 @@ pub async fn room_turn_exec(
     // (密钥不出对方机器; 对方也可按天限额拒绝)
     let out = match out {
         Ok(t) => Ok(t),
-        Err(e) if looks_like_no_model(&e) => match borrow_from_pool(st, gid, agent, trigger).await {
-            Ok((t, by)) => Ok(format!(
-                "{t}\n\n（本机没有可用模型通路，本轮由好友节点 {} 代跑）",
-                short_did(&by)
-            )),
-            Err(pe) => Err(format!("{e}｜借用好友算力也失败: {pe}")),
-        },
+        Err(e) if looks_like_no_model(&e) => {
+            match borrow_from_pool(st, gid, agent, trigger).await {
+                Ok((t, by)) => Ok(format!(
+                    "{t}\n\n（本机没有可用模型通路，本轮由好友节点 {} 代跑）",
+                    short_did(&by)
+                )),
+                Err(pe) => Err(format!("{e}｜借用好友算力也失败: {pe}")),
+            }
+        }
         Err(e) => Err(e),
     };
     match &out {
@@ -4326,9 +4639,19 @@ async fn borrow_from_pool(
             "from_did": our, "to_did": peer_did, "group_id": gid, "agent_id": agent.id,
             "trigger": trigger, "ts_ms": ts, "sig": sig,
         });
-        match peer_json("POST", format!("{}/api/pool/infer", url.trim_end_matches('/')), Some(body)).await {
+        match peer_json(
+            "POST",
+            format!("{}/api/pool/infer", url.trim_end_matches('/')),
+            Some(body),
+        )
+        .await
+        {
             Ok(v) if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) => {
-                let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                let text = v
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if !text.trim().is_empty() {
                     // 记下"我借过他的", 下次他找我借时额度更高（互惠）
                     {
@@ -4441,7 +4764,11 @@ pub async fn room_stop(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let gid = req["group_id"].as_str().unwrap_or_default().to_string();
-    st.forge.lock().await.room_running.insert(gid.clone(), false);
+    st.forge
+        .lock()
+        .await
+        .room_running
+        .insert(gid.clone(), false);
     // 广播取消: 同一群的所有并发回合 (sid 前缀 room-<gid>) 一次全停
     let prefix = format!("room-{gid}");
     let stopped_all = st.chat_runs.cancel_prefix(&prefix);
@@ -4595,7 +4922,10 @@ pub async fn room_guide(
     let text = req["text"].as_str().unwrap_or_default().to_string();
     let kind = req["kind"].as_str().unwrap_or("discuss").to_string();
     // 逻辑作者：外部桥接可声明 `from`（外部顾问）；缺省=本机人类
-    let author = req["from"].as_str().unwrap_or_else(|| st.identity.did.as_str()).to_string();
+    let author = req["from"]
+        .as_str()
+        .unwrap_or_else(|| st.identity.did.as_str())
+        .to_string();
     let is_command = req["command"].as_bool().unwrap_or(false);
 
     // 商议决策 + 命令门禁（先门禁再落块）
@@ -4662,12 +4992,12 @@ pub async fn room_guide(
                 fs.save(&data_dir());
             }
             crate::room_bus::spawn_reports(
-        st.clone(),
-        gid.clone(),
-        text.clone(),
-        targets,
-        crate::room_bus::group_intent(&gid, chrono::Utc::now().timestamp_millis() as u64),
-    );
+                st.clone(),
+                gid.clone(),
+                text.clone(),
+                targets,
+                crate::room_bus::group_intent(&gid, chrono::Utc::now().timestamp_millis() as u64),
+            );
             Json(serde_json::json!({
             "hash": entry.hash,
             "kind": kind,
@@ -4702,7 +5032,11 @@ pub async fn auth_request(
     // 完全访问模式: 非敏感路径的请求直接放行 (所有门/白名单不拦 agent);
     // 敏感路径仍是系统硬边界, 任何决策都不可授权。
     let full = st.full_access.load(Ordering::SeqCst);
-    let status = if full && !sensitive { "allow_full".into() } else { "pending".into() };
+    let status = if full && !sensitive {
+        "allow_full".into()
+    } else {
+        "pending".into()
+    };
     let r = AuthRequest {
         id: format!("auth-{:04}", fs.next_auth),
         agent_id: req["agent_id"].as_str().unwrap_or("agent").into(),
@@ -4805,13 +5139,16 @@ pub async fn auth_decide(
         } else if !target.trim().is_empty() {
             // 文件/目录请求: 记住目录前缀（文件则记它的父目录）
             let p = std::path::Path::new(target.trim());
-            let dir = if p.is_dir() { p.to_path_buf() } else { p.parent().unwrap_or(p).to_path_buf() };
+            let dir = if p.is_dir() {
+                p.to_path_buf()
+            } else {
+                p.parent().unwrap_or(p).to_path_buf()
+            };
             push("paths", &dir.to_string_lossy());
         }
     }
     Json(serde_json::json!({ "ok": true, "status": r.status, "granted": granted }))
 }
-
 
 // ────────────────────── 更新源 (国内可达优先) ──────────────────────
 //
@@ -4834,7 +5171,9 @@ fn update_candidates(file: &str) -> Vec<String> {
         // GitHub Pages 原站
         format!("https://logos-42.github.io/bolloon-UI/update/{file}"),
         // GitHub 加速代理 → GitHub 直连 (最后的兜底)
-        format!("https://ghfast.top/https://github.com/logos-42/bolloon/releases/latest/download/{file}"),
+        format!(
+            "https://ghfast.top/https://github.com/logos-42/bolloon/releases/latest/download/{file}"
+        ),
         format!("https://github.com/logos-42/bolloon/releases/latest/download/{file}"),
     ]
 }
@@ -4979,7 +5318,8 @@ pub async fn update_apply(State(st): State<AppState>) -> Json<serde_json::Value>
             "message": "正在下载并安装新版本，装好会自动重启",
         }));
     }
-    let is_desktop = exe.as_deref()
+    let is_desktop = exe
+        .as_deref()
         .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS"))
         .unwrap_or(false);
     if is_desktop {
@@ -5002,7 +5342,10 @@ pub async fn update_apply(State(st): State<AppState>) -> Json<serde_json::Value>
         }
     }
     // 网页端/裸进程: 走 npm 一条龙 (安装 → 重启 web), 不再只给个链接
-    if std::env::var("BOLLOON_UPDATE_NPM").map(|v| v != "0").unwrap_or(true) {
+    if std::env::var("BOLLOON_UPDATE_NPM")
+        .map(|v| v != "0")
+        .unwrap_or(true)
+    {
         tokio::spawn(async move {
             let r = tokio::task::spawn_blocking(crate::updater::npm_install_latest).await;
             match r {
@@ -5153,29 +5496,56 @@ pub async fn agent_card_paid(
         return Json(serde_json::json!({ "ok": false, "error": format!("没有这个智能体: {id}") }));
     };
     let title = req["title"].as_str().unwrap_or_default().trim().to_string();
-    let summary = req["summary"].as_str().unwrap_or_default().trim().to_string();
-    let content = req["content"].as_str().unwrap_or_default().trim().to_string();
+    let summary = req["summary"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let content = req["content"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let price_atomic = req["price_atomic"].as_u64().unwrap_or(0);
     if title.is_empty() || content.is_empty() || price_atomic == 0 {
-        return Json(serde_json::json!({ "ok": false, "error": "缺 title / content / price_atomic(原子单位, >0)" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "缺 title / content / price_atomic(原子单位, >0)" }),
+        );
     }
     // 收款地址: 显式给的必须是**本智能体钱包本**里的地址 (防挂别人的收款码); 不给就用第一个钱包
     let wallets = crate::agent_wallet::public_view(&id);
-    let pay_to = match req["wallet_address"].as_str().map(|s| s.trim().to_lowercase()) {
+    let pay_to = match req["wallet_address"]
+        .as_str()
+        .map(|s| s.trim().to_lowercase())
+    {
         Some(w) if !w.is_empty() => {
-            if !wallets.iter().any(|x| x["address"].as_str() == Some(w.as_str())) {
-                return Json(serde_json::json!({ "ok": false, "error": "wallet_address 不在该智能体钱包本里 (防挂他人收款地址)" }));
+            if !wallets
+                .iter()
+                .any(|x| x["address"].as_str() == Some(w.as_str()))
+            {
+                return Json(
+                    serde_json::json!({ "ok": false, "error": "wallet_address 不在该智能体钱包本里 (防挂他人收款地址)" }),
+                );
             }
             w
         }
-        _ => match wallets.iter().find_map(|x| x["address"].as_str().map(|s| s.to_string())) {
+        _ => match wallets
+            .iter()
+            .find_map(|x| x["address"].as_str().map(|s| s.to_string()))
+        {
             Some(w) => w,
-            None => return Json(serde_json::json!({ "ok": false, "error": "该智能体还没有钱包 — 先在「智能体钱包」里创建" })),
+            None => {
+                return Json(
+                    serde_json::json!({ "ok": false, "error": "该智能体还没有钱包 — 先在「智能体钱包」里创建" }),
+                );
+            }
         },
     };
     let now = now_ms();
     let item_id = format!("x402-{}-{}", short_did(agent.did.as_str()), now);
-    let price_display = req["price_display"].as_str().map(|s| s.to_string())
+    let price_display = req["price_display"]
+        .as_str()
+        .map(|s| s.to_string())
         .unwrap_or_else(|| format!("{} micro-USDC", price_atomic));
     let item = bolloon_x402::paid_info::PaidInfoItem {
         protocol: bolloon_x402::paid_info::INFO_PROTOCOL.into(),
@@ -5194,10 +5564,18 @@ pub async fn agent_card_paid(
         content_hash: bolloon_x402::paid_info::compute_content_hash(&content),
         issued_at_ms: now,
     };
-    st.paid_info.lock().await.insert(item_id.clone(), (item, content));
-    let tags: Vec<String> = req["tags"].as_array().map(|a| {
-        a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
-    }).unwrap_or_default();
+    st.paid_info
+        .lock()
+        .await
+        .insert(item_id.clone(), (item, content));
+    let tags: Vec<String> = req["tags"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
     let card = bolloon_agent::world::WorldCard {
         title: format!("{title} · {price_display}"),
         summary,
@@ -5216,11 +5594,8 @@ pub async fn agent_card_paid(
             kind: bolloon_agent::world::ActionKind::Link,
         }],
         reply_to: None,
-    
-    
-        
-    
-    content_rating: None,
+
+        content_rating: None,
     };
     let card_json = serde_json::to_value(&card).unwrap_or(serde_json::Value::Null);
     let mut fs = st.forge.lock().await;
@@ -5234,29 +5609,47 @@ pub async fn agent_card_paid(
     });
     fs.inbox.push(inbox_item);
     fs.save(&data_dir());
-    Json(serde_json::json!({ "ok": true, "id": oid, "item_id": item_id, "pay_to": pay_to,
-        "note": "已入世界流; 用「分享给好友」投递, 对方卡片上会带支付按钮" }))
+    Json(
+        serde_json::json!({ "ok": true, "id": oid, "item_id": item_id, "pay_to": pay_to,
+        "note": "已入世界流; 用「分享给好友」投递, 对方卡片上会带支付按钮" }),
+    )
 }
 
 /// 卡片 → (item_id, 收款方 did, 是否本机卡)
-async fn resolve_pay_target(st: &AppState, card_id: &str) -> Result<(String, String, bool), String> {
+async fn resolve_pay_target(
+    st: &AppState,
+    card_id: &str,
+) -> Result<(String, String, bool), String> {
     let fs = st.forge.lock().await;
-    let item = fs.inbox.iter()
+    let item = fs
+        .inbox
+        .iter()
         .find(|it| it["id"].as_str() == Some(card_id))
         .ok_or_else(|| "世界流里没有这张卡".to_string())?;
     let card = item.get("card").cloned().unwrap_or(serde_json::Value::Null);
-    let item_id = card["actions"].as_array()
-        .and_then(|a| a.iter().filter_map(|x| x["url"].as_str())
-            .find_map(|u| u.strip_prefix("x402:item/").map(|s| s.to_string())))
-        .or_else(|| item["actions"].as_array().and_then(|a| a.iter().filter_map(|x| x["url"].as_str())
-            .find_map(|u| u.strip_prefix("x402:item/").map(|s| s.to_string()))))
+    let item_id = card["actions"]
+        .as_array()
+        .and_then(|a| {
+            a.iter()
+                .filter_map(|x| x["url"].as_str())
+                .find_map(|u| u.strip_prefix("x402:item/").map(|s| s.to_string()))
+        })
+        .or_else(|| {
+            item["actions"].as_array().and_then(|a| {
+                a.iter()
+                    .filter_map(|x| x["url"].as_str())
+                    .find_map(|u| u.strip_prefix("x402:item/").map(|s| s.to_string()))
+            })
+        })
         .ok_or_else(|| "这张卡不是付费卡片 (没有 x402 支付动作)".to_string())?;
-    let by = item["by"].as_str().or_else(|| card["provider_did"].as_str())
-        .unwrap_or_default().to_string();
+    let by = item["by"]
+        .as_str()
+        .or_else(|| card["provider_did"].as_str())
+        .unwrap_or_default()
+        .to_string();
     // 本机卡判定: by 是节点身份**或本机任一智能体 DID** 都算
     // (以前只比节点身份, 自己智能体发的付费卡被当成好友卡去查不存在的对端)
-    let is_self = by == st.identity.did.as_str()
-        || fs.agents.iter().any(|a| a.did.as_str() == by);
+    let is_self = by == st.identity.did.as_str() || fs.agents.iter().any(|a| a.did.as_str() == by);
     Ok((item_id, by.clone(), is_self))
 }
 
@@ -5265,7 +5658,11 @@ pub async fn world_pay_quote(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let card_id = req["card_id"].as_str().unwrap_or_default().trim().to_string();
+    let card_id = req["card_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let (item_id, by, is_self) = match resolve_pay_target(&st, &card_id).await {
         Ok(v) => v,
         Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
@@ -5284,11 +5681,19 @@ pub async fn world_pay_quote(
     }
     let url = match peer_url_for_did(&st, &by).await {
         Ok(u) => u,
-        Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("找不到对方节点地址: {e}") })),
+        Err(e) => {
+            return Json(
+                serde_json::json!({ "ok": false, "error": format!("找不到对方节点地址: {e}") }),
+            );
+        }
     };
     match peer_json("GET", format!("{url}/api/x402/info/{item_id}"), None).await {
         Ok(q) => {
-            let acc = q["accepts"].as_array().and_then(|a| a.first()).cloned().unwrap_or(serde_json::Value::Null);
+            let acc = q["accepts"]
+                .as_array()
+                .and_then(|a| a.first())
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             Json(serde_json::json!({
                 "ok": true, "item_id": item_id, "by": by,
                 "pay_to": acc["payTo"], "amount_atomic": acc["maxAmountRequired"],
@@ -5304,8 +5709,16 @@ pub async fn world_pay_confirm(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let card_id = req["card_id"].as_str().unwrap_or_default().trim().to_string();
-    let tx_hash = req["tx_hash"].as_str().unwrap_or_default().trim().to_string();
+    let card_id = req["card_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let tx_hash = req["tx_hash"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let payer = req["payer"].as_str().map(|s| s.to_lowercase());
     if card_id.is_empty() || tx_hash.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 card_id / tx_hash" }));
@@ -5326,15 +5739,27 @@ pub async fn world_pay_confirm(
     } else {
         let url = match peer_url_for_did(&st, &by).await {
             Ok(u) => u,
-            Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("找不到对方节点地址: {e}") })),
+            Err(e) => {
+                return Json(
+                    serde_json::json!({ "ok": false, "error": format!("找不到对方节点地址: {e}") }),
+                );
+            }
         };
         let q = match peer_json("GET", format!("{url}/api/x402/info/{item_id}"), None).await {
             Ok(q) => q,
-            Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("报价失败: {e}") })),
+            Err(e) => {
+                return Json(serde_json::json!({ "ok": false, "error": format!("报价失败: {e}") }));
+            }
         };
-        let acc = q["accepts"].as_array().and_then(|a| a.first()).cloned().unwrap_or(serde_json::Value::Null);
+        let acc = q["accepts"]
+            .as_array()
+            .and_then(|a| a.first())
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         let pt = acc["payTo"].as_str().unwrap_or_default().to_lowercase();
-        let am = acc["maxAmountRequired"].as_str().and_then(|s| s.parse::<u128>().ok())
+        let am = acc["maxAmountRequired"]
+            .as_str()
+            .and_then(|s| s.parse::<u128>().ok())
             .or_else(|| acc["maxAmountRequired"].as_u64().map(|v| v as u128))
             .unwrap_or(0);
         (pt, am)
@@ -5345,10 +5770,14 @@ pub async fn world_pay_confirm(
     let observations = match tokio::task::spawn_blocking({
         let tx = tx_hash.clone();
         move || crate::x402_buy::observe(&tx)
-    }).await {
+    })
+    .await
+    {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => return Json(serde_json::json!({ "ok": false, "error": e })),
-        Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("读链线程失败: {e}") })),
+        Err(e) => {
+            return Json(serde_json::json!({ "ok": false, "error": format!("读链线程失败: {e}") }));
+        }
     };
     let claim = bolloon_x402::direct_payment::PaymentClaim {
         tx_hash: tx_hash.clone(),
@@ -5361,16 +5790,25 @@ pub async fn world_pay_confirm(
     if is_self {
         let used = st.x402_used_txs.lock().await.clone();
         let cfg = bolloon_x402::direct_payment::DirectPaymentConfig::default();
-        let report = bolloon_x402::direct_payment::verify_direct_payment(&cfg, &claim, &observations, &used);
+        let report =
+            bolloon_x402::direct_payment::verify_direct_payment(&cfg, &claim, &observations, &used);
         match report.verdict {
             bolloon_x402::PaymentVerdict::Verified | bolloon_x402::PaymentVerdict::SelfAttested => {
                 st.x402_used_txs.lock().await.insert(tx_hash.clone());
-                let content = st.paid_info.lock().await.get(&item_id).map(|(_, c)| c.clone()).unwrap_or_default();
+                let content = st
+                    .paid_info
+                    .lock()
+                    .await
+                    .get(&item_id)
+                    .map(|(_, c)| c.clone())
+                    .unwrap_or_default();
                 // 2026-11-06 (外溢验收): 付费卡片确认成功必须落订单, 否则 /api/x402/orders
                 // 只覆盖 buy_pay 一条路径, 回答不了"有没有人真付钱"。
                 let pack_id = {
                     let fs = st.forge.lock().await;
-                    fs.inbox.iter().find(|it| it["id"].as_str() == Some(card_id.as_str()))
+                    fs.inbox
+                        .iter()
+                        .find(|it| it["id"].as_str() == Some(card_id.as_str()))
                         .and_then(|it| it["pack_id"].as_str().map(|x| x.to_string()))
                         .unwrap_or_default()
                 };
@@ -5382,11 +5820,17 @@ pub async fn world_pay_confirm(
                 }));
                 // 为别人提供付费内容且验链通过 ⇒ 服务积分 (按 tx_hash 去重)
                 let pts = crate::contribution::award(
-                    &st, "service_paid", &format!("交付付费内容 {}", item_id),
-                    &tx_hash, "x402-verified");
+                    &st,
+                    "service_paid",
+                    &format!("交付付费内容 {}", item_id),
+                    &tx_hash,
+                    "x402-verified",
+                );
                 let _ = pts;
-                Json(serde_json::json!({ "ok": true, "verdict": report.verdict, "content": content,
-                    "observations": observations.len(), "note": "验链通过, 内容已交付" }))
+                Json(
+                    serde_json::json!({ "ok": true, "verdict": report.verdict, "content": content,
+                    "observations": observations.len(), "note": "验链通过, 内容已交付" }),
+                )
             }
             other => Json(serde_json::json!({ "ok": false, "verdict": other,
                 "failed": report.failed, "observations": observations.len() })),
@@ -5394,15 +5838,27 @@ pub async fn world_pay_confirm(
     } else {
         let url = match peer_url_for_did(&st, &by).await {
             Ok(u) => u,
-            Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("找不到对方节点地址: {e}") })),
+            Err(e) => {
+                return Json(
+                    serde_json::json!({ "ok": false, "error": format!("找不到对方节点地址: {e}") }),
+                );
+            }
         };
         let body = serde_json::json!({ "claim": claim, "observations": observations });
-        match peer_json("POST", format!("{url}/api/x402/info/{item_id}/payment"), Some(body)).await {
+        match peer_json(
+            "POST",
+            format!("{url}/api/x402/info/{item_id}/payment"),
+            Some(body),
+        )
+        .await
+        {
             Ok(v) => {
                 if v["status"] == serde_json::json!("delivered") {
                     let pack_id = {
                         let fs = st.forge.lock().await;
-                        fs.inbox.iter().find(|it| it["id"].as_str() == Some(card_id.as_str()))
+                        fs.inbox
+                            .iter()
+                            .find(|it| it["id"].as_str() == Some(card_id.as_str()))
                             .and_then(|it| it["pack_id"].as_str().map(|x| x.to_string()))
                             .unwrap_or_default()
                     };
@@ -5414,14 +5870,22 @@ pub async fn world_pay_confirm(
                     }));
                     // 为别人提供付费内容且验链通过 ⇒ 服务积分 (按 tx_hash 去重)
                     let pts = crate::contribution::award(
-                        &st, "service_paid", &format!("交付付费内容 {}", item_id),
-                        &tx_hash, "x402-verified");
+                        &st,
+                        "service_paid",
+                        &format!("交付付费内容 {}", item_id),
+                        &tx_hash,
+                        "x402-verified",
+                    );
                     let _ = pts;
-                    Json(serde_json::json!({ "ok": true, "verdict": v["verdict"], "content": v["content"],
-                        "observations": observations.len(), "note": "对方节点验链通过, 内容已交付" }))
+                    Json(
+                        serde_json::json!({ "ok": true, "verdict": v["verdict"], "content": v["content"],
+                        "observations": observations.len(), "note": "对方节点验链通过, 内容已交付" }),
+                    )
                 } else {
-                    Json(serde_json::json!({ "ok": false, "verdict": v["verdict"], "failed": v["failed"],
-                        "observations": observations.len() }))
+                    Json(
+                        serde_json::json!({ "ok": false, "verdict": v["verdict"], "failed": v["failed"],
+                        "observations": observations.len() }),
+                    )
                 }
             }
             Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("交付失败: {e}") })),
@@ -5435,10 +5899,19 @@ pub async fn list_opportunities(
 ) -> Json<serde_json::Value> {
     let tags: Vec<String> = q
         .get("tags")
-        .map(|t| t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .map(|t| {
+            t.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
     let fs = st.forge.lock().await;
-    let use_tags = if tags.is_empty() { fs.intents.clone() } else { tags };
+    let use_tags = if tags.is_empty() {
+        fs.intents.clone()
+    } else {
+        tags
+    };
     // 2026-10-30 (leo: 世界里都是 mock 卡片): 演示种子整批删除。
     // 世界流只装**真实流入**: ① 验签通过的世界卡片 ② 本机智能体在世界里的回应 (带出处/时间)。
     // 没有流入就如实空着, 并说清"怎么才会有"——不用编造的卡片撑场面。
@@ -5480,7 +5953,10 @@ pub async fn list_opportunities(
         } else {
             RankWeights::HALF_LIFE_H // 没时间戳 ⇒ 按"半天旧"处理, 不假装最新
         };
-        let pinned = item.get("pinned").and_then(|v| v.as_bool()).unwrap_or(false);
+        let pinned = item
+            .get("pinned")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let watching = item.get("watch").and_then(|v| v.as_bool()).unwrap_or(false);
         let state = item.get("state").and_then(|v| v.as_str()).unwrap_or("");
         // 2026-11-06: 交互反馈直接进推荐引擎 (接受抬、拒绝压、置顶最高)
@@ -5499,7 +5975,11 @@ pub async fn list_opportunities(
         // json! 里不能放带 let 的块, 先算好 (空 ⇒ 默认值, 不编造"已验证")
         let verification = {
             let v = pick("verification");
-            if v.is_null() { serde_json::json!("unverified") } else { v }
+            if v.is_null() {
+                serde_json::json!("unverified")
+            } else {
+                v
+            }
         };
         let version = {
             let v = pick("version");
@@ -5557,7 +6037,11 @@ pub async fn list_opportunities(
             id: o["id"].as_str().unwrap_or_default().to_string(),
             topics: o["tags"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default(),
             quality: o["score"].as_f64().unwrap_or(0.0),
             vote: {
@@ -5586,7 +6070,10 @@ pub async fn list_opportunities(
     }
     // 引擎没覆盖到的 (理论上不会有) 追加在后面, 不丢弃内容
     for o in items.iter() {
-        if !ranked.iter().any(|r| Some(r.id.as_str()) == o["id"].as_str()) {
+        if !ranked
+            .iter()
+            .any(|r| Some(r.id.as_str()) == o["id"].as_str())
+        {
             out_items.push(o.clone());
         }
     }
@@ -5647,10 +6134,7 @@ pub fn judge_candidates(
     }
     (
         picked,
-        format!(
-            "意图权重 {w:.2} · 命中 {} 个候选 · 取前 2",
-            scored.len()
-        ),
+        format!("意图权重 {w:.2} · 命中 {} 个候选 · 取前 2", scored.len()),
     )
 }
 
@@ -5778,7 +6262,8 @@ pub async fn mark_world_opened(
     for i in intents {
         if id.contains(i.as_str()) {
             let cur = fs.intent_weights.get(&i).copied().unwrap_or(1.0);
-            fs.intent_weights.insert(i.clone(), bump_intent_weight(cur, "open"));
+            fs.intent_weights
+                .insert(i.clone(), bump_intent_weight(cur, "open"));
         }
     }
     fs.world_opened.insert(0, id.clone()); // 最近的在最前
@@ -5843,11 +6328,20 @@ pub async fn publish_group_to_world(
     }
     let body = texts.join("\n\n");
     let headline: String = {
-        let flat = texts[0].lines().next().unwrap_or("").trim().trim_start_matches(['#', '-', '*', ' ']);
+        let flat = texts[0]
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_start_matches(['#', '-', '*', ' ']);
         let first = flat.split(['。', '！', '？']).next().unwrap_or(flat);
         first.chars().take(28).collect()
     };
-    let topic = req["topic"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "群聊".to_string());
+    let topic = req["topic"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "群聊".to_string());
     let key = format!("group:{gid}:{topic}");
     let links = extract_links(&body);
     let ts = chrono::Utc::now().timestamp_millis();
@@ -5861,18 +6355,21 @@ pub async fn publish_group_to_world(
         .unwrap_or(1);
     fs.inbox.retain(|c| c["key"].as_str() != Some(key.as_str()));
     let summary: String = body.chars().take(160).collect();
-    fs.inbox.insert(0, serde_json::json!({
-        "id": key.clone(),
-        "key": key,
-        "title": if headline.is_empty() { format!("群聊 · {group_name}") } else { headline },
-        "summary": summary,
-        "by": group_name,
-        "from": gid,
-        "links": links,
-        "ts": ts,
-        "version": version,
-        "verification": "unverified",
-    }));
+    fs.inbox.insert(
+        0,
+        serde_json::json!({
+            "id": key.clone(),
+            "key": key,
+            "title": if headline.is_empty() { format!("群聊 · {group_name}") } else { headline },
+            "summary": summary,
+            "by": group_name,
+            "from": gid,
+            "links": links,
+            "ts": ts,
+            "version": version,
+            "verification": "unverified",
+        }),
+    );
     if fs.inbox.len() > 50 {
         fs.inbox.truncate(50);
     }
@@ -5890,7 +6387,11 @@ pub async fn ignore_opportunity(
         fs.ignored.push(id.clone());
     }
     // 拒绝也要有可见状态 + 反馈 (以前 id.contains(意图) 几乎永不命中)
-    let (title, tags) = match fs.inbox.iter_mut().find(|it| it["id"].as_str() == Some(id.as_str())) {
+    let (title, tags) = match fs
+        .inbox
+        .iter_mut()
+        .find(|it| it["id"].as_str() == Some(id.as_str()))
+    {
         Some(it) => {
             it["state"] = serde_json::json!("rejected");
             (
@@ -5902,7 +6403,8 @@ pub async fn ignore_opportunity(
     };
     if !title.is_empty() {
         let cur = fs.intent_weights.get(&title).copied().unwrap_or(1.0);
-        fs.intent_weights.insert(title.clone(), bump_intent_weight(cur, "reject"));
+        fs.intent_weights
+            .insert(title.clone(), bump_intent_weight(cur, "reject"));
         // 对**所有当前意图**做一次弱负反馈 (按标签交集, 不再用 id.contains)
         for i in fs.intents.clone() {
             if title.contains(&i) || i.contains(&title) {
@@ -5914,9 +6416,12 @@ pub async fn ignore_opportunity(
     fs.save(&data_dir());
     drop(fs);
     let trace = crate::world_interact::record_interaction(
-        &st, "reject", &id,
+        &st,
+        "reject",
+        &id,
         serde_json::json!({ "label": title, "tags": tags }),
-    ).await;
+    )
+    .await;
     Json(serde_json::json!({ "ignored": id, "state": "rejected", "trace": trace }))
 }
 
@@ -5932,7 +6437,11 @@ pub async fn accept_opportunity(
         if !fs.accepted.contains(&id) {
             fs.accepted.push(id.clone());
         }
-        let (title, tags) = match fs.inbox.iter_mut().find(|it| it["id"].as_str() == Some(id.as_str())) {
+        let (title, tags) = match fs
+            .inbox
+            .iter_mut()
+            .find(|it| it["id"].as_str() == Some(id.as_str()))
+        {
             Some(it) => {
                 it["state"] = serde_json::json!("accepted");
                 it["accepted_at_ms"] = serde_json::json!(now_ms());
@@ -5946,10 +6455,13 @@ pub async fn accept_opportunity(
         // 意图权重: 接受 = 强正信号 (推荐引擎下一轮就会体现)
         if !title.is_empty() {
             let cur = fs.intent_weights.get(&title).copied().unwrap_or(1.0);
-            fs.intent_weights.insert(title.clone(), bump_intent_weight(cur, "accept"));
+            fs.intent_weights
+                .insert(title.clone(), bump_intent_weight(cur, "accept"));
             if !fs.intents.contains(&title) {
                 fs.intents.push(title.clone());
-                if fs.intents.len() > 200 { fs.intents.remove(0); }
+                if fs.intents.len() > 200 {
+                    fs.intents.remove(0);
+                }
             }
         }
         fs.save(&data_dir());
@@ -5957,9 +6469,12 @@ pub async fn accept_opportunity(
     };
     // 四件套沉淀 (记忆/判断力/工作流/信念)
     let trace = crate::world_interact::record_interaction(
-        &st, "accept", &id,
+        &st,
+        "accept",
+        &id,
         serde_json::json!({ "label": title, "tags": tags }),
-    ).await;
+    )
+    .await;
     // 自动化工作流优化: 接受说明这类内容值得跟, 由差距自动写一条方法型 skill
     let mut workflow = "本轮无能力差距；偏好已进推荐与信念系统".to_string();
     if !title.is_empty() {
@@ -5995,7 +6510,9 @@ pub async fn world_profile(State(st): State<AppState>) -> Json<serde_json::Value
 
 /// GET /api/world/watch → 世界持续观察状态
 pub async fn world_watch() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "watching": true, "orbit_status": "local-oplog", "channel": "orbitdb" }))
+    Json(
+        serde_json::json!({ "watching": true, "orbit_status": "local-oplog", "channel": "orbitdb" }),
+    )
 }
 
 /// GET /api/world/inbox → 世界信箱 (外部智能体投递)
@@ -6020,7 +6537,7 @@ pub async fn world_inbox_post(
         match bolloon_agent::world::unpack_world_card(&env) {
             Ok(c) => serde_json::to_value(&c).unwrap_or(serde_json::Value::Null),
             Err(e) => {
-                return Json(serde_json::json!({ "error": format!("卡片验签失败 (拒收): {e}") }))
+                return Json(serde_json::json!({ "error": format!("卡片验签失败 (拒收): {e}") }));
             }
         }
     } else {
@@ -6039,7 +6556,10 @@ pub async fn world_inbox_post(
         })
     };
     // 验签结论: 信封路径由 unpack 写入 verified, 裸卡一律 unverified
-    let verification = card_json["verification"].as_str().unwrap_or("unverified").to_string();
+    let verification = card_json["verification"]
+        .as_str()
+        .unwrap_or("unverified")
+        .to_string();
     card_json["verification"] = serde_json::json!(verification);
 
     let mut fs = st.forge.lock().await;
@@ -6122,9 +6642,13 @@ pub async fn world_fulfill(
                     if hits.is_empty() {
                         // 解不出结构化 → 原文进内容卡 (真实产出, 不是编的)
                         search_text = Some(r.output.clone());
-                        search_note = format!("检索完成, 未识别出结构化链接 (原文已入卡, {} ms)", r.elapsed_ms);
+                        search_note = format!(
+                            "检索完成, 未识别出结构化链接 (原文已入卡, {} ms)",
+                            r.elapsed_ms
+                        );
                     } else {
-                        search_note = format!("检索完成, {} 条命中 ({} ms)", hits.len(), r.elapsed_ms);
+                        search_note =
+                            format!("检索完成, {} 条命中 ({} ms)", hits.len(), r.elapsed_ms);
                         links = hits;
                     }
                 } else {
@@ -6134,7 +6658,11 @@ pub async fn world_fulfill(
                     );
                 }
             }
-            bolloon_agent::UpgradeStep::Delegate { capability, digest, budget } => {
+            bolloon_agent::UpgradeStep::Delegate {
+                capability,
+                digest,
+                budget,
+            } => {
                 let mut board = st.tasks.lock().await;
                 let (id, dup) = board.publish(&st.identity, capability, digest, budget, None, now);
                 let _ = board.save_json(&data_dir().join("task-board.json"));
@@ -6160,9 +6688,8 @@ pub async fn world_fulfill(
                                 ));
                                 skills_authored.push(name);
                             }
-                            None => install_notes.push(format!(
-                                "{note}; 登记面无该类别可安装技能, 已记录待办"
-                            )),
+                            None => install_notes
+                                .push(format!("{note}; 登记面无该类别可安装技能, 已记录待办")),
                         }
                     }
                     Some(entry) => {
@@ -6175,13 +6702,18 @@ pub async fn world_fulfill(
                             })
                             .await;
                         if !r.ok {
-                            install_notes.push(format!("下载「{}」失败: {}", entry.name, r.output.lines().next().unwrap_or("未知原因")));
+                            install_notes.push(format!(
+                                "下载「{}」失败: {}",
+                                entry.name,
+                                r.output.lines().next().unwrap_or("未知原因")
+                            ));
                         } else if let Some(body) =
                             bolloon_agent::skill_install::parse_fetch_output(&r.output)
                         {
                             let mut ev = st.skills.lock().await;
-                            match bolloon_agent::skill_install::apply_install(&mut ev, entry, body, now)
-                            {
+                            match bolloon_agent::skill_install::apply_install(
+                                &mut ev, entry, body, now,
+                            ) {
                                 Ok(()) => {
                                     let _ = ev.save_json(&data_dir().join("skills.json"));
                                     install_notes.push(format!(
@@ -6229,9 +6761,11 @@ pub async fn world_fulfill(
         let db = st.memory_db.lock().await;
         let _ = db.remember("local", "lesson", &lesson, 0.4, now, None);
     }
-    let profile = bolloon_agent::profile::ProfileCardStore::open(data_dir().join("world").join("profile.json"))
-        .ok()
-        .and_then(|s| s.load().ok().flatten());
+    let profile = bolloon_agent::profile::ProfileCardStore::open(
+        data_dir().join("world").join("profile.json"),
+    )
+    .ok()
+    .and_then(|s| s.load().ok().flatten());
     let ctx = bolloon_agent::fulfill::FulfillContext {
         intent_id: intent.id.clone(),
         links,
@@ -6293,7 +6827,8 @@ pub async fn world_fulfill(
 /// GET /api/world/cards → 世界卡片列表 (对齐 TS `GET /api/world/cards`)
 pub async fn world_cards(State(st): State<AppState>) -> Json<serde_json::Value> {
     let fs = st.forge.lock().await;
-    let cards: Vec<&serde_json::Value> = fs.inbox
+    let cards: Vec<&serde_json::Value> = fs
+        .inbox
         .iter()
         .filter(|c| c["kind"] == "card")
         .filter(|c| {
@@ -6326,7 +6861,11 @@ pub async fn deliver_world_card(
     bolloon_agent::world::accept_card(&card, fs.friends.friends())?;
     let sig = env.signature.clone();
     // 去重: 同签名信封不重复入库 (QUIC 直连 + HTTP/DIAP 回退可能各送一次)
-    if fs.inbox.iter().any(|it| it["kind"] == "card" && it["sig"].as_str() == Some(&sig)) {
+    if fs
+        .inbox
+        .iter()
+        .any(|it| it["kind"] == "card" && it["sig"].as_str() == Some(&sig))
+    {
         return Ok(serde_json::json!({ "id": "dup", "kind": "card", "dup": true, "sig": sig }));
     }
     let card_json = serde_json::to_value(&card).unwrap_or(serde_json::Value::Null);
@@ -6375,14 +6914,14 @@ pub async fn world_cards_share(
 ) -> Json<serde_json::Value> {
     // 2026-11-08 修复: 前端「分享给选中的好友」以前对每个好友重复 POST 同一张卡,
     // 且选中的 DID 从没进请求体 ⇒ 实际目标集永远是**全部好友**。现在 `to` 真生效。
-    let selected: Option<Vec<String>> = req["to"].as_array().map(|a| a.iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string())).collect());
+    let selected: Option<Vec<String>> = req["to"].as_array().map(|a| {
+        a.iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect()
+    });
     let card: bolloon_agent::world::WorldCard = match serde_json::from_value(req) {
         Ok(c) => c,
         Err(e) => return Json(serde_json::json!({ "error": format!("卡片格式错误: {e}") })),
-    
-    
-        
     };
     let all_friends = {
         let fs = st.forge.lock().await;
@@ -6401,14 +6940,22 @@ pub async fn world_cards_share(
         }
     };
     // 2026-11-06: 贡献卡片给好友 = 一点点积分 (按卡片身份去重, 双通道分享只算一次)
-    let contrib_key = bolloon_x402::paid_info::compute_content_hash(
-        &format!("{}|{}", card.title, card.issued_at_ms));
+    let contrib_key = bolloon_x402::paid_info::compute_content_hash(&format!(
+        "{}|{}",
+        card.title, card.issued_at_ms
+    ));
     let contrib_points = crate::contribution::award(
-        &st, "card_share", &format!("分享卡片 {}", card.title), &contrib_key, "world.card");
-    let (env, delivery) =
-        bolloon_agent::world::share_card(&st.identity, card, &friends, now_ms());
+        &st,
+        "card_share",
+        &format!("分享卡片 {}", card.title),
+        &contrib_key,
+        "world.card",
+    );
+    let (env, delivery) = bolloon_agent::world::share_card(&st.identity, card, &friends, now_ms());
     // QUIC 直连出站 (优先): 对**已登记 socket 地址**的好友经 QUIC 直发信封。
     // 记下来哪些好友走通了 QUIC, 剩下的交给下面的 HTTP/DIAP 回退, 保证「关 QUIC 也能送达」。
+    // 关掉 quic-transport 时这个集合不会被写入；保留 mut 供启用 QUIC 的构建使用。
+    #[allow(unused_mut)]
     let mut quic_ok: std::collections::HashSet<String> = Default::default();
     #[cfg(feature = "quic-transport")]
     if let Some(q) = &st.quic {
@@ -6440,13 +6987,17 @@ pub async fn world_cards_share(
             match peer_url_for_did(&st, f).await {
                 Ok(url) => {
                     let push_url = format!("{}/api/world/cards/push", url.trim_end_matches('/'));
-                    if peer_json("POST", push_url, Some(payload.clone())).await.is_ok() {
+                    if peer_json("POST", push_url, Some(payload.clone()))
+                        .await
+                        .is_ok()
+                    {
                         http_ok += 1;
                     } else {
                         tracing::warn!("世界卡 HTTP/DIAP 投递好友 {} 失败", f);
                     }
                 }
-                Err(_) => { /* 好友地址不可解析 (未登记/不在线), 跳过, 不影响其它人 */ }
+                Err(_) => { /* 好友地址不可解析 (未登记/不在线), 跳过, 不影响其它人 */
+                }
             }
         }
     }
@@ -6600,7 +7151,10 @@ pub async fn directory_publish(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let contact = req["contact"].as_str().unwrap_or_default().to_string();
-    let did = req["did"].as_str().unwrap_or_else(|| st.identity.did.as_str()).to_string();
+    let did = req["did"]
+        .as_str()
+        .unwrap_or_else(|| st.identity.did.as_str())
+        .to_string();
     let name = req["display_name"].as_str();
     let pk = req["public_key_hex"].as_str();
     match publish_contact_entry(&st, &contact, &did, name, pk).await {
@@ -6722,7 +7276,9 @@ async fn post_lookup_replies(
         // 一次瞬时超时不再直接判「不可达」; 重试完仍失败才把原因写进 notes。
         let mut last_err = String::new();
         let mut got: Option<bolloon_agent::directory::LookupReply> = None;
-        for delay in std::iter::once(0u64).chain(bolloon_agent::poll::POLL_INTERVALS.iter().copied().take(2)) {
+        for delay in
+            std::iter::once(0u64).chain(bolloon_agent::poll::POLL_INTERVALS.iter().copied().take(2))
+        {
             if delay > 0 {
                 tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
             }
@@ -6739,7 +7295,10 @@ async fn post_lookup_replies(
                     .map_err(|e| format!("reply 解析不了: {e}"))
             });
             match handle.await {
-                Ok(Ok(reply)) => { got = Some(reply); break; }
+                Ok(Ok(reply)) => {
+                    got = Some(reply);
+                    break;
+                }
                 Ok(Err(e)) => last_err = e,
                 Err(e) => last_err = format!("任务异常 {e}"),
             }
@@ -6815,7 +7374,8 @@ pub async fn directory_rpc(
         .unwrap_or_else(|| rpc.payload.phone.clone());
     let fs = st.forge.lock().await;
     let d = dir_view(&fs);
-    let hit = bolloon_agent::directory::foreign_lookup(&d, &contact, rpc.payload.kind, &load_pepper());
+    let hit =
+        bolloon_agent::directory::foreign_lookup(&d, &contact, rpc.payload.kind, &load_pepper());
     Json(bolloon_agent::directory::build_lookup_reply(
         &rpc.payload.rpc_id,
         hit,
@@ -6889,7 +7449,8 @@ pub async fn directory_peers_remove(
         .to_string();
     let mut fs = st.forge.lock().await;
     let before = fs.directory_peers.len();
-    fs.directory_peers.retain(|p| p.trim_end_matches('/') != url);
+    fs.directory_peers
+        .retain(|p| p.trim_end_matches('/') != url);
     fs.save(&data_dir());
     Json(serde_json::json!({
         "removed": before != fs.directory_peers.len(),
@@ -6958,7 +7519,14 @@ pub async fn node_connect(
         return Json(serde_json::json!({ "ok": true, "added_friend": remote_did, "mutual": true }));
     }
     // 发起分支 (抽成 core, 供 /api/contacts/connect 复用)
-    Json(connect_node_core(&st, &req.url.clone().unwrap_or_default(), req.name.as_deref()).await)
+    Json(
+        connect_node_core(
+            &st,
+            &req.url.clone().unwrap_or_default(),
+            req.name.as_deref(),
+        )
+        .await,
+    )
 }
 
 /// 建立跨机连接的**唯一实现**: 登记 URL → 拉对端 DID → 互加好友 → 回调对端互加。
@@ -7060,7 +7628,9 @@ pub async fn scratch_run(
             "stderr": r.stderr,
             "run_dir": run_dir.to_string_lossy(),
         })),
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("{e}"), "run_id": run_id })),
+        Err(e) => {
+            Json(serde_json::json!({ "ok": false, "error": format!("{e}"), "run_id": run_id }))
+        }
     }
 }
 
@@ -7114,11 +7684,15 @@ pub async fn config_apply(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let config: bolloon_config::AppConfig = match serde_json::from_value(
-        req.get("config").cloned().unwrap_or(serde_json::Value::Null),
+        req.get("config")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
     ) {
         Ok(c) => c,
         Err(e) => {
-            return Json(serde_json::json!({ "ok": false, "error": format!("config 解析失败: {e}") }))
+            return Json(
+                serde_json::json!({ "ok": false, "error": format!("config 解析失败: {e}") }),
+            );
         }
     };
     let auth = match req.get("auth").and_then(|v| v.as_str()) {
@@ -7165,7 +7739,9 @@ pub async fn config_rollback(
         None => return Json(serde_json::json!({ "ok": false, "error": "缺少 version" })),
     };
     match st.config.rollback_to(version).await {
-        Ok(snap) => Json(serde_json::json!({ "ok": true, "version": snap.version, "restored_from": snap.restored_from })),
+        Ok(snap) => Json(
+            serde_json::json!({ "ok": true, "version": snap.version, "restored_from": snap.restored_from }),
+        ),
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
     }
 }
@@ -7238,15 +7814,26 @@ pub async fn econ_provider_register(
     let Some(econ) = st.econ.get() else {
         return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
     };
-    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let id = body
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if id.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 id" }));
     }
     let kind: bolloon_econ::ProviderKind = match serde_json::from_value(
-        body.get("kind").cloned().unwrap_or(serde_json::json!("external_api")),
+        body.get("kind")
+            .cloned()
+            .unwrap_or(serde_json::json!("external_api")),
     ) {
         Ok(k) => k,
-        Err(_) => return Json(serde_json::json!({ "ok": false, "error": "kind 非法 (external_api/owner_api/local_model/community_model/agent_service/sponsor)" })),
+        Err(_) => {
+            return Json(
+                serde_json::json!({ "ok": false, "error": "kind 非法 (external_api/owner_api/local_model/community_model/agent_service/sponsor)" }),
+            );
+        }
     };
     let models: Vec<bolloon_econ::ModelCapability> = body
         .get("models")
@@ -7254,13 +7841,27 @@ pub async fn econ_provider_register(
         .unwrap_or_default();
     let mut spec = bolloon_econ::ProviderSpec::new(&id, kind);
     spec.models = models;
-    spec.display_name = body.get("display_name").and_then(|v| v.as_str()).unwrap_or(&id).to_string();
-    spec.allows_sensitive = body.get("allows_sensitive").and_then(|v| v.as_bool()).unwrap_or(false);
+    spec.display_name = body
+        .get("display_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&id)
+        .to_string();
+    spec.allows_sensitive = body
+        .get("allows_sensitive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     spec.online = body.get("online").and_then(|v| v.as_bool()).unwrap_or(true);
     spec.latency_ms = body.get("latency_ms").and_then(|v| v.as_u64());
-    spec.note = body.get("note").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    spec.note = body
+        .get("note")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     // 授权位只能由所有者自己置；请求体里没写就是 false（默认不把别人的资源放进网络）
-    spec.owner_authorized = body.get("owner_authorized").and_then(|v| v.as_bool()).unwrap_or(false);
+    spec.owner_authorized = body
+        .get("owner_authorized")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     match econ.registry().register(spec) {
         Ok(_) => Json(serde_json::json!({
             "ok": true, "id": id,
@@ -7294,18 +7895,36 @@ pub async fn econ_contribute(
         return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
     };
     let kind: bolloon_econ::ContributionKind = match serde_json::from_value(
-        body.get("kind").cloned().unwrap_or(serde_json::json!("cash_sponsor")),
+        body.get("kind")
+            .cloned()
+            .unwrap_or(serde_json::json!("cash_sponsor")),
     ) {
         Ok(k) => k,
-        Err(_) => return Json(serde_json::json!({ "ok": false, "error": "kind 非法 (api_credit/cash_sponsor/local_inference/tool_service/task_execution/verified_knowledge)" })),
+        Err(_) => {
+            return Json(
+                serde_json::json!({ "ok": false, "error": "kind 非法 (api_credit/cash_sponsor/local_inference/tool_service/task_execution/verified_knowledge)" }),
+            );
+        }
     };
     let c = bolloon_econ::Contribution {
-        id: body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        contributor: body.get("contributor").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        id: body
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        contributor: body
+            .get("contributor")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         kind,
         cash_usd: body.get("cash_usd").and_then(|v| v.as_f64()),
         units: body.get("units").and_then(|v| v.as_f64()),
-        unit_kind: body.get("unit_kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        unit_kind: body
+            .get("unit_kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         state: bolloon_econ::ContributionState::Pledged,
         at: String::new(),
         verified_by: None,
@@ -7313,7 +7932,11 @@ pub async fn econ_contribute(
             .get("evidence_refs")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default(),
-        note: body.get("note").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        note: body
+            .get("note")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
     };
     match econ.contributions().pledge(c) {
         Ok(rec) => Json(serde_json::json!({
@@ -7334,7 +7957,11 @@ pub async fn econ_contribute_confirm(
     let Some(econ) = st.econ.get() else {
         return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
     };
-    let by = body.get("by").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let by = body
+        .get("by")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if by.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 by（验收人）" }));
     }
@@ -7371,7 +7998,11 @@ pub async fn econ_pool_topup(
         return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
     };
     let usd = body.get("usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let by = body.get("by").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let by = body
+        .get("by")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if !(usd.is_finite() && usd > 0.0) {
         return Json(serde_json::json!({ "ok": false, "error": "usd 必须 > 0" }));
     }
@@ -7388,7 +8019,12 @@ pub async fn econ_pool_topup(
         state: bolloon_econ::ContributionState::Pledged,
         at: String::new(),
         verified_by: None,
-        evidence_refs: vec![body.get("note").and_then(|v| v.as_str()).unwrap_or("").to_string()],
+        evidence_refs: vec![
+            body.get("note")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        ],
         note: "pool topup (已到账)".into(),
     };
     let pledged = match econ.contributions().pledge(c) {
@@ -7421,7 +8057,10 @@ pub async fn econ_intent_budget(
         return Json(serde_json::json!({ "ok": false, "error": "经济层未启用" }));
     };
     let mut limits = bolloon_econ::BudgetLimits {
-        max_model_calls: body.get("max_model_calls").and_then(|v| v.as_u64()).map(|v| v as u32),
+        max_model_calls: body
+            .get("max_model_calls")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
         max_cash_usd: body.get("max_cash_usd").and_then(|v| v.as_f64()),
         ..Default::default()
     };
@@ -7432,7 +8071,9 @@ pub async fn econ_intent_budget(
         limits.max_depth = d as u32;
     }
     if limits.max_model_calls.is_none() && limits.max_cash_usd.is_none() {
-        return Json(serde_json::json!({ "ok": false, "error": "至少要给 max_model_calls 或 max_cash_usd 之一" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "至少要给 max_model_calls 或 max_cash_usd 之一" }),
+        );
     }
     let g = econ.guard_for(&intent, limits);
     Json(serde_json::json!({
@@ -7524,7 +8165,11 @@ pub async fn config_optimize(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let mode = match req.get("mode").and_then(|v| v.as_str()).unwrap_or("advisory") {
+    let mode = match req
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("advisory")
+    {
         "restricted" => bolloon_config::AiMode::RestrictedAuto,
         _ => bolloon_config::AiMode::Advisory,
     };
@@ -7556,7 +8201,11 @@ pub async fn config_optimize(
             .and_then(|v| v.as_u64())
             .unwrap_or(60_000),
     };
-    let direction = match req.get("direction").and_then(|v| v.as_str()).unwrap_or("higher_helps") {
+    let direction = match req
+        .get("direction")
+        .and_then(|v| v.as_str())
+        .unwrap_or("higher_helps")
+    {
         "lower_helps" => bolloon_config::ParamResponse::LowerHelps,
         _ => bolloon_config::ParamResponse::HigherHelps,
     };
@@ -7676,18 +8325,20 @@ pub async fn friend_request(
                 let ts = now_ms();
                 let name = st.identity.did.as_str().to_string();
                 let base = crate::server::public_base();
-                let sig = hex::encode(st.identity.sign(
-                    friend_message(
-                        st.identity.did.as_str(),
-                        &peer,
-                        "request",
-                        &rid,
-                        &name,
-                        ts,
-                        &base,
-                    )
-                    .as_bytes(),
-                ));
+                let sig = hex::encode(
+                    st.identity.sign(
+                        friend_message(
+                            st.identity.did.as_str(),
+                            &peer,
+                            "request",
+                            &rid,
+                            &name,
+                            ts,
+                            &base,
+                        )
+                        .as_bytes(),
+                    ),
+                );
                 fs.friend_outbox.push(FriendOutbox {
                     to_did: peer.clone(),
                     kind: "request".into(),
@@ -7750,18 +8401,20 @@ pub async fn friend_accept(
                     .get(&peer)
                     .cloned()
                     .unwrap_or_else(local_api_base);
-                let sig = hex::encode(st.identity.sign(
-                    friend_message(
-                        st.identity.did.as_str(),
-                        &peer,
-                        "accept",
-                        &rid,
-                        &name,
-                        ts,
-                        &base,
-                    )
-                    .as_bytes(),
-                ));
+                let sig = hex::encode(
+                    st.identity.sign(
+                        friend_message(
+                            st.identity.did.as_str(),
+                            &peer,
+                            "accept",
+                            &rid,
+                            &name,
+                            ts,
+                            &base,
+                        )
+                        .as_bytes(),
+                    ),
+                );
                 fs.friend_outbox.push(FriendOutbox {
                     to_did: peer,
                     kind: "accept".into(),
@@ -7798,8 +8451,16 @@ pub async fn friend_inbox(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let from_did = req["from_did"].as_str().unwrap_or_default().trim().to_string();
-    let to_did = req["to_did"].as_str().unwrap_or_default().trim().to_string();
+    let from_did = req["from_did"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let to_did = req["to_did"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let kind = req["kind"].as_str().unwrap_or_default().trim().to_string();
     let rid = req["request_id"].as_str().unwrap_or_default().to_string();
     let name = req["name"].as_str().unwrap_or_default().to_string();
@@ -7942,7 +8603,10 @@ pub async fn flush_friend_outbox(st: &AppState) -> (usize, usize) {
                     }
                     Ok(v) => failed.push((
                         e.request_id.clone(),
-                        v.get("error").and_then(|s| s.as_str()).unwrap_or("对端拒收").to_string(),
+                        v.get("error")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("对端拒收")
+                            .to_string(),
                     )),
                     Err(err) => failed.push((e.request_id.clone(), err)),
                 }
@@ -7957,11 +8621,7 @@ pub async fn flush_friend_outbox(st: &AppState) -> (usize, usize) {
             .any(|s| s.request_id == e.request_id && s.kind == e.kind && s.ts_ms == e.ts_ms)
     });
     for (rid, msg) in failed {
-        if let Some(e) = fs
-            .friend_outbox
-            .iter_mut()
-            .find(|e| e.request_id == rid)
-        {
+        if let Some(e) = fs.friend_outbox.iter_mut().find(|e| e.request_id == rid) {
             e.tries += 1;
             e.last_error = msg;
         }
@@ -8099,7 +8759,8 @@ pub async fn contact_search(
     // ② 手机号 / 邮箱形状 ⇒ 先本机目录, 再**跨机**问已登记对端
     let plausible = {
         use bolloon_agent::directory::{is_plausible_contact, sniff_kind};
-        !query.is_empty() && is_plausible_contact(&query, kind.unwrap_or_else(|| sniff_kind(&query)))
+        !query.is_empty()
+            && is_plausible_contact(&query, kind.unwrap_or_else(|| sniff_kind(&query)))
     };
     let mut directory = serde_json::Value::Null;
     let mut notes: Vec<String> = vec![];
@@ -8200,13 +8861,15 @@ pub async fn contact_connect(
                     return Json(serde_json::json!({
                         "ok": false, "did": explicit,
                         "error": "这个 DID 没有已登记地址, gossip / Kademlia DHT / 边缘目录里也没找到"
-                    }))
+                    }));
                 }
             }
         }
     } else {
         if query.is_empty() {
-            return Json(serde_json::json!({ "ok": false, "error": "缺 query (手机号/邮箱) 或 did" }));
+            return Json(
+                serde_json::json!({ "ok": false, "error": "缺 query (手机号/邮箱) 或 did" }),
+            );
         }
         let kind = if kind_str == "email" {
             bolloon_agent::directory::ContactKind::Email
@@ -8232,7 +8895,9 @@ pub async fn contact_connect(
                         register_discovered(&st, &rec, kind_str, &query).await;
                         let d = rec["did"].as_str().unwrap_or_default().to_string();
                         if d.is_empty() {
-                            return Json(serde_json::json!({ "ok": false, "error": "发现记录缺 DID" }));
+                            return Json(
+                                serde_json::json!({ "ok": false, "error": "发现记录缺 DID" }),
+                            );
                         }
                         (d, via_name)
                     }
@@ -8241,7 +8906,7 @@ pub async fn contact_connect(
                             "ok": false,
                             "error": "这个联系方式在 gossip / Kademlia DHT / 边缘目录里都没有记录",
                             "notes": notes,
-                        }))
+                        }));
                     }
                 }
             }
@@ -8407,7 +9072,10 @@ pub async fn contact_invite(State(st): State<AppState>) -> Json<serde_json::Valu
     let did = st.identity.did.as_str().to_string();
     let (url, source) = self_reachable_base();
     let ts = now_ms();
-    let sig = hex_of(&st.identity.sign(connect_code_message(&phone, &did, &url, ts).as_bytes()));
+    let sig = hex_of(
+        &st.identity
+            .sign(connect_code_message(&phone, &did, &url, ts).as_bytes()),
+    );
     let code = encode_connect_code(&phone, &did, &url, ts, &sig);
     Json(serde_json::json!({
         "ok": true,
@@ -8472,14 +9140,23 @@ pub async fn contact_accept_invite(
         }));
     }
     if ts > now_ms() + 3600_000 {
-        return Json(serde_json::json!({ "ok": false, "error": "连接码时间戳在未来 (两端时钟差太大?)" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "连接码时间戳在未来 (两端时钟差太大?)" }),
+        );
     }
     register_peer_url(&st, &url).await;
     let mut fs = st.forge.lock().await;
     let fr = fs.friends.inbound(&did, &did, now_ms());
     let accepted = fs.friends.accept(&fr.request_id, now_ms()).is_ok();
-    let display = if phone.is_empty() { short_did(&did) } else { phone.clone() };
-    let named = fs.contacts.upsert(&did, &display, "invite", now_ms()).is_ok();
+    let display = if phone.is_empty() {
+        short_did(&did)
+    } else {
+        phone.clone()
+    };
+    let named = fs
+        .contacts
+        .upsert(&did, &display, "invite", now_ms())
+        .is_ok();
     fs.save(&data_dir());
     Json(serde_json::json!({
         "ok": true,
@@ -8504,15 +9181,24 @@ pub async fn agent_reach_out(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let to_did = req["to_did"].as_str().unwrap_or_default().trim().to_string();
+    let to_did = req["to_did"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if to_did.is_empty() {
         return Json(serde_json::json!({
             "ok": false,
             "error": "缺 to_did (可先 POST /api/contacts/connect 按手机号连上对方)"
         }));
     }
-    let remote_agent_id = req["remote_agent_id"].as_str().unwrap_or(&agent_id).trim().to_string();
-    let intent = req["intent"].as_str()
+    let remote_agent_id = req["remote_agent_id"]
+        .as_str()
+        .unwrap_or(&agent_id)
+        .trim()
+        .to_string();
+    let intent = req["intent"]
+        .as_str()
         .unwrap_or("向对方问好并说明来意, 提出一个具体可回答的问题")
         .to_string();
     Json(agent_reach_out_core(&st, &agent_id, &to_did, &remote_agent_id, &intent).await)
@@ -8531,7 +9217,9 @@ pub(crate) async fn agent_reach_out_core(
     }
     let agent = match agent_by_id(st, Some(agent_id)).await {
         Some(a) => a,
-        None => return serde_json::json!({ "ok": false, "error": format!("本机没有智能体 {agent_id}") }),
+        None => {
+            return serde_json::json!({ "ok": false, "error": format!("本机没有智能体 {agent_id}") });
+        }
     };
     // ① 本机模型生成要说的话 —— 不编造, 失败/空串都不发
     let system = build_web_system(st, intent, Some(&agent), "").await;
@@ -8549,8 +9237,12 @@ pub(crate) async fn agent_reach_out_core(
     }];
     let opening = match call_model_metered(st, &system, messages, None).await {
         Ok(s) if !s.trim().is_empty() => s.trim().chars().take(200).collect::<String>(),
-        Ok(_) => return serde_json::json!({ "ok": false, "error": "本机模型返回空开场白 (不伪造消息)" }),
-        Err(e) => return serde_json::json!({ "ok": false, "error": format!("本机模型调用失败: {e}") }),
+        Ok(_) => {
+            return serde_json::json!({ "ok": false, "error": "本机模型返回空开场白 (不伪造消息)" });
+        }
+        Err(e) => {
+            return serde_json::json!({ "ok": false, "error": format!("本机模型调用失败: {e}") });
+        }
     };
     // ② 复用 friend_chat_core（签名 + DIAP 优先 + 会话落盘），不另造一条执行路径。
     // 2026-11-13: 以前 reach-out 自己拼 body 直接 POST，消息不进会话历史 ⇒ 无法接力。
@@ -8565,7 +9257,10 @@ pub(crate) async fn agent_reach_out_core(
 /// cron 侧的无人工触发入口: 必须同时显式打开开关并给出目标, 否则什么都不做。
 /// 默认静默, 避免未经配置就自动给好友发消息 / 消耗模型额度。
 pub(crate) async fn agent_reach_out_cron(st: &AppState) -> Option<serde_json::Value> {
-    let target = std::env::var("BOLLOON_REACH_OUT_TARGET").ok()?.trim().to_string();
+    let target = std::env::var("BOLLOON_REACH_OUT_TARGET")
+        .ok()?
+        .trim()
+        .to_string();
     if target.is_empty() {
         return None;
     }
@@ -8573,7 +9268,8 @@ pub(crate) async fn agent_reach_out_cron(st: &AppState) -> Option<serde_json::Va
         let fs = st.forge.lock().await;
         fs.agents.first().map(|a| a.id.clone())?
     };
-    let remote_agent = std::env::var("BOLLOON_REACH_OUT_AGENT").unwrap_or_else(|_| agent_id.clone());
+    let remote_agent =
+        std::env::var("BOLLOON_REACH_OUT_AGENT").unwrap_or_else(|_| agent_id.clone());
     let intent = std::env::var("BOLLOON_REACH_OUT_INTENT")
         .unwrap_or_else(|_| "定期向好友智能体同步一次进展并询问是否需要协作".to_string());
     Some(agent_reach_out_core(st, &agent_id, &target, &remote_agent, &intent).await)
@@ -8622,7 +9318,8 @@ pub async fn dream_run(
     // 忙就不做梦 (不打扰正在跑的任务)
     let idle_ms = req["idle_ms"].as_u64().unwrap_or(u64::MAX);
     let busy = req["busy"].as_bool().unwrap_or(false);
-    if !bolloon_agent::dream::should_dream(idle_ms, req["threshold_ms"].as_u64().unwrap_or(0), busy) {
+    if !bolloon_agent::dream::should_dream(idle_ms, req["threshold_ms"].as_u64().unwrap_or(0), busy)
+    {
         return Json(serde_json::json!({ "skipped": true, "reason": "忙或不够空闲 — 做梦不打扰" }));
     }
 
@@ -8630,7 +9327,10 @@ pub async fn dream_run(
     let mut judgments = st.judgments.lock().await;
     let mut skills = st.skills.lock().await;
     let report = bolloon_agent::dream::dream(
-        &bolloon_agent::dream::DreamInput { memories: &memories, now_ms: now_ms() },
+        &bolloon_agent::dream::DreamInput {
+            memories: &memories,
+            now_ms: now_ms(),
+        },
         &mut judgments,
         &mut skills,
         domain,
@@ -8694,7 +9394,11 @@ pub async fn dream_topic(
         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
         .take(40)
         .collect();
-    let path = dir.join(format!("{}-{}.md", chrono::Utc::now().format("%Y-%m-%d"), safe));
+    let path = dir.join(format!(
+        "{}-{}.md",
+        chrono::Utc::now().format("%Y-%m-%d"),
+        safe
+    ));
     match std::fs::write(&path, doc.as_bytes()) {
         Ok(()) => {
             let shown = path.display().to_string();
@@ -8711,7 +9415,6 @@ pub async fn dream_topic(
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
 }
-
 
 // ────────────────────────── 好友 × 对方开放的智能体 + 跨机对话 (2026-10-30) ──────────────────────────
 //
@@ -8781,7 +9484,10 @@ pub async fn friend_update(
     // 走 feature_pack 的唯一写入口: 与读取同一把锁, 且只改本次提交的开关。
     if req["allow_agent"].is_boolean() || req["blocked"].is_boolean() {
         crate::feature_pack::update_friend_access(
-            &did, req["allow_agent"].as_bool(), req["blocked"].as_bool());
+            &did,
+            req["allow_agent"].as_bool(),
+            req["blocked"].as_bool(),
+        );
     }
     if let Some(name) = req["name"].as_str() {
         let name = name.trim();
@@ -8879,7 +9585,11 @@ pub async fn friend_report(
 ) -> Json<serde_json::Value> {
     use std::io::Write;
     let did = req["did"].as_str().unwrap_or_default().trim().to_string();
-    let reason = req["reason"].as_str().unwrap_or_default().trim().to_string();
+    let reason = req["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let note = req["note"].as_str().unwrap_or_default().trim().to_string();
     if did.is_empty() || reason.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 did 或 reason" }));
@@ -8941,7 +9651,11 @@ pub async fn agent_grants_set(
     }
     let raw: Vec<String> = req["caps"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
     let caps = normalize_caps(&raw);
     if caps.is_empty() {
@@ -8955,7 +9669,9 @@ pub async fn agent_grants_set(
         return Json(serde_json::json!({ "ok": false, "error": format!("没有这个智能体: {id}") }));
     }
     if !fs.friends.friends().iter().any(|f| f == &did) {
-        return Json(serde_json::json!({ "ok": false, "error": "只能授权给已加的好友（先去通讯录加好友）" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "只能授权给已加的好友（先去通讯录加好友）" }),
+        );
     }
     fs.agent_grants
         .entry(id.clone())
@@ -9029,7 +9745,11 @@ pub async fn settle_turn(
 
     // ③ 判断力演化 (只在回复够长时; 短句不入库, 防止污染)
     if reply.chars().count() >= 40 {
-        let domain = if surface.starts_with("group") { "group" } else { "web" };
+        let domain = if surface.starts_with("group") {
+            "group"
+        } else {
+            "web"
+        };
         let statement = format!(
             "{}：{}",
             agent_id.unwrap_or("agent"),
@@ -9041,13 +9761,25 @@ pub async fn settle_turn(
     }
 
     // ④ 能力缺口迹象 → 自动写方法型 skill
-    let gap_hints = ["没有这个能力", "缺", "无法", "需要安装", "没有工具", "can't", "cannot"];
+    let gap_hints = [
+        "没有这个能力",
+        "缺",
+        "无法",
+        "需要安装",
+        "没有工具",
+        "can't",
+        "cannot",
+    ];
     if gap_hints.iter().any(|h| reply.contains(h)) {
         let cls = bolloon_agent::world::classify_intent(text);
         let intent = bolloon_agent::world::Intent {
             id: format!("intent-settle-{now}"),
             text: text.to_string(),
-            tags: text.split_whitespace().take(6).map(|s| s.to_string()).collect(),
+            tags: text
+                .split_whitespace()
+                .take(6)
+                .map(|s| s.to_string())
+                .collect(),
             active: true,
             created_at_ms: now,
             category: cls.category,
@@ -9074,7 +9806,9 @@ pub async fn author_skill_for_intent(
     };
     let gap = bolloon_agent::gap::detect_gaps(intent, &inv);
     // 只有"缺能力/无法覆盖"的意图才值得写方法; 纯检索类不写 (链接靠搜索, 不是知识)
-    if !gap.paths.contains(&bolloon_agent::GapPath::Install) && !gap.paths.contains(&bolloon_agent::GapPath::Delegate) {
+    if !gap.paths.contains(&bolloon_agent::GapPath::Install)
+        && !gap.paths.contains(&bolloon_agent::GapPath::Delegate)
+    {
         return None;
     }
     let cand = bolloon_agent::skill_authoring::draft_skill(intent, &gap);
@@ -9103,7 +9837,11 @@ pub async fn group_invite_agent(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let did = req["did"].as_str().unwrap_or_default().trim().to_string();
-    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
+    let agent_id = req["agent_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if did.is_empty() || agent_id.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 did 或 agent_id" }));
     }
@@ -9114,15 +9852,20 @@ pub async fn group_invite_agent(
     let share = crate::server::group_share(
         State(st.clone()),
         AxumPath(gid.clone()),
-        Json(serde_json::from_value::<crate::server::ShareGroupRequest>(
-            serde_json::json!({ "mode": "join" }),
-        ).expect("默认 mode=join")),
+        Json(
+            serde_json::from_value::<crate::server::ShareGroupRequest>(
+                serde_json::json!({ "mode": "join" }),
+            )
+            .expect("默认 mode=join"),
+        ),
     )
     .await
     .0;
     let link = share["invite"].as_str().unwrap_or("").to_string();
     if link.is_empty() {
-        return Json(serde_json::json!({ "ok": false, "error": "签发邀请链接失败", "detail": share }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "签发邀请链接失败", "detail": share }),
+        );
     }
     // 2) 发给对端 (对端校验好友 + invite_group 授权)
     let peer = match peer_url_for_did(&st, &did).await {
@@ -9133,12 +9876,22 @@ pub async fn group_invite_agent(
         "from_did": st.identity.did.as_str(), "agent_id": agent_id,
         "group_id": gid, "group_name": share["group_id"], "link": link,
     });
-    let resp = match peer_json("POST", format!("{peer}/api/agents/public/join-group"), Some(body)).await {
+    let resp = match peer_json(
+        "POST",
+        format!("{peer}/api/agents/public/join-group"),
+        Some(body),
+    )
+    .await
+    {
         Ok(v) => v,
-        Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("对端不可达: {e}") })),
+        Err(e) => {
+            return Json(serde_json::json!({ "ok": false, "error": format!("对端不可达: {e}") }));
+        }
     };
     if resp["ok"] != serde_json::json!(true) {
-        return Json(serde_json::json!({ "ok": false, "error": resp["error"].clone(), "peer": resp }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": resp["error"].clone(), "peer": resp }),
+        );
     }
     // 3) 本机议程登记这个外部智能体 (显示/被 @ 都靠它)
     {
@@ -9163,9 +9916,21 @@ pub async fn agents_public_join_group(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let from_did = req["from_did"].as_str().unwrap_or_default().trim().to_string();
-    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
-    let gid = req["group_id"].as_str().unwrap_or_default().trim().to_string();
+    let from_did = req["from_did"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let agent_id = req["agent_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let gid = req["group_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let link = req["link"].as_str().unwrap_or_default().trim().to_string();
     if from_did.is_empty() || agent_id.is_empty() || link.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 from_did / agent_id / link" }));
@@ -9176,7 +9941,9 @@ pub async fn agents_public_join_group(
     {
         let fs = st.forge.lock().await;
         if !fs.agents.iter().any(|a| a.id == agent_id) {
-            return Json(serde_json::json!({ "ok": false, "error": format!("本机没有这个智能体: {agent_id}") }));
+            return Json(
+                serde_json::json!({ "ok": false, "error": format!("本机没有这个智能体: {agent_id}") }),
+            );
         }
         let caps = caps_in(&fs, &agent_id, &from_did);
         if !caps.iter().any(|c| c == "invite_group") {
@@ -9189,12 +9956,14 @@ pub async fn agents_public_join_group(
     // 按邀请链接导入 (与手动 /api/groups/join 同一份实现)
     let joined = crate::server::group_join(
         State(st.clone()),
-        Json(serde_json::from_value::<crate::server::JoinGroupRequest>(
-            serde_json::json!({ "link": link }),
-        )
-        .map_err(|e| e.to_string())
-        .unwrap_or_else(|_| unreachable!("JoinGroupRequest 只需 link")),
-    ))
+        Json(
+            serde_json::from_value::<crate::server::JoinGroupRequest>(
+                serde_json::json!({ "link": link }),
+            )
+            .map_err(|e| e.to_string())
+            .unwrap_or_else(|_| unreachable!("JoinGroupRequest 只需 link")),
+        ),
+    )
     .await
     .0;
     if joined["error"].is_string() {
@@ -9222,7 +9991,12 @@ pub async fn agents_public_wallet(
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
     let caller = q.get("did").cloned().unwrap_or_default().trim().to_string();
-    let agent_id = q.get("agent_id").cloned().unwrap_or_default().trim().to_string();
+    let agent_id = q
+        .get("agent_id")
+        .cloned()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if caller.is_empty() || agent_id.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 did / agent_id" }));
     }
@@ -9237,7 +10011,9 @@ pub async fn agents_public_wallet(
         caps_in(&fs, &agent_id, &caller)
     };
     if !caps.iter().any(|c| c == "payment_info") {
-        return Json(serde_json::json!({ "ok": false, "error": "该智能体未对这位好友开放支付信息" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "该智能体未对这位好友开放支付信息" }),
+        );
     }
     let w = crate::agent_wallet::public_view(&agent_id);
     Json(serde_json::json!({ "ok": true, "agent_id": agent_id, "wallet": w }))
@@ -9250,7 +10026,11 @@ fn append_friend_audit(rec: serde_json::Value) {
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
         let _ = writeln!(f, "{}", serde_json::to_string(&rec).unwrap_or_default());
     }
 }
@@ -9263,11 +10043,25 @@ pub async fn agents_public_command(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let from_did = req["from_did"].as_str().unwrap_or_default().trim().to_string();
-    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
-    let instruction = req["instruction"].as_str().unwrap_or_default().trim().to_string();
+    let from_did = req["from_did"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let agent_id = req["agent_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let instruction = req["instruction"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if from_did.is_empty() || agent_id.is_empty() || instruction.is_empty() {
-        return Json(serde_json::json!({ "ok": false, "error": "缺 from_did / agent_id / instruction" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "缺 from_did / agent_id / instruction" }),
+        );
     }
     if !is_local_friend(&st, &from_did).await {
         return Json(serde_json::json!({ "ok": false, "error": "对方不是本机好友" }));
@@ -9275,12 +10069,17 @@ pub async fn agents_public_command(
     let agent = {
         let fs = st.forge.lock().await;
         if !fs.agents.iter().any(|a| a.id == agent_id) {
-            return Json(serde_json::json!({ "ok": false, "error": format!("本机没有这个智能体: {agent_id}") }));
+            return Json(
+                serde_json::json!({ "ok": false, "error": format!("本机没有这个智能体: {agent_id}") }),
+            );
         }
         let caps = caps_in(&fs, &agent_id, &from_did);
         // 三档: 极度信任(含 shell) > 信任(可写无 shell) > 普通(只读)
         let allowed = caps.iter().any(|c| {
-            matches!(c.as_str(), "command_readonly" | "trust_write" | "trust_shell")
+            matches!(
+                c.as_str(),
+                "command_readonly" | "trust_write" | "trust_shell"
+            )
         });
         if !allowed {
             return Json(serde_json::json!({
@@ -9399,8 +10198,16 @@ pub async fn friend_command(
     if !is_local_friend(&st, &did).await {
         return Json(serde_json::json!({ "ok": false, "error": "不是本机好友" }));
     }
-    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
-    let instruction = req["instruction"].as_str().unwrap_or_default().trim().to_string();
+    let agent_id = req["agent_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let instruction = req["instruction"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if agent_id.is_empty() || instruction.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 agent_id / instruction" }));
     }
@@ -9425,7 +10232,13 @@ pub async fn friend_command(
     let body = serde_json::json!({
         "from_did": st.identity.did.as_str(), "agent_id": agent_id, "instruction": instruction,
     });
-    match peer_json("POST", format!("{url}/api/agents/public/command"), Some(body)).await {
+    match peer_json(
+        "POST",
+        format!("{url}/api/agents/public/command"),
+        Some(body),
+    )
+    .await
+    {
         Ok(v) => {
             if v["ok"].as_bool() == Some(true) {
                 let summary = v["reply"]
@@ -9457,7 +10270,12 @@ pub async fn agents_public_judgments(
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
     let caller = q.get("did").cloned().unwrap_or_default().trim().to_string();
-    let agent_id = q.get("agent_id").cloned().unwrap_or_default().trim().to_string();
+    let agent_id = q
+        .get("agent_id")
+        .cloned()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if caller.is_empty() || agent_id.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 did / agent_id" }));
     }
@@ -9548,7 +10366,11 @@ pub async fn friend_judgments(
 }
 
 fn agent_open_to_friends(id: &str) -> bool {
-    !data_dir().join("agents").join(id).join("private.json").exists()
+    !data_dir()
+        .join("agents")
+        .join(id)
+        .join("private.json")
+        .exists()
 }
 
 /// 智能体门户文件路径
@@ -9557,14 +10379,19 @@ fn portal_path(id: &str) -> std::path::PathBuf {
 }
 
 /// GET /api/agents/{id}/portal → 这个智能体对外的 IPNS 门户（名字 + 当前 CID + 文档）
-pub async fn agent_portal(State(st): State<AppState>, AxumPath(id): AxumPath<String>) -> Json<serde_json::Value> {
+pub async fn agent_portal(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Json<serde_json::Value> {
     let Some(a) = agent_by_id(&st, Some(&id)).await else {
         return Json(serde_json::json!({ "ok": false, "error": format!("没有这个智能体: {id}") }));
     };
     match std::fs::read_to_string(portal_path(&a.id)) {
         Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
             Ok(v) => Json(serde_json::json!({ "ok": true, "agent_id": a.id, "portal": v })),
-            Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("门户文件坏了: {e}") })),
+            Err(e) => {
+                Json(serde_json::json!({ "ok": false, "error": format!("门户文件坏了: {e}") }))
+            }
         },
         Err(_) => Json(serde_json::json!({
             "ok": true,
@@ -9640,7 +10467,12 @@ pub async fn portal_publish_for(st: &AppState, id: &str) -> serde_json::Value {
                 let _ = std::fs::create_dir_all(dir);
             }
             let tmp = path.with_extension("json.tmp");
-            if std::fs::write(&tmp, serde_json::to_string_pretty(&portal).unwrap_or_default()).is_ok() {
+            if std::fs::write(
+                &tmp,
+                serde_json::to_string_pretty(&portal).unwrap_or_default(),
+            )
+            .is_ok()
+            {
                 let _ = std::fs::rename(&tmp, &path);
             }
             serde_json::json!({ "ok": true, "agent_id": a.id, "portal": portal })
@@ -9672,13 +10504,16 @@ pub async fn portal_follow(
         let path = bolloon_agent::ipfs_tools::resolve_ipns(&name_for_task)?;
         let cid = path.trim_start_matches("/ipfs/").to_string();
         let raw = bolloon_agent::ipfs_tools::cat_text(&cid)?;
-        serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| format!("门户文档不是 JSON: {e}"))
+        serde_json::from_str::<serde_json::Value>(&raw)
+            .map_err(|e| format!("门户文档不是 JSON: {e}"))
     })
     .await;
     let doc = match doc {
         Ok(Ok(d)) => d,
         Ok(Err(e)) => return Json(serde_json::json!({ "ok": false, "error": e })),
-        Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("线程失败: {e}") })),
+        Err(e) => {
+            return Json(serde_json::json!({ "ok": false, "error": format!("线程失败: {e}") }));
+        }
     };
     let agent_did = doc["did"].as_str().unwrap_or_default().to_string();
     // 好友关系是**节点(人)级**的: 请求要发给 node_did, 不是某个智能体的 DID。
@@ -9694,7 +10529,11 @@ pub async fn portal_follow(
     if did == st.identity.did.as_str() {
         return Json(serde_json::json!({ "ok": false, "error": "这是你自己的门户" }));
     }
-    let node_base = doc["node_base"].as_str().unwrap_or_default().trim_end_matches('/').to_string();
+    let node_base = doc["node_base"]
+        .as_str()
+        .unwrap_or_default()
+        .trim_end_matches('/')
+        .to_string();
     let display = doc["name"].as_str().unwrap_or("").to_string();
     // 本机记一条 outbound + 入队（对方离线也留存）
     let (rid, ts, sig, base, alt) = {
@@ -9707,10 +10546,20 @@ pub async fn portal_follow(
         let ts = now_ms();
         let base = crate::server::public_base();
         let alt = local_api_base();
-        let sig = hex::encode(st.identity.sign(
-            friend_message(st.identity.did.as_str(), &did, "request", &rec.request_id, display.trim(), ts, &base)
+        let sig = hex::encode(
+            st.identity.sign(
+                friend_message(
+                    st.identity.did.as_str(),
+                    &did,
+                    "request",
+                    &rec.request_id,
+                    display.trim(),
+                    ts,
+                    &base,
+                )
                 .as_bytes(),
-        ));
+            ),
+        );
         // 从门户学到的地址要记住: 之前失败的旧条目、以后「同意」回投都要用它
         if !node_base.is_empty() {
             fs.peer_bases.insert(did.clone(), node_base.clone());
@@ -9768,9 +10617,12 @@ pub async fn agent_portal_resolve(
         return Json(serde_json::json!({ "ok": false, "error": "门户文件里没有 ipns 字段" }));
     }
     let name = ipns.clone();
-    let res = tokio::task::spawn_blocking(move || bolloon_agent::ipfs_tools::resolve_ipns(&name)).await;
+    let res =
+        tokio::task::spawn_blocking(move || bolloon_agent::ipfs_tools::resolve_ipns(&name)).await;
     match res {
-        Ok(Ok(path)) => Json(serde_json::json!({ "ok": true, "agent_id": a.id, "ipns": ipns, "path": path })),
+        Ok(Ok(path)) => {
+            Json(serde_json::json!({ "ok": true, "agent_id": a.id, "ipns": ipns, "path": path }))
+        }
         Ok(Err(e)) => Json(serde_json::json!({ "ok": false, "error": e })),
         Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("解析线程失败: {e}") })),
     }
@@ -9792,7 +10644,11 @@ pub async fn agent_friends_open(
     };
     let r = if open {
         std::fs::remove_file(&mark).or_else(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(e)
+            }
         })
     } else {
         std::fs::write(&mark, "{\"private\":true}\n")
@@ -9820,7 +10676,9 @@ pub async fn agents_public(
 ) -> Json<serde_json::Value> {
     let caller = q.get("did").cloned().unwrap_or_default();
     if caller.trim().is_empty() {
-        return Json(serde_json::json!({ "ok": false, "error": "缺少来访者 did (只对已加好友开放)" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "缺少来访者 did (只对已加好友开放)" }),
+        );
     }
     if !is_local_friend(&st, caller.trim()).await {
         return Json(serde_json::json!({ "ok": false, "error": "对方不是本机好友, 不列智能体" }));
@@ -9846,8 +10704,9 @@ pub async fn agents_public(
                     .unwrap_or(false)
         })
         .map(|a| {
-            let soul = std::fs::read_to_string(data_dir().join("agents").join(&a.id).join("soul.md"))
-                .unwrap_or_default();
+            let soul =
+                std::fs::read_to_string(data_dir().join("agents").join(&a.id).join("soul.md"))
+                    .unwrap_or_default();
             let caps = grants
                 .get(&a.id)
                 .and_then(|m| m.get(&caller_key))
@@ -9870,8 +10729,16 @@ pub async fn agents_public_chat(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let from_did = req["from_did"].as_str().unwrap_or_default().trim().to_string();
-    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
+    let from_did = req["from_did"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let agent_id = req["agent_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let text = req["text"].as_str().unwrap_or_default().trim().to_string();
     if from_did.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺少 from_did" }));
@@ -9912,7 +10779,9 @@ pub async fn agents_public_chat(
     }
     let agent = agent_by_id(&st, Some(agent_id.as_str())).await;
     let Some(agent) = agent else {
-        return Json(serde_json::json!({ "ok": false, "error": format!("本机没有这个智能体: {agent_id}") }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": format!("本机没有这个智能体: {agent_id}") }),
+        );
     };
     if !agent_open_to_friends(&agent.id) {
         return Json(serde_json::json!({ "ok": false, "error": "该智能体没有对好友开放" }));
@@ -9996,7 +10865,9 @@ pub async fn agents_public_chat(
                 "context_turns": turns.len(),
             }))
         }
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("对端模型调用失败: {e}") })),
+        Err(e) => {
+            Json(serde_json::json!({ "ok": false, "error": format!("对端模型调用失败: {e}") }))
+        }
     }
 }
 
@@ -10007,7 +10878,9 @@ pub(crate) async fn peer_url_for_did(st: &AppState, did: &str) -> Result<String,
         fs.directory_peers.clone()
     };
     if peers.is_empty() {
-        return Err("本机还没登记对端节点地址 (通讯录 → 直连节点: 粘贴 http://IP:54188)".to_string());
+        return Err(
+            "本机还没登记对端节点地址 (通讯录 → 直连节点: 粘贴 http://IP:54188)".to_string(),
+        );
     }
     for url in &peers {
         if let Some(remote) = fetch_remote_did(url).await {
@@ -10049,7 +10922,9 @@ pub(crate) async fn peer_json(
             None => req.call(),
         };
         match resp {
-            Ok(r) => r.into_json::<serde_json::Value>().map_err(|e| format!("对端返回不是 JSON: {e}")),
+            Ok(r) => r
+                .into_json::<serde_json::Value>()
+                .map_err(|e| format!("对端返回不是 JSON: {e}")),
             Err(e) => Err(format!("对端不可达: {e}")),
         }
     });
@@ -10090,9 +10965,14 @@ pub async fn friend_agents(
     }
 }
 
-
 /// 跨机来访的签名原文: `relay|from|to|agent|sha256(text)|ts`
-pub(crate) fn relay_message(from: &str, to: &str, agent_id: &str, text: &str, ts_ms: u64) -> String {
+pub(crate) fn relay_message(
+    from: &str,
+    to: &str,
+    agent_id: &str,
+    text: &str,
+    ts_ms: u64,
+) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(text.as_bytes());
@@ -10252,7 +11132,11 @@ pub async fn friend_chat_auto(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let did = did.trim().to_string();
-    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
+    let agent_id = req["agent_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if agent_id.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 agent_id" }));
     }
@@ -10518,7 +11402,11 @@ pub async fn authorize_wallet(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let address = req["address"].as_str().unwrap_or_default().trim().to_string();
+    let address = req["address"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if address.len() < 8 || address.len() > 80 {
         return Json(serde_json::json!({ "error": "钱包地址长度不合理 (8–80)" }));
     }
@@ -10535,8 +11423,10 @@ pub async fn authorize_wallet(
         "verified": st.identity.sign(msg.as_bytes()).to_vec() == sig.to_vec(),
     });
     let path = data_dir().join("wallet_auth.json");
-    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&proof).unwrap_or_default())
-    {
+    if let Err(e) = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&proof).unwrap_or_default(),
+    ) {
         return Json(serde_json::json!({ "error": e.to_string() }));
     }
     let mut out = proof;
@@ -10588,24 +11478,30 @@ pub async fn bind_phone(
         "note": "DID 签名绑定; 本机无短信通道, 不做短信验证码 (不假装验过)",
     });
     let path = data_dir().join("phone_binding.json");
-    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&proof).unwrap_or_default())
-    {
+    if let Err(e) = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&proof).unwrap_or_default(),
+    ) {
         return Json(serde_json::json!({ "error": e.to_string() }));
     }
     // 手机号(DID 签名) 绑定的同时写统一身份文件 → 眼镜 App / Web App / CLI / env 立刻同源
     let env_path = sync_identity_env(&proof);
     let mut out = proof;
     out["ok"] = serde_json::json!(verified);
-    if let Some(p) = env_path { out["env_path"] = serde_json::json!(p); }
+    if let Some(p) = env_path {
+        out["env_path"] = serde_json::json!(p);
+    }
     // 2026-11-09: 绑定即发布盲化索引。以前只写本机 phone_binding.json ⇒ 对端查不到,
     // 「靠手机号连到对方」是假的。现在绑定完立刻能被已登记对端检索到 DID。
     // 只发布 HMAC 盲索引 (明文不落盘); `publish:false` 可显式关闭, 不替用户擅自公开。
     if req["publish"].as_bool().unwrap_or(true) {
         match publish_contact_entry(&st, &phone, &did, None, None).await {
-            Ok(v) => out["discoverable"] = serde_json::json!({
-                "ok": true, "blind": v["blind"], "verified": v["verified"],
-                "note": "已发布盲索引; 对端凭手机号能查到本机 DID, 连接仍需对方主动发起"
-            }),
+            Ok(v) => {
+                out["discoverable"] = serde_json::json!({
+                    "ok": true, "blind": v["blind"], "verified": v["verified"],
+                    "note": "已发布盲索引; 对端凭手机号能查到本机 DID, 连接仍需对方主动发起"
+                })
+            }
             Err(e) => out["discoverable"] = serde_json::json!({ "ok": false, "error": e }),
         }
     } else {
@@ -10627,9 +11523,11 @@ pub async fn bind_phone(
         let rec = crate::discovery::signed_record(&st, &phone);
         let key = bolloon_agent::directory::discovery_topic(&phone).to_vec();
         match dht.put(key, rec.to_string().into_bytes()).await {
-            Ok(()) => out["dht"] = serde_json::json!({
-                "ok": true, "topic": rec["topic"], "note": "已写入 Kademlia DHT"
-            }),
+            Ok(()) => {
+                out["dht"] = serde_json::json!({
+                    "ok": true, "topic": rec["topic"], "note": "已写入 Kademlia DHT"
+                })
+            }
             Err(e) => out["dht"] = serde_json::json!({ "ok": false, "error": e }),
         }
     }
@@ -10648,8 +11546,10 @@ pub async fn phone_status(State(st): State<AppState>) -> Json<serde_json::Value>
     let did_ok = v["did"].as_str().unwrap_or_default() == st.identity.did.as_str();
     // 绑定时登记的 DID 必须就是这把公钥推出来的 DID (自洽性; 防止手改文件把两个身份拼一起)
     let key_did_ok = pubkey_from_hex(&pubkey_hex)
-        .map(|pk| bolloon_p2p::KeyPair::did_from_public(&pk).as_str()
-            == v["did"].as_str().unwrap_or_default())
+        .map(|pk| {
+            bolloon_p2p::KeyPair::did_from_public(&pk).as_str()
+                == v["did"].as_str().unwrap_or_default()
+        })
         .unwrap_or(false);
     Json(serde_json::json!({
         "bound": true,
@@ -10681,7 +11581,10 @@ pub async fn phone_challenge(State(st): State<AppState>) -> Json<serde_json::Val
     };
     let rec = serde_json::json!({ "nonce": nonce, "ts_ms": now, "used": false });
     let path = data_dir().join("phone_challenge.json");
-    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&rec).unwrap_or_default()) {
+    if let Err(e) = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&rec).unwrap_or_default(),
+    ) {
         return Json(serde_json::json!({ "error": e.to_string() }));
     }
     Json(serde_json::json!({
@@ -10710,7 +11613,10 @@ pub async fn phone_login(
     };
     let phone = binding["phone"].as_str().unwrap_or_default().to_string();
     let bound_did = binding["did"].as_str().unwrap_or_default().to_string();
-    let pubkey_hex = binding["public_key"].as_str().unwrap_or_default().to_string();
+    let pubkey_hex = binding["public_key"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     // 先验**绑定记录本身**: 记录被改过 (手机号/签名被换) 就不许登录 ——
     // 否则改一下 signature 字段照样能进, 那"身份一致"就只是句口号。
     let binding_intact = verify_proof(
@@ -10750,11 +11656,16 @@ pub async fn phone_login(
     // 挑战一次性: 用掉就作废 (重放同一 nonce 不成立)
     let _ = std::fs::write(
         &cpath,
-        serde_json::to_string_pretty(&serde_json::json!({ "nonce": nonce, "ts_ms": ts, "used": true }))
-            .unwrap_or_default(),
+        serde_json::to_string_pretty(
+            &serde_json::json!({ "nonce": nonce, "ts_ms": ts, "used": true }),
+        )
+        .unwrap_or_default(),
     );
-    let key_did = pubkey_from_hex(&pubkey_hex)
-        .map(|pk| bolloon_p2p::KeyPair::did_from_public(&pk).as_str().to_string());
+    let key_did = pubkey_from_hex(&pubkey_hex).map(|pk| {
+        bolloon_p2p::KeyPair::did_from_public(&pk)
+            .as_str()
+            .to_string()
+    });
     let identity_match = sig_ok && key_did.as_deref() == Some(bound_did.as_str());
     Json(serde_json::json!({
         "ok": identity_match,
@@ -10793,7 +11704,11 @@ fn verify_proof(pubkey_hex: &str, msg: &[u8], sig_hex: &str) -> bool {
 }
 
 fn short_did(did: &str) -> String {
-    if did.len() <= 18 { did.to_string() } else { format!("{}…{}", &did[..12], &did[did.len()-4..]) }
+    if did.len() <= 18 {
+        did.to_string()
+    } else {
+        format!("{}…{}", &did[..12], &did[did.len() - 4..])
+    }
 }
 
 /// GET /api/agents/{id}/profile → 智能体档案：DID（含缩写）+ soul 介绍 + 功能简介
@@ -10829,7 +11744,6 @@ pub async fn agent_profile(
     }))
 }
 
-
 /// POST /api/intent/observe —— 眼镜最小化后持续上报的实时意图
 ///
 /// 落 **OrbitDB store**（群 id 固定 `intent-stream`，Open ACL，observer 署名），
@@ -10839,7 +11753,11 @@ pub async fn intent_observe(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     const GID: &str = "intent-stream";
-    let intent = req["intent"].as_str().unwrap_or_default().trim().to_string();
+    let intent = req["intent"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let text = req["text"].as_str().unwrap_or_default().to_string();
     let conf = req["confidence"].as_f64().unwrap_or(0.0);
     let reason = req["reason"].as_str().unwrap_or_default().to_string();
@@ -10872,7 +11790,10 @@ pub async fn intent_observe(
     })
     .to_string();
 
-    match st.groups.say(GID, &st.identity, "glass-observer", &payload, now_ms) {
+    match st
+        .groups
+        .say(GID, &st.identity, "glass-observer", &payload, now_ms)
+    {
         Ok(entry) => {
             let count = st.groups.history(GID, 200).map(|h| h.len()).unwrap_or(0);
             Json(serde_json::json!({
@@ -10889,7 +11810,6 @@ pub async fn intent_observe(
         Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("{e}") })),
     }
 }
-
 
 /// GET /api/agents/{id}/paths —— 这个智能体自己的身份与文件位置。
 ///
@@ -10953,7 +11873,9 @@ pub async fn notify_count(State(st): State<AppState>) -> Json<serde_json::Value>
 pub async fn broadcast_intents(st: &AppState, limit: usize) -> serde_json::Value {
     let (peers, intents) = {
         let fs = st.forge.lock().await;
-        let mut top = fs.interests.top(limit, chrono::Utc::now().timestamp_millis());
+        let mut top = fs
+            .interests
+            .top(limit, chrono::Utc::now().timestamp_millis());
         if top.is_empty() {
             top = fs.intents.iter().map(|i| (i.clone(), 1.0)).collect();
         }
@@ -11029,7 +11951,6 @@ pub async fn world_intents_announce(
 pub async fn world_intents_broadcast(State(st): State<AppState>) -> Json<serde_json::Value> {
     Json(broadcast_intents(&st, 3).await)
 }
-
 
 /// GET /api/update/log → 最近的更新日志 (前端据此显示 npm 装到哪一步)
 pub async fn update_log() -> Json<serde_json::Value> {
@@ -11134,8 +12055,15 @@ mod tests {
 
         // 外部顾问献策（建议）→ 放行（建议/发言不受门禁约束）
         let ok = decide_room_message(
-            &h, "g", "ext", MemberRole::Advisor, "@agent 建议加个缓存", false, 1,
-            ElectionMode::AddressedFirst, 0,
+            &h,
+            "g",
+            "ext",
+            MemberRole::Advisor,
+            "@agent 建议加个缓存",
+            false,
+            1,
+            ElectionMode::AddressedFirst,
+            0,
         )
         .expect("建议应放行");
         assert_eq!(ok.speaker_id.as_deref(), Some("agent")); // 被@的内部 agent 被推为发言者
@@ -11143,8 +12071,15 @@ mod tests {
 
         // 外部顾问被直接点名献策（他是发言者）→ 其发言的 can_command=false（顾问不可被命令）
         let ok_ext = decide_room_message(
-            &h, "g", "human", MemberRole::Human, "@ext 你怎么看", false, 2,
-            ElectionMode::AddressedFirst, 0,
+            &h,
+            "g",
+            "human",
+            MemberRole::Human,
+            "@ext 你怎么看",
+            false,
+            2,
+            ElectionMode::AddressedFirst,
+            0,
         )
         .expect("点名顾问献策应放行");
         assert_eq!(ok_ext.speaker_id.as_deref(), Some("ext"));
@@ -11152,15 +12087,29 @@ mod tests {
 
         // 外部顾问下达指令（command=true）→ 入口判据拒绝
         let refused = decide_room_message(
-            &h, "g", "ext", MemberRole::Advisor, "@agent 立刻执行 X", true, 3,
-            ElectionMode::AddressedFirst, 0,
+            &h,
+            "g",
+            "ext",
+            MemberRole::Advisor,
+            "@agent 立刻执行 X",
+            true,
+            3,
+            ElectionMode::AddressedFirst,
+            0,
         );
         assert!(refused.is_err(), "外部顾问不可下达命令");
 
         // 本机人类下达指令 → 放行
         let ok2 = decide_room_message(
-            &h, "g", "human", MemberRole::Human, "@agent 帮我跑测试", true, 4,
-            ElectionMode::AddressedFirst, 0,
+            &h,
+            "g",
+            "human",
+            MemberRole::Human,
+            "@agent 帮我跑测试",
+            true,
+            4,
+            ElectionMode::AddressedFirst,
+            0,
         )
         .expect("人类指令应放行");
         assert!(ok2.can_command);
@@ -11194,7 +12143,6 @@ mod tests {
         assert_eq!(seqs, (1..=24).collect::<Vec<_>>());
     }
 }
-
 
 #[cfg(test)]
 mod pool_tests {
@@ -11249,8 +12197,19 @@ mod stage_tests {
         }
         runs.finish("s4", "finished", "好");
         let of = runs.stages_of("s4");
-        assert_eq!(of, vec!["步骤 1", "步骤 2", "步骤 3", "步骤 4", "步骤 5", "步骤 6"], "收尾后阶段不丢(历史留 40)");
-        assert_eq!(runs.snapshot("s4")["stages"].as_array().unwrap().last().unwrap(), "步骤 6");
+        assert_eq!(
+            of,
+            vec!["步骤 1", "步骤 2", "步骤 3", "步骤 4", "步骤 5", "步骤 6"],
+            "收尾后阶段不丢(历史留 40)"
+        );
+        assert_eq!(
+            runs.snapshot("s4")["stages"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap(),
+            "步骤 6"
+        );
     }
 
     /// 2026-11-04 (leo: 折叠栏过长 · 最新更新不出现): 对前端只给**最新 5 条**,
@@ -11264,7 +12223,11 @@ mod stage_tests {
         }
         let snap = runs.snapshot("s3");
         let arr = snap["stages"].as_array().expect("stages 数组");
-        assert_eq!(arr.len(), STAGES_IN_HISTORY, "历史保留 40 条 (展示端只渲染 5 条)");
+        assert_eq!(
+            arr.len(),
+            STAGES_IN_HISTORY,
+            "历史保留 40 条 (展示端只渲染 5 条)"
+        );
         assert_eq!(arr.last().unwrap(), "步骤 45", "最新的一定在内");
         assert_eq!(arr.first().unwrap(), "步骤 6", "只丢掉更早的");
         assert_eq!(snap["stage"], "步骤 45");
@@ -11295,7 +12258,10 @@ mod stage_tests {
         assert!(old.stages.is_empty());
 
         // 空阶段不写进 JSON (不把历史文件撑大)
-        let empty = UiMessage { stages: vec![], ..m.clone() };
+        let empty = UiMessage {
+            stages: vec![],
+            ..m.clone()
+        };
         assert!(!serde_json::to_string(&empty).unwrap().contains("stages"));
     }
 

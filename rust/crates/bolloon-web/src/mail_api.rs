@@ -4,13 +4,13 @@
 //! 纪律: 只做「解析请求 → 调 `bolloon_agent::mail::MailService` → 统一 JSON 形状」,
 //! 批量/凭据硬拒全在 service 层, 这里不许放行。
 
-use axum::{extract::State, Json};
-use serde_json::{json, Value};
+use axum::{Json, extract::State};
+use serde_json::{Value, json};
 
 use bolloon_agent::home::BolloonHome;
-use bolloon_agent::mail::adapters::vcard::{load_imported, VcardCsvAdapter};
+use bolloon_agent::mail::adapters::vcard::{VcardCsvAdapter, load_imported};
 use bolloon_agent::mail::{
-    build_service, delete_mail_password, ContactsPort, MailDraft, MailId, MailQuery, MailService,
+    ContactsPort, MailDraft, MailId, MailQuery, MailService, build_service, delete_mail_password,
     set_mail_password,
 };
 
@@ -27,8 +27,7 @@ fn fail(kind: &str, msg: impl Into<String>) -> Reply {
 }
 
 fn open() -> Result<MailService, (String, String)> {
-    build_service(&BolloonHome::resolve())
-        .map_err(|e| ("store_unreadable".to_string(), e))
+    build_service(&BolloonHome::resolve()).map_err(|e| ("store_unreadable".to_string(), e))
 }
 
 fn ids_from(v: &Value) -> Vec<MailId> {
@@ -55,11 +54,28 @@ pub async fn list(State(_st): State<AppState>, Json(req): Json<Value>) -> Reply 
         Err((k, m)) => return fail(&k, &m),
     };
     let q = MailQuery {
-        account: req.get("account").and_then(|v| v.as_str()).map(String::from),
-        mailbox: req.get("mailbox").and_then(|v| v.as_str()).map(String::from),
-        unread_only: req.get("unread_only").and_then(|v| v.as_bool()).unwrap_or(false),
-        keyword: req.get("keyword").and_then(|v| v.as_str()).map(String::from),
-        limit: Some(req.get("limit").and_then(|v| v.as_u64()).unwrap_or(50).min(500) as usize),
+        account: req
+            .get("account")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        mailbox: req
+            .get("mailbox")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        unread_only: req
+            .get("unread_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        keyword: req
+            .get("keyword")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        limit: Some(
+            req.get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(50)
+                .min(500) as usize,
+        ),
     };
     match svc.list(&q) {
         Ok(mails) => ok(json!({ "mails": mails, "count": mails.len() })),
@@ -87,16 +103,34 @@ pub async fn send(State(_st): State<AppState>, Json(req): Json<Value>) -> Reply 
         Err((k, m)) => return fail(&k, &m),
     };
     let to: Vec<String> = match req.get("to") {
-        Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
         Some(Value::String(s)) => vec![s.clone()],
         _ => vec![],
     };
     let draft = MailDraft {
-        account: req.get("account").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        account: req
+            .get("account")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
         to,
-        subject: req.get("subject").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-        text: req.get("text").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-        in_reply_to: req.get("in_reply_to").and_then(|v| v.as_str()).map(String::from),
+        subject: req
+            .get("subject")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        text: req
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        in_reply_to: req
+            .get("in_reply_to")
+            .and_then(|v| v.as_str())
+            .map(String::from),
     };
     match svc.send(&draft).await {
         Ok(id) => ok(json!({ "id": id.to_string() })),
@@ -130,7 +164,10 @@ pub async fn contacts_import(State(_st): State<AppState>, Json(req): Json<Value>
 /// 列已导入的通讯录(本地文件, 不联网)
 pub async fn contacts_imported(State(_st): State<AppState>, Json(req): Json<Value>) -> Reply {
     let home = BolloonHome::resolve();
-    let kw = req.get("keyword").and_then(|v| v.as_str()).map(|s| s.to_lowercase());
+    let kw = req
+        .get("keyword")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_lowercase());
     match load_imported(home.root()) {
         Ok(list) => {
             let items: Vec<_> = list

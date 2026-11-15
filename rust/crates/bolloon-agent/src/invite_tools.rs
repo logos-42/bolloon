@@ -156,7 +156,12 @@ pub fn execute_with_base(base: Option<String>, call: &ToolCall) -> ToolResult {
     };
     match call.name.as_str() {
         "group_invite" => {
-            let gid = call.arguments.get("group_id").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let gid = call
+                .arguments
+                .get("group_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if gid.is_empty() {
                 return fail("group_id 必填".into());
             }
@@ -171,7 +176,12 @@ pub fn execute_with_base(base: Option<String>, call: &ToolCall) -> ToolResult {
             }
         }
         "group_join" => {
-            let link = call.arguments.get("link").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let link = call
+                .arguments
+                .get("link")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if link.is_empty() {
                 return fail("link 必填".into());
             }
@@ -186,8 +196,18 @@ pub fn execute_with_base(base: Option<String>, call: &ToolCall) -> ToolResult {
             }
         }
         "immune_report" => {
-            let subject = call.arguments.get("subject").and_then(|v| v.as_str()).unwrap_or("").trim();
-            let kind = call.arguments.get("kind").and_then(|v| v.as_str()).unwrap_or("spam").trim();
+            let subject = call
+                .arguments
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let kind = call
+                .arguments
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("spam")
+                .trim();
             if subject.is_empty() {
                 return fail("subject 必填".into());
             }
@@ -212,7 +232,12 @@ pub fn execute_with_base(base: Option<String>, call: &ToolCall) -> ToolResult {
             }
         }
         "immune_status" => {
-            let subject = call.arguments.get("subject").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let subject = call
+                .arguments
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if subject.is_empty() {
                 return fail("subject 必填".into());
             }
@@ -235,7 +260,11 @@ pub fn execute_with_base(base: Option<String>, call: &ToolCall) -> ToolResult {
             if gid.is_empty() {
                 return fail("group_id 必填".into());
             }
-            let limit = call.arguments.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
+            let limit = call
+                .arguments
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(50);
             let url = format!(
                 "{base}/api/groups/{}/messages?limit={limit}&role=agent",
                 urlencode(gid)
@@ -249,7 +278,12 @@ pub fn execute_with_base(base: Option<String>, call: &ToolCall) -> ToolResult {
             }
         }
         "group_members" => {
-            let gid = call.arguments.get("group_id").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let gid = call
+                .arguments
+                .get("group_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if gid.is_empty() {
                 return fail("group_id 必填".into());
             }
@@ -283,7 +317,11 @@ mod tests {
     use super::*;
 
     fn call(name: &str, args: serde_json::Value) -> ToolCall {
-        ToolCall { id: "c".into(), name: name.into(), arguments: args }
+        ToolCall {
+            id: "c".into(),
+            name: name.into(),
+            arguments: args,
+        }
     }
 
     #[test]

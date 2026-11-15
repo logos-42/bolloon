@@ -17,7 +17,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use diap_rs_sdk::iroh_communicator::{IrohCommunicator, IrohConfig, IrohMessage};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
 const MSG_REQ: &str = "BOLLOON_HTTP_REQ";
 const MSG_RESP: &str = "BOLLOON_HTTP_RESP";
@@ -185,7 +185,9 @@ impl DiapHub {
             match result {
                 Ok(r) => {
                     let status = r.status();
-                    let body = r.into_json::<serde_json::Value>().unwrap_or(serde_json::Value::Null);
+                    let body = r
+                        .into_json::<serde_json::Value>()
+                        .unwrap_or(serde_json::Value::Null);
                     serde_json::json!({ "id": id, "ok": true, "status": status, "body": body })
                 }
                 Err(e) => serde_json::json!({

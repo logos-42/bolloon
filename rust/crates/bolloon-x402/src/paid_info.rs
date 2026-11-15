@@ -301,11 +301,11 @@ mod tests {
 
     #[test]
     fn content_hash_stable() {
-        assert_eq!(
+        assert_eq!(compute_content_hash("hello"), compute_content_hash("hello"));
+        assert_ne!(
             compute_content_hash("hello"),
-            compute_content_hash("hello")
+            compute_content_hash("hello ")
         );
-        assert_ne!(compute_content_hash("hello"), compute_content_hash("hello "));
         assert!(compute_content_hash("x").starts_with("sha256:"));
     }
 
@@ -314,7 +314,12 @@ mod tests {
         let seller = kp(1);
         let env = build_envelope(&seller, "item_1", "内容本体", "receipt_abc", 100);
         let report = verify_envelope(&env, Some("receipt_abc"), Some(&seller.public_bytes()));
-        assert_eq!(report.verdict, VerifyVerdict::Verified, "{:?}", report.checks);
+        assert_eq!(
+            report.verdict,
+            VerifyVerdict::Verified,
+            "{:?}",
+            report.checks
+        );
     }
 
     #[test]

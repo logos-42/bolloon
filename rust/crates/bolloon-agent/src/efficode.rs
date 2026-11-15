@@ -158,7 +158,11 @@ fn crc32_table() -> [u32; 256] {
         let mut c = i as u32;
         let mut k = 0;
         while k < 8 {
-            c = if c & 1 != 0 { 0xedb88320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xedb88320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
             k += 1;
         }
         table[i] = c;
@@ -206,7 +210,10 @@ fn read_varint(buf: &[u8], pos: &mut usize) -> Result<u32, EfficodeError> {
         }
         shift += 7;
         if shift > 28 {
-            return Err(EfficodeError::Truncated("varint 超过 32 位上限".into(), *pos));
+            return Err(EfficodeError::Truncated(
+                "varint 超过 32 位上限".into(),
+                *pos,
+            ));
         }
     }
     Ok(value)
@@ -250,7 +257,8 @@ const LZ_MAX_CHAIN: usize = 16; // 哈希链回溯上限 (控制最坏耗时)
 const LZ_HASH_SIZE: usize = 1 << 16; // 3 字节前缀哈希表大小
 
 fn lz_hash3(b: &[u8], i: usize) -> usize {
-    (((b[i] as usize) << 10) ^ ((b[i + 1] as usize) << 5) ^ (b[i + 2] as usize)) & (LZ_HASH_SIZE - 1)
+    (((b[i] as usize) << 10) ^ ((b[i + 1] as usize) << 5) ^ (b[i + 2] as usize))
+        & (LZ_HASH_SIZE - 1)
 }
 
 fn lz_insert_at(input: &[u8], pos: usize, head: &mut [i32], prev: &mut [i32]) {
@@ -377,7 +385,10 @@ pub fn lz77_decompress(block: &[u8]) -> Result<Vec<u8>, EfficodeError> {
         while bit >= 0 && out.len() < orig_len {
             if control & (1 << bit) != 0 {
                 if pos + 2 > body_end {
-                    return Err(EfficodeError::Truncated("LZ77 匹配 token 缺字节".into(), pos));
+                    return Err(EfficodeError::Truncated(
+                        "LZ77 匹配 token 缺字节".into(),
+                        pos,
+                    ));
                 }
                 let v = ((block[pos] as usize) << 8) | block[pos + 1] as usize;
                 pos += 2;
@@ -395,7 +406,10 @@ pub fn lz77_decompress(block: &[u8]) -> Result<Vec<u8>, EfficodeError> {
                 }
             } else {
                 if pos >= body_end {
-                    return Err(EfficodeError::Truncated("LZ77 字面量 token 缺字节".into(), pos));
+                    return Err(EfficodeError::Truncated(
+                        "LZ77 字面量 token 缺字节".into(),
+                        pos,
+                    ));
                 }
                 out.push(block[pos]);
                 pos += 1;
@@ -535,7 +549,9 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedPacket, EfficodeError> {
     let b0 = body_all[0];
     let version = b0 >> 4;
     if version != EFFICODE_VERSION {
-        return Err(EfficodeError::BadHeader(format!("version {version} ≠ {EFFICODE_VERSION}")));
+        return Err(EfficodeError::BadHeader(format!(
+            "version {version} ≠ {EFFICODE_VERSION}"
+        )));
     }
     let mode = match b0 & 0x0f {
         0 => EfficodeMode::Compact,
@@ -596,7 +612,11 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedPacket, EfficodeError> {
     // (中间有垃圾 = 报错, 不许"能解多少解多少" —— 对齐 TS EFFICODE_TRAILING_BYTES)
     if pos != rest.len() {
         return Err(EfficodeError::Truncated(
-            format!("解析在 {pos}B 结束, 但段总长 {}B —— 中间有 {}B 垃圾", rest.len(), rest.len() - pos),
+            format!(
+                "解析在 {pos}B 结束, 但段总长 {}B —— 中间有 {}B 垃圾",
+                rest.len(),
+                rest.len() - pos
+            ),
             pos,
         ));
     }
@@ -676,7 +696,9 @@ pub fn symbolic_to_instructions(text: &str) -> Result<Vec<Instruction>, Efficode
                 None => tok.to_string(),
             });
         } else {
-            return Err(EfficodeError::BadInstruction(format!("首 token 非指令: {tok}")));
+            return Err(EfficodeError::BadInstruction(format!(
+                "首 token 非指令: {tok}"
+            )));
         }
     }
     Ok(out)
@@ -690,9 +712,18 @@ mod tests {
         EfficodeMessage {
             did: Some([7u8; 32]),
             instructions: vec![
-                Instruction { op: Op::AtDid, arg: Some("z6MkTarget".into()) },
-                Instruction { op: Op::Req, arg: Some("weather".into()) },
-                Instruction { op: Op::End, arg: None },
+                Instruction {
+                    op: Op::AtDid,
+                    arg: Some("z6MkTarget".into()),
+                },
+                Instruction {
+                    op: Op::Req,
+                    arg: Some("weather".into()),
+                },
+                Instruction {
+                    op: Op::End,
+                    arg: None,
+                },
             ],
             data: Some(b"payload-123".to_vec()),
             compression: None,
@@ -720,7 +751,11 @@ mod tests {
         bare.did = None;
         let l_full = encode(&full).unwrap().len();
         let l_bare = encode(&bare).unwrap().len();
-        assert_eq!(l_full - l_bare, DID_SEGMENT_BYTES, "省略 DID 段必须真省 32B");
+        assert_eq!(
+            l_full - l_bare,
+            DID_SEGMENT_BYTES,
+            "省略 DID 段必须真省 32B"
+        );
     }
 
     #[test]
@@ -729,7 +764,10 @@ mod tests {
         let mid = bytes.len() / 2;
         bytes[mid] ^= 0x01; // 翻转正文中 1 bit
         let err = decode(&bytes).unwrap_err();
-        assert!(matches!(err, EfficodeError::CrcMismatch { .. }), "CRC 硬门必须拦");
+        assert!(
+            matches!(err, EfficodeError::CrcMismatch { .. }),
+            "CRC 硬门必须拦"
+        );
     }
 
     #[test]
@@ -747,7 +785,10 @@ mod tests {
         let crc = crc32(&bytes[..bytes.len() - 4]);
         let body_len = bytes.len() - 4;
         bytes[body_len..].copy_from_slice(&crc.to_be_bytes());
-        assert!(matches!(decode(&bytes).unwrap_err(), EfficodeError::BadHeader(_)));
+        assert!(matches!(
+            decode(&bytes).unwrap_err(),
+            EfficodeError::BadHeader(_)
+        ));
     }
 
     #[test]
@@ -761,15 +802,27 @@ mod tests {
         packet.extend_from_slice(&body);
         let crc = crc32(&packet);
         packet.extend_from_slice(&crc.to_be_bytes());
-        assert!(matches!(decode(&packet).unwrap_err(), EfficodeError::UnknownOp(9)));
+        assert!(matches!(
+            decode(&packet).unwrap_err(),
+            EfficodeError::UnknownOp(9)
+        ));
     }
 
     #[test]
     fn symbolic_text_roundtrip() {
         let ins = vec![
-            Instruction { op: Op::AtDid, arg: Some("z6MkX".into()) },
-            Instruction { op: Op::Send, arg: None },
-            Instruction { op: Op::End, arg: None },
+            Instruction {
+                op: Op::AtDid,
+                arg: Some("z6MkX".into()),
+            },
+            Instruction {
+                op: Op::Send,
+                arg: None,
+            },
+            Instruction {
+                op: Op::End,
+                arg: None,
+            },
         ];
         let text = instructions_to_symbolic(&ins);
         assert_eq!(text, "@DID:z6MkX !SEND !END");
@@ -792,7 +845,12 @@ mod tests {
     fn lz77_roundtrip_and_truncation_rejected() {
         let raw: Vec<u8> = b"abababababababababab".to_vec().repeat(10);
         let comp = lz77_compress(&raw);
-        assert!(comp.len() < raw.len(), "重复文本真压得动: {} < {}", comp.len(), raw.len());
+        assert!(
+            comp.len() < raw.len(),
+            "重复文本真压得动: {} < {}",
+            comp.len(),
+            raw.len()
+        );
         assert_eq!(lz77_decompress(&comp).unwrap(), raw, "解压逐字节还原");
         assert!(
             lz77_decompress(&comp[..comp.len() - 1]).is_err(),
@@ -803,18 +861,32 @@ mod tests {
     #[test]
     fn compressed_data_block_roundtrip() {
         let mut msg = sample_msg();
-        msg.data = Some("同一句话重复很多次, 同一句话重复很多次。".as_bytes().to_vec().repeat(12));
+        msg.data = Some(
+            "同一句话重复很多次, 同一句话重复很多次。"
+                .as_bytes()
+                .to_vec()
+                .repeat(12),
+        );
         let bytes = encode(&msg).unwrap();
         assert_ne!(bytes[1] & F_COMPRESSED, 0, "压得动 → 压缩位置起");
         let pkt = decode(&bytes).unwrap();
-        assert_eq!(pkt.data.as_deref(), msg.data.as_deref(), "解压后与原文逐字节一致");
+        assert_eq!(
+            pkt.data.as_deref(),
+            msg.data.as_deref(),
+            "解压后与原文逐字节一致"
+        );
 
         // 同消息强制不压 → 包更大 (压缩省下的字节是真数字, 不是声明)
         let mut plain = msg.clone();
         plain.compression = Some(CompressionAlgo::None);
         let plain_bytes = encode(&plain).unwrap();
         assert_eq!(plain_bytes[1] & F_COMPRESSED, 0, "没压就如实标 0");
-        assert!(bytes.len() < plain_bytes.len(), "压缩后真的小于原样: {} vs {}", bytes.len(), plain_bytes.len());
+        assert!(
+            bytes.len() < plain_bytes.len(),
+            "压缩后真的小于原样: {} vs {}",
+            bytes.len(),
+            plain_bytes.len()
+        );
     }
 
     #[test]
@@ -825,7 +897,10 @@ mod tests {
             EfficodeError::UnknownCompression(_)
         ));
         // 空数据块 = 缺算法 id → 截断
-        assert!(matches!(decompress_block(&[]).unwrap_err(), EfficodeError::Truncated(..)));
+        assert!(matches!(
+            decompress_block(&[]).unwrap_err(),
+            EfficodeError::Truncated(..)
+        ));
         // 小消息不压 (开箱代价 > 收益)
         assert_eq!(pick_algo(b"short"), CompressionAlgo::None);
         assert_eq!(pick_algo(&b"x".to_vec().repeat(200)), CompressionAlgo::Lz77);
@@ -843,8 +918,14 @@ mod tests {
         let msg = EfficodeMessage {
             did: Some([0; 32]),
             instructions: vec![
-                Instruction { op: Op::AtDid, arg: Some("z6MkAB".into()) },
-                Instruction { op: Op::Data, arg: Some("x".into()) },
+                Instruction {
+                    op: Op::AtDid,
+                    arg: Some("z6MkAB".into()),
+                },
+                Instruction {
+                    op: Op::Data,
+                    arg: Some("x".into()),
+                },
             ],
             data: Some(vec![0u8; 20]),
             compression: None,

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
-use super::audio::{segment, HalfDuplex, Pcm16, VadConfig};
+use super::audio::{HalfDuplex, Pcm16, VadConfig, segment};
 
 #[async_trait]
 pub trait AsrPort: Send + Sync {
@@ -41,7 +41,9 @@ pub struct WhisperAsr {
 impl WhisperAsr {
     /// 默认路径与 `bolloon-web::asr` 保持一致（同一套环境变量）
     pub fn from_env() -> Self {
-        let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."));
+        let home = std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."));
         let bin = std::env::var("BOLLOON_ASR_BIN")
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".bolloon/asr/bin/whisper-cli"));
@@ -49,7 +51,12 @@ impl WhisperAsr {
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".bolloon/asr/models/ggml-base.bin"));
         let lang = std::env::var("BOLLOON_ASR_LANG").unwrap_or_else(|_| "zh".into());
-        Self { bin, model, lang, timeout: Duration::from_secs(60) }
+        Self {
+            bin,
+            model,
+            lang,
+            timeout: Duration::from_secs(60),
+        }
     }
 
     pub fn available(&self) -> bool {
@@ -107,7 +114,10 @@ impl WhisperAsr {
             return Err(format!(
                 "whisper-cli 退出码 {:?}: {}",
                 out.status.code(),
-                String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>()
+                String::from_utf8_lossy(&out.stderr)
+                    .chars()
+                    .take(300)
+                    .collect::<String>()
             ));
         }
         let text = String::from_utf8_lossy(&out.stdout)
@@ -155,7 +165,10 @@ pub struct MacSayTts {
 
 impl MacSayTts {
     pub fn new() -> Self {
-        Self { voice: std::env::var("BOLLOON_TTS_VOICE").ok(), rate: None }
+        Self {
+            voice: std::env::var("BOLLOON_TTS_VOICE").ok(),
+            rate: None,
+        }
     }
 
     pub fn with_rate(mut self, wpm: u32) -> Self {
@@ -193,7 +206,10 @@ impl MacSayTts {
             let _ = std::fs::remove_file(&wav);
             return Err(format!(
                 "say 失败: {}",
-                String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>()
+                String::from_utf8_lossy(&out.stderr)
+                    .chars()
+                    .take(300)
+                    .collect::<String>()
             ));
         }
         let bytes = std::fs::read(&wav).map_err(|e| format!("读 say 输出失败: {e}"))?;
@@ -212,11 +228,9 @@ impl TtsPort for MacSayTts {
         let text = text.to_string();
         let voice = self.voice.clone();
         let rate = self.rate;
-        tokio::task::spawn_blocking(move || {
-            MacSayTts { voice, rate }.run_blocking(&text)
-        })
-        .await
-        .map_err(|e| format!("TTS 线程失败: {e}"))?
+        tokio::task::spawn_blocking(move || MacSayTts { voice, rate }.run_blocking(&text))
+            .await
+            .map_err(|e| format!("TTS 线程失败: {e}"))?
     }
 }
 
@@ -296,7 +310,10 @@ pub struct VoiceLoop {
 
 impl Default for VoiceLoop {
     fn default() -> Self {
-        Self { vad: VadConfig::default(), half_duplex: HalfDuplex::new() }
+        Self {
+            vad: VadConfig::default(),
+            half_duplex: HalfDuplex::new(),
+        }
     }
 }
 
@@ -356,7 +373,11 @@ impl VoiceLoop {
             output.extend_from_slice(&audio.samples);
         }
 
-        turn.output_ms = if rate == 0 { 0 } else { (output.len() as u64 * 1000) / rate as u64 };
+        turn.output_ms = if rate == 0 {
+            0
+        } else {
+            (output.len() as u64 * 1000) / rate as u64
+        };
         Ok(turn)
     }
 
@@ -500,17 +521,17 @@ mod tests {
 
         let tts = MacSayTts::new();
         // 对方说一句（真实合成）
-        let peer = tts.synthesize("你好，请问收货时间怎么安排？").await.unwrap();
+        let peer = tts
+            .synthesize("你好，请问收货时间怎么安排？")
+            .await
+            .unwrap();
 
         let loop_ = VoiceLoop::default();
         let t0 = std::time::Instant::now();
         let turn = loop_
-            .run_turn(
-                &peer,
-                &asr,
-                &tts,
-                &|_| "我帮您安排在明天下午三点，可以吗？".into(),
-            )
+            .run_turn(&peer, &asr, &tts, &|_| {
+                "我帮您安排在明天下午三点，可以吗？".into()
+            })
             .await
             .unwrap();
         let total_ms = t0.elapsed().as_millis() as u64;

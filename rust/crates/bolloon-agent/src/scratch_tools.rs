@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use bolloon_harness::{EffectKind, ToolCall, ToolExecutor, ToolResult, ToolDef};
+use bolloon_harness::{EffectKind, ToolCall, ToolDef, ToolExecutor, ToolResult};
 
 use crate::home::BolloonHome;
 use crate::scratch::{ScriptRunPort, ScriptRunRequest};
@@ -105,9 +105,10 @@ impl ToolExecutor for ScratchExecutor {
 pub fn scratch_tool_defs() -> Vec<ToolDef> {
     vec![ToolDef {
         name: "run_scratch_script".into(),
-        description: "在内部 scratch 目录(~/.bolloon/rust/scratch)跑一段临时脚本(sh/python3/node 等), \
+        description:
+            "在内部 scratch 目录(~/.bolloon/rust/scratch)跑一段临时脚本(sh/python3/node 等), \
             用于快速验证/原型; 运行痕迹落盘且可被孤儿恢复 catch。受权限门控(默认不放开)。"
-            .into(),
+                .into(),
         parameters: json!({
             "type": "object",
             "properties": {

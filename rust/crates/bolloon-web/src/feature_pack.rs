@@ -7,11 +7,15 @@
 //! - 幂等响应缓存: 参考 TS 侧 `canonicalizeJson` / `SYSTEM_PROMPT_CACHE_TTL_MS`
 //! - 路由使用费: **不按 token、不花贡献积分**, 只按"路由调度次数"计费; 100 万次 0.001 元
 
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 use std::sync::{Mutex, OnceLock};
 
-fn now_ms() -> u64 { chrono::Utc::now().timestamp_millis() as u64 }
-fn path(name: &str) -> std::path::PathBuf { crate::server::data_dir().join(name) }
+fn now_ms() -> u64 {
+    chrono::Utc::now().timestamp_millis() as u64
+}
+fn path(name: &str) -> std::path::PathBuf {
+    crate::server::data_dir().join(name)
+}
 
 /// 所有 JSON 文件的读-改-写都在同一把进程内锁下, 防并发绑定/缓存互相覆盖。
 fn io_lock() -> &'static Mutex<()> {
@@ -20,15 +24,24 @@ fn io_lock() -> &'static Mutex<()> {
 }
 
 fn read_jsonl(name: &str) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(path(name)).unwrap_or_default().lines()
-        .filter_map(|l| serde_json::from_str(l).ok()).collect()
+    std::fs::read_to_string(path(name))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
 }
 fn append_jsonl(name: &str, v: &serde_json::Value) {
     use std::io::Write;
     let _g = io_lock().lock();
     let p = path(name);
-    if let Some(d) = p.parent() { let _ = std::fs::create_dir_all(d); }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
         let _ = writeln!(f, "{}", serde_json::to_string(v).unwrap_or_default());
     }
 }
@@ -39,35 +52,57 @@ fn read_obj(name: &str) -> serde_json::Value {
 }
 /// 调用方已持锁时用, 避免 std::sync::Mutex 不可重入导致死锁
 fn read_obj_locked(name: &str) -> serde_json::Value {
-    let v: serde_json::Value = std::fs::read_to_string(path(name)).ok()
-        .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| serde_json::json!({}));
+    let v: serde_json::Value = std::fs::read_to_string(path(name))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
     // 旧版/写坏的文件可能是 [] / 数字 / 字符串; 统一归一化成对象,
     // 否则调用点的 `v[a][b] = ...` 链式 IndexMut 会直接 panic。
-    if v.is_object() { v } else { serde_json::json!({}) }
+    if v.is_object() {
+        v
+    } else {
+        serde_json::json!({})
+    }
 }
 fn write_obj_locked(name: &str, v: &serde_json::Value) {
     let p = path(name);
-    if let Some(d) = p.parent() { let _ = std::fs::create_dir_all(d); }
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
     let tmp = p.with_extension("tmp");
     if std::fs::write(&tmp, serde_json::to_string_pretty(v).unwrap_or_default()).is_ok() {
         let _ = std::fs::rename(&tmp, &p);
     }
 }
 
-async fn kernel_log(st: &crate::AppState, mode: &str, kind: &str, label: &str, detail: serde_json::Value) {
+async fn kernel_log(
+    st: &crate::AppState,
+    mode: &str,
+    kind: &str,
+    label: &str,
+    detail: serde_json::Value,
+) {
     st.kernel.lock().await.record(mode, kind, label, detail);
 }
 
 /// 保证 reactions 结构完整 (老卡片可能只有 like 计数, 或压根没有 reactions)。
 /// 不做 `as_array_mut().unwrap()` —— 那会在旧卡上把整个请求打崩。
 fn ensure_reactions(it: &mut serde_json::Value) -> &mut serde_json::Value {
-    if !it["reactions"].is_object() { it["reactions"] = serde_json::json!({}); }
+    if !it["reactions"].is_object() {
+        it["reactions"] = serde_json::json!({});
+    }
     let r = &mut it["reactions"];
     for k in ["like", "favorite", "share"] {
-        if !r[k].is_u64() { r[k] = serde_json::json!(0); }
+        if !r[k].is_u64() {
+            r[k] = serde_json::json!(0);
+        }
     }
-    if !r["comments"].is_array() { r["comments"] = serde_json::json!([]); }
-    if !r["by"].is_object() { r["by"] = serde_json::json!({}); }
+    if !r["comments"].is_array() {
+        r["comments"] = serde_json::json!([]);
+    }
+    if !r["by"].is_object() {
+        r["by"] = serde_json::json!({});
+    }
     r
 }
 
@@ -80,15 +115,27 @@ pub async fn react_card(
     let id = req["id"].as_str().unwrap_or_default().to_string();
     let kind = req["type"].as_str().unwrap_or_default().to_string();
     if !matches!(kind.as_str(), "like" | "favorite" | "comment" | "share") || id.is_empty() {
-        return Json(serde_json::json!({ "ok": false, "error": "缺 id / type(like|favorite|comment|share)" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "缺 id / type(like|favorite|comment|share)" }),
+        );
     }
-    let text = req["text"].as_str().unwrap_or_default().trim().chars().take(300).collect::<String>();
+    let text = req["text"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(300)
+        .collect::<String>();
     if kind == "comment" && text.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "评论不能为空" }));
     }
     let did = st.identity.did.as_str().to_string();
     let mut fs = st.forge.lock().await;
-    let Some(it) = fs.inbox.iter_mut().find(|x| x["id"].as_str() == Some(id.as_str())) else {
+    let Some(it) = fs
+        .inbox
+        .iter_mut()
+        .find(|x| x["id"].as_str() == Some(id.as_str()))
+    else {
         return Json(serde_json::json!({ "ok": false, "error": "没有这张卡片" }));
     };
     let action;
@@ -96,7 +143,10 @@ pub async fn react_card(
         let r = ensure_reactions(it);
         // 只有「旧版把票记成布尔/数字/字符串」才算坏数据; by[did] 缺失/Null 是全新用户,
         // 必须按没点过处理, 否则第一次点赞会被误判成取消。
-        let legacy = r["by"].get(&did).map(|v| !v.is_null() && !v.is_object()).unwrap_or(false);
+        let legacy = r["by"]
+            .get(&did)
+            .map(|v| !v.is_null() && !v.is_object())
+            .unwrap_or(false);
         if !r["by"][&did].is_object() {
             r["by"][&did] = serde_json::json!({
                 "like": legacy && kind == "like",
@@ -106,15 +156,21 @@ pub async fn react_card(
         }
         match kind.as_str() {
             "comment" => {
-                r["comments"].as_array_mut().unwrap().push(
-                    serde_json::json!({ "at_ms": now_ms(), "text": text, "by": did }));
+                r["comments"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({ "at_ms": now_ms(), "text": text, "by": did }));
                 action = "comment";
             }
             "like" | "favorite" => {
                 let on = !r["by"][&did][&kind].as_bool().unwrap_or(false);
                 r["by"][&did][&kind] = serde_json::json!(on);
                 let n = r[&kind].as_u64().unwrap_or(0);
-                r[&kind] = serde_json::json!(if on { n.saturating_add(1) } else { n.saturating_sub(1) });
+                r[&kind] = serde_json::json!(if on {
+                    n.saturating_add(1)
+                } else {
+                    n.saturating_sub(1)
+                });
                 action = if on { "on" } else { "off" };
             }
             _ => {
@@ -142,17 +198,30 @@ pub async fn react_card(
     }
     drop(fs);
     if action != "duplicate" {
-        kernel_log(&st, "world", "button", &format!("卡片 {kind}: {id}"),
-            serde_json::json!({ "type": kind, "action": action })).await;
+        kernel_log(
+            &st,
+            "world",
+            "button",
+            &format!("卡片 {kind}: {id}"),
+            serde_json::json!({ "type": kind, "action": action }),
+        )
+        .await;
         // 一次互动只在这一个落点沉淀记忆/判断力/工作流/信念 (前端按钮不再重复上报)
         let _ = crate::world_interact::record_interaction(
             &st,
-            match kind.as_str() { "like" => "vote_up", "favorite" => "pin", _ => &kind },
+            match kind.as_str() {
+                "like" => "vote_up",
+                "favorite" => "pin",
+                _ => &kind,
+            },
             &id,
             serde_json::json!({ "label": format!("卡片 {kind}") }),
-        ).await;
+        )
+        .await;
     }
-    Json(serde_json::json!({ "ok": true, "id": id, "type": kind, "action": action, "reactions": counts }))
+    Json(
+        serde_json::json!({ "ok": true, "id": id, "type": kind, "action": action, "reactions": counts }),
+    )
 }
 
 /// POST /api/models/bind {scope: session|agent, id, provider, model}
@@ -166,27 +235,43 @@ pub async fn bind_model(
     if !matches!(scope, "session" | "agent") || id.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "scope=session|agent 且要 id" }));
     }
-    let provider = req["provider"].as_str().unwrap_or_default().trim().to_string();
+    let provider = req["provider"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let model = req["model"].as_str().unwrap_or_default().trim().to_string();
     if provider.is_empty() || model.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 provider / model" }));
     }
     let known = st.llm_snapshot().provider(&provider).is_some()
-        || bolloon_llm::config_store::load().custom_providers.contains_key(&provider);
+        || bolloon_llm::config_store::load()
+            .custom_providers
+            .contains_key(&provider);
     if !known {
         return Json(serde_json::json!({ "ok": false,
             "error": format!("provider {provider} 不在模型通路里 — 先登记/自训模型接入") }));
     }
     let _g = io_lock().lock();
     let mut b = read_obj_locked("model-bindings.json");
-    if !b[scope].is_object() { b[scope] = serde_json::json!({}); }
+    if !b[scope].is_object() {
+        b[scope] = serde_json::json!({});
+    }
     b[scope][id] = serde_json::json!({ "provider": provider, "model": model, "at_ms": now_ms() });
     write_obj_locked("model-bindings.json", &b);
     drop(_g);
-    kernel_log(&st, "agent", "route", &format!("绑定模型 {scope}/{id} → {model}"),
-        serde_json::json!({ "scope": scope, "provider": provider })).await;
-    Json(serde_json::json!({ "ok": true, "scope": scope, "id": id, "model": model,
-        "note": "下次打开这个会话/智能体沿用同一模型; 可指定本地 provider" }))
+    kernel_log(
+        &st,
+        "agent",
+        "route",
+        &format!("绑定模型 {scope}/{id} → {model}"),
+        serde_json::json!({ "scope": scope, "provider": provider }),
+    )
+    .await;
+    Json(
+        serde_json::json!({ "ok": true, "scope": scope, "id": id, "model": model,
+        "note": "下次打开这个会话/智能体沿用同一模型; 可指定本地 provider" }),
+    )
 }
 
 pub async fn model_bindings() -> Json<serde_json::Value> {
@@ -197,7 +282,9 @@ pub async fn model_bindings() -> Json<serde_json::Value> {
 pub fn resolve_binding(session_id: &str, agent_id: &str) -> Option<(String, String)> {
     let b = read_obj("model-bindings.json");
     for (scope, key) in [("session", session_id), ("agent", agent_id)] {
-        if key.is_empty() { continue; }
+        if key.is_empty() {
+            continue;
+        }
         let e = &b[scope][key];
         if e.is_object() {
             let p = e["provider"].as_str().unwrap_or("").trim();
@@ -211,7 +298,12 @@ pub fn resolve_binding(session_id: &str, agent_id: &str) -> Option<(String, Stri
 }
 
 /// 给「旧路径」(群聊/特化/视觉 call_model_metered) 也套用同一份绑定。
-pub fn apply_binding(session_id: &str, agent_id: &str, provider: String, model: String) -> (String, String) {
+pub fn apply_binding(
+    session_id: &str,
+    agent_id: &str,
+    provider: String,
+    model: String,
+) -> (String, String) {
     match resolve_binding(session_id, agent_id) {
         Some((p, m)) => (p, m),
         None => (provider, model),
@@ -220,25 +312,42 @@ pub fn apply_binding(session_id: &str, agent_id: &str, provider: String, model: 
 
 /// 调用错误落到事件管道 (Kernel 执行核), 带上下文 scope 便于回查。
 pub fn record_error(scope: &str, error: &str, detail: serde_json::Value) {
-    append_jsonl("route-errors.jsonl", &serde_json::json!({
-        "at_ms": now_ms(), "scope": scope,
-        "error": error.chars().take(300).collect::<String>(),
-        "detail": detail,
-    }));
-    crate::kernel_bus::record_event("agent", "error", &format!("{scope} 调用失败"),
-        serde_json::json!({ "error": error.chars().take(160).collect::<String>() }));
+    append_jsonl(
+        "route-errors.jsonl",
+        &serde_json::json!({
+            "at_ms": now_ms(), "scope": scope,
+            "error": error.chars().take(300).collect::<String>(),
+            "detail": detail,
+        }),
+    );
+    crate::kernel_bus::record_event(
+        "agent",
+        "error",
+        &format!("{scope} 调用失败"),
+        serde_json::json!({ "error": error.chars().take(160).collect::<String>() }),
+    );
 }
-pub fn route_usage_count() -> usize { read_jsonl("route-usage.jsonl").len() }
+pub fn route_usage_count() -> usize {
+    read_jsonl("route-usage.jsonl").len()
+}
 
 /// 好友面板两个开关的**唯一写入口**: 与 `friend_access` 同一把 io_lock,
 /// 且只更新本次提交的字段 —— 没传的开关不能被重置成默认值。
 pub fn update_friend_access(did: &str, allow: Option<bool>, blocked: Option<bool>) -> bool {
-    if allow.is_none() && blocked.is_none() { return false; }
+    if allow.is_none() && blocked.is_none() {
+        return false;
+    }
     let _g = io_lock().lock();
     let mut m = read_obj_locked("friend-access.json");
-    if !m[did].is_object() { m[did] = serde_json::json!({}); }
-    if let Some(v) = allow { m[did]["allow_agent"] = serde_json::json!(v); }
-    if let Some(v) = blocked { m[did]["blocked"] = serde_json::json!(v); }
+    if !m[did].is_object() {
+        m[did] = serde_json::json!({});
+    }
+    if let Some(v) = allow {
+        m[did]["allow_agent"] = serde_json::json!(v);
+    }
+    if let Some(v) = blocked {
+        m[did]["blocked"] = serde_json::json!(v);
+    }
     m[did]["at_ms"] = serde_json::json!(now_ms());
     write_obj_locked("friend-access.json", &m);
     true
@@ -271,39 +380,60 @@ pub async fn register_custom_model(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let name = req["name"].as_str().unwrap_or_default().trim().to_string();
-    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
         return Json(serde_json::json!({ "ok": false, "error": "模型名只能用中英文/数字/-/_" }));
     }
     let path_s = req["path"].as_str().unwrap_or_default().trim().to_string();
     if !path_s.is_empty() && !std::path::PathBuf::from(&path_s).exists() {
-        return Json(serde_json::json!({ "ok": false, "error": "路径不存在（GGUF 文件或模型目录）" }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "路径不存在（GGUF 文件或模型目录）" }),
+        );
     }
     let fmt = req["format"].as_str().unwrap_or("gguf").to_string();
-    let base_url = req["base_url"].as_str().unwrap_or_default().trim().trim_end_matches('/').to_string();
+    let base_url = req["base_url"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
     let model = req["model"].as_str().unwrap_or_default().trim().to_string();
     let mut wired = false;
     let mut provider = String::new();
     if !base_url.is_empty() {
         if !(base_url.starts_with("http://127.0.0.1")
             || base_url.starts_with("http://localhost")
-            || base_url.starts_with("http://[::1]")) {
+            || base_url.starts_with("http://[::1]"))
+        {
             return Json(serde_json::json!({ "ok": false,
                 "error": "自训模型只接本机推理端点 (127.0.0.1 / localhost / ::1)" }));
         }
         // 真探测: 端点不通就不登记成可用 provider (不假装能用)
         let probe = ureq::get(&format!("{base_url}/v1/models"))
-            .timeout(std::time::Duration::from_secs(3)).call();
+            .timeout(std::time::Duration::from_secs(3))
+            .call();
         if let Err(e) = probe {
             return Json(serde_json::json!({ "ok": false,
                 "error": format!("本机推理端点没响应 ({base_url}/v1/models): {e}") }));
         }
         provider = format!("custom-{name}");
-        let model_name = if model.is_empty() { name.clone() } else { model.clone() };
+        let model_name = if model.is_empty() {
+            name.clone()
+        } else {
+            model.clone()
+        };
         let mut cfg = bolloon_llm::config_store::load();
         bolloon_llm::config_store::upsert_custom(
-            &mut cfg, &provider, &format!("自训模型 {name}"), &base_url,
+            &mut cfg,
+            &provider,
+            &format!("自训模型 {name}"),
+            &base_url,
             Some(bolloon_llm::provider_registry::Protocol::OpenAiCompatible),
-            None, Some(&model_name),
+            None,
+            Some(&model_name),
         );
         if let Err(e) = bolloon_llm::config_store::save(&cfg) {
             return Json(serde_json::json!({ "ok": false, "error": format!("配置落盘失败: {e}") }));
@@ -320,12 +450,20 @@ pub async fn register_custom_model(
     });
     write_obj_locked("custom-models.json", &m);
     drop(_g);
-    kernel_log(&st, "agent", "route", &format!("接入自训模型 {name}"),
-        serde_json::json!({ "format": fmt, "wired": wired })).await;
-    Json(serde_json::json!({ "ok": true, "name": name, "format": fmt, "wired": wired,
+    kernel_log(
+        &st,
+        "agent",
+        "route",
+        &format!("接入自训模型 {name}"),
+        serde_json::json!({ "format": fmt, "wired": wired }),
+    )
+    .await;
+    Json(
+        serde_json::json!({ "ok": true, "name": name, "format": fmt, "wired": wired,
         "provider": provider,
         "note": if wired { "已注册成 provider, 可用 /api/models/bind 绑到会话/智能体" }
-                else { "只登记了文件; 要给 base_url(本机推理端点) 才真能调用" } }))
+                else { "只登记了文件; 要给 base_url(本机推理端点) 才真能调用" } }),
+    )
 }
 pub async fn list_custom_models() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true, "models": read_obj("custom-models.json") }))
@@ -338,10 +476,14 @@ pub async fn share_model(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let name = req["name"].as_str().unwrap_or_default().trim().to_string();
-    if name.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "缺 name" })); }
+    if name.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 name" }));
+    }
     let m = read_obj("custom-models.json");
     let e = &m[&name];
-    if !e.is_object() { return Json(serde_json::json!({ "ok": false, "error": "模型池里没有这个模型" })); }
+    if !e.is_object() {
+        return Json(serde_json::json!({ "ok": false, "error": "模型池里没有这个模型" }));
+    }
     let card = serde_json::json!({
         "title": format!("模型分享：{}", name),
         "summary": format!("自训模型 {} · 格式 {}（API 与密钥自配，不含密钥与本机路径）",
@@ -352,9 +494,13 @@ pub async fn share_model(
         "category": serde_json::Value::Null,
         "tags": ["model", "share"], "actions": [], "reply_to": serde_json::Value::Null,
     });
-    let r = crate::native::world_cards_share(State(st.clone()), Json(card)).await.0;
-    Json(serde_json::json!({ "ok": r["ok"].as_bool().unwrap_or(false), "name": name,
-        "delivery": r["delivery"], "error": r["error"] }))
+    let r = crate::native::world_cards_share(State(st.clone()), Json(card))
+        .await
+        .0;
+    Json(
+        serde_json::json!({ "ok": r["ok"].as_bool().unwrap_or(false), "name": name,
+        "delivery": r["delivery"], "error": r["error"] }),
+    )
 }
 
 // ── 幂等响应缓存 ────────────────────────────────────────────────────────────
@@ -386,10 +532,17 @@ fn canonicalize(v: &serde_json::Value) -> serde_json::Value {
             let mut vals: Vec<serde_json::Value> = a.iter().map(canonicalize).collect();
             // 工具 schema 的顺序抖动是 KV 前缀失配的经典原因 (TS canonicalizeTools)
             if vals.iter().all(|x| x.is_object())
-                && vals.iter().any(|x| x.get("function").is_some() || x.get("name").is_some())
+                && vals
+                    .iter()
+                    .any(|x| x.get("function").is_some() || x.get("name").is_some())
             {
-                vals.sort_by_key(|x| x["function"]["name"].as_str()
-                    .or_else(|| x["name"].as_str()).unwrap_or("").to_string());
+                vals.sort_by_key(|x| {
+                    x["function"]["name"]
+                        .as_str()
+                        .or_else(|| x["name"].as_str())
+                        .unwrap_or("")
+                        .to_string()
+                });
             }
             serde_json::Value::Array(vals)
         }
@@ -398,9 +551,14 @@ fn canonicalize(v: &serde_json::Value) -> serde_json::Value {
 }
 
 /// 一次模型请求的稳定 key (调用方传完整 GenerateParams JSON)
-pub fn request_cache_key(provider: &str, model: &str, session_id: &str, params_json: &str) -> String {
-    let params: serde_json::Value = serde_json::from_str(params_json)
-        .unwrap_or(serde_json::Value::Null);
+pub fn request_cache_key(
+    provider: &str,
+    model: &str,
+    session_id: &str,
+    params_json: &str,
+) -> String {
+    let params: serde_json::Value =
+        serde_json::from_str(params_json).unwrap_or(serde_json::Value::Null);
     let stable = serde_json::json!({
         "schema": 2, "provider": provider, "model": model, "session": session_id,
         "params": canonicalize(&params),
@@ -421,17 +579,24 @@ pub fn cache_lookup_by_key(key: &str) -> Option<String> {
     let _g = io_lock().lock();
     let mut c = read_obj_locked("response-cache.json");
     let e = c[key].clone();
-    if !e.is_object() { bump_counter_locked("misses"); return None }
+    if !e.is_object() {
+        bump_counter_locked("misses");
+        return None;
+    }
     let age = now_ms().saturating_sub(e["at_ms"].as_u64().unwrap_or(0));
     if age > CACHE_TTL_MS || e["at_ms"].as_u64().unwrap_or(0) > now_ms().saturating_add(2_000) {
-        if let Some(obj) = c.as_object_mut() { obj.remove(key); }
+        if let Some(obj) = c.as_object_mut() {
+            obj.remove(key);
+        }
         write_obj_locked("response-cache.json", &c);
         bump_counter_locked("misses");
         return None;
     }
     let Some(text) = e["text"].as_str() else {
         // 坏条目也要算一次未命中, 不能 `?` 提前返回让 hits/misses 统计失真
-        if let Some(obj) = c.as_object_mut() { obj.remove(key); }
+        if let Some(obj) = c.as_object_mut() {
+            obj.remove(key);
+        }
         write_obj_locked("response-cache.json", &c);
         bump_counter_locked("misses");
         return None;
@@ -456,7 +621,9 @@ pub fn cache_skip() {
 }
 
 pub fn cache_store_by_key(key: &str, text: &str) {
-    if text.is_empty() || text.chars().count() > MAX_CACHE_CHARS { return }
+    if text.is_empty() || text.chars().count() > MAX_CACHE_CHARS {
+        return;
+    }
     let _g = io_lock().lock();
     let mut c = read_obj_locked("response-cache.json");
     let now = now_ms();
@@ -467,10 +634,14 @@ pub fn cache_store_by_key(key: &str, text: &str) {
         });
         // 容量上限: 超了淘汰最旧的 (TS 侧 MAX=200)
         if obj.len() >= MAX_CACHE_ENTRIES {
-            let mut rows: Vec<(String, u64)> = obj.iter()
-                .map(|(k, v)| (k.clone(), v["at_ms"].as_u64().unwrap_or(0))).collect();
+            let mut rows: Vec<(String, u64)> = obj
+                .iter()
+                .map(|(k, v)| (k.clone(), v["at_ms"].as_u64().unwrap_or(0)))
+                .collect();
             rows.sort_by_key(|(_, t)| *t);
-            for (k, _) in rows.iter().take(obj.len() - MAX_CACHE_ENTRIES + 1) { obj.remove(k); }
+            for (k, _) in rows.iter().take(obj.len() - MAX_CACHE_ENTRIES + 1) {
+                obj.remove(k);
+            }
         }
     }
     c[key] = serde_json::json!({ "at_ms": now, "text": text });
@@ -487,7 +658,9 @@ pub fn cache_store(model: &str, prompt: &str, text: &str) {
 
 pub async fn cache_stats() -> Json<serde_json::Value> {
     let counters = read_obj("cache-counters.json");
-    let hits = counters["hits"].as_u64().unwrap_or_else(|| read_jsonl("cache-hits.jsonl").len() as u64);
+    let hits = counters["hits"]
+        .as_u64()
+        .unwrap_or_else(|| read_jsonl("cache-hits.jsonl").len() as u64);
     let misses = counters["misses"].as_u64().unwrap_or(0);
     let skipped = counters["skipped"].as_u64().unwrap_or(0);
     let total = hits + misses; // 分母只含「可缓存回合」, skipped 不参与
@@ -505,7 +678,10 @@ pub async fn cache_stats() -> Json<serde_json::Value> {
 pub const ROUTE_FEE_CNY_PER_MILLION: f64 = 0.001;
 /// 只有**拿到成功响应**才记一次; 缓存命中/调用失败/账本记账都不算调度 (没用成不收费)。
 pub fn charge_route_call(detail: &str) {
-    append_jsonl("route-usage.jsonl", &serde_json::json!({ "at_ms": now_ms(), "detail": detail }));
+    append_jsonl(
+        "route-usage.jsonl",
+        &serde_json::json!({ "at_ms": now_ms(), "detail": detail }),
+    );
 }
 pub async fn route_fee() -> Json<serde_json::Value> {
     let n = read_jsonl("route-usage.jsonl").len() as f64;
@@ -529,11 +705,32 @@ mod tests {
     }
     #[test]
     fn canonicalization_ignores_key_and_tool_order_but_not_values() {
-        let a = request_cache_key("p", "m", "s", r#"{"model":"m","tools":[{"function":{"name":"b"}},{"function":{"name":"a"}}],"messages":[{"role":"user","content":"hi"}]}"#);
-        let b = request_cache_key("p", "m", "s", r#"{"tools":[{"function":{"name":"a"}},{"function":{"name":"b"}}],"messages":[{"content":"hi","role":"user"}],"model":"m"}"#);
+        let a = request_cache_key(
+            "p",
+            "m",
+            "s",
+            r#"{"model":"m","tools":[{"function":{"name":"b"}},{"function":{"name":"a"}}],"messages":[{"role":"user","content":"hi"}]}"#,
+        );
+        let b = request_cache_key(
+            "p",
+            "m",
+            "s",
+            r#"{"tools":[{"function":{"name":"a"}},{"function":{"name":"b"}}],"messages":[{"content":"hi","role":"user"}],"model":"m"}"#,
+        );
         assert_eq!(a, b);
-        assert_ne!(a, request_cache_key("p", "m", "s2", r#"{"model":"m","tools":[],"messages":[]}"#));
-        assert_ne!(a, request_cache_key("p2", "m", "s", r#"{"model":"m","tools":[{"function":{"name":"a"}},{"function":{"name":"b"}}],"messages":[{"content":"hi","role":"user"}]}"#));
+        assert_ne!(
+            a,
+            request_cache_key("p", "m", "s2", r#"{"model":"m","tools":[],"messages":[]}"#)
+        );
+        assert_ne!(
+            a,
+            request_cache_key(
+                "p2",
+                "m",
+                "s",
+                r#"{"model":"m","tools":[{"function":{"name":"a"}},{"function":{"name":"b"}}],"messages":[{"content":"hi","role":"user"}]}"#
+            )
+        );
     }
     #[test]
     fn tool_turns_and_oversize_replies_are_never_cached() {

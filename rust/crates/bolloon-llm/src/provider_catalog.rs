@@ -140,31 +140,96 @@ pub struct FamilyDecision {
 
 /// npm 包名 → 协议族 (只列**有把握**的, 与 TS `FAMILY_BY_NPM` 同序)
 const FAMILY_BY_NPM: &[(&str, Family, &str)] = &[
-    ("amazon-bedrock", Family::Special, "npm 指明是 Amazon Bedrock (AWS SigV4 / 专用凭证)"),
-    ("@ai-sdk/azure", Family::Special, "npm 指明是 Azure (端点 + api-version + api-key 组合)"),
-    ("google-vertex", Family::Special, "npm 指明是 Google Vertex (GCP 服务账号 / OAuth)"),
-    ("@ai-sdk/anthropic", Family::Anthropic, "npm 指明是 Anthropic 客户端"),
-    ("@ai-sdk/google", Family::Gemini, "npm 指明是 Google Generative AI 客户端"),
-    ("sap-ai-provider", Family::Special, "npm 指明是 SAP AI Core (OAuth 换 token)"),
-    ("watsonx", Family::Special, "npm 指明是 IBM watsonx (apiKey + projectId)"),
-    ("gitlab", Family::Special, "npm 指明是 GitLab (instance + token 组合)"),
+    (
+        "amazon-bedrock",
+        Family::Special,
+        "npm 指明是 Amazon Bedrock (AWS SigV4 / 专用凭证)",
+    ),
+    (
+        "@ai-sdk/azure",
+        Family::Special,
+        "npm 指明是 Azure (端点 + api-version + api-key 组合)",
+    ),
+    (
+        "google-vertex",
+        Family::Special,
+        "npm 指明是 Google Vertex (GCP 服务账号 / OAuth)",
+    ),
+    (
+        "@ai-sdk/anthropic",
+        Family::Anthropic,
+        "npm 指明是 Anthropic 客户端",
+    ),
+    (
+        "@ai-sdk/google",
+        Family::Gemini,
+        "npm 指明是 Google Generative AI 客户端",
+    ),
+    (
+        "sap-ai-provider",
+        Family::Special,
+        "npm 指明是 SAP AI Core (OAuth 换 token)",
+    ),
+    (
+        "watsonx",
+        Family::Special,
+        "npm 指明是 IBM watsonx (apiKey + projectId)",
+    ),
+    (
+        "gitlab",
+        Family::Special,
+        "npm 指明是 GitLab (instance + token 组合)",
+    ),
 ];
 
 /// 环境变量里的"云凭证味道" → special (要多个变量/云签名, 不是一个 Bearer 的事)
 const CLOUD_ENV_SIGNALS: &[(&str, &str)] = &[
     ("prefix:AWS_", "环境变量是 AWS 签名凭证 (AWS_*)"),
-    ("prefix:AZURE_", "环境变量是 Azure 资源名 + key 组合 (AZURE_*)"),
-    ("prefix:GOOGLE_APPLICATION_CREDENTIALS", "环境变量是 GCP 服务账号 / Vertex 项目 (GOOGLE_*)"),
-    ("prefix:GOOGLE_VERTEX_", "环境变量是 GCP 服务账号 / Vertex 项目 (GOOGLE_*)"),
-    ("prefix:WATSONX_", "环境变量是 watsonx 的 apiKey + projectId"),
-    ("prefix:DATABRICKS_", "环境变量是 Databricks host + token 组合"),
-    ("prefix:SNOWFLAKE_", "环境变量是 Snowflake account + PAT 组合"),
-    ("prefix:CLOUDFLARE_ACCOUNT_ID", "环境变量是 Cloudflare 账号/网关 id (不止一个 key)"),
-    ("prefix:CLOUDFLARE_GATEWAY_ID", "环境变量是 Cloudflare 账号/网关 id (不止一个 key)"),
+    (
+        "prefix:AZURE_",
+        "环境变量是 Azure 资源名 + key 组合 (AZURE_*)",
+    ),
+    (
+        "prefix:GOOGLE_APPLICATION_CREDENTIALS",
+        "环境变量是 GCP 服务账号 / Vertex 项目 (GOOGLE_*)",
+    ),
+    (
+        "prefix:GOOGLE_VERTEX_",
+        "环境变量是 GCP 服务账号 / Vertex 项目 (GOOGLE_*)",
+    ),
+    (
+        "prefix:WATSONX_",
+        "环境变量是 watsonx 的 apiKey + projectId",
+    ),
+    (
+        "prefix:DATABRICKS_",
+        "环境变量是 Databricks host + token 组合",
+    ),
+    (
+        "prefix:SNOWFLAKE_",
+        "环境变量是 Snowflake account + PAT 组合",
+    ),
+    (
+        "prefix:CLOUDFLARE_ACCOUNT_ID",
+        "环境变量是 Cloudflare 账号/网关 id (不止一个 key)",
+    ),
+    (
+        "prefix:CLOUDFLARE_GATEWAY_ID",
+        "环境变量是 Cloudflare 账号/网关 id (不止一个 key)",
+    ),
     ("suffix:ENDPOINT", "环境变量里有端点地址 (不是单纯的 key)"),
-    ("suffix:_PROJECT_ID", "环境变量里有项目/产品 id (不是单纯的 key)"),
-    ("suffix:_PRODUCT_ID", "环境变量里有项目/产品 id (不是单纯的 key)"),
-    ("prefix:INFOMANIAK_", "环境变量里有项目/产品 id (不是单纯的 key)"),
+    (
+        "suffix:_PROJECT_ID",
+        "环境变量里有项目/产品 id (不是单纯的 key)",
+    ),
+    (
+        "suffix:_PRODUCT_ID",
+        "环境变量里有项目/产品 id (不是单纯的 key)",
+    ),
+    (
+        "prefix:INFOMANIAK_",
+        "环境变量里有项目/产品 id (不是单纯的 key)",
+    ),
 ];
 
 fn env_signal_matches(rule: &str, env_name: &str) -> bool {
@@ -183,7 +248,10 @@ pub fn family_of(p: &CatalogProvider) -> FamilyDecision {
         for (needle, family, signal) in FAMILY_BY_NPM {
             // `@ai-sdk/google` 不能吃掉 `@ai-sdk/google-vertex` (后者先命中 special)
             if npm.contains(needle) {
-                return FamilyDecision { family: *family, signal: (*signal).to_string() };
+                return FamilyDecision {
+                    family: *family,
+                    signal: (*signal).to_string(),
+                };
             }
         }
     }
@@ -322,9 +390,18 @@ mod tests {
             npm: npm.map(|s| s.to_string()),
             ..Default::default()
         };
-        assert_eq!(family_of(&mk(Some("@ai-sdk/anthropic"), &[])).family, Family::Anthropic);
-        assert_eq!(family_of(&mk(Some("@ai-sdk/google"), &[])).family, Family::Gemini);
-        assert_eq!(family_of(&mk(Some("@ai-sdk/amazon-bedrock"), &[])).family, Family::Special);
+        assert_eq!(
+            family_of(&mk(Some("@ai-sdk/anthropic"), &[])).family,
+            Family::Anthropic
+        );
+        assert_eq!(
+            family_of(&mk(Some("@ai-sdk/google"), &[])).family,
+            Family::Gemini
+        );
+        assert_eq!(
+            family_of(&mk(Some("@ai-sdk/amazon-bedrock"), &[])).family,
+            Family::Special
+        );
         // npm 更明确的优先于 env 启发式
         assert_eq!(
             family_of(&mk(Some("@ai-sdk/anthropic"), &["AWS_ACCESS_KEY_ID"])).family,
@@ -333,8 +410,14 @@ mod tests {
         // 云凭证味道 → special (不假装能用一个 Bearer 搞定)
         let d = family_of(&mk(None, &["AZURE_API_KEY"]));
         assert_eq!(d.family, Family::Special);
-        assert!(d.signal.contains("AZURE_API_KEY"), "理由要能对上命中项: {d:?}");
-        assert_eq!(family_of(&mk(None, &["MY_ENDPOINT"])).family, Family::Special);
+        assert!(
+            d.signal.contains("AZURE_API_KEY"),
+            "理由要能对上命中项: {d:?}"
+        );
+        assert_eq!(
+            family_of(&mk(None, &["MY_ENDPOINT"])).family,
+            Family::Special
+        );
         // 兜底
         let d = family_of(&mk(None, &["DEEPSEEK_API_KEY"]));
         assert_eq!(d.family, Family::OpenAiCompatible);
@@ -362,7 +445,10 @@ mod tests {
             ..Default::default()
         };
         let d = family_of(&p);
-        assert_eq!(auth_shape_of(&p, d.family, &d.signal).kind, AuthKind::XApiKey);
+        assert_eq!(
+            auth_shape_of(&p, d.family, &d.signal).kind,
+            AuthKind::XApiKey
+        );
 
         // 本机服务 → 不需要 key
         let p = CatalogProvider {
@@ -375,14 +461,21 @@ mod tests {
         assert!(a.supported);
 
         // special → 明确不支持
-        let p = CatalogProvider { env: vec!["AWS_ACCESS_KEY_ID".into()], ..Default::default() };
+        let p = CatalogProvider {
+            env: vec!["AWS_ACCESS_KEY_ID".into()],
+            ..Default::default()
+        };
         let a = auth_shape_of(&p, Family::Special, "AWS 签名");
         assert_eq!(a.kind, AuthKind::Special);
         assert!(!a.supported);
         assert!(a.note.contains("未支持"));
 
         // 没 env 也没有本机基址 → 凭据无从读起 (unsupported, 不猜)
-        let p = CatalogProvider { env: vec![], api: None, ..Default::default() };
+        let p = CatalogProvider {
+            env: vec![],
+            api: None,
+            ..Default::default()
+        };
         let a = auth_shape_of(&p, Family::OpenAiCompatible, "x");
         assert_eq!(a.kind, AuthKind::None);
         assert!(!a.supported);
@@ -398,6 +491,9 @@ mod tests {
             }
         }
         // TS 文档口径: 223 家里 200 家 openai-compatible
-        assert!(openai >= 180, "openai-compatible 家数 {openai} (应占绝大多数)");
+        assert!(
+            openai >= 180,
+            "openai-compatible 家数 {openai} (应占绝大多数)"
+        );
     }
 }

@@ -67,7 +67,10 @@ mod tests {
         assert_eq!(i.platform, "android");
         assert_eq!(i.action, "android.intent.action.CALL");
         assert_eq!(i.data_uri, "tel:+8613800138000");
-        assert_eq!(i.required_permission.as_deref(), Some("android.permission.CALL_PHONE"));
+        assert_eq!(
+            i.required_permission.as_deref(),
+            Some("android.permission.CALL_PHONE")
+        );
     }
 
     #[test]

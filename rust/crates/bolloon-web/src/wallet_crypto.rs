@@ -80,7 +80,10 @@ pub fn encrypt_secret(passphrase: &str, secret_hex: &str) -> Result<EncWallet, S
     let ct = cipher
         .encrypt(
             aes_gcm::Nonce::from_slice(&nonce),
-            aes_gcm::aead::Payload { msg: secret_hex.trim().as_bytes(), aad: AAD },
+            aes_gcm::aead::Payload {
+                msg: secret_hex.trim().as_bytes(),
+                aad: AAD,
+            },
         )
         .map_err(|e| format!("加密失败: {e}"))?;
     Ok(EncWallet {
@@ -96,10 +99,7 @@ pub fn encrypt_secret(passphrase: &str, secret_hex: &str) -> Result<EncWallet, S
 /// 用口令解密信封，返回私钥 hex。口令错误会返回明确错误（GCM 校验失败）。
 pub fn decrypt_secret(passphrase: &str, enc: &EncWallet) -> Result<String, String> {
     if !enc.is_supported() {
-        return Err(format!(
-            "不支持的钱包密文格式 v={} kdf={}",
-            enc.v, enc.kdf
-        ));
+        return Err(format!("不支持的钱包密文格式 v={} kdf={}", enc.v, enc.kdf));
     }
     let salt = b64d(&enc.salt)?;
     let nonce = b64d(&enc.nonce)?;

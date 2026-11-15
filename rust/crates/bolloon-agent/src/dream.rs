@@ -16,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::judgment::{jaccard, EvolveAction, JudgmentStore};
+use crate::judgment::{EvolveAction, JudgmentStore, jaccard};
 use crate::memory::{MemoryEntry, MemoryLayer};
 use crate::skills_runtime::SkillEvolver;
 
@@ -126,7 +126,8 @@ pub fn dream(
 
     if clusters.is_empty() {
         // 纪律: 没有素材就如实报"梦境空空", 不编洞察
-        report.skipped_reason = Some("empty-memory: 没有可整理的记忆 (多对话让记忆沉淀后再做梦)".into());
+        report.skipped_reason =
+            Some("empty-memory: 没有可整理的记忆 (多对话让记忆沉淀后再做梦)".into());
         report.insight = None;
         return report;
     }
@@ -206,9 +207,15 @@ mod tests {
     fn empty_memory_dreams_nothing() {
         let mut j = JudgmentStore::new();
         let mut s = SkillEvolver::new();
-        let input = DreamInput { memories: &[], now_ms: 1000 };
+        let input = DreamInput {
+            memories: &[],
+            now_ms: 1000,
+        };
         let r = dream(&input, &mut j, &mut s, "all");
-        assert_eq!(r.skipped_reason.as_deref(), Some("empty-memory: 没有可整理的记忆 (多对话让记忆沉淀后再做梦)"));
+        assert_eq!(
+            r.skipped_reason.as_deref(),
+            Some("empty-memory: 没有可整理的记忆 (多对话让记忆沉淀后再做梦)")
+        );
         assert!(r.insight.is_none(), "梦境空空 — 不编洞察");
         assert_eq!(r.promoted_total(), 0);
     }
@@ -219,7 +226,10 @@ mod tests {
             entry("m1", "临时便签 A", MemoryLayer::Temporary, Some(500)),
             entry("m2", "长期事实 B", MemoryLayer::RunFact, None),
         ]);
-        let (clusters, expired) = consolidate(&DreamInput { memories: &mems, now_ms: 1000 });
+        let (clusters, expired) = consolidate(&DreamInput {
+            memories: &mems,
+            now_ms: 1000,
+        });
         assert_eq!(expired, 1, "过期临时记忆被清掉");
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].text, "长期事实 B");
@@ -228,11 +238,24 @@ mod tests {
     #[test]
     fn similar_memories_consolidated_into_experience() {
         let mems = ms(vec![
-            entry("m1", "先做最小版本再迭代，不要过度设计", MemoryLayer::Lesson, None),
-            entry("m2", "先做最小版本再迭代，不要过度设计（补充成本考量）", MemoryLayer::Lesson, None),
+            entry(
+                "m1",
+                "先做最小版本再迭代，不要过度设计",
+                MemoryLayer::Lesson,
+                None,
+            ),
+            entry(
+                "m2",
+                "先做最小版本再迭代，不要过度设计（补充成本考量）",
+                MemoryLayer::Lesson,
+                None,
+            ),
             entry("m3", "回复用户用中文", MemoryLayer::Decision, None),
         ]);
-        let (clusters, _) = consolidate(&DreamInput { memories: &mems, now_ms: 0 });
+        let (clusters, _) = consolidate(&DreamInput {
+            memories: &mems,
+            now_ms: 0,
+        });
         // 两条相似的合成一簇, 另一条独立
         assert_eq!(clusters.len(), 2, "{clusters:?}");
         let big = clusters.iter().max_by_key(|c| c.from.len()).unwrap();
@@ -242,15 +265,31 @@ mod tests {
     #[test]
     fn dream_builds_judgments_and_skills() {
         let mems = ms(vec![
-            entry("m1", "先做最小版本再迭代，不要过度设计", MemoryLayer::Lesson, None),
+            entry(
+                "m1",
+                "先做最小版本再迭代，不要过度设计",
+                MemoryLayer::Lesson,
+                None,
+            ),
             entry("m2", "回复用户用中文", MemoryLayer::Decision, None),
         ]);
         let mut j = JudgmentStore::new();
         let mut s = SkillEvolver::new();
-        let r = dream(&DreamInput { memories: &mems, now_ms: 1000 }, &mut j, &mut s, "coding");
+        let r = dream(
+            &DreamInput {
+                memories: &mems,
+                now_ms: 1000,
+            },
+            &mut j,
+            &mut s,
+            "coding",
+        );
         assert_eq!(r.scanned, 2);
         assert!(r.judgments_created >= 1, "经验进判断力: {r:?}");
-        assert_eq!(r.judgments_created + r.judgments_merged + r.judgments_contradicted, 2);
+        assert_eq!(
+            r.judgments_created + r.judgments_merged + r.judgments_contradicted,
+            2
+        );
         assert!(r.skills_promoted >= 1, "经验升级成 skill: {r:?}");
         assert!(r.insight.is_some(), "有素材 → 有灵感");
         assert!(!j.is_empty());
@@ -259,30 +298,70 @@ mod tests {
 
     #[test]
     fn contradiction_flagged_not_overwritten() {
-        let mems = ms(vec![entry("m1", "回复必须用英文，不要用中文", MemoryLayer::Decision, None)]);
+        let mems = ms(vec![entry(
+            "m1",
+            "回复必须用英文，不要用中文",
+            MemoryLayer::Decision,
+            None,
+        )]);
         let mut j = JudgmentStore::new();
         j.evolve("回复用户用中文", "coding", 0.9, 1); // 既有: 用中文
         let mut s = SkillEvolver::new();
-        let r = dream(&DreamInput { memories: &mems, now_ms: 2 }, &mut j, &mut s, "coding");
+        let r = dream(
+            &DreamInput {
+                memories: &mems,
+                now_ms: 2,
+            },
+            &mut j,
+            &mut s,
+            "coding",
+        );
         // 反向: 要么标冲突, 要么新建; 关键是不静默吞 —— notes 里能看到
         assert!(
             r.judgments_contradicted >= 1 || r.judgments_created >= 1,
             "{r:?}"
         );
-        assert!(!r.notes.is_empty() || r.judgments_created >= 1, "冲突必须留痕: {r:?}");
+        assert!(
+            !r.notes.is_empty() || r.judgments_created >= 1,
+            "冲突必须留痕: {r:?}"
+        );
     }
 
     #[test]
     fn second_dream_is_idempotent() {
-        let mems = ms(vec![entry("m1", "先做最小版本再迭代", MemoryLayer::Lesson, None)]);
+        let mems = ms(vec![entry(
+            "m1",
+            "先做最小版本再迭代",
+            MemoryLayer::Lesson,
+            None,
+        )]);
         let mut j = JudgmentStore::new();
         let mut s = SkillEvolver::new();
-        let r1 = dream(&DreamInput { memories: &mems, now_ms: 1000 }, &mut j, &mut s, "coding");
-        let r2 = dream(&DreamInput { memories: &mems, now_ms: 2000 }, &mut j, &mut s, "coding");
+        let r1 = dream(
+            &DreamInput {
+                memories: &mems,
+                now_ms: 1000,
+            },
+            &mut j,
+            &mut s,
+            "coding",
+        );
+        let r2 = dream(
+            &DreamInput {
+                memories: &mems,
+                now_ms: 2000,
+            },
+            &mut j,
+            &mut s,
+            "coding",
+        );
         assert!(r1.skills_promoted >= 1);
         assert_eq!(r2.skills_promoted, 0, "同一经验第二次不再重复晋升 (幂等)");
         assert_eq!(s.registry.len(), r1.skills_promoted, "skills 没被重复塞");
-        assert!(r2.judgments_merged >= 1 || r2.judgments_created == 0, "判断力走合并不是新建");
+        assert!(
+            r2.judgments_merged >= 1 || r2.judgments_created == 0,
+            "判断力走合并不是新建"
+        );
     }
 
     #[test]

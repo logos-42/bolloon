@@ -169,7 +169,12 @@ pub fn assess(principal: &str, s: &Signals) -> Profile {
             reasons.push(format!("{label} ×{n} ⇒ {pts:.1} 分（权重 {w:.0}）"));
         }
     };
-    push(s.helped_others_verified, "帮到别人且被确认", 30.0, w_help * 30.0);
+    push(
+        s.helped_others_verified,
+        "帮到别人且被确认",
+        30.0,
+        w_help * 30.0,
+    );
     push(s.promises_kept, "承诺兑现并通过验收", 22.0, w_keep * 22.0);
     push(s.shares_verified, "主动分享被确认", 12.0, w_share * 12.0);
     push(s.corrections, "主动更正错误", 12.0, w_fix * 12.0);
@@ -352,8 +357,20 @@ mod tests {
 
     #[test]
     fn diminishing_returns_prevent_farming() {
-        let a = assess("u", &Signals { helped_others_verified: 10, ..Default::default() });
-        let b = assess("u", &Signals { helped_others_verified: 10_000, ..Default::default() });
+        let a = assess(
+            "u",
+            &Signals {
+                helped_others_verified: 10,
+                ..Default::default()
+            },
+        );
+        let b = assess(
+            "u",
+            &Signals {
+                helped_others_verified: 10_000,
+                ..Default::default()
+            },
+        );
         assert!(b.index >= a.index);
         assert!(
             b.index - a.index <= 7,
@@ -370,7 +387,15 @@ mod tests {
             ..Default::default()
         };
         let blob = serde_json::to_string(&assess("u", &s)).unwrap();
-        for forbidden in ["religion", "faith", "ethnic", "nationality", "party", "gender", "race"] {
+        for forbidden in [
+            "religion",
+            "faith",
+            "ethnic",
+            "nationality",
+            "party",
+            "gender",
+            "race",
+        ] {
             assert!(
                 !blob.to_lowercase().contains(forbidden),
                 "档案不许出现身份维度: {forbidden}"
@@ -385,7 +410,14 @@ mod tests {
     fn higher_stage_gets_more_but_never_less_than_baseline() {
         let mut prev = 0.0;
         for (h, k) in [(0, 0), (1, 1), (3, 3), (6, 6), (20, 20)] {
-            let p = assess("u", &Signals { helped_others_verified: h, promises_kept: k, ..Default::default() });
+            let p = assess(
+                "u",
+                &Signals {
+                    helped_others_verified: h,
+                    promises_kept: k,
+                    ..Default::default()
+                },
+            );
             assert!(p.permissions.allowance_multiplier >= 1.0, "永远 ≥ 基线");
             assert!(p.permissions.allowance_multiplier >= prev, "单调不倒退");
             prev = p.permissions.allowance_multiplier;
@@ -404,7 +436,10 @@ mod tests {
         let hv = human_view(&p);
         let blob = serde_json::to_string(&hv).unwrap().to_lowercase();
         for forbidden in ["index", "score", "stage", "\"level\"", "luminous", "deep\""] {
-            assert!(!blob.contains(forbidden), "人类视图不许出现指标: {forbidden} ⇒ {blob}");
+            assert!(
+                !blob.contains(forbidden),
+                "人类视图不许出现指标: {forbidden} ⇒ {blob}"
+            );
         }
         assert!(!hv.quantified);
         assert!(!hv.needs.is_empty(), "但要给出具体帮助");
@@ -413,10 +448,22 @@ mod tests {
 
     #[test]
     fn needs_are_actionable() {
-        let p = assess("u", &Signals { promises_kept: 3, ..Default::default() });
-        assert!(p.needs.iter().any(|n| n.kind == "serve_someone"), "缺利他 ⇒ 建议去帮人");
+        let p = assess(
+            "u",
+            &Signals {
+                promises_kept: 3,
+                ..Default::default()
+            },
+        );
+        assert!(
+            p.needs.iter().any(|n| n.kind == "serve_someone"),
+            "缺利他 ⇒ 建议去帮人"
+        );
         for n in &p.needs {
-            assert!(!n.help.is_empty() && !n.because.is_empty(), "需求必须说清原因与做法");
+            assert!(
+                !n.help.is_empty() && !n.because.is_empty(),
+                "需求必须说清原因与做法"
+            );
         }
     }
 }

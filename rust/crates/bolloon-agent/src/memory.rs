@@ -101,12 +101,21 @@ impl MemoryStore {
     }
 
     /// 召回: 过滤失效 + 打分 (importance × decay) top-k, 按分降序
-    pub fn recall(&self, query_substring: Option<&str>, top_k: usize, now: DateTime<Utc>) -> Vec<&MemoryEntry> {
+    pub fn recall(
+        &self,
+        query_substring: Option<&str>,
+        top_k: usize,
+        now: DateTime<Utc>,
+    ) -> Vec<&MemoryEntry> {
         let mut scored: Vec<(f64, &MemoryEntry)> = self
             .entries
             .iter()
             .filter(|e| e.alive_at(now))
-            .filter(|e| query_substring.map(|q| e.content.contains(q)).unwrap_or(true))
+            .filter(|e| {
+                query_substring
+                    .map(|q| e.content.contains(q))
+                    .unwrap_or(true)
+            })
             .map(|e| (score_of(e, now), e))
             .collect();
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -129,7 +138,10 @@ impl MemoryStore {
     pub fn from_snapshot(entries: Vec<MemoryEntry>) -> Self {
         let next_id = entries
             .iter()
-            .filter_map(|e| e.id.strip_prefix("mem-").and_then(|s| s.parse::<u64>().ok()))
+            .filter_map(|e| {
+                e.id.strip_prefix("mem-")
+                    .and_then(|s| s.parse::<u64>().ok())
+            })
             .max()
             .unwrap_or(0)
             + 1;
@@ -185,7 +197,12 @@ mod tests {
     #[test]
     fn temporary_expires() {
         let mut m = MemoryStore::new();
-        m.remember("temp", MemoryLayer::Temporary, 0.9, Some(chrono::Duration::minutes(10)));
+        m.remember(
+            "temp",
+            MemoryLayer::Temporary,
+            0.9,
+            Some(chrono::Duration::minutes(10)),
+        );
         assert_eq!(m.alive_count(Utc::now()), 1);
         let later = Utc::now() + chrono::Duration::minutes(11);
         assert_eq!(m.alive_count(later), 0, "temporary 过期必须失效");

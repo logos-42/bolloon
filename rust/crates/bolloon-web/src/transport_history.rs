@@ -45,8 +45,8 @@ pub fn record(
     elapsed_ms: u64,
 ) {
     record_detail(
-        direction, peer, transport, method, api_path, req_bytes, resp_bytes, ok, elapsed_ms,
-        "api", "",
+        direction, peer, transport, method, api_path, req_bytes, resp_bytes, ok, elapsed_ms, "api",
+        "",
     );
 }
 
@@ -140,7 +140,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("bolloon-quic-history-{}-{n}.jsonl", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "bolloon-quic-history-{}-{n}.jsonl",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -158,7 +161,10 @@ mod tests {
         }
         let txt = std::fs::read_to_string(&f).unwrap();
         assert_eq!(txt.lines().count(), 3);
-        let mut v: Vec<Value> = txt.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let mut v: Vec<Value> = txt
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
         v.reverse();
         assert_eq!(v[0]["req_bytes"], serde_json::json!(2));
         let _ = std::fs::remove_file(&f);
@@ -169,7 +175,10 @@ mod tests {
         let f = tmpfile();
         std::fs::write(&f, "not json\n{\"ok\":true}\n").unwrap();
         let txt = std::fs::read_to_string(&f).unwrap();
-        let bad = txt.lines().filter(|l| serde_json::from_str::<Value>(l).is_err()).count();
+        let bad = txt
+            .lines()
+            .filter(|l| serde_json::from_str::<Value>(l).is_err())
+            .count();
         assert_eq!(bad, 1);
         let _ = std::fs::remove_file(&f);
     }

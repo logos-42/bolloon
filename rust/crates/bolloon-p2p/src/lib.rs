@@ -3,25 +3,25 @@
 //! 接口先行（磁盘/编译友好）：DID 身份 + 群聊 store + 传输抽象。
 //! DIAP 后端通过 feature 注入（见 Cargo.toml 注释）。
 
-pub mod identity;
-pub mod envelope;
-pub mod gossip;
-pub mod oplog;
-pub mod replication;
-pub mod orbit_store;
-pub mod group_orbit;
 pub mod attestation;
-#[cfg(feature = "quic-transport")]
-pub mod quic_transport;
 /// 跨 NAT 的 DIAP 传输（iroh 1.4，由 diap-rs-sdk 提供）
 #[cfg(feature = "diap-backend")]
 pub mod diap_transport;
-pub use identity::*;
+pub mod envelope;
+pub mod gossip;
+pub mod group_orbit;
+pub mod identity;
+pub mod oplog;
+pub mod orbit_store;
+#[cfg(feature = "quic-transport")]
+pub mod quic_transport;
+pub mod replication;
+pub use attestation::*;
 pub use envelope::*;
 pub use gossip::*;
-pub use orbit_store::*;
 pub use group_orbit::*;
-pub use attestation::*;
+pub use identity::*;
+pub use orbit_store::*;
 
 /// b58 编码 (外部 crate 复用, 不重复引依赖)
 pub fn b58_encode(bytes: &[u8]) -> String {

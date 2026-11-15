@@ -12,7 +12,7 @@
 //! 诚实边界：EIP-3009 的 `AuthorizationUsed` nonce 未解码（订单标识自证留给后续），
 //! 判定退化为"转账事实核验"，卖方会如实回 Verified / SelfAttested。
 
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 use bolloon_x402::direct_payment::{PaymentClaim, RpcObservation};
 
 use crate::AppState;
@@ -82,7 +82,10 @@ fn observe_one(rpc: &str, tx_hash: &str) -> Result<RpcObservation, String> {
                 continue;
             }
             let to = topic_addr(topics[2].as_str().unwrap_or("0x0")).to_lowercase();
-            let data = log["data"].as_str().unwrap_or("0x0").trim_start_matches("0x");
+            let data = log["data"]
+                .as_str()
+                .unwrap_or("0x0")
+                .trim_start_matches("0x");
             let value = u128::from_str_radix(data, 16).unwrap_or(0);
             transfer_to = Some(to);
             transfer_value = Some(value);
@@ -151,7 +154,11 @@ pub(crate) fn append_order(rec: &serde_json::Value) {
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
         let _ = writeln!(f, "{}", serde_json::to_string(rec).unwrap_or_default());
     }
 }
@@ -165,7 +172,11 @@ pub async fn buy_quote(
         Ok(p) => p,
         Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
     };
-    let item = req["item_id"].as_str().unwrap_or_default().trim().to_string();
+    let item = req["item_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if item.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 item_id" }));
     }
@@ -188,8 +199,16 @@ pub async fn buy_pay(
         Ok(p) => p,
         Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
     };
-    let item = req["item_id"].as_str().unwrap_or_default().trim().to_string();
-    let tx_hash = req["tx_hash"].as_str().unwrap_or_default().trim().to_string();
+    let item = req["item_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let tx_hash = req["tx_hash"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if item.is_empty() || tx_hash.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 item_id 或 tx_hash" }));
     }
@@ -198,22 +217,22 @@ pub async fn buy_pay(
     }
 
     // 1) 报价以卖方为准
-    let quote = match crate::native::peer_json(
-        "GET",
-        format!("{peer}/api/x402/info/{item}"),
-        None,
-    )
-    .await
-    {
-        Ok(q) => q,
-        Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("报价失败: {e}") })),
-    };
+    let quote =
+        match crate::native::peer_json("GET", format!("{peer}/api/x402/info/{item}"), None).await {
+            Ok(q) => q,
+            Err(e) => {
+                return Json(serde_json::json!({ "ok": false, "error": format!("报价失败: {e}") }));
+            }
+        };
     let accepted = quote["accepts"]
         .as_array()
         .and_then(|a| a.first())
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-    let pay_to = accepted["payTo"].as_str().unwrap_or_default().to_lowercase();
+    let pay_to = accepted["payTo"]
+        .as_str()
+        .unwrap_or_default()
+        .to_lowercase();
     let amount = accepted["maxAmountRequired"]
         .as_str()
         .and_then(|s| s.parse::<u128>().ok())
@@ -237,7 +256,7 @@ pub async fn buy_pay(
         Ok(Ok(v)) => v,
         Ok(Err(e)) => return Json(serde_json::json!({ "ok": false, "error": e })),
         Err(e) => {
-            return Json(serde_json::json!({ "ok": false, "error": format!("读链线程失败: {e}") }))
+            return Json(serde_json::json!({ "ok": false, "error": format!("读链线程失败: {e}") }));
         }
     };
 
@@ -260,7 +279,7 @@ pub async fn buy_pay(
     {
         Ok(v) => v,
         Err(e) => {
-            return Json(serde_json::json!({ "ok": false, "error": format!("交付失败: {e}") }))
+            return Json(serde_json::json!({ "ok": false, "error": format!("交付失败: {e}") }));
         }
     };
 
@@ -317,7 +336,10 @@ mod tests {
         assert_eq!(hex_u64("0x10"), 16);
         assert_eq!(hex_u64("0x0"), 0);
         let topic = "0x0000000000000000000000001111111111111111111111111111111111111111";
-        assert_eq!(topic_addr(topic), "0x1111111111111111111111111111111111111111");
+        assert_eq!(
+            topic_addr(topic),
+            "0x1111111111111111111111111111111111111111"
+        );
     }
 
     /// 观测必须多源: 少于 2 条 RPC 直接拒 (不许拿单点当事实)

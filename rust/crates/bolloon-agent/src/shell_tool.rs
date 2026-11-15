@@ -19,8 +19,8 @@
 //! **命令正文先脱敏再落盘**（命中凭据模式整条打码 —— 宁可误伤，不可漏放）。
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Windows 桌面 App 里 agent 每跑一条 shell 工具都会 spawn 一个控制台子进程;
 /// 不加 CREATE_NO_WINDOW 就会连着弹黑框 (2026-11-05 用户报「经常产生弹窗」)。
@@ -34,8 +34,8 @@ fn no_console_window(cmd: &mut TokioCommand) {
 #[cfg(not(windows))]
 fn no_console_window(_cmd: &mut TokioCommand) {}
 
-use async_trait::async_trait;
 use crate::tool_contract::{ErrorCode, error_evidence, with_error};
+use async_trait::async_trait;
 use bolloon_harness::security::guard_shell;
 use bolloon_harness::{EffectKind, ToolCall, ToolDef, ToolExecutor, ToolResult};
 use tokio::io::AsyncReadExt;
@@ -187,7 +187,11 @@ fn audit(record: serde_json::Value) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         use std::io::Write;
         let _ = writeln!(f, "{record}");
     }
@@ -275,7 +279,10 @@ impl ToolExecutor for ShellExecutor {
         if cmds.len() > MAX_COMMANDS {
             return ToolResult {
                 ok: false,
-                output: format!("shell: 一次最多 {MAX_COMMANDS} 条命令（收到 {}）", cmds.len()),
+                output: format!(
+                    "shell: 一次最多 {MAX_COMMANDS} 条命令（收到 {}）",
+                    cmds.len()
+                ),
                 elapsed_ms,
                 verified: Some(false),
                 evidence: Some(error_evidence(ErrorCode::InvalidArgument, "命令条数超限")),
@@ -351,7 +358,11 @@ impl ToolExecutor for ShellExecutor {
             let head = format!("$ {}\n", c);
             let body = match r.kind {
                 CmdEnd::Done => {
-                    format!("{}[exit {}]", r.output, r.exit.map(|c| c.to_string()).unwrap_or("?".into()))
+                    format!(
+                        "{}[exit {}]",
+                        r.output,
+                        r.exit.map(|c| c.to_string()).unwrap_or("?".into())
+                    )
                 }
                 CmdEnd::Timeout => format!("[超时 {}ms, 已 kill 子进程]\n{}", timeout_ms, r.output),
                 CmdEnd::Cancelled => "[已取消: 收到取消信号, 已 kill 子进程]".to_string(),
@@ -380,7 +391,11 @@ impl ToolExecutor for ShellExecutor {
                     CmdEnd::Timeout => format!("第 {} 条超时（已 kill）", i + 1),
                     CmdEnd::Cancelled => format!("第 {} 条被取消", i + 1),
                     CmdEnd::SpawnErr(e) => format!("第 {} 条启动失败: {e}", i + 1),
-                    CmdEnd::Done => format!("第 {} 条退出码 {:?} —— 失败即停，后续命令未执行", i + 1, r.exit),
+                    CmdEnd::Done => format!(
+                        "第 {} 条退出码 {:?} —— 失败即停，后续命令未执行",
+                        i + 1,
+                        r.exit
+                    ),
                 });
                 break; // fail-fast
             }
@@ -389,10 +404,7 @@ impl ToolExecutor for ShellExecutor {
         let executed = entries.len();
         let mut output = parts.join("\n");
         if let Some(reason) = &stop_reason {
-            output.push_str(&format!(
-                "\n[已执行 {executed}/{} 条] {reason}",
-                cmds.len()
-            ));
+            output.push_str(&format!("\n[已执行 {executed}/{} 条] {reason}", cmds.len()));
         }
         let chars = output.chars().count();
         if chars > MAX_OUTPUT_CHARS {
@@ -568,7 +580,9 @@ mod tests {
     #[tokio::test]
     async fn bin_outside_allowlist_rejected() {
         let r = ShellExecutor::new()
-            .execute(call(serde_json::json!({ "command": "python3 -c 'print(1)'" })))
+            .execute(call(
+                serde_json::json!({ "command": "python3 -c 'print(1)'" }),
+            ))
             .await;
         assert!(!r.ok);
         assert!(r.output.contains("白名单"), "{}", r.output);
@@ -577,7 +591,12 @@ mod tests {
     /// 路径 deny（凭据类，任何模式不放行）
     #[tokio::test]
     async fn credential_path_rejected() {
-        for c in ["cat .env", "cat ~/.ssh/id_rsa", "cat a/b.pem", "cat .bolloon/keypair.json"] {
+        for c in [
+            "cat .env",
+            "cat ~/.ssh/id_rsa",
+            "cat a/b.pem",
+            "cat .bolloon/keypair.json",
+        ] {
             let r = ShellExecutor::new()
                 .execute(call(serde_json::json!({ "commands": [c] })))
                 .await;
@@ -591,10 +610,16 @@ mod tests {
     #[tokio::test]
     async fn multiple_commands_run_in_order() {
         let r = ShellExecutor::new()
-            .execute(call(serde_json::json!({ "commands": ["echo one", "echo two"] })))
+            .execute(call(
+                serde_json::json!({ "commands": ["echo one", "echo two"] }),
+            ))
             .await;
         assert!(r.ok, "{}", r.output);
-        assert!(r.output.contains("one") && r.output.contains("two"), "{}", r.output);
+        assert!(
+            r.output.contains("one") && r.output.contains("two"),
+            "{}",
+            r.output
+        );
         let ev = r.evidence.expect("有证据");
         assert_eq!(ev["executed"], 2);
         assert_eq!(ev["total"], 2);
@@ -609,8 +634,16 @@ mod tests {
             })))
             .await;
         assert!(!r.ok);
-        assert!(r.output.contains("first"), "已执行的要如实列出: {}", r.output);
-        assert!(!r.output.contains("third"), "失败后不该再执行: {}", r.output);
+        assert!(
+            r.output.contains("first"),
+            "已执行的要如实列出: {}",
+            r.output
+        );
+        assert!(
+            !r.output.contains("third"),
+            "失败后不该再执行: {}",
+            r.output
+        );
         let ev = r.evidence.expect("有证据");
         assert_eq!(ev["executed"], 2, "失败即停 ⇒ 只跑了前两条");
         assert_eq!(ev["total"], 3);
@@ -651,7 +684,9 @@ mod tests {
             flag.store(true, Ordering::Relaxed);
         });
         let r = ex
-            .execute(call(serde_json::json!({ "commands": ["sleep 30"], "timeout_ms": 60_000 })))
+            .execute(call(
+                serde_json::json!({ "commands": ["sleep 30"], "timeout_ms": 60_000 }),
+            ))
             .await;
         assert!(!r.ok);
         assert!(r.output.contains("取消"), "{}", r.output);
@@ -660,7 +695,9 @@ mod tests {
     /// 参数必填（入口校验）
     #[tokio::test]
     async fn missing_commands_rejected_at_entry() {
-        let r = ShellExecutor::new().execute(call(serde_json::json!({}))).await;
+        let r = ShellExecutor::new()
+            .execute(call(serde_json::json!({})))
+            .await;
         assert!(!r.ok);
         assert!(r.output.contains("commands 必填"), "{}", r.output);
     }
@@ -679,11 +716,16 @@ mod tests {
         use crate::grants::GrantStore;
         let mut g = GrantStore::default();
         assert_eq!(
-            precheck_with_grants("python3 -c 'x'", false, &g).unwrap_err().kind,
+            precheck_with_grants("python3 -c 'x'", false, &g)
+                .unwrap_err()
+                .kind,
             "bin_not_allowed"
         );
         g.grant("bins", "python3").unwrap();
-        assert!(precheck_with_grants("python3 -c 'x'", false, &g).is_ok(), "允许过的 bin 放行");
+        assert!(
+            precheck_with_grants("python3 -c 'x'", false, &g).is_ok(),
+            "允许过的 bin 放行"
+        );
 
         // 凭据/系统路径是硬边界: 即使 grant 了目录也不打开（denylist 或 path_denied 都算拒）
         g.grant("paths", "/etc").unwrap();
@@ -693,7 +735,9 @@ mod tests {
         g.grant("bins", "shutdown").unwrap();
         g.grant("commands", "shutdown *").unwrap();
         assert_eq!(
-            precheck_with_grants("shutdown now", false, &g).unwrap_err().kind,
+            precheck_with_grants("shutdown now", false, &g)
+                .unwrap_err()
+                .kind,
             "denylist",
             "denylist 必须仍然拒 —— 一次性授权不能把硬边界打开"
         );
@@ -702,12 +746,21 @@ mod tests {
     /// **完全访问 (bypass)**: 三道权限门全跳过（纯函数验证，绝不真跑破坏性命令）
     #[test]
     fn precheck_bypass_skips_all_gates() {
-        assert!(precheck("rm -rf /", true).is_ok(), "完全访问: denylist 不拦");
-        assert!(precheck("python3 -c 'x'", true).is_ok(), "完全访问: 白名单不拦");
+        assert!(
+            precheck("rm -rf /", true).is_ok(),
+            "完全访问: denylist 不拦"
+        );
+        assert!(
+            precheck("python3 -c 'x'", true).is_ok(),
+            "完全访问: 白名单不拦"
+        );
         assert!(precheck("cat .env", true).is_ok(), "完全访问: 路径保护不拦");
         // 对照 —— 默认模式三道门都拦
         assert_eq!(precheck("rm -rf /", false).unwrap_err().kind, "denylist");
-        assert_eq!(precheck("python3 -c 'x'", false).unwrap_err().kind, "bin_not_allowed");
+        assert_eq!(
+            precheck("python3 -c 'x'", false).unwrap_err().kind,
+            "bin_not_allowed"
+        );
         assert_eq!(precheck("cat .env", false).unwrap_err().kind, "path_denied");
     }
 
@@ -716,7 +769,9 @@ mod tests {
     async fn bypass_executes_outside_allowlist() {
         let r = ShellExecutor::new()
             .with_bypass(true)
-            .execute(call(serde_json::json!({ "commands": ["python3 --version"] })))
+            .execute(call(
+                serde_json::json!({ "commands": ["python3 --version"] }),
+            ))
             .await;
         assert!(
             !r.output.contains("白名单"),
@@ -730,7 +785,9 @@ mod tests {
     async fn bypass_still_enforces_timeout_and_cancel() {
         let r = ShellExecutor::new()
             .with_bypass(true)
-            .execute(call(serde_json::json!({ "commands": ["sleep 30"], "timeout_ms": 300 })))
+            .execute(call(
+                serde_json::json!({ "commands": ["sleep 30"], "timeout_ms": 300 }),
+            ))
             .await;
         assert!(!r.ok);
         assert!(r.output.contains("超时"), "全开 ≠ 撤掉超时: {}", r.output);
@@ -742,7 +799,9 @@ mod tests {
             flag.store(true, Ordering::Relaxed);
         });
         let r2 = ex
-            .execute(call(serde_json::json!({ "commands": ["sleep 30"], "timeout_ms": 60_000 })))
+            .execute(call(
+                serde_json::json!({ "commands": ["sleep 30"], "timeout_ms": 60_000 }),
+            ))
             .await;
         assert!(r2.output.contains("取消"), "全开 ≠ 撤掉取消: {}", r2.output);
     }
@@ -750,8 +809,13 @@ mod tests {
     /// 失败必须带**结构化**错误码 —— 调用方据此决定重试 / 改参数 / 重规划
     #[tokio::test]
     async fn failures_carry_structured_error_codes() {
-        let r = ShellExecutor::new().execute(call(serde_json::json!({}))).await;
-        assert_eq!(r.evidence.as_ref().unwrap()["error"]["code"], "invalid_argument");
+        let r = ShellExecutor::new()
+            .execute(call(serde_json::json!({})))
+            .await;
+        assert_eq!(
+            r.evidence.as_ref().unwrap()["error"]["code"],
+            "invalid_argument"
+        );
 
         let r = ShellExecutor::new()
             .execute(call(serde_json::json!({ "commands": ["rm -rf /"] })))
@@ -761,16 +825,23 @@ mod tests {
         assert_eq!(ev["error"]["retryable"], false, "安全门拒绝不该重试");
 
         let r = ShellExecutor::new()
-            .execute(call(serde_json::json!({ "commands": ["sleep 30"], "timeout_ms": 300 })))
+            .execute(call(
+                serde_json::json!({ "commands": ["sleep 30"], "timeout_ms": 300 }),
+            ))
             .await;
         let ev = r.evidence.as_ref().unwrap();
         assert_eq!(ev["error"]["code"], "timeout");
         assert_eq!(ev["error"]["retryable"], true, "超时类型上可重试");
 
         let r = ShellExecutor::new()
-            .execute(call(serde_json::json!({ "commands": ["ls /definitely-not-exist-xyz"] })))
+            .execute(call(
+                serde_json::json!({ "commands": ["ls /definitely-not-exist-xyz"] }),
+            ))
             .await;
-        assert_eq!(r.evidence.as_ref().unwrap()["error"]["code"], "command_failed");
+        assert_eq!(
+            r.evidence.as_ref().unwrap()["error"]["code"],
+            "command_failed"
+        );
     }
 
     /// 高风险工具定义: 不默认允许（须显式授权）

@@ -20,7 +20,9 @@ const RPC_BASE: &str = "https://mainnet.base.org";
 const RPC_SEPOLIA: &str = "https://ethereum-sepolia-rpc.publicnode.com";
 
 fn home() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn wallet_file() -> Option<PathBuf> {
@@ -44,7 +46,11 @@ fn hex_to_f64(hex: &str, decimals: u32) -> Option<f64> {
     Some(v as f64 / 10f64.powi(decimals as i32))
 }
 
-pub(crate) fn rpc_call(url: &str, method: &str, params: serde_json::Value) -> Result<String, String> {
+pub(crate) fn rpc_call(
+    url: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<String, String> {
     let body = serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": method, "params": params
     })
@@ -88,12 +94,16 @@ pub async fn wallet() -> Json<serde_json::Value> {
         Err(e) => {
             return Json(serde_json::json!({
                 "ok": false, "error": format!("读钱包失败: {e}")
-            }))
+            }));
         }
     };
     let json: serde_json::Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
-        Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("钱包 JSON 解析失败: {e}") })),
+        Err(e) => {
+            return Json(
+                serde_json::json!({ "ok": false, "error": format!("钱包 JSON 解析失败: {e}") }),
+            );
+        }
     };
     let address = json
         .get("address")
@@ -112,11 +122,17 @@ pub async fn wallet() -> Json<serde_json::Value> {
         .and_then(|v| v.as_str())
         .unwrap_or("sepolia")
         .to_string();
-    let is_base = network.contains("base") || network.contains("mainnet.eth") || network == "ethereum-mainnet";
+    let is_base = network.contains("base")
+        || network.contains("mainnet.eth")
+        || network == "ethereum-mainnet";
 
     let rpc = std::env::var("BOLLOON_RPC_URL").unwrap_or_else(|_| {
         // 注意：ethereum-mainnet 的钱包默认查 Base（bolloon 的支付链是 Base + USDC）
-        if is_base { RPC_BASE.to_string() } else { RPC_SEPOLIA.to_string() }
+        if is_base {
+            RPC_BASE.to_string()
+        } else {
+            RPC_SEPOLIA.to_string()
+        }
     });
     let usdc = if is_base { USDC_BASE } else { USDC_SEPOLIA };
     let chain_label = if is_base { "base" } else { "sepolia" };
@@ -125,7 +141,11 @@ pub async fn wallet() -> Json<serde_json::Value> {
     let rpc_c = rpc.clone();
     let usdc_c = usdc.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        let eth_hex = rpc_call(&rpc_c, "eth_getBalance", serde_json::json!([addr, "latest"]))?;
+        let eth_hex = rpc_call(
+            &rpc_c,
+            "eth_getBalance",
+            serde_json::json!([addr, "latest"]),
+        )?;
         let usdc_hex = rpc_call(
             &rpc_c,
             "eth_call",

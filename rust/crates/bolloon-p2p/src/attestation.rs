@@ -84,7 +84,10 @@ pub struct OwnershipAttestation {
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum OwnershipError {
     #[error("owner_did 必须是签名者本人 ({statement_did} ≠ {signer_did}) — 不能替别人签名")]
-    DidNotSigner { statement_did: String, signer_did: String },
+    DidNotSigner {
+        statement_did: String,
+        signer_did: String,
+    },
     #[error("owner_did 解不出公钥 (不是 did:pi:/did:key:z… 形态)")]
     UnresolvableDid,
     #[error("自验不通过 (拒返回/拒落盘): {reasons}")]
@@ -261,7 +264,11 @@ pub fn verify_ownership(att: &OwnershipAttestation, opts: &VerifyOpts) -> Owners
     let mut checks: Vec<OwnershipCheck> = vec![];
     let mut reasons: Vec<String> = vec![];
     let mut push = |name: &str, ok: bool, detail: String, fatal: bool| {
-        checks.push(OwnershipCheck { name: name.into(), ok, detail });
+        checks.push(OwnershipCheck {
+            name: name.into(),
+            ok,
+            detail,
+        });
         if !ok && fatal {
             reasons.push(name.into());
         }
@@ -309,7 +316,11 @@ pub fn verify_ownership(att: &OwnershipAttestation, opts: &VerifyOpts) -> Owners
         format!(
             "owner_did={} {}",
             s.owner_did,
-            if pubkey.is_some() { "可解公钥" } else { "解不出公钥" }
+            if pubkey.is_some() {
+                "可解公钥"
+            } else {
+                "解不出公钥"
+            }
         ),
         true,
     );
@@ -355,7 +366,11 @@ pub fn verify_ownership(att: &OwnershipAttestation, opts: &VerifyOpts) -> Owners
         "not_expired",
         !expired,
         match s.expires_at_ms {
-            Some(exp) => format!("expires_at_ms={exp}, now_ms={} ⇒ {}", opts.now_ms, if expired { "已过期" } else { "未过期" }),
+            Some(exp) => format!(
+                "expires_at_ms={exp}, now_ms={} ⇒ {}",
+                opts.now_ms,
+                if expired { "已过期" } else { "未过期" }
+            ),
             None => "无过期时间".into(),
         },
         true,
@@ -433,16 +448,31 @@ mod tests {
         let k = kp();
         let s = agent_statement("did:pi:agent-abc", k.did.as_str(), 1000, None, new_nonce());
         let att = sign_ownership(&s, &k).unwrap();
-        let v = verify_ownership(&att, &VerifyOpts { now_ms: 1000, ..Default::default() });
+        let v = verify_ownership(
+            &att,
+            &VerifyOpts {
+                now_ms: 1000,
+                ..Default::default()
+            },
+        );
         assert!(v.ok, "{:?}", v.reasons);
         assert!(v.owner_sig_ok);
-        assert_eq!(v.wallet_self_proving, None, "agent 不是钱包, 不该有自证标记");
+        assert_eq!(
+            v.wallet_self_proving, None,
+            "agent 不是钱包, 不该有自证标记"
+        );
     }
 
     #[test]
     fn cannot_sign_for_someone_else() {
         let k = kp();
-        let s = agent_statement("did:pi:agent-abc", "did:pi:someoneElse", 1, None, new_nonce());
+        let s = agent_statement(
+            "did:pi:agent-abc",
+            "did:pi:someoneElse",
+            1,
+            None,
+            new_nonce(),
+        );
         let err = sign_ownership(&s, &k).unwrap_err();
         assert!(matches!(err, OwnershipError::DidNotSigner { .. }), "{err}");
     }
@@ -451,9 +481,19 @@ mod tests {
     fn tampered_statement_rejected() {
         let mut att = agent_att(1000);
         att.statement.subject_id = "did:pi:evil-agent".into(); // 改正文不重签
-        let v = verify_ownership(&att, &VerifyOpts { now_ms: 1000, ..Default::default() });
+        let v = verify_ownership(
+            &att,
+            &VerifyOpts {
+                now_ms: 1000,
+                ..Default::default()
+            },
+        );
         assert!(!v.ok);
-        assert!(v.reasons.contains(&"statement_canonical".to_string()), "{:?}", v.reasons);
+        assert!(
+            v.reasons.contains(&"statement_canonical".to_string()),
+            "{:?}",
+            v.reasons
+        );
         assert!(!v.owner_sig_ok, "canonical 重算后签名对不上 ⇒ 验不过");
     }
 
@@ -463,7 +503,13 @@ mod tests {
         let mut sig = hex::decode(&att.owner_sig).unwrap();
         sig[0] ^= 0xff;
         att.owner_sig = hex::encode(sig);
-        let v = verify_ownership(&att, &VerifyOpts { now_ms: 1000, ..Default::default() });
+        let v = verify_ownership(
+            &att,
+            &VerifyOpts {
+                now_ms: 1000,
+                ..Default::default()
+            },
+        );
         assert!(!v.ok && !v.owner_sig_ok);
     }
 
@@ -472,8 +518,23 @@ mod tests {
         let k = kp();
         let s = agent_statement("did:pi:a", k.did.as_str(), 1000, Some(2000), new_nonce());
         let att = sign_ownership(&s, &k).unwrap();
-        assert!(verify_ownership(&att, &VerifyOpts { now_ms: 1500, ..Default::default() }).ok);
-        let v = verify_ownership(&att, &VerifyOpts { now_ms: 2001, ..Default::default() });
+        assert!(
+            verify_ownership(
+                &att,
+                &VerifyOpts {
+                    now_ms: 1500,
+                    ..Default::default()
+                }
+            )
+            .ok
+        );
+        let v = verify_ownership(
+            &att,
+            &VerifyOpts {
+                now_ms: 2001,
+                ..Default::default()
+            },
+        );
         assert!(!v.ok && v.reasons.contains(&"not_expired".to_string()));
     }
 
@@ -481,12 +542,31 @@ mod tests {
     fn nonce_reuse_is_rejected() {
         let k = kp();
         let nonce = new_nonce();
-        let a1 = sign_ownership(&agent_statement("did:pi:a", k.did.as_str(), 1, None, nonce.clone()), &k).unwrap();
-        let a2 = sign_ownership(&agent_statement("did:pi:b", k.did.as_str(), 1, None, nonce.clone()), &k).unwrap();
+        let a1 = sign_ownership(
+            &agent_statement("did:pi:a", k.did.as_str(), 1, None, nonce.clone()),
+            &k,
+        )
+        .unwrap();
+        let a2 = sign_ownership(
+            &agent_statement("did:pi:b", k.did.as_str(), 1, None, nonce.clone()),
+            &k,
+        )
+        .unwrap();
         let mut index = std::collections::HashMap::new();
         index.insert(nonce, a1.id.clone());
-        let v = verify_ownership(&a2, &VerifyOpts { now_ms: 1, nonces: Some(index), ..Default::default() });
-        assert!(!v.ok && v.reasons.contains(&"nonce_unused".to_string()), "{:?}", v.reasons);
+        let v = verify_ownership(
+            &a2,
+            &VerifyOpts {
+                now_ms: 1,
+                nonces: Some(index),
+                ..Default::default()
+            },
+        );
+        assert!(
+            !v.ok && v.reasons.contains(&"nonce_unused".to_string()),
+            "{:?}",
+            v.reasons
+        );
     }
 
     #[test]
@@ -495,7 +575,13 @@ mod tests {
         let addr = "0x6a3f797592bed028f6afd6da82339c8e815480eb";
         let s = wallet_statement(addr, k.did.as_str(), 1000, None, new_nonce());
         let att = sign_ownership(&s, &k).unwrap();
-        let v = verify_ownership(&att, &VerifyOpts { now_ms: 1000, ..Default::default() });
+        let v = verify_ownership(
+            &att,
+            &VerifyOpts {
+                now_ms: 1000,
+                ..Default::default()
+            },
+        );
         // DID 侧是真的…
         assert!(v.ok, "{:?}", v.reasons);
         assert!(v.owner_sig_ok);
@@ -503,7 +589,14 @@ mod tests {
         assert_eq!(v.wallet_self_proving, Some(false));
         assert!(v.wallet_note.is_some());
         // 严格模式要自证 ⇒ 直接判红 (不能糊过去)
-        let strict = verify_ownership(&att, &VerifyOpts { now_ms: 1000, require_wallet_proof: true, ..Default::default() });
+        let strict = verify_ownership(
+            &att,
+            &VerifyOpts {
+                now_ms: 1000,
+                require_wallet_proof: true,
+                ..Default::default()
+            },
+        );
         assert!(!strict.ok, "要求钱包自证时必须红");
         assert!(strict.reasons.contains(&"wallet_self_proving".to_string()));
     }
@@ -512,9 +605,22 @@ mod tests {
     fn contact_ownership_covers_phone_and_email() {
         let k = kp();
         for kind in [SubjectKind::Phone, SubjectKind::Email] {
-            let s = contact_statement("blind-hash-abc", kind, k.did.as_str(), 1000, None, new_nonce());
+            let s = contact_statement(
+                "blind-hash-abc",
+                kind,
+                k.did.as_str(),
+                1000,
+                None,
+                new_nonce(),
+            );
             let att = sign_ownership(&s, &k).unwrap();
-            let v = verify_ownership(&att, &VerifyOpts { now_ms: 1000, ..Default::default() });
+            let v = verify_ownership(
+                &att,
+                &VerifyOpts {
+                    now_ms: 1000,
+                    ..Default::default()
+                },
+            );
             assert!(v.ok, "{kind:?}: {:?}", v.reasons);
         }
     }

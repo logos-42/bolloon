@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use super::state::{check_dial, reduce, CallGuardError};
+use super::state::{CallGuardError, check_dial, reduce};
 use super::{
     CallEffect, CallEvent, CallId, CallPort, CallPortError, CallRecord, CallResult, CallState,
     CallTarget,
@@ -40,10 +40,7 @@ pub struct CallService {
 }
 
 impl CallService {
-    pub fn new(
-        store_dir: impl Into<PathBuf>,
-        adapter: Arc<dyn CallPort>,
-    ) -> Self {
+    pub fn new(store_dir: impl Into<PathBuf>, adapter: Arc<dyn CallPort>) -> Self {
         let dir = store_dir.into();
         let _ = std::fs::create_dir_all(&dir);
         Self {
@@ -131,12 +128,16 @@ impl CallService {
             let ev = match self.adapter.next_event(id, per_event_timeout).await {
                 Ok(e) => e,
                 Err(e) if e.kind == "timeout" => {
-                    state = CallState::Failed { error: "timeout".into() };
+                    state = CallState::Failed {
+                        error: "timeout".into(),
+                    };
                     timeline.push("timeout".into());
                     break;
                 }
                 Err(e) => {
-                    state = CallState::Failed { error: e.kind.clone() };
+                    state = CallState::Failed {
+                        error: e.kind.clone(),
+                    };
                     timeline.push(format!("error:{}", e.kind));
                     break;
                 }
@@ -230,9 +231,9 @@ impl CallPort for MockCallPort {
             .sessions
             .lock()
             .map_err(|_| CallPortError::new("io", "mock 会话锁中毒"))?;
-        let cursor = s.get_mut(&id.0).ok_or_else(|| {
-            CallPortError::new("unknown_call", format!("没有这个通话: {id}"))
-        })?;
+        let cursor = s
+            .get_mut(&id.0)
+            .ok_or_else(|| CallPortError::new("unknown_call", format!("没有这个通话: {id}")))?;
         if *cursor < self.script.len() {
             let ev = self.script[*cursor].clone();
             *cursor += 1;
@@ -301,9 +302,14 @@ mod tests {
         let svc = CallService::new(&dir, port.clone());
 
         let id = svc.dial(&target("确认收货")).await.unwrap();
-        let (state, timeline) = svc.run(&id, &target("确认收货"), Duration::from_millis(100)).await;
+        let (state, timeline) = svc
+            .run(&id, &target("确认收货"), Duration::from_millis(100))
+            .await;
 
-        assert!(matches!(state, CallState::Completed { .. }), "{state:?} {timeline:?}");
+        assert!(
+            matches!(state, CallState::Completed { .. }),
+            "{state:?} {timeline:?}"
+        );
 
         let spoken = port.spoken();
         assert!(!spoken.is_empty(), "必须真的播报过");
@@ -334,7 +340,9 @@ mod tests {
         let svc = CallService::new(&dir, port);
 
         let id = svc.dial(&target("推销")).await.unwrap();
-        let (state, _) = svc.run(&id, &target("推销"), Duration::from_millis(100)).await;
+        let (state, _) = svc
+            .run(&id, &target("推销"), Duration::from_millis(100))
+            .await;
         assert!(matches!(state, CallState::Completed { reason } if reason == "declined"));
 
         let e = svc.dial(&target("再推销")).await.unwrap_err();
@@ -361,7 +369,9 @@ mod tests {
         ]));
         let svc = CallService::new(&dir, port.clone());
         let id = svc.dial(&target("售后")).await.unwrap();
-        let (state, _) = svc.run(&id, &target("售后"), Duration::from_millis(100)).await;
+        let (state, _) = svc
+            .run(&id, &target("售后"), Duration::from_millis(100))
+            .await;
         assert!(matches!(state, CallState::Completed { reason } if reason.contains("human")));
         assert!(port.spoken().iter().any(|(_, t)| t.contains("转接人工")));
         let _ = std::fs::remove_dir_all(&dir);

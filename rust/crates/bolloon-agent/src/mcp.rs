@@ -48,7 +48,11 @@ impl McpSessionState {
     }
 
     /// 构造 initialize 请求
-    pub fn initialize_request(id: u64, client_name: &str, client_version: &str) -> serde_json::Value {
+    pub fn initialize_request(
+        id: u64,
+        client_name: &str,
+        client_version: &str,
+    ) -> serde_json::Value {
         serde_json::json!({
             "jsonrpc": JSONRPC_VERSION,
             "id": id,
@@ -98,7 +102,12 @@ impl McpSessionState {
     }
 
     /// 构造 tools/call 请求
-    pub fn call_tool_request(&self, id: u64, tool: &str, args: serde_json::Value) -> Result<serde_json::Value, McpError> {
+    pub fn call_tool_request(
+        &self,
+        id: u64,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
         if !self.initialized {
             return Err(McpError::NotInitialized);
         }
@@ -128,9 +137,16 @@ pub enum InboundFrame {
     /// 带 id 的响应
     Response { id: u64, result: serde_json::Value },
     /// 带错误码的响应
-    ErrorResponse { id: Option<u64>, code: i64, message: String },
+    ErrorResponse {
+        id: Option<u64>,
+        code: i64,
+        message: String,
+    },
     /// 无 id 的通知
-    Notification { method: String, params: serde_json::Value },
+    Notification {
+        method: String,
+        params: serde_json::Value,
+    },
 }
 
 /// 解析 JSON-RPC 帧 (形状不对如实报错)
@@ -155,7 +171,10 @@ pub fn parse_frame(raw: &str) -> Result<InboundFrame, McpError> {
                         .to_string(),
                 })
             } else {
-                Ok(InboundFrame::Response { id, result: v["result"].clone() })
+                Ok(InboundFrame::Response {
+                    id,
+                    result: v["result"].clone(),
+                })
             }
         }
         (None, Some(m)) => Ok(InboundFrame::Notification {
@@ -188,7 +207,11 @@ mod tests {
     #[test]
     fn protocol_sequence_enforced() {
         let mut s = McpSessionState::new();
-        assert_eq!(s.list_tools_request(1).unwrap_err(), McpError::NotInitialized, "未 initialize 就 tools/list 拒");
+        assert_eq!(
+            s.list_tools_request(1).unwrap_err(),
+            McpError::NotInitialized,
+            "未 initialize 就 tools/list 拒"
+        );
         s.on_initialized();
         assert!(s.list_tools_request(1).is_ok());
     }
@@ -211,7 +234,10 @@ mod tests {
             description: "读文件".into(),
             input_schema: serde_json::json!({"type": "object"}),
         };
-        assert_eq!(s.register_tools(vec![tool.clone()]).unwrap_err(), McpError::NotInitialized);
+        assert_eq!(
+            s.register_tools(vec![tool.clone()]).unwrap_err(),
+            McpError::NotInitialized
+        );
         s.on_initialized();
         assert!(s.register_tools(vec![tool]).is_ok());
         assert_eq!(s.tool_count(), 1);
@@ -221,32 +247,65 @@ mod tests {
     fn call_unknown_tool_rejected() {
         let mut s = McpSessionState::new();
         s.on_initialized();
-        assert_eq!(s.call_tool_request(1, "ghost", serde_json::json!({})).unwrap_err(), McpError::ToolNotFound("ghost".into()));
+        assert_eq!(
+            s.call_tool_request(1, "ghost", serde_json::json!({}))
+                .unwrap_err(),
+            McpError::ToolNotFound("ghost".into())
+        );
     }
 
     #[test]
     fn frame_parse_response_notification_error() {
         let resp = parse_frame(r#"{"jsonrpc":"2.0","id":7,"result":{"tools":[]}}"#).unwrap();
-        assert_eq!(resp, InboundFrame::Response { id: 7, result: serde_json::json!({"tools": []}) });
-
-        let note = parse_frame(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).unwrap();
         assert_eq!(
-            note,
-            InboundFrame::Notification { method: "notifications/initialized".into(), params: serde_json::Value::Null }
+            resp,
+            InboundFrame::Response {
+                id: 7,
+                result: serde_json::json!({"tools": []})
+            }
         );
 
-        let err = parse_frame(r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"no such tool"}}"#).unwrap();
+        let note =
+            parse_frame(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).unwrap();
+        assert_eq!(
+            note,
+            InboundFrame::Notification {
+                method: "notifications/initialized".into(),
+                params: serde_json::Value::Null
+            }
+        );
+
+        let err = parse_frame(
+            r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"no such tool"}}"#,
+        )
+        .unwrap();
         assert_eq!(
             err,
-            InboundFrame::ErrorResponse { id: Some(3), code: -32601, message: "no such tool".into() }
+            InboundFrame::ErrorResponse {
+                id: Some(3),
+                code: -32601,
+                message: "no such tool".into()
+            }
         );
     }
 
     #[test]
     fn frame_parse_bad_shapes_reported() {
-        assert!(matches!(parse_frame("不是json"), Err(McpError::BadFrame(_))));
-        assert!(matches!(parse_frame(r#"{"id":1}"#), Err(McpError::BadFrame(_))), "缺 jsonrpc 字段拒");
-        assert!(matches!(parse_frame(r#"{"jsonrpc":"2.0"}"#), Err(McpError::BadFrame(_))), "既无 id 也无 method 拒");
+        assert!(matches!(
+            parse_frame("不是json"),
+            Err(McpError::BadFrame(_))
+        ));
+        assert!(
+            matches!(parse_frame(r#"{"id":1}"#), Err(McpError::BadFrame(_))),
+            "缺 jsonrpc 字段拒"
+        );
+        assert!(
+            matches!(
+                parse_frame(r#"{"jsonrpc":"2.0"}"#),
+                Err(McpError::BadFrame(_))
+            ),
+            "既无 id 也无 method 拒"
+        );
     }
 
     #[test]

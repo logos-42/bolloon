@@ -89,7 +89,10 @@ impl KeyPair {
 
     fn from_signing(signing: SigningKey) -> Self {
         let verifying = signing.verifying_key();
-        let did = Did(format!("did:pi:{}", bs58::encode(verifying.as_bytes()).into_string()));
+        let did = Did(format!(
+            "did:pi:{}",
+            bs58::encode(verifying.as_bytes()).into_string()
+        ));
         Self { signing, did }
     }
 
@@ -196,7 +199,11 @@ mod tests {
     fn unresolvable_did_returns_none() {
         assert_eq!(pubkey_of_did("not-a-did"), None);
         assert_eq!(pubkey_of_did("did:key:z6Mkabc"), None, "长度不对 ⇒ None");
-        assert_eq!(pubkey_of_did("did:pi:!@#"), None, "非法 b58 ⇒ None (不 panic)");
+        assert_eq!(
+            pubkey_of_did("did:pi:!@#"),
+            None,
+            "非法 b58 ⇒ None (不 panic)"
+        );
     }
 
     #[test]
@@ -209,6 +216,9 @@ mod tests {
         assert!(KeyPair::verify(&pk, msg, &sig));
         let other = KeyPair::from_seed(&[14u8; 32]);
         let other_pk = pubkey_of_did(other.did.as_str()).unwrap();
-        assert!(!KeyPair::verify(&other_pk, msg, &sig), "换一把公钥 ⇒ 验不过");
+        assert!(
+            !KeyPair::verify(&other_pk, msg, &sig),
+            "换一把公钥 ⇒ 验不过"
+        );
     }
 }

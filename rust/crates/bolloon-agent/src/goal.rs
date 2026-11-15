@@ -118,7 +118,11 @@ pub struct RunFacts {
 /// 7. 有进展 → continue
 /// 8. 连续无进展达阈值 → stalled (下一轮升级 needs_human)
 /// 9. 默认 → continue (无进展但未达阈值, 再给一轮)
-pub fn decide_continuation(obs: &RoundObservation, facts: &RunFacts, limits: &HardLimits) -> ContinuationDecision {
+pub fn decide_continuation(
+    obs: &RoundObservation,
+    facts: &RunFacts,
+    limits: &HardLimits,
+) -> ContinuationDecision {
     // 1. 无价值
     if obs.no_value_left {
         return ContinuationDecision {
@@ -221,8 +225,10 @@ pub fn decide_continuation(obs: &RoundObservation, facts: &RunFacts, limits: &Ha
 fn hard_limit_hit(what: &str, facts: &RunFacts, obs: &RoundObservation) -> ContinuationDecision {
     ContinuationDecision {
         decision: DecisionKind::NeedsHuman,
-        reason: format!("硬底线触发: {what} (elapsed={}ms, budget={}, stalled={})",
-            facts.run_elapsed_ms, facts.spent_budget_atomic, facts.consecutive_stalled_rounds),
+        reason: format!(
+            "硬底线触发: {what} (elapsed={}ms, budget={}, stalled={})",
+            facts.run_elapsed_ms, facts.spent_budget_atomic, facts.consecutive_stalled_rounds
+        ),
         next_action: "熔断: 保留现场, 报告人".into(),
         wake_at_ms: None,
         progress_delta: obs.progress_delta,

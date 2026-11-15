@@ -11,7 +11,7 @@
 //!
 //! 诚实边界: 本机不代签链上交易、不编造 CID; 锚定失败如实返回"仅本地记录"。
 
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 
 fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis() as u64
@@ -40,20 +40,35 @@ pub const POINTS_BY_KIND: &[(&str, f64)] = &[
     ("share_card", 0.3), // 旧台账里"贡献卡片"用的老 kind, 保留小分不归零
 ];
 pub fn points_for(kind: &str) -> f64 {
-    POINTS_BY_KIND.iter().find(|(k, _)| *k == kind).map(|(_, p)| *p).unwrap_or(0.0)
+    POINTS_BY_KIND
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, p)| *p)
+        .unwrap_or(0.0)
 }
 pub fn is_self_reportable(kind: &str) -> bool {
-    matches!(kind, "skill_share" | "card_share" | "contribution_card" | "share_card")
+    matches!(
+        kind,
+        "skill_share" | "card_share" | "contribution_card" | "share_card"
+    )
 }
 
 /// 累计贡献分 earned: **只增不减**; 每条按权重求和, anchor/penalty 等元数据不算。
 pub fn credit_of(records: &[serde_json::Value]) -> f64 {
-    records.iter().filter(|r| {
-        r["content_hash"].is_string() && r["at_ms"].is_u64()
-            && r["kind"].as_str() != Some("anchor") && r["kind"].as_str() != Some("penalty")
-    }).map(|r| {
-        r["points"].as_f64().unwrap_or_else(|| points_for(r["kind"].as_str().unwrap_or("")))
-    }).sum()
+    records
+        .iter()
+        .filter(|r| {
+            r["content_hash"].is_string()
+                && r["at_ms"].is_u64()
+                && r["kind"].as_str() != Some("anchor")
+                && r["kind"].as_str() != Some("penalty")
+        })
+        .map(|r| {
+            r["points"]
+                .as_f64()
+                .unwrap_or_else(|| points_for(r["kind"].as_str().unwrap_or("")))
+        })
+        .sum()
 }
 
 /// 内部加分入口: 只有代码里**真实交付点**才调用, 端点不直接暴露服务类。
@@ -66,7 +81,10 @@ pub fn award(st: &crate::AppState, kind: &str, summary: &str, ref_id: &str, evid
     let did = st.identity.did.as_str().to_string();
     let key = format!("{did}|{kind}|{ref_id}|{evidence}");
     let hash = bolloon_x402::paid_info::compute_content_hash(&key);
-    if load().iter().any(|r| r["content_hash"].as_str() == Some(hash.as_str())) {
+    if load()
+        .iter()
+        .any(|r| r["content_hash"].as_str() == Some(hash.as_str()))
+    {
         return 0.0;
     }
     let at = now_ms();
@@ -90,14 +108,23 @@ fn spend_path() -> std::path::PathBuf {
     crate::server::data_dir().join("contribution-spend.jsonl")
 }
 fn spend_records() -> Vec<serde_json::Value> {
-    std::fs::read_to_string(spend_path()).unwrap_or_default().lines()
-        .filter_map(|l| serde_json::from_str(l).ok()).collect()
+    std::fs::read_to_string(spend_path())
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
 }
 fn append_spend(rec: &serde_json::Value) {
     use std::io::Write;
     let p = spend_path();
-    if let Some(d) = p.parent() { let _ = std::fs::create_dir_all(d); }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
         let _ = writeln!(f, "{}", serde_json::to_string(rec).unwrap_or_default());
     }
 }
@@ -109,7 +136,9 @@ pub fn balance_state() -> (f64, f64, f64, f64) {
     for r in spend_records() {
         let v = r["points"].as_f64().unwrap_or(0.0);
         match r["kind"].as_str() {
-            Some("spend") => spent += v, Some("penalty") => penalty += v, _ => {}
+            Some("spend") => spent += v,
+            Some("penalty") => penalty += v,
+            _ => {}
         }
     }
     (earned, spent, penalty, (earned - spent - penalty).max(0.0))
@@ -118,30 +147,46 @@ pub fn balance_state() -> (f64, f64, f64, f64) {
 /// GET /api/contribution/balance → 左下角余额
 pub async fn balance() -> Json<serde_json::Value> {
     let (earned, spent, penalty, available) = balance_state();
-    Json(serde_json::json!({ "ok": true, "earned": earned, "spent": spent,
+    Json(
+        serde_json::json!({ "ok": true, "earned": earned, "spent": spent,
         "penalty": penalty, "balance": available,
         "services": SERVICES.iter().map(|(id,name,price)|
             serde_json::json!({"id":id,"name":name,"price":price})).collect::<Vec<_>>(),
-        "note": "没做坏事只增不减；唯一消耗 = 购买增值服务；求助永不需要积分" }))
+        "note": "没做坏事只增不减；唯一消耗 = 购买增值服务；求助永不需要积分" }),
+    )
 }
 
 /// POST /api/contribution/spend {service, ref_id?} → 扣积分并**真兑现**
-pub async fn spend(State(st): State<crate::AppState>, Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
-    let service = req["service"].as_str().unwrap_or_default().trim().to_string();
-    let Some((_, name, price)) = SERVICES.iter().find(|(id,_,_)| *id == service) else {
+pub async fn spend(
+    State(st): State<crate::AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let service = req["service"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let Some((_, name, price)) = SERVICES.iter().find(|(id, _, _)| *id == service) else {
         return Json(serde_json::json!({"ok":false,"error":"没有这个增值服务",
             "services":SERVICES.iter().map(|(id,n,p)|serde_json::json!({"id":id,"name":n,"price":p})).collect::<Vec<_>>()}));
     };
     let before = balance_state().3;
     if before < *price as f64 {
-        return Json(serde_json::json!({"ok":false,"error":"贡献积分不足","balance":before,"price":price}));
+        return Json(
+            serde_json::json!({"ok":false,"error":"贡献积分不足","balance":before,"price":price}),
+        );
     }
     let ref_id = req["ref_id"].as_str().unwrap_or_default().to_string();
     let mut delivered = serde_json::json!({"service":service,"name":name});
     match service.as_str() {
         "proof_export" => {
-            let Some(rec) = load().into_iter().find(|r| r["id"].as_str() == Some(ref_id.as_str())) else {
-                return Json(serde_json::json!({"ok":false,"error":"proof_export 需要 ref_id = 贡献记录 id"}));
+            let Some(rec) = load()
+                .into_iter()
+                .find(|r| r["id"].as_str() == Some(ref_id.as_str()))
+            else {
+                return Json(
+                    serde_json::json!({"ok":false,"error":"proof_export 需要 ref_id = 贡献记录 id"}),
+                );
             };
             delivered["proof"] = make_proof(&rec, &st.identity);
         }
@@ -151,7 +196,11 @@ pub async fn spend(State(st): State<crate::AppState>, Json(req): Json<serde_json
             }
             let found = {
                 let mut fs = st.forge.lock().await;
-                let hit = match fs.inbox.iter_mut().find(|x| x["id"].as_str() == Some(ref_id.as_str())) {
+                let hit = match fs
+                    .inbox
+                    .iter_mut()
+                    .find(|x| x["id"].as_str() == Some(ref_id.as_str()))
+                {
                     Some(it) => {
                         let cur = it["score"].as_f64().unwrap_or(0.0);
                         it["score"] = serde_json::json!(cur + 2.0);
@@ -159,7 +208,9 @@ pub async fn spend(State(st): State<crate::AppState>, Json(req): Json<serde_json
                     }
                     None => None,
                 };
-                if hit.is_some() { fs.save(&crate::server::data_dir()); }
+                if hit.is_some() {
+                    fs.save(&crate::server::data_dir());
+                }
                 hit
             };
             let Some(card) = found else {
@@ -167,16 +218,24 @@ pub async fn spend(State(st): State<crate::AppState>, Json(req): Json<serde_json
             };
             delivered["score_bonus"] = serde_json::json!(2.0);
             if service == "help_boost" && card.is_object() {
-                delivered["redelivery"] = crate::native::world_cards_share(State(st.clone()), Json(card)).await.0["delivery"].clone();
+                delivered["redelivery"] =
+                    crate::native::world_cards_share(State(st.clone()), Json(card))
+                        .await
+                        .0["delivery"]
+                        .clone();
             }
         }
         _ => {}
     }
-    append_spend(&serde_json::json!({"kind":"spend","service":service,"points":price,
-        "ref_id":ref_id,"at_ms":now_ms()}));
-    Json(serde_json::json!({"ok":true,"service":service,"price":price,
+    append_spend(
+        &serde_json::json!({"kind":"spend","service":service,"points":price,
+        "ref_id":ref_id,"at_ms":now_ms()}),
+    );
+    Json(
+        serde_json::json!({"ok":true,"service":service,"price":price,
         "before":before,"balance":balance_state().3,"delivered":delivered,
-        "note":"积分只在购买增值服务时消耗；earned 累计不减"}))
+        "note":"积分只在购买增值服务时消耗；earned 累计不减"}),
+    )
 }
 
 fn append(rec: &serde_json::Value) {
@@ -185,7 +244,11 @@ fn append(rec: &serde_json::Value) {
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
         let _ = writeln!(f, "{}", serde_json::to_string(rec).unwrap_or_default());
     }
 }
@@ -196,7 +259,11 @@ pub async fn record(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let kind = req["kind"].as_str().unwrap_or_default().trim().to_string();
-    let summary = req["summary"].as_str().unwrap_or_default().trim().to_string();
+    let summary = req["summary"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if kind.is_empty() || summary.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 kind / summary" }));
     }
@@ -209,7 +276,11 @@ pub async fn record(
         }));
     }
     let ref_id = req["ref_id"].as_str().unwrap_or_default().to_string();
-    let key = if ref_id.is_empty() { summary.chars().take(40).collect::<String>() } else { ref_id.clone() };
+    let key = if ref_id.is_empty() {
+        summary.chars().take(40).collect::<String>()
+    } else {
+        ref_id.clone()
+    };
     let points = award(&st, &kind, &summary, &key, "self_report");
     Json(serde_json::json!({
         "ok": points > 0.0, "kind": kind, "points": points,
@@ -218,7 +289,6 @@ pub async fn record(
                 else { "这条已记过，不重复加分" }
     }))
 }
-
 
 /// GET /api/contribution/ledger → 贡献记录与声誉分
 pub async fn ledger() -> Json<serde_json::Value> {
@@ -260,21 +330,32 @@ pub async fn anchor(
         return Json(serde_json::json!({ "ok": false, "error": "缺 id" }));
     }
     let mut all = load();
-    let Some(r) = all.iter_mut().find(|r| r["id"].as_str() == Some(id.as_str())) else {
+    let Some(r) = all
+        .iter_mut()
+        .find(|r| r["id"].as_str() == Some(id.as_str()))
+    else {
         return Json(serde_json::json!({ "ok": false, "error": "没有这条贡献记录" }));
     };
     let cid = req["cid"].as_str().unwrap_or_default().trim().to_string();
-    let tx = req["tx_hash"].as_str().unwrap_or_default().trim().to_string();
+    let tx = req["tx_hash"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let mut anchors: Vec<serde_json::Value> = vec![];
     if !cid.is_empty() {
         if !looks_like_cid(&cid) {
             return Json(serde_json::json!({ "ok": false, "error": "CID 形状不对 (Qm… / bafy…)" }));
         }
-        anchors.push(serde_json::json!({ "kind": "ipfs", "cid": cid, "verified_by": "user_provided" }));
+        anchors.push(
+            serde_json::json!({ "kind": "ipfs", "cid": cid, "verified_by": "user_provided" }),
+        );
     }
     if !tx.is_empty() {
         if !looks_like_tx(&tx) {
-            return Json(serde_json::json!({ "ok": false, "error": "tx_hash 形状不对 (0x + 64 hex)" }));
+            return Json(
+                serde_json::json!({ "ok": false, "error": "tx_hash 形状不对 (0x + 64 hex)" }),
+            );
         }
         anchors.push(serde_json::json!({ "kind": "eth", "tx_hash": tx, "verified_by": "user_provided", "note": "本机不代签链上交易" }));
     }
@@ -291,7 +372,9 @@ pub async fn anchor(
         .ok()
         .and_then(|r| r.ok());
         if let Some(text) = out {
-            let maybe = text.split_whitespace().find(|w| looks_like_cid(w.trim_matches(|ch: char| !ch.is_ascii_alphanumeric())));
+            let maybe = text
+                .split_whitespace()
+                .find(|w| looks_like_cid(w.trim_matches(|ch: char| !ch.is_ascii_alphanumeric())));
             if let Some(c) = maybe {
                 let clean = c.trim_matches(|ch: char| !ch.is_ascii_alphanumeric());
                 anchors.push(serde_json::json!({ "kind": "ipfs", "cid": clean, "verified_by": "local_kubo" }));
@@ -312,7 +395,9 @@ pub async fn anchor(
         "ref_id": id, "anchors": anchors, "at_ms": now_ms(),
     }));
     let _ = st;
-    Json(serde_json::json!({ "ok": true, "record": snapshot, "note": "锚定已作为独立事件追加, 历史行不改" }))
+    Json(
+        serde_json::json!({ "ok": true, "record": snapshot, "note": "锚定已作为独立事件追加, 历史行不改" }),
+    )
 }
 
 /// POST /api/world/cards/help {text, urgency?} → 求助意图卡片 (善意优先分发)
@@ -351,10 +436,14 @@ pub async fn help_card(
     });
     // 双通道分发 (去中心化): public 走世界广播; private 副本定向投递给所有好友
     // —— 求助要"更多可能性到每个人的电脑/手机", 不能只挂公域等人来看。
-    let share = crate::native::world_cards_share(State(st.clone()), Json(card.clone())).await.0;
+    let share = crate::native::world_cards_share(State(st.clone()), Json(card.clone()))
+        .await
+        .0;
     let mut private_card = card.clone();
     private_card["scope"] = serde_json::json!("private");
-    let direct = crate::native::world_cards_share(State(st.clone()), Json(private_card)).await.0;
+    let direct = crate::native::world_cards_share(State(st.clone()), Json(private_card))
+        .await
+        .0;
     // 特定智能体立刻想办法满足: 走差距→自动写方法型 skill (真实动作, 不是空话)
     let cls = bolloon_agent::world::classify_intent(&text);
     let intent = bolloon_agent::world::Intent {
@@ -422,7 +511,11 @@ mod tests {
     #[test]
     fn earned_only_increases_and_ignores_metadata_events() {
         assert_eq!(credit_of(&[]), 0.0);
-        let a = vec![rec("service_paid", 1), rec("skill_share", 2), rec("card_share", 3)];
+        let a = vec![
+            rec("service_paid", 1),
+            rec("skill_share", 2),
+            rec("card_share", 3),
+        ];
         assert!((credit_of(&a) - 5.8).abs() < 1e-9);
         let mut b = a.clone();
         b.push(serde_json::json!({ "kind": "anchor", "at_ms": 4, "anchors": [] }));
@@ -440,7 +533,9 @@ mod tests {
 
     #[test]
     fn anchor_shapes_are_validated() {
-        assert!(looks_like_cid("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"));
+        assert!(looks_like_cid(
+            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+        ));
         assert!(looks_like_tx(&format!("0x{}", "a".repeat(64))));
         assert!(!looks_like_cid("not-a-cid"));
         assert!(!looks_like_tx("0x123"));
@@ -552,7 +647,11 @@ fn append_peer(rec: &serde_json::Value) {
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
         let _ = writeln!(f, "{}", serde_json::to_string(rec).unwrap_or_default());
     }
 }
@@ -563,7 +662,10 @@ pub async fn proof(
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
     let id = q.get("id").cloned().unwrap_or_default();
-    let Some(rec) = load().into_iter().find(|r| r["id"].as_str() == Some(id.as_str())) else {
+    let Some(rec) = load()
+        .into_iter()
+        .find(|r| r["id"].as_str() == Some(id.as_str()))
+    else {
         return Json(serde_json::json!({ "ok": false, "error": "没有这条贡献记录" }));
     };
     Json(serde_json::json!({ "ok": true, "proof": make_proof(&rec, &st.identity) }))
@@ -572,8 +674,10 @@ pub async fn proof(
 /// POST /api/contribution/verify {proof} → 纯验签 (不入库; 变异自检用这个)
 pub async fn verify(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
     match verify_proof(&req["proof"]) {
-        Ok(rec) => Json(serde_json::json!({ "ok": true, "verified": true, "record": rec,
-            "note": "用 signer DID 反解公钥验签 + 重算内容哈希, 不依赖中心目录" })),
+        Ok(rec) => Json(
+            serde_json::json!({ "ok": true, "verified": true, "record": rec,
+            "note": "用 signer DID 反解公钥验签 + 重算内容哈希, 不依赖中心目录" }),
+        ),
         Err(e) => Json(serde_json::json!({ "ok": false, "verified": false, "error": e })),
     }
 }
@@ -585,15 +689,22 @@ pub async fn inbox(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value
         Err(e) => return Json(serde_json::json!({ "ok": false, "verified": false, "error": e })),
     };
     let hash = rec["content_hash"].as_str().unwrap_or_default().to_string();
-    if peer_records().iter().any(|r| r["content_hash"].as_str() == Some(hash.as_str())) {
-        return Json(serde_json::json!({ "ok": true, "verified": true, "duplicate": true,
-            "note": "同一贡献已验过, 不重复入库" }));
+    if peer_records()
+        .iter()
+        .any(|r| r["content_hash"].as_str() == Some(hash.as_str()))
+    {
+        return Json(
+            serde_json::json!({ "ok": true, "verified": true, "duplicate": true,
+            "note": "同一贡献已验过, 不重复入库" }),
+        );
     }
     let mut stored = rec.clone();
     stored["received_at_ms"] = serde_json::json!(now_ms());
     append_peer(&stored);
-    Json(serde_json::json!({ "ok": true, "verified": true, "duplicate": false,
-        "id": rec["id"], "signer": rec["did"] }))
+    Json(
+        serde_json::json!({ "ok": true, "verified": true, "duplicate": false,
+        "id": rec["id"], "signer": rec["did"] }),
+    )
 }
 
 /// POST /api/contribution/announce {id, peer_url?|did?} → 把签名信封发给对端节点
@@ -602,7 +713,10 @@ pub async fn announce(
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let id = req["id"].as_str().unwrap_or_default().to_string();
-    let Some(rec) = load().into_iter().find(|r| r["id"].as_str() == Some(id.as_str())) else {
+    let Some(rec) = load()
+        .into_iter()
+        .find(|r| r["id"].as_str() == Some(id.as_str()))
+    else {
         return Json(serde_json::json!({ "ok": false, "error": "没有这条贡献记录" }));
     };
     let proof = make_proof(&rec, &st.identity);
@@ -620,9 +734,13 @@ pub async fn announce(
         "POST",
         format!("{url}/api/contribution/inbox"),
         Some(serde_json::json!({ "proof": proof })),
-    ).await {
-        Ok(v) => Json(serde_json::json!({ "ok": v["ok"] == serde_json::json!(true),
-            "peer": v, "note": "对端独立验签; 本机说了不算" })),
+    )
+    .await
+    {
+        Ok(v) => Json(
+            serde_json::json!({ "ok": v["ok"] == serde_json::json!(true),
+            "peer": v, "note": "对端独立验签; 本机说了不算" }),
+        ),
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
     }
 }
@@ -640,9 +758,9 @@ mod proof_tests {
         let did = kp.did.as_str().to_string();
         let at = 1_700_000_000_000u64;
         let (kind, summary, ref_id) = ("share_card", "分享资料给集体", "");
-        let hash = bolloon_x402::paid_info::compute_content_hash(
-            &format!("{did}|{at}|{kind}|{summary}|{ref_id}"),
-        );
+        let hash = bolloon_x402::paid_info::compute_content_hash(&format!(
+            "{did}|{at}|{kind}|{summary}|{ref_id}"
+        ));
         serde_json::json!({
             "id": "contrib-test", "did": did, "at_ms": at, "kind": kind,
             "summary": summary, "ref_id": ref_id, "content_hash": hash,

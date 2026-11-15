@@ -186,13 +186,16 @@ impl HooksEngine {
                 }
                 Some(exec) => {
                     let exec_fut = exec.execute(&hook, ctx);
-                    match tokio::time::timeout(Duration::from_millis(hook.timeout_ms), exec_fut).await {
+                    match tokio::time::timeout(Duration::from_millis(hook.timeout_ms), exec_fut)
+                        .await
+                    {
                         Ok(Ok(output)) => {
                             result.raw_output = Some(output.clone());
                             let lower = output.to_lowercase();
                             if lower.starts_with("deny") {
                                 result.deny = true;
-                                result.reason = Some(output.trim_start_matches("deny").trim().to_string());
+                                result.reason =
+                                    Some(output.trim_start_matches("deny").trim().to_string());
                             }
                             if let Some(add) = output.strip_prefix("system:") {
                                 result.modified = true;
@@ -266,7 +269,10 @@ mod tests {
     async fn pre_tool_use_deny_short_circuits() {
         let engine = engine_with(vec![deny_hook(), inject_hook()]).await;
         // inject hook 挂在 postToolUse, 不该在 preToolUse 触发
-        let ctx = HookContext { tool_name: Some("shell".into()), ..Default::default() };
+        let ctx = HookContext {
+            tool_name: Some("shell".into()),
+            ..Default::default()
+        };
         let results = engine.emit(HookEventType::PreToolUse, &ctx).await;
         assert_eq!(results.len(), 1);
         assert!(results[0].deny);
@@ -278,9 +284,20 @@ mod tests {
         let mut h = deny_hook();
         h.tool_filter = Some(vec!["terminal".into()]);
         let engine = engine_with(vec![h]).await;
-        let ctx = HookContext { tool_name: Some("shell".into()), ..Default::default() };
-        assert!(engine.emit(HookEventType::PreToolUse, &ctx).await.is_empty());
-        let ctx2 = HookContext { tool_name: Some("terminal".into()), ..Default::default() };
+        let ctx = HookContext {
+            tool_name: Some("shell".into()),
+            ..Default::default()
+        };
+        assert!(
+            engine
+                .emit(HookEventType::PreToolUse, &ctx)
+                .await
+                .is_empty()
+        );
+        let ctx2 = HookContext {
+            tool_name: Some("terminal".into()),
+            ..Default::default()
+        };
         assert_eq!(engine.emit(HookEventType::PreToolUse, &ctx2).await.len(), 1);
     }
 
@@ -324,7 +341,12 @@ mod tests {
         h.enabled = false;
         let engine = engine_with(vec![h]).await;
         let ctx = HookContext::default();
-        assert!(engine.emit(HookEventType::PreToolUse, &ctx).await.is_empty());
+        assert!(
+            engine
+                .emit(HookEventType::PreToolUse, &ctx)
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]

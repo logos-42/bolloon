@@ -94,13 +94,13 @@ fn beliefs_db_roundtrip_render_and_initiative_todo() {
     assert!(!pick.next_action.is_empty(), "挑出的下一步不能为空");
 
     // ⑤ 心跳: 挑出的目标落成 todo, 且幂等 (同一动作不重复入清单)
-    let tick = bolloon_agent::belief_tools::tick_into_todo(2)
-        .expect("有活着目标时心跳应挑出下一步");
+    let tick =
+        bolloon_agent::belief_tools::tick_into_todo(2).expect("有活着目标时心跳应挑出下一步");
     assert_eq!(tick.0, gid);
     assert_eq!(tick.1, "把下一步落成待办");
     bolloon_agent::belief_tools::tick_into_todo(3);
-    let progress = bolloon_agent::belief_tools::todo_progress_text()
-        .expect("todo.json 应可读并进 prompt");
+    let progress =
+        bolloon_agent::belief_tools::todo_progress_text().expect("todo.json 应可读并进 prompt");
     assert_eq!(
         progress.matches("把下一步落成待办").count(),
         1,

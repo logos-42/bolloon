@@ -93,7 +93,10 @@ pub fn check_dispatch(d: &Dispatch, input: &CheckInput) -> DispatchCheck {
         return DispatchCheck {
             verdict: CheckVerdict::NeedsNudge,
             contract_id,
-            reason: format!("已用 {:.0}% 时限未回 → 提醒", (elapsed as f64 / timeout as f64) * 100.0),
+            reason: format!(
+                "已用 {:.0}% 时限未回 → 提醒",
+                (elapsed as f64 / timeout as f64) * 100.0
+            ),
         };
     }
     DispatchCheck {
@@ -125,7 +128,11 @@ impl DispatchBoard {
 
     /// 子端心跳 (更新)
     pub fn heartbeat(&mut self, contract_id: &str, now_ms: u64, progress: Option<String>) -> bool {
-        let Some(d) = self.inflight.iter_mut().find(|d| d.contract.contract_id == contract_id) else {
+        let Some(d) = self
+            .inflight
+            .iter_mut()
+            .find(|d| d.contract.contract_id == contract_id)
+        else {
             return false;
         };
         d.last_heartbeat_ms = Some(now_ms);
@@ -137,7 +144,11 @@ impl DispatchBoard {
 
     /// 子上报阻塞
     pub fn report_blocked(&mut self, contract_id: &str) -> bool {
-        let Some(d) = self.inflight.iter_mut().find(|d| d.contract.contract_id == contract_id) else {
+        let Some(d) = self
+            .inflight
+            .iter_mut()
+            .find(|d| d.contract.contract_id == contract_id)
+        else {
             return false;
         };
         d.blocked = true;
@@ -160,7 +171,11 @@ impl DispatchBoard {
             out.push(c);
         }
         for id in &nudged_ids {
-            if let Some(dd) = self.inflight.iter_mut().find(|x| &x.contract.contract_id == id) {
+            if let Some(dd) = self
+                .inflight
+                .iter_mut()
+                .find(|x| &x.contract.contract_id == id)
+            {
                 dd.nudged = true;
             }
         }
@@ -174,7 +189,8 @@ impl DispatchBoard {
     /// 收到终报 (从在途移除; done 与否由 validate_report 定)
     pub fn settle(&mut self, contract_id: &str, status: ReportStatus) -> bool {
         let before = self.inflight.len();
-        self.inflight.retain(|d| d.contract.contract_id != contract_id);
+        self.inflight
+            .retain(|d| d.contract.contract_id != contract_id);
         if self.inflight.len() < before {
             let dest = match status {
                 ReportStatus::Done => "completed",
@@ -207,7 +223,11 @@ mod tests {
     }
 
     fn input(now: u64, timeout: u64) -> CheckInput {
-        CheckInput { now_ms: now, global_timeout_ms: timeout, nudge_ratio: 0.8 }
+        CheckInput {
+            now_ms: now,
+            global_timeout_ms: timeout,
+            nudge_ratio: 0.8,
+        }
     }
 
     #[test]
@@ -258,7 +278,12 @@ mod tests {
         assert!(checks.iter().any(|c| c.verdict == CheckVerdict::NeedsNudge));
         // 已标 nudged → 再巡检不重复 (nudged=true 时该分支跳过)
         let checks2 = board.check_all(&input(8600, 10_000));
-        assert!(checks2.iter().all(|c| c.verdict != CheckVerdict::NeedsNudge), "nudge 一次后不重复催");
+        assert!(
+            checks2
+                .iter()
+                .all(|c| c.verdict != CheckVerdict::NeedsNudge),
+            "nudge 一次后不重复催"
+        );
     }
 
     #[test]
@@ -268,7 +293,11 @@ mod tests {
         board.heartbeat("c-1", 1000, Some("一半了".into()));
         // 心跳停在 1000, 现在 6500 → 差 5500 > 半程 5000 → nudge
         let checks = board.check_all(&input(6500, 10_000));
-        assert!(checks.iter().any(|c| c.verdict == CheckVerdict::NeedsNudge && c.reason.contains("心跳")));
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.verdict == CheckVerdict::NeedsNudge && c.reason.contains("心跳"))
+        );
     }
 
     #[test]
@@ -278,6 +307,9 @@ mod tests {
         assert!(board.settle("c-1", ReportStatus::Done));
         assert_eq!(board.inflight.len(), 0);
         assert_eq!(board.recovered[0].1, "completed");
-        assert!(!board.settle("c-1", ReportStatus::Done), "重复 settle false");
+        assert!(
+            !board.settle("c-1", ReportStatus::Done),
+            "重复 settle false"
+        );
     }
 }

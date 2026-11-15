@@ -155,7 +155,6 @@ pub struct AppConfig {
     pub economic: EconomicConfig,
 }
 
-
 impl Default for TaskPolicyConfig {
     fn default() -> Self {
         Self {
@@ -193,7 +192,6 @@ impl Default for StartupConfig {
     }
 }
 
-
 /// 不可变、带版本号的完整配置快照。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConfigSnapshot {
@@ -208,7 +206,13 @@ pub struct ConfigSnapshot {
 }
 
 impl ConfigSnapshot {
-    pub fn new(version: u64, config: AppConfig, source: &str, operator: &str, reason: &str) -> Self {
+    pub fn new(
+        version: u64,
+        config: AppConfig,
+        source: &str,
+        operator: &str,
+        reason: &str,
+    ) -> Self {
         Self {
             version,
             applied_at: chrono::Utc::now().to_rfc3339(),

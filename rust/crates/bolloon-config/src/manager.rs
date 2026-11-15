@@ -1,3 +1,4 @@
+use crate::ConfigView;
 use crate::audit::ConfigAuditLog;
 use crate::coordinator::{CoordError, Lease, LeaseCoordinator};
 use crate::error::ConfigError;
@@ -7,9 +8,8 @@ use crate::metrics::{ConfigMetrics, MetricsSnapshot};
 use crate::policy::{apply_ai_whitelist, check_category_auth};
 use crate::schema::*;
 use crate::validator::validate;
-use crate::ConfigView;
 use std::collections::VecDeque;
-use std::fs::{create_dir_all, OpenOptions};
+use std::fs::{OpenOptions, create_dir_all};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -70,7 +70,10 @@ impl ConfigManager {
         let initial = AppConfig::default();
         let snap = ConfigSnapshot::new(0, initial, "default", "system", "initial defaults");
         let (tx, _rx) = broadcast::channel(256);
-        let audit = ConfigAuditLog::new(file.as_ref().map(|f| f.with_file_name("config-audit.jsonl")));
+        let audit = ConfigAuditLog::new(
+            file.as_ref()
+                .map(|f| f.with_file_name("config-audit.jsonl")),
+        );
         let evidence = ConfigEvidence::beside(file.as_deref());
         Self {
             view: Arc::new(RwLock::new(Arc::new(snap))),
@@ -282,8 +285,13 @@ impl ConfigManager {
             &p.reason,
             "ok",
         );
-        self.metrics.record_apply(true, t_apply.elapsed().as_nanos() as u64);
-        if self.tx.send(ConfigChangeEvent::Applied(arc.clone())).is_ok() {
+        self.metrics
+            .record_apply(true, t_apply.elapsed().as_nanos() as u64);
+        if self
+            .tx
+            .send(ConfigChangeEvent::Applied(arc.clone()))
+            .is_ok()
+        {
             self.metrics.record_event();
         }
         Ok(arc)
@@ -319,8 +327,13 @@ impl ConfigManager {
             }
         };
         let new_version = self.version.load(Ordering::SeqCst) + 1;
-        let mut snap =
-            ConfigSnapshot::new(new_version, src.config.clone(), "rollback", "system", "rollback");
+        let mut snap = ConfigSnapshot::new(
+            new_version,
+            src.config.clone(),
+            "rollback",
+            "system",
+            "rollback",
+        );
         snap.restored_from = Some(target);
         let arc = Arc::new(snap);
         *w = arc.clone();
@@ -480,15 +493,8 @@ impl ConfigManager {
             *w = arc.clone();
             self.version.store(v, Ordering::SeqCst);
         }
-        self.audit.log(
-            "load",
-            v,
-            None,
-            "file",
-            "system",
-            "restart recovery",
-            "ok",
-        );
+        self.audit
+            .log("load", v, None, "file", "system", "restart recovery", "ok");
         Ok(arc)
     }
 

@@ -43,9 +43,15 @@ impl CharacterTraits {
 
     /// 全部维度在 [0,1] 才算合法
     pub fn validate(&self) -> bool {
-        [self.integrity, self.kindness, self.capability, self.responsibility, self.foresight]
-            .iter()
-            .all(|v| (0.0..=1.0).contains(v))
+        [
+            self.integrity,
+            self.kindness,
+            self.capability,
+            self.responsibility,
+            self.foresight,
+        ]
+        .iter()
+        .all(|v| (0.0..=1.0).contains(v))
     }
 }
 
@@ -70,7 +76,8 @@ pub struct HistoryStats {
 pub fn score_from_stats(s: &HistoryStats) -> CharacterTraits {
     let capability = clamp01((s.judgments as f64 / 20.0) * 0.6 + s.avg_confidence * 0.4);
     let responsibility = clamp01((s.judgments as f64 / 20.0) * 0.5 + s.avg_confidence * 0.5);
-    let foresight = clamp01((s.intents as f64 / 10.0) * 0.5 + (s.intents_adopted as f64 / 10.0) * 0.5);
+    let foresight =
+        clamp01((s.intents as f64 / 10.0) * 0.5 + (s.intents_adopted as f64 / 10.0) * 0.5);
     let integrity = clamp01(0.5 + 0.5 * (1.0 - (s.contradictions as f64 / 10.0).min(1.0)));
     let kindness = clamp01((s.helps as f64 / 10.0) * 0.5 + 0.5);
     CharacterTraits {

@@ -3,10 +3,10 @@
 //! 对应 TS 版：prepare → model call → harness tool call → checkpoint → reducer → continuation → finish
 //! Pi/ReAct 旧循环降为策略或 Adapter；这里只保留一个 loop。
 
-use std::sync::Arc;
 use async_trait::async_trait;
+use std::sync::Arc;
 
-use bolloon_config::{policy::RuntimePolicy, ConfigView};
+use bolloon_config::{ConfigView, policy::RuntimePolicy};
 use bolloon_harness::{GateOutcome, Harness, ToolCall};
 use bolloon_llm::{ChatMessage, GenerateParams, GenerateResult, LlmRuntime, ToolSchema};
 
@@ -78,7 +78,11 @@ pub struct LlmGoalReviewer {
 
 impl LlmGoalReviewer {
     pub fn new(llm: Arc<LlmRuntime>, provider_id: String, model: String) -> Self {
-        Self { llm, provider_id, model }
+        Self {
+            llm,
+            provider_id,
+            model,
+        }
     }
 }
 
@@ -443,7 +447,11 @@ impl<S: LoopStrategy> KernelLoop<S> {
                 let mut last_err = String::new();
                 let mut got: Option<GenerateResult> = None;
                 for attempt in 0..=retries {
-                    match self.strategy.call(provider_id, &model, messages.clone(), tools.clone()).await {
+                    match self
+                        .strategy
+                        .call(provider_id, &model, messages.clone(), tools.clone())
+                        .await
+                    {
                         Ok(r) => {
                             self.health.record_attempt(true);
                             got = Some(r);
@@ -458,7 +466,10 @@ impl<S: LoopStrategy> KernelLoop<S> {
                             }
                             if attempt < retries {
                                 self.health.record_retry();
-                                tokio::time::sleep(std::time::Duration::from_secs(2u64 * (attempt as u64 + 1))).await;
+                                tokio::time::sleep(std::time::Duration::from_secs(
+                                    2u64 * (attempt as u64 + 1),
+                                ))
+                                .await;
                             }
                         }
                     }
@@ -511,9 +522,10 @@ impl<S: LoopStrategy> KernelLoop<S> {
                 let aligned = if did_tools {
                     let transcript = build_transcript(&messages, &resp);
                     match &self.goal_review {
-                        Some(reviewer) => {
-                            reviewer.is_aligned(provider_id, &model, &initial_intent, &transcript).await.unwrap_or(false)
-                        }
+                        Some(reviewer) => reviewer
+                            .is_aligned(provider_id, &model, &initial_intent, &transcript)
+                            .await
+                            .unwrap_or(false),
                         None => true,
                     }
                 } else {
@@ -599,8 +611,8 @@ impl<S: LoopStrategy> KernelLoop<S> {
                     tool_call_id: Some(tc.id.clone()),
                     images: vec![],
                     tool_calls: None,
-    reasoning_content: None,
-});
+                    reasoning_content: None,
+                });
                 if !tool_ok {
                     // 工具失败不打断循环（下一次模型调用会看到 tool 结果）
                 }
@@ -680,8 +692,8 @@ fn build_transcript(messages: &[ChatMessage], current: &GenerateResult) -> Strin
         tool_call_id: None,
         images: vec![],
         tool_calls: None,
-    reasoning_content: None,
-});
+        reasoning_content: None,
+    });
     msgs.into_iter()
         .rev()
         .take(24)
@@ -724,9 +736,7 @@ mod tests {
             _messages: Vec<ChatMessage>,
             _tools: Vec<ToolSchema>,
         ) -> Result<GenerateResult, String> {
-            let idx = self
-                .calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let idx = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let (tools, content) = if idx == 0 {
                 (1, "需要查一下".to_string())
             } else {
@@ -747,7 +757,11 @@ mod tests {
             Ok(GenerateResult {
                 content,
                 tool_calls: calls,
-                finish_reason: if tools == 1 { "tool_calls".into() } else { "stop".into() },
+                finish_reason: if tools == 1 {
+                    "tool_calls".into()
+                } else {
+                    "stop".into()
+                },
                 usage: bolloon_llm::Usage::default(),
                 model: _provider_id.to_string(),
                 reasoning_content: None,
@@ -765,8 +779,17 @@ mod tests {
             default_allowed: true,
         };
         reg.register(def).await;
-        let harness = Arc::new(Harness::new(reg, Arc::new(MockExecutor), Budget::new(10, 60_000)));
-        (harness, Arc::new(MockStrategy { calls: std::sync::atomic::AtomicUsize::new(0) }))
+        let harness = Arc::new(Harness::new(
+            reg,
+            Arc::new(MockExecutor),
+            Budget::new(10, 60_000),
+        ));
+        (
+            harness,
+            Arc::new(MockStrategy {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }),
+        )
     }
 
     #[tokio::test]
@@ -781,8 +804,8 @@ mod tests {
             tool_call_id: None,
             images: vec![],
             tool_calls: None,
-    reasoning_content: None,
-}];
+            reasoning_content: None,
+        }];
         let steps = loop_.run("p", "m", messages, vec![], None).await.unwrap();
         assert!(steps.len() >= 2, "至少两轮: 工具轮 + 完成轮");
         let last = steps.last().unwrap();
@@ -869,7 +892,11 @@ mod tests {
                 Ok(GenerateResult {
                     content,
                     tool_calls: calls,
-                    finish_reason: if tools == 1 { "tool_calls".into() } else { "stop".into() },
+                    finish_reason: if tools == 1 {
+                        "tool_calls".into()
+                    } else {
+                        "stop".into()
+                    },
                     usage: bolloon_llm::Usage::default(),
                     model: "m".into(),
                     reasoning_content: None,
@@ -895,7 +922,9 @@ mod tests {
         }
 
         let (harness, _) = setup().await;
-        let strategy = Arc::new(SelfQaStrategy { calls: std::sync::atomic::AtomicUsize::new(0) });
+        let strategy = Arc::new(SelfQaStrategy {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
         let reviewer = Arc::new(MockReviewer {
             answers: std::sync::Mutex::new(vec![false, true]),
         });
@@ -909,14 +938,20 @@ mod tests {
             tool_call_id: None,
             images: vec![],
             tool_calls: None,
-    reasoning_content: None,
-}];
+            reasoning_content: None,
+        }];
         let steps = loop_.run("p", "m", messages, vec![], None).await.unwrap();
         // 自问自答没有提前停: 走了 工具→自问→工具→结论 共 4 轮
         assert_eq!(steps.len(), 4, "自问自答应持续推进到对齐才收尾");
         let last = steps.last().unwrap();
-        assert!(matches!(last.stop, Some(StopReason::Finished)), "最终应 Finished");
-        assert!(steps.iter().filter(|s| !s.tool_calls.is_empty()).count() >= 2, "应至少调了 2 次工具");
+        assert!(
+            matches!(last.stop, Some(StopReason::Finished)),
+            "最终应 Finished"
+        );
+        assert!(
+            steps.iter().filter(|s| !s.tool_calls.is_empty()).count() >= 2,
+            "应至少调了 2 次工具"
+        );
     }
 
     /// **请求形状门 (2026-10-31)**: 目标未对齐的自纠轮, 每次模型调用都必须**以 user 轮收尾**。
@@ -1008,7 +1043,11 @@ mod tests {
         let _ = loop_.run("p", "m", messages, vec![], None).await.unwrap();
 
         let roles = strategy.last_roles.lock().unwrap().clone();
-        assert!(roles.len() >= 3, "自纠应至少再问一次, 实际调用 {} 次", roles.len());
+        assert!(
+            roles.len() >= 3,
+            "自纠应至少再问一次, 实际调用 {} 次",
+            roles.len()
+        );
         for (i, r) in roles.iter().enumerate() {
             // 合法收尾: user (新指令) 或 tool (工具结果) —— **绝不能是 assistant**
             assert!(
@@ -1065,8 +1104,8 @@ mod tests {
             tool_call_id: None,
             images: vec![],
             tool_calls: None,
-    reasoning_content: None,
-}];
+            reasoning_content: None,
+        }];
         let run = loop_
             .run_observed(&obs, "p", "m", messages, vec![], None)
             .await
@@ -1138,8 +1177,8 @@ mod tests {
                     tool_call_id: None,
                     images: vec![],
                     tool_calls: None,
-    reasoning_content: None,
-}],
+                    reasoning_content: None,
+                }],
                 vec![],
                 None,
             )
@@ -1151,5 +1190,4 @@ mod tests {
             "配置的 prompt 覆盖必须替换 system, 而不是把它追加到身份提示后面"
         );
     }
-
 }

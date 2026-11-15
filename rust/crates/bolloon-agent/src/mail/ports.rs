@@ -97,7 +97,10 @@ pub struct MailPortError {
 
 impl MailPortError {
     pub fn new(kind: &str, msg: impl Into<String>) -> Self {
-        Self { kind: kind.into(), message: msg.into() }
+        Self {
+            kind: kind.into(),
+            message: msg.into(),
+        }
     }
 }
 

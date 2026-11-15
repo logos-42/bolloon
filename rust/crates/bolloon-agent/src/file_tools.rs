@@ -52,11 +52,18 @@ pub fn verify_write(path: &str, is_dir: bool) -> String {
 }
 
 fn arg_str<'a>(call: &'a ToolCall, key: &str) -> Option<&'a str> {
-    call.arguments.get(key).and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty())
+    call.arguments
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
 }
 
 /// 入口校验 + 路径 deny（所有写/删操作共用）
-fn guard_write_path(call: &ToolCall, keys: &[&str]) -> Result<(Vec<String>, Option<String>), ToolResult> {
+fn guard_write_path(
+    call: &ToolCall,
+    keys: &[&str],
+) -> Result<(Vec<String>, Option<String>), ToolResult> {
     let started = std::time::Instant::now();
     let mut vals = Vec::new();
     for k in keys {
@@ -141,7 +148,11 @@ async fn do_write(call: ToolCall) -> ToolResult {
         Ok(()) => ToolResult {
             ok: true,
             // 成功必须自带读回事实（TS write-verify 基线）
-            output: format!("已写入 {path}（{} 字节）\n{}", content.len(), verify_write(path, false)),
+            output: format!(
+                "已写入 {path}（{} 字节）\n{}",
+                content.len(),
+                verify_write(path, false)
+            ),
             elapsed_ms: started.elapsed().as_millis() as u64,
             verified: Some(true),
             evidence: Some(serde_json::json!({ "path": path, "bytes": content.len() })),
@@ -177,7 +188,8 @@ pub fn bounded_diff(path: &str, before: &str, after: &str) -> String {
         pre += 1;
     }
     let mut suf = 0usize;
-    while suf < a.len() - pre && suf < b.len() - pre && a[a.len() - 1 - suf] == b[b.len() - 1 - suf] {
+    while suf < a.len() - pre && suf < b.len() - pre && a[a.len() - 1 - suf] == b[b.len() - 1 - suf]
+    {
         suf += 1;
     }
     let old_mid = &a[pre..a.len() - suf];
@@ -270,7 +282,11 @@ async fn do_edit(call: ToolCall) -> ToolResult {
             output: format!(
                 "已编辑 {path}\n{diff}\n{}",
                 verify_write(path, false),
-                diff = if diff_txt.is_empty() { "(内容未变)".to_string() } else { diff_txt }
+                diff = if diff_txt.is_empty() {
+                    "(内容未变)".to_string()
+                } else {
+                    diff_txt
+                }
             ),
             elapsed_ms: started.elapsed().as_millis() as u64,
             verified: Some(true),
@@ -307,7 +323,10 @@ async fn do_list(call: ToolCall) -> ToolResult {
             let mut entries: Vec<String> = Vec::new();
             for e in rd.flatten().take(MAX_LIST_ENTRIES) {
                 let name = e.file_name().to_string_lossy().to_string();
-                let kind = e.file_type().map(|t| if t.is_dir() { "/" } else { "" }).unwrap_or("");
+                let kind = e
+                    .file_type()
+                    .map(|t| if t.is_dir() { "/" } else { "" })
+                    .unwrap_or("");
                 entries.push(format!("{name}{kind}"));
             }
             entries.sort();
@@ -406,7 +425,9 @@ async fn do_delete(call: ToolCall) -> ToolResult {
     if meta.is_dir() {
         return ToolResult {
             ok: false,
-            output: format!("{path} 是目录 —— delete_file 只删文件（目录删除不可撤回，需显式工具）"),
+            output: format!(
+                "{path} 是目录 —— delete_file 只删文件（目录删除不可撤回，需显式工具）"
+            ),
             elapsed_ms: started.elapsed().as_millis() as u64,
             verified: Some(false),
             evidence: Some(error_evidence(ErrorCode::InvalidArgument, "目录不删")),
@@ -458,7 +479,8 @@ fn write_file_def() -> ToolDef {
 fn edit_file_def() -> ToolDef {
     ToolDef {
         name: "edit_file".into(),
-        description: "按 old_text 精确替换一处（多处命中会拒绝并要求更具体）。成功后返回读回自证。".into(),
+        description: "按 old_text 精确替换一处（多处命中会拒绝并要求更具体）。成功后返回读回自证。"
+            .into(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -559,11 +581,19 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("bolloon_file_tools_{}_{}", std::process::id(), name))
+        std::env::temp_dir().join(format!(
+            "bolloon_file_tools_{}_{}",
+            std::process::id(),
+            name
+        ))
     }
 
     fn call(name: &str, args: serde_json::Value) -> ToolCall {
-        ToolCall { id: "c1".into(), name: name.into(), arguments: args }
+        ToolCall {
+            id: "c1".into(),
+            name: name.into(),
+            arguments: args,
+        }
     }
 
     /// **TS 基线**: 写成功必须自带读回事实（k10-write-verify-wiring 钉住的行为）
@@ -571,10 +601,17 @@ mod tests {
     async fn write_success_carries_readback_proof() {
         let p = tmp("write.txt");
         let r = FileExecutor
-            .execute(call("write_file", serde_json::json!({ "path": p.display().to_string(), "content": "hello" })))
+            .execute(call(
+                "write_file",
+                serde_json::json!({ "path": p.display().to_string(), "content": "hello" }),
+            ))
             .await;
         assert!(r.ok, "{}", r.output);
-        assert!(r.output.contains("[已核对] 文件已落盘"), "必须有读回自证: {}", r.output);
+        assert!(
+            r.output.contains("[已核对] 文件已落盘"),
+            "必须有读回自证: {}",
+            r.output
+        );
         assert!(r.output.contains("5 字节"), "字节数要真: {}", r.output);
         let _ = std::fs::remove_file(&p);
     }
@@ -583,10 +620,17 @@ mod tests {
     #[tokio::test]
     async fn write_failure_does_not_claim_verified() {
         let r = FileExecutor
-            .execute(call("write_file", serde_json::json!({ "path": "/no/such/dir/x.txt", "content": "x" })))
+            .execute(call(
+                "write_file",
+                serde_json::json!({ "path": "/no/such/dir/x.txt", "content": "x" }),
+            ))
             .await;
         assert!(!r.ok);
-        assert!(!r.output.contains("[已核对]"), "失败不许拼已核对: {}", r.output);
+        assert!(
+            !r.output.contains("[已核对]"),
+            "失败不许拼已核对: {}",
+            r.output
+        );
         assert_eq!(r.verified, Some(false));
     }
 
@@ -595,9 +639,12 @@ mod tests {
         let p = tmp("edit.txt");
         std::fs::write(&p, "aaa\nbbb\n").unwrap();
         let r = FileExecutor
-            .execute(call("edit_file", serde_json::json!({
-                "path": p.display().to_string(), "old_text": "bbb", "new_text": "ccc"
-            })))
+            .execute(call(
+                "edit_file",
+                serde_json::json!({
+                    "path": p.display().to_string(), "old_text": "bbb", "new_text": "ccc"
+                }),
+            ))
             .await;
         assert!(r.ok, "{}", r.output);
         assert!(r.output.contains("[已核对]"), "{}", r.output);
@@ -611,12 +658,19 @@ mod tests {
         let p = tmp("amb.txt");
         std::fs::write(&p, "x\nx\n").unwrap();
         let r = FileExecutor
-            .execute(call("edit_file", serde_json::json!({
-                "path": p.display().to_string(), "old_text": "x", "new_text": "y"
-            })))
+            .execute(call(
+                "edit_file",
+                serde_json::json!({
+                    "path": p.display().to_string(), "old_text": "x", "new_text": "y"
+                }),
+            ))
             .await;
         assert!(!r.ok);
-        assert!(r.output.contains("多处") || r.output.contains("更具体"), "{}", r.output);
+        assert!(
+            r.output.contains("多处") || r.output.contains("更具体"),
+            "{}",
+            r.output
+        );
         let _ = std::fs::remove_file(&p);
     }
 
@@ -624,7 +678,10 @@ mod tests {
     #[tokio::test]
     async fn credential_paths_refused_for_write_and_delete() {
         for (name, args) in [
-            ("write_file", serde_json::json!({ "path": ".env", "content": "x" })),
+            (
+                "write_file",
+                serde_json::json!({ "path": ".env", "content": "x" }),
+            ),
             ("delete_file", serde_json::json!({ "path": "a/b.pem" })),
             ("mkdir", serde_json::json!({ "path": ".bolloon/keypair" })),
         ] {
@@ -637,17 +694,27 @@ mod tests {
     /// 入口校验: 必填参数
     #[tokio::test]
     async fn missing_args_rejected_at_entry() {
-        let r = FileExecutor.execute(call("write_file", serde_json::json!({ "path": "a" }))).await;
+        let r = FileExecutor
+            .execute(call("write_file", serde_json::json!({ "path": "a" })))
+            .await;
         assert!(!r.ok);
         assert!(r.output.contains("content 必填"), "{}", r.output);
-        assert_eq!(r.evidence.as_ref().unwrap()["error"]["code"], "invalid_argument");
+        assert_eq!(
+            r.evidence.as_ref().unwrap()["error"]["code"],
+            "invalid_argument"
+        );
     }
 
     /// mkdir 成功 → 目录自证
     #[tokio::test]
     async fn mkdir_proves_directory_exists() {
         let p = tmp("dirA");
-        let r = FileExecutor.execute(call("mkdir", serde_json::json!({ "path": p.display().to_string() }))).await;
+        let r = FileExecutor
+            .execute(call(
+                "mkdir",
+                serde_json::json!({ "path": p.display().to_string() }),
+            ))
+            .await;
         assert!(r.ok, "{}", r.output);
         assert!(r.output.contains("[已核对] 目录存在"), "{}", r.output);
         let _ = std::fs::remove_dir_all(&p);
@@ -658,9 +725,18 @@ mod tests {
     async fn delete_removes_file_without_fake_proof() {
         let p = tmp("del.txt");
         std::fs::write(&p, "bye").unwrap();
-        let r = FileExecutor.execute(call("delete_file", serde_json::json!({ "path": p.display().to_string() }))).await;
+        let r = FileExecutor
+            .execute(call(
+                "delete_file",
+                serde_json::json!({ "path": p.display().to_string() }),
+            ))
+            .await;
         assert!(r.ok, "{}", r.output);
-        assert!(!r.output.contains("[已核对]"), "删后无物可读回, 不许拼自证: {}", r.output);
+        assert!(
+            !r.output.contains("[已核对]"),
+            "删后无物可读回, 不许拼自证: {}",
+            r.output
+        );
         assert!(!p.exists());
     }
 
@@ -670,7 +746,13 @@ mod tests {
         let ro = list_directory_def();
         assert_eq!(ro.effect, EffectKind::Read);
         assert!(ro.default_allowed, "只读默认允许");
-        for d in [write_file_def(), edit_file_def(), mkdir_def(), move_file_def(), delete_file_def()] {
+        for d in [
+            write_file_def(),
+            edit_file_def(),
+            mkdir_def(),
+            move_file_def(),
+            delete_file_def(),
+        ] {
             assert_eq!(d.effect, EffectKind::Write);
             assert!(!d.default_allowed, "{} 不该默认允许", d.name);
         }
@@ -689,7 +771,11 @@ mod tests {
         let before: String = (0..200).map(|i| format!("old {i}\n")).collect();
         let after: String = (0..200).map(|i| format!("new {i}\n")).collect();
         let d = super::bounded_diff("big.txt", &before, &after);
-        assert!(d.lines().count() <= 3 + 2 * super::DIFF_MAX_LINES + 2, "{}", d.lines().count());
+        assert!(
+            d.lines().count() <= 3 + 2 * super::DIFF_MAX_LINES + 2,
+            "{}",
+            d.lines().count()
+        );
         assert!(d.contains("省略"), "超长要如实说省略了多少: {d}");
     }
     #[test]

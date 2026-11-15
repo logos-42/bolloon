@@ -196,7 +196,11 @@ mod tests {
     fn done_without_evidence_rejected() {
         let c = contract();
         let r = report(ReportStatus::Done, vec![]);
-        assert_eq!(validate_report(&c, &r).unwrap_err(), ReportError::NoEvidence, "强负例: 漂亮回报不完成");
+        assert_eq!(
+            validate_report(&c, &r).unwrap_err(),
+            ReportError::NoEvidence,
+            "强负例: 漂亮回报不完成"
+        );
     }
 
     #[test]
@@ -210,26 +214,43 @@ mod tests {
     fn done_with_fewer_evidence_than_criteria_rejected() {
         let c = contract();
         let r = report(ReportStatus::Done, vec!["ev-1".into()]);
-        assert!(matches!(validate_report(&c, &r), Err(ReportError::CriterionUnmet(_))));
+        assert!(matches!(
+            validate_report(&c, &r),
+            Err(ReportError::CriterionUnmet(_))
+        ));
     }
 
     #[test]
     fn partial_needs_no_evidence() {
         let c = contract();
         let r = report(ReportStatus::Partial, vec![]);
-        assert!(validate_report(&c, &r).is_ok(), "partial 如实报, 不冒充 done");
+        assert!(
+            validate_report(&c, &r).is_ok(),
+            "partial 如实报, 不冒充 done"
+        );
     }
 
     #[test]
     fn board_rejects_and_accepts() {
         let mut board = SubagentBoard::new();
-        board.dispatch("run-1", "调研", vec!["来源".into(), "结论".into()], 1000, 60_000, 1);
+        board.dispatch(
+            "run-1",
+            "调研",
+            vec!["来源".into(), "结论".into()],
+            1000,
+            60_000,
+            1,
+        );
         assert!(!board.can_complete_from("c-0001"));
         // 无证据 → 拒收
         assert!(board.receive(report(ReportStatus::Done, vec![])).is_err());
         assert!(!board.can_complete_from("c-0001"), "拒收后父不可完成");
         // 有证据 → 收
-        assert!(board.receive(report(ReportStatus::Done, vec!["e1".into(), "e2".into()])).is_ok());
+        assert!(
+            board
+                .receive(report(ReportStatus::Done, vec!["e1".into(), "e2".into()]))
+                .is_ok()
+        );
         assert!(board.can_complete_from("c-0001"));
     }
 

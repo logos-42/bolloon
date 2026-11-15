@@ -114,11 +114,18 @@ pub fn quota_with_age(age_days: u32, violations: u32, used_today: u32) -> JoinQu
             JOIN_QUOTA_PENALTY
         )
     } else if age_days >= JOIN_QUOTA_MATURE_DAYS {
-        format!("满 {} 天且无违规：{}/天", JOIN_QUOTA_MATURE_DAYS, JOIN_QUOTA_MATURED)
+        format!(
+            "满 {} 天且无违规：{}/天",
+            JOIN_QUOTA_MATURE_DAYS, JOIN_QUOTA_MATURED
+        )
     } else if age_days >= JOIN_QUOTA_RELAX_DAY {
         format!("第 {} 天起：{}/天", JOIN_QUOTA_RELAX_DAY, JOIN_QUOTA_DAY5)
     } else {
-        format!("新面孔第 {} 天：{}/天（先把一个群用起来，比进十个群刷脸有用）", age_days + 1, JOIN_QUOTA_NEW_DAY)
+        format!(
+            "新面孔第 {} 天：{}/天（先把一个群用起来，比进十个群刷脸有用）",
+            age_days + 1,
+            JOIN_QUOTA_NEW_DAY
+        )
     };
     JoinQuota {
         groups_per_day: cap,
@@ -246,11 +253,7 @@ pub fn build(
         reasons: a.reasons.clone(),
         throttle_explanation: a.throttled_note.clone(),
         goodwill_path: goodwill_path(a),
-        join_quota: quota_with_age(
-            age_days,
-            h.blocked_attempts.max(blocked),
-            join_used_today,
-        ),
+        join_quota: quota_with_age(age_days, h.blocked_attempts.max(blocked), join_used_today),
     };
     let detail = detail_digest(&off);
 
@@ -291,7 +294,10 @@ pub fn goodwill_path(a: &Allowance) -> Vec<String> {
     let p = AllowancePolicy::default();
     let mut v = vec![
         format!("完成一个意图并验收通过：+{} 次/个", p.per_success),
-        format!("用社区资源（别人供的算力/额度）完成任务：+{} 次/个（省的是大家的钱）", p.per_zero_cost_intent),
+        format!(
+            "用社区资源（别人供的算力/额度）完成任务：+{} 次/个（省的是大家的钱）",
+            p.per_zero_cost_intent
+        ),
         format!("贡献被独立验收确认：+{} 次/条", p.per_verified_contribution),
         format!("真金白银赞助公共池：+{} 次/1 USD", p.per_confirmed_usd),
         "做实事（研究/代码/验证）比闲聊额度更高：意图权重 1.5×".to_string(),
@@ -328,7 +334,13 @@ mod tests {
     #[test]
     fn attestation_is_deterministic_and_verifiable() {
         let h = hist();
-        let a = daily_allowance("did:pi:abc", "2026-10-29", &h, &AllowancePolicy::default(), None);
+        let a = daily_allowance(
+            "did:pi:abc",
+            "2026-10-29",
+            &h,
+            &AllowancePolicy::default(),
+            None,
+        );
         let (att1, _) = build("did:pi:abc", "2026-10-29", &h, &a, 0, 0, 0);
         let (att2, _) = build("did:pi:abc", "2026-10-29", &h, &a, 0, 0, 0);
         assert_eq!(att1.digest, att2.digest, "同档案必须同摘要（跨节点可比对）");
@@ -354,14 +366,21 @@ mod tests {
         let blob = serde_json::to_string(&att).unwrap();
         assert!(!blob.contains("reasons"), "上链部分不许带详细理由");
         assert!(!blob.contains("goodwill_path"), "上链部分不带链下细节");
-        assert_eq!(att.detail_digest, detail_digest(&off), "上链只带细节的哈希承诺");
+        assert_eq!(
+            att.detail_digest,
+            detail_digest(&off),
+            "上链只带细节的哈希承诺"
+        );
         assert!(!off.reasons.is_empty(), "链下要详细");
         assert!(!off.goodwill_path.is_empty(), "必须写明怎么赚额度");
     }
 
     #[test]
     fn low_trust_loses_join_quota_but_keeps_speaking() {
-        let h = PrincipalHistory { blocked_attempts: 50, ..Default::default() };
+        let h = PrincipalHistory {
+            blocked_attempts: 50,
+            ..Default::default()
+        };
         let a = daily_allowance("刷子", "w", &h, &AllowancePolicy::default(), None);
         assert_eq!(a.tier, AllowanceTier::Throttled);
         let q = quota_with_age(0, h.blocked_attempts, 0);
@@ -373,7 +392,10 @@ mod tests {
         assert!(f.note.contains("核实"), "要提醒其它 agent 设防: {}", f.note);
 
         // 贡献者加群额度更高
-        let good = PrincipalHistory { verified_contributions: 3, ..Default::default() };
+        let good = PrincipalHistory {
+            verified_contributions: 3,
+            ..Default::default()
+        };
         let ag = daily_allowance("好人", "w", &good, &AllowancePolicy::default(), None);
         assert!(join_quota_by_age(40, 0) >= 500);
         assert!(speech_flag(ag.tier, 0).is_none(), "好人发言不打标记");
@@ -392,7 +414,10 @@ mod tests {
         // 任何违规一律 5/天（不是 0，不封号）
         assert_eq!(join_quota_by_age(0, 1), JOIN_QUOTA_PENALTY);
         assert_eq!(join_quota_by_age(365, 2), 5);
-        assert!(join_quota_by_age(365, 99) > 0, "违规也不清零：还能进 5 个群");
+        assert!(
+            join_quota_by_age(365, 99) > 0,
+            "违规也不清零：还能进 5 个群"
+        );
         // 说明文案要能讲清为什么
         let q = quota_with_age(0, 0, 3);
         assert_eq!(q.groups_per_day, 10);
@@ -404,7 +429,13 @@ mod tests {
 
     #[test]
     fn newcomer_is_watched_but_not_blocked() {
-        let a = daily_allowance("新人", "w", &PrincipalHistory::default(), &AllowancePolicy::default(), None);
+        let a = daily_allowance(
+            "新人",
+            "w",
+            &PrincipalHistory::default(),
+            &AllowancePolicy::default(),
+            None,
+        );
         let f = speech_flag(a.tier, 0).unwrap();
         assert_eq!(f.level, "watch");
         assert_eq!(join_quota_by_age(0, 0), JOIN_QUOTA_NEW_DAY);

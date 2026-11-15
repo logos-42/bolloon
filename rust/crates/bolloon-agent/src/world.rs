@@ -172,7 +172,12 @@ pub fn classify_intent(text: &str) -> ClassifiedIntent {
     } else {
         Clarity::Clear
     };
-    ClassifiedIntent { category, want, clarity, matched }
+    ClassifiedIntent {
+        category,
+        want,
+        clarity,
+        matched,
+    }
 }
 
 /// 用户意图 (世界流的筛选器; None = 纯默认流)
@@ -207,7 +212,6 @@ pub enum CardMediaKind {
     Image,
     Video,
 }
-
 
 /// 卡片媒体项 (对齐 TS `CardMedia`: {type,url,mime,name})
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -248,7 +252,6 @@ pub enum CardVerification {
     Unverified,
 }
 
-
 /// 行动类型 (行动链接与 media 的内容 URL 语义不同: media=看, action=做)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -284,19 +287,54 @@ pub enum ContentRating {
 /// 这是服务端兜底，不依赖 AI 自觉打标；词表可后续扩充。
 fn mature_keywords() -> &'static [&'static str] {
     &[
-        "色情", "性爱", "裸", "成人", "18禁", "黄", "约炮", "援交",
-        "赌博", "赌场", "博彩", "彩票", "赌球",
-        "暴力", "血腥", "凶杀", "武器", "枪支", "军火",
-        "毒品", "吸毒", "毒品", "冰毒", "大麻", "摇头丸",
-        "porn", "nsfw", "xxx", "sex", "nude", "adult", "erotic",
-        "gambling", "casino", "bet", "violence", "drug", "weapon",
+        "色情",
+        "性爱",
+        "裸",
+        "成人",
+        "18禁",
+        "黄",
+        "约炮",
+        "援交",
+        "赌博",
+        "赌场",
+        "博彩",
+        "彩票",
+        "赌球",
+        "暴力",
+        "血腥",
+        "凶杀",
+        "武器",
+        "枪支",
+        "军火",
+        "毒品",
+        "吸毒",
+        "毒品",
+        "冰毒",
+        "大麻",
+        "摇头丸",
+        "porn",
+        "nsfw",
+        "xxx",
+        "sex",
+        "nude",
+        "adult",
+        "erotic",
+        "gambling",
+        "casino",
+        "bet",
+        "violence",
+        "drug",
+        "weapon",
     ]
 }
 
 /// 根据标题/摘要/标签自动判定分级（服务端兜底层）。
 pub fn auto_rate(title: &str, summary: &str, tags: &[String]) -> ContentRating {
     let hay = format!("{} {} {}", title, summary, tags.join(" ")).to_lowercase();
-    if mature_keywords().iter().any(|k| hay.contains(&k.to_lowercase())) {
+    if mature_keywords()
+        .iter()
+        .any(|k| hay.contains(&k.to_lowercase()))
+    {
         ContentRating::Mature
     } else {
         ContentRating::General
@@ -344,7 +382,8 @@ pub struct WorldCard {
 
 /// 取卡片的生效分级：显式声明优先，否则按内容自动判定（服务端兜底）。
 pub fn effective_rating(card: &WorldCard) -> ContentRating {
-    card.content_rating.unwrap_or_else(|| auto_rate(&card.title, &card.summary, &card.tags))
+    card.content_rating
+        .unwrap_or_else(|| auto_rate(&card.title, &card.summary, &card.tags))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -355,7 +394,6 @@ pub enum CardScope {
     Private,
     Public,
 }
-
 
 /// 机会 (世界流条目)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -430,9 +468,11 @@ impl OpportunityStream {
         };
         let mut items: Vec<&Opportunity> = self.items.iter().collect();
         items.sort_by(|a, b| {
-            rank(&a.source)
-                .cmp(&rank(&b.source))
-                .then(b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal))
+            rank(&a.source).cmp(&rank(&b.source)).then(
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
         });
         items
     }
@@ -459,13 +499,20 @@ pub fn score_opportunity(opp_tags: &[String], intent_tags: &[String]) -> (f64, S
     }
     let hits = intent_tags
         .iter()
-        .filter(|t| opp_tags.iter().any(|o| o.contains(t.as_str()) || t.contains(o.as_str())))
+        .filter(|t| {
+            opp_tags
+                .iter()
+                .any(|o| o.contains(t.as_str()) || t.contains(o.as_str()))
+        })
         .count();
     let ratio = hits as f64 / intent_tags.len() as f64;
     if hits == 0 {
         (0.3, "no-match".into())
     } else {
-        (0.5 + 0.5 * ratio, format!("match:{hits}/{}", intent_tags.len()))
+        (
+            0.5 + 0.5 * ratio,
+            format!("match:{hits}/{}", intent_tags.len()),
+        )
     }
 }
 
@@ -485,10 +532,14 @@ pub fn score_with_category(
         return (base, reason);
     }
     match opp_category {
-        Some(c) if c == intent.category => {
-            ((base + 0.15).clamp(0.0, 1.0), format!("{reason}+cat:{}", c.as_str()))
-        }
-        Some(c) => ((base - 0.10).clamp(0.0, 1.0), format!("{reason}-cat:{}", c.as_str())),
+        Some(c) if c == intent.category => (
+            (base + 0.15).clamp(0.0, 1.0),
+            format!("{reason}+cat:{}", c.as_str()),
+        ),
+        Some(c) => (
+            (base - 0.10).clamp(0.0, 1.0),
+            format!("{reason}-cat:{}", c.as_str()),
+        ),
         None => (base, reason),
     }
 }
@@ -670,9 +721,7 @@ pub fn share_card(
 ///
 /// 与发送侧的 `delivery_for` 成对 —— 只发不给的人, 收到也照样拒, 两端都不放水。
 pub fn accept_card(card: &WorldCard, friends: &[String]) -> Result<(), CardError> {
-    if card.scope == CardScope::Private
-        && !friends.iter().any(|f| f == &card.provider_did)
-    {
+    if card.scope == CardScope::Private && !friends.iter().any(|f| f == &card.provider_did) {
         return Err(CardError::NotFriend);
     }
     Ok(())
@@ -917,12 +966,18 @@ mod tests {
     fn card_cover_tamper_breaks_signature() {
         let kp = KeyPair::generate();
         let mut card = sample_card(&kp);
-        card.cover = Some(CardCover { url: "ipfs://a".into(), kind: CoverKind::Image });
+        card.cover = Some(CardCover {
+            url: "ipfs://a".into(),
+            kind: CoverKind::Image,
+        });
         let sig = kp.sign(card_canonical_bytes(&card).as_bytes());
         assert!(verify_card(&card, &kp.public_bytes(), &sig).is_ok());
 
         let mut forged = card.clone();
-        forged.cover = Some(CardCover { url: "ipfs://evil".into(), kind: CoverKind::Video });
+        forged.cover = Some(CardCover {
+            url: "ipfs://evil".into(),
+            kind: CoverKind::Video,
+        });
         assert_eq!(
             verify_card(&forged, &kp.public_bytes(), &sig).unwrap_err(),
             CardError::BadSignature
@@ -941,7 +996,10 @@ mod tests {
             mime: Some("video/mp4".into()),
             name: Some("demo.mp4".into()),
         }];
-        card.cover = Some(CardCover { url: "ipfs://cover".into(), kind: CoverKind::Video });
+        card.cover = Some(CardCover {
+            url: "ipfs://cover".into(),
+            kind: CoverKind::Video,
+        });
 
         let env = pack_world_card(&kp, &card, 1000);
         assert_eq!(env.topic, TOPIC_WORLD_CARD, "帧主题必须是 world.card");
@@ -960,21 +1018,33 @@ mod tests {
         // ① 主题不对
         let mut wrong_topic = env.clone();
         wrong_topic.topic = "group.msg".into();
-        assert!(matches!(unpack_world_card(&wrong_topic), Err(CardError::BadTopic(_))));
+        assert!(matches!(
+            unpack_world_card(&wrong_topic),
+            Err(CardError::BadTopic(_))
+        ));
 
         // ② 改正文 (塞进伪造封面) → 信封签名失效
         let mut forged = env.clone();
         forged.payload = serde_json::to_value(WorldCard {
-            cover: Some(CardCover { url: "ipfs://evil".into(), kind: CoverKind::Video }),
+            cover: Some(CardCover {
+                url: "ipfs://evil".into(),
+                kind: CoverKind::Video,
+            }),
             ..sample_card(&kp)
         })
         .unwrap();
-        assert!(matches!(unpack_world_card(&forged), Err(CardError::BadEnvelope(_))));
+        assert!(matches!(
+            unpack_world_card(&forged),
+            Err(CardError::BadEnvelope(_))
+        ));
 
         // ③ 卡片自称的 provider 与信封签名者不一致 → 转发伪造
         let other = KeyPair::generate();
         let mismatch = pack_world_card(&kp, &sample_card(&other), 1000);
-        assert!(matches!(unpack_world_card(&mismatch), Err(CardError::ProviderMismatch)));
+        assert!(matches!(
+            unpack_world_card(&mismatch),
+            Err(CardError::ProviderMismatch)
+        ));
     }
 
     #[test]
@@ -1048,7 +1118,10 @@ mod tests {
         let mut priv_card = sample_card(&kp);
         priv_card.scope = CardScope::Private;
         priv_card.provider_did = friend_did.clone();
-        assert!(accept_card(&priv_card, std::slice::from_ref(&friend_did)).is_ok(), "是好友 → 收");
+        assert!(
+            accept_card(&priv_card, std::slice::from_ref(&friend_did)).is_ok(),
+            "是好友 → 收"
+        );
         assert_eq!(
             accept_card(&priv_card, &["did:pi:other".into()]).unwrap_err(),
             CardError::NotFriend,

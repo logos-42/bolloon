@@ -220,7 +220,13 @@ mod tests {
         JudgenessAsset {
             id: "jd-0001".into(),
             title: "先做最小版本".into(),
-            scores: JudgenessScores { taste: 0.9, evidence: 0.7, novelty: 0.5, judgment: 0.92, value: 0.8 },
+            scores: JudgenessScores {
+                taste: 0.9,
+                evidence: 0.7,
+                novelty: 0.5,
+                judgment: 0.92,
+                value: 0.8,
+            },
             basis: "多次项目复盘: 大而全首版从未按时交付".into(),
             scope: "新功能首版决策".into(),
             core_claim: "先做最小版本再迭代, 不要过度设计".into(),
@@ -249,7 +255,10 @@ mod tests {
 
     #[test]
     fn unparseable_reported_honestly() {
-        assert!(parse_paid_markdown("随便一段文字").is_err(), "解析不出如实报错不猜");
+        assert!(
+            parse_paid_markdown("随便一段文字").is_err(),
+            "解析不出如实报错不猜"
+        );
     }
 
     #[test]

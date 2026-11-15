@@ -12,8 +12,8 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use axum::extract::Query;
 use axum::Json;
+use axum::extract::Query;
 use serde::Deserialize;
 
 fn root() -> PathBuf {
@@ -32,7 +32,10 @@ fn append_line(path: &Path, line: &str) -> std::io::Result<usize> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     f.write_all(line.as_bytes())?;
     f.write_all(b"\n")?;
     f.flush()?;
@@ -90,7 +93,7 @@ pub async fn archive(Json(req): Json<ArchiveRequest>) -> Json<serde_json::Value>
         Err(e) => {
             return Json(serde_json::json!({
                 "ok": false, "error": format!("写总账失败: {e}"), "path": main_path.display().to_string()
-            }))
+            }));
         }
     };
 
@@ -98,15 +101,23 @@ pub async fn archive(Json(req): Json<ArchiveRequest>) -> Json<serde_json::Value>
     let mut agent_path: Option<String> = None;
     if !req.agent_id.trim().is_empty() {
         let id = req.agent_id.trim();
-        if id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            let p = root().join("agents").join(id).join("archive").join(dir_name).join(&file);
+        if id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            let p = root()
+                .join("agents")
+                .join(id)
+                .join("archive")
+                .join(dir_name)
+                .join(&file);
             match append_line(&p, &line) {
                 Ok(_) => agent_path = Some(p.display().to_string()),
                 Err(e) => {
                     return Json(serde_json::json!({
                         "ok": false, "error": format!("写智能体账失败: {e}"),
                         "path": main_path.display().to_string()
-                    }))
+                    }));
                 }
             }
         } else {

@@ -13,7 +13,7 @@
 //!
 //! **边界**: 本模块只产"用户选了哪个 value", 不读不写任何配置。
 
-use crate::theme::{bg, fg, BOLD, RESET, THEME_ACCENT, THEME_CURSOR};
+use crate::theme::{BOLD, RESET, THEME_ACCENT, THEME_CURSOR, bg, fg};
 use crate::width::{disp_width, term_height, term_width, truncate_safe};
 
 use std::io::Write;
@@ -66,8 +66,14 @@ pub struct TuiChoice {
 
 #[derive(Debug, Clone)]
 pub enum DisplayLine {
-    Sep { group: String, count: usize, collapsed: bool },
-    Item { index: usize },
+    Sep {
+        group: String,
+        count: usize,
+        collapsed: bool,
+    },
+    Item {
+        index: usize,
+    },
 }
 
 /** 过滤: 大小写不敏感, 匹配 value / label / hint / group */
@@ -123,8 +129,16 @@ pub fn build_display_lines(
         if let Some(g) = &g {
             if last_group.as_ref() != Some(g) {
                 let is_collapsed = collapsed.contains(g);
-                let count = counts.iter().find(|(k, _)| k == g).map(|(_, n)| *n).unwrap_or(0);
-                lines.push(DisplayLine::Sep { group: g.clone(), count, collapsed: is_collapsed });
+                let count = counts
+                    .iter()
+                    .find(|(k, _)| k == g)
+                    .map(|(_, n)| *n)
+                    .unwrap_or(0);
+                lines.push(DisplayLine::Sep {
+                    group: g.clone(),
+                    count,
+                    collapsed: is_collapsed,
+                });
                 last_group = Some(g.clone());
             }
             if collapsed.contains(g) {
@@ -173,7 +187,8 @@ pub fn render_frame(st: &FrameState) -> (String, usize) {
         if cursor < start0 {
             nt = (cursor as isize - if above0 { 1 } else { 0 }).max(0) as usize;
         } else if cursor > start0 + body0 - 1 {
-            nt = (cursor as isize - body0 as isize + 1 - if above0 { 1 } else { 0 }).max(0) as usize;
+            nt =
+                (cursor as isize - body0 as isize + 1 - if above0 { 1 } else { 0 }).max(0) as usize;
         }
         nt = nt.min(total.saturating_sub(h));
         if nt == top {
@@ -186,7 +201,11 @@ pub fn render_frame(st: &FrameState) -> (String, usize) {
     let body = 1usize.max(h - if above { 1 } else { 0 } - if below { 1 } else { 0 });
     let start = top + if above { 1 } else { 0 };
 
-    let filtered = st.items.iter().filter(|c| matches_query(c, st.query)).count();
+    let filtered = st
+        .items
+        .iter()
+        .filter(|c| matches_query(c, st.query))
+        .count();
     let has_groups = st.items.iter().any(|c| c.group.is_some());
     let hint = if has_groups { TUI_HINT } else { TUI_HINT_FLAT };
 
@@ -197,7 +216,13 @@ pub fn render_frame(st: &FrameState) -> (String, usize) {
     let count_part = if st.query.trim().is_empty() {
         format!("共 {} {}", st.items.len(), st.unit)
     } else {
-        format!("共 {} {} · 已筛 {} {}", st.items.len(), st.unit, filtered, st.unit)
+        format!(
+            "共 {} {} · 已筛 {} {}",
+            st.items.len(),
+            st.unit,
+            filtered,
+            st.unit
+        )
     };
     let mut head = format!("{} · {}", st.title, count_part);
     let head_room = w.saturating_sub(disp_width(&head) + 3);
@@ -221,8 +246,16 @@ pub fn render_frame(st: &FrameState) -> (String, usize) {
         let Some(line) = st.lines.get(li) else { break };
         let is_cursor = li == cursor;
         let text = match line {
-            DisplayLine::Sep { group, count, collapsed } => {
-                let mark = if *collapsed { GROUP_COLLAPSED_MARK } else { GROUP_EXPANDED_MARK };
+            DisplayLine::Sep {
+                group,
+                count,
+                collapsed,
+            } => {
+                let mark = if *collapsed {
+                    GROUP_COLLAPSED_MARK
+                } else {
+                    GROUP_EXPANDED_MARK
+                };
                 format!("── {} ({}) {}", group, count, mark)
             }
             DisplayLine::Item { index } => {
@@ -262,7 +295,13 @@ pub fn render_frame(st: &FrameState) -> (String, usize) {
     let status = if st.query.is_empty() {
         format!("第 {}/{} {}", cursor + 1, total, st.unit)
     } else {
-        format!("第 {}/{} {} · 筛选 \"{}\"", cursor + 1, total, st.unit, st.query)
+        format!(
+            "第 {}/{} {} · 筛选 \"{}\"",
+            cursor + 1,
+            total,
+            st.unit,
+            st.query
+        )
     };
     let mut status_line = status;
     if !st.note.is_empty() {
@@ -386,9 +425,8 @@ pub fn parse_keys(bytes: &[u8]) -> Vec<Key> {
                         }
                         // `\x1b[<b;x;yM` —— SGR 鼠标 (滚轮 = b 64/65)。**不认它滚轮就没反应**
                         b'<' => {
-                            if let Some(end) = bytes[i..]
-                                .iter()
-                                .position(|&c| c == b'M' || c == b'm')
+                            if let Some(end) =
+                                bytes[i..].iter().position(|&c| c == b'M' || c == b'm')
                             {
                                 let body = &bytes[i + 3..i + end];
                                 let bnum = std::str::from_utf8(body)
@@ -528,7 +566,12 @@ impl RawGuard {
             crate::term_compat::cfmakeraw(&mut t);
             // 同 input.rs: 保留输出的 OPOST|ONLCR, 否则 `\n` 不回列首 (阶梯状)
             t.c_oflag |= crate::term_compat::OPOST | crate::term_compat::ONLCR;
-            if crate::term_compat::tcsetattr(crate::term_compat::STDIN_FILENO, crate::term_compat::TCSANOW, &t) != 0 {
+            if crate::term_compat::tcsetattr(
+                crate::term_compat::STDIN_FILENO,
+                crate::term_compat::TCSANOW,
+                &t,
+            ) != 0
+            {
                 return Self { orig: None };
             }
             Self { orig: Some(orig) }
@@ -543,7 +586,11 @@ impl Drop for RawGuard {
     fn drop(&mut self) {
         if let Some(orig) = self.orig.as_ref() {
             unsafe {
-                crate::term_compat::tcsetattr(crate::term_compat::STDIN_FILENO, crate::term_compat::TCSANOW, orig);
+                crate::term_compat::tcsetattr(
+                    crate::term_compat::STDIN_FILENO,
+                    crate::term_compat::TCSANOW,
+                    orig,
+                );
             }
         }
         print!("{SHOW_CURSOR}");
@@ -564,7 +611,9 @@ pub fn tui_capable() -> bool {
         return false;
     }
     unsafe {
-        if crate::term_compat::isatty(crate::term_compat::STDIN_FILENO) != 1 || crate::term_compat::isatty(crate::term_compat::STDOUT_FILENO) != 1 {
+        if crate::term_compat::isatty(crate::term_compat::STDIN_FILENO) != 1
+            || crate::term_compat::isatty(crate::term_compat::STDOUT_FILENO) != 1
+        {
             return false;
         }
     }
@@ -652,7 +701,9 @@ pub fn tui_select(title: &str, items: &[TuiChoice], opts: &SelectOptions) -> Opt
         let mut lines = build_display_lines(&all, &collapsed, &query);
         if lines.is_empty() {
             // 筛没了: 至少留 Cancel 行, 不然光标无处可落
-            lines.push(DisplayLine::Item { index: all.len() - 1 });
+            lines.push(DisplayLine::Item {
+                index: all.len() - 1,
+            });
         }
         if cursor >= lines.len() {
             cursor = lines.len() - 1;
@@ -703,25 +754,41 @@ pub fn tui_select(title: &str, items: &[TuiChoice], opts: &SelectOptions) -> Opt
             // 滚轮: 一次滚 3 行 (光标跟着走 → 顺手就能 Enter)
             Key::WheelUp => {
                 for _ in 0..3 {
-                    cursor = if cursor > 0 { cursor - 1 } else { lines.len() - 1 };
+                    cursor = if cursor > 0 {
+                        cursor - 1
+                    } else {
+                        lines.len() - 1
+                    };
                 }
                 num_buf.clear();
                 note.clear();
             }
             Key::WheelDown => {
                 for _ in 0..3 {
-                    cursor = if cursor + 1 < lines.len() { cursor + 1 } else { 0 };
+                    cursor = if cursor + 1 < lines.len() {
+                        cursor + 1
+                    } else {
+                        0
+                    };
                 }
                 num_buf.clear();
                 note.clear();
             }
             Key::Up => {
-                cursor = if cursor > 0 { cursor - 1 } else { lines.len() - 1 };
+                cursor = if cursor > 0 {
+                    cursor - 1
+                } else {
+                    lines.len() - 1
+                };
                 num_buf.clear();
                 note.clear();
             }
             Key::Down => {
-                cursor = if cursor + 1 < lines.len() { cursor + 1 } else { 0 };
+                cursor = if cursor + 1 < lines.len() {
+                    cursor + 1
+                } else {
+                    0
+                };
                 num_buf.clear();
                 note.clear();
             }
@@ -904,7 +971,10 @@ extern "C" fn on_winch(_sig: crate::term_compat::c_int) {
 pub fn install_resize_watch() {
     WINCH_INSTALLED.call_once(|| unsafe {
         // 函数项不能直接 cast 成整数: 先转裸指针再转 sighandler_t
-        crate::term_compat::signal(crate::term_compat::SIGWINCH, on_winch as *const () as crate::term_compat::sighandler_t);
+        crate::term_compat::signal(
+            crate::term_compat::SIGWINCH,
+            on_winch as *const () as crate::term_compat::sighandler_t,
+        );
     });
 }
 
@@ -1071,8 +1141,20 @@ mod tests {
     #[test]
     fn query_flattens_matches() {
         let it = vec![
-            TuiChoice { value: "a".into(), label: "● A".into(), hint: None, group: Some("内置".into()), cancel: false },
-            TuiChoice { value: "b".into(), label: "● B".into(), hint: None, group: Some("目录".into()), cancel: false },
+            TuiChoice {
+                value: "a".into(),
+                label: "● A".into(),
+                hint: None,
+                group: Some("内置".into()),
+                cancel: false,
+            },
+            TuiChoice {
+                value: "b".into(),
+                label: "● B".into(),
+                hint: None,
+                group: Some("目录".into()),
+                cancel: false,
+            },
         ];
         let lines = build_display_lines(&it, &["目录".to_string()], "b");
         assert_eq!(lines.len(), 1); // 只有 b 命中, 且不受"目录"收起影响
@@ -1086,8 +1168,20 @@ mod tests {
     #[test]
     fn group_header_writes_count_and_mark() {
         let it = vec![
-            TuiChoice { value: "a".into(), label: "● A".into(), hint: None, group: Some("内置".into()), cancel: false },
-            TuiChoice { value: "b".into(), label: "● B".into(), hint: None, group: Some("内置".into()), cancel: false },
+            TuiChoice {
+                value: "a".into(),
+                label: "● A".into(),
+                hint: None,
+                group: Some("内置".into()),
+                cancel: false,
+            },
+            TuiChoice {
+                value: "b".into(),
+                label: "● B".into(),
+                hint: None,
+                group: Some("内置".into()),
+                cancel: false,
+            },
         ];
         let lines = build_display_lines(&it, &[], "");
         assert_eq!(lines.len(), 3); // 标题 + 2 项

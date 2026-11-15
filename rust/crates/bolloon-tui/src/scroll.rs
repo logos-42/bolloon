@@ -73,11 +73,23 @@ pub fn apply_scroll(act: NormalAction, cur: usize, page: usize, max_top: usize) 
         },
         NormalAction::ScrollDown => {
             let nx = (cur + page).min(max_top);
-            ScrollMove { next: nx, stick: nx >= max_top }
+            ScrollMove {
+                next: nx,
+                stick: nx >= max_top,
+            }
         }
-        NormalAction::ScrollHome => ScrollMove { next: 0, stick: false },
-        NormalAction::ScrollEnd => ScrollMove { next: max_top, stick: true },
-        NormalAction::None => ScrollMove { next: cur, stick: false },
+        NormalAction::ScrollHome => ScrollMove {
+            next: 0,
+            stick: false,
+        },
+        NormalAction::ScrollEnd => ScrollMove {
+            next: max_top,
+            stick: true,
+        },
+        NormalAction::None => ScrollMove {
+            next: cur,
+            stick: false,
+        },
     }
 }
 
@@ -94,43 +106,91 @@ mod tests {
     /// 不可滚 ⇒ 一律不动 (看着像"页面在跳"的根源就是这个判据)
     #[test]
     fn not_scrollable_means_no_action() {
-        let ctx = NormalCtx { scrollable: false, input: 'u' };
-        let key = RawKey { ctrl: true, ..Default::default() };
+        let ctx = NormalCtx {
+            scrollable: false,
+            input: 'u',
+        };
+        let key = RawKey {
+            ctrl: true,
+            ..Default::default()
+        };
         assert_eq!(resolve_normal_key(&key, &ctx), NormalAction::None);
     }
 
     #[test]
     fn ctrl_u_and_pgup_scroll_up() {
-        let ctx = NormalCtx { scrollable: true, input: 'u' };
+        let ctx = NormalCtx {
+            scrollable: true,
+            input: 'u',
+        };
         assert_eq!(
-            resolve_normal_key(&RawKey { ctrl: true, ..Default::default() }, &ctx),
+            resolve_normal_key(
+                &RawKey {
+                    ctrl: true,
+                    ..Default::default()
+                },
+                &ctx
+            ),
             NormalAction::ScrollUp
         );
         assert_eq!(
-            resolve_normal_key(&RawKey { page_up: true, ..Default::default() }, &ctx),
+            resolve_normal_key(
+                &RawKey {
+                    page_up: true,
+                    ..Default::default()
+                },
+                &ctx
+            ),
             NormalAction::ScrollUp
         );
     }
 
     #[test]
     fn ctrl_d_and_pgdn_scroll_down() {
-        let ctx = NormalCtx { scrollable: true, input: 'd' };
+        let ctx = NormalCtx {
+            scrollable: true,
+            input: 'd',
+        };
         assert_eq!(
-            resolve_normal_key(&RawKey { ctrl: true, ..Default::default() }, &ctx),
+            resolve_normal_key(
+                &RawKey {
+                    ctrl: true,
+                    ..Default::default()
+                },
+                &ctx
+            ),
             NormalAction::ScrollDown
         );
     }
 
     #[test]
     fn home_end_and_ctrl_a_e() {
-        let ctx = NormalCtx { scrollable: true, input: 'a' };
+        let ctx = NormalCtx {
+            scrollable: true,
+            input: 'a',
+        };
         assert_eq!(
-            resolve_normal_key(&RawKey { home: true, ..Default::default() }, &ctx),
+            resolve_normal_key(
+                &RawKey {
+                    home: true,
+                    ..Default::default()
+                },
+                &ctx
+            ),
             NormalAction::ScrollHome
         );
-        let ctx_e = NormalCtx { scrollable: true, input: 'e' };
+        let ctx_e = NormalCtx {
+            scrollable: true,
+            input: 'e',
+        };
         assert_eq!(
-            resolve_normal_key(&RawKey { ctrl: true, ..Default::default() }, &ctx_e),
+            resolve_normal_key(
+                &RawKey {
+                    ctrl: true,
+                    ..Default::default()
+                },
+                &ctx_e
+            ),
             NormalAction::ScrollEnd
         );
     }

@@ -48,7 +48,10 @@ pub struct FileExchange {
 
 impl FileExchange {
     pub fn new(root: &std::path::Path, address: &str) -> Self {
-        Self { root: root.to_path_buf(), address: address.to_string() }
+        Self {
+            root: root.to_path_buf(),
+            address: address.to_string(),
+        }
     }
 
     fn blocks_dir(&self) -> std::path::PathBuf {
@@ -131,7 +134,11 @@ pub fn replicate<E: BlockExchange>(
             entries_after: self_log.len(),
             fetched: 0,
             converged,
-            failure: if converged { None } else { Some("无缺失但 heads 不一致 (分叉?)".into()) },
+            failure: if converged {
+                None
+            } else {
+                Some("无缺失但 heads 不一致 (分叉?)".into())
+            },
         };
     }
 
@@ -148,7 +155,7 @@ pub fn replicate<E: BlockExchange>(
                 fetched: fetched_entries.len(),
                 converged: false,
                 failure: Some(format!("join 失败: {e}")),
-            }
+            };
         }
     }
 
@@ -200,7 +207,11 @@ mod tests {
         let mut log_a = OpLog::new(a.did.as_str());
         for i in 0..51 {
             log_a
-                .append(&a, serde_json::json!({"seq": i, "text": format!("消息 {i}")}), 1000 + i as u64)
+                .append(
+                    &a,
+                    serde_json::json!({"seq": i, "text": format!("消息 {i}")}),
+                    1000 + i as u64,
+                )
                 .unwrap();
         }
         assert_eq!(log_a.len(), 51);
@@ -215,8 +226,16 @@ mod tests {
         assert_eq!(report.entries_after, 51);
         assert_eq!(log_b.len(), 51);
         // B 遍历视图与 A 一致
-        let view_a: Vec<String> = log_a.traverse().iter().map(|e| e.payload["text"].as_str().unwrap().into()).collect();
-        let view_b: Vec<String> = log_b.traverse().iter().map(|e| e.payload["text"].as_str().unwrap().into()).collect();
+        let view_a: Vec<String> = log_a
+            .traverse()
+            .iter()
+            .map(|e| e.payload["text"].as_str().unwrap().into())
+            .collect();
+        let view_b: Vec<String> = log_b
+            .traverse()
+            .iter()
+            .map(|e| e.payload["text"].as_str().unwrap().into())
+            .collect();
         assert_eq!(view_a, view_b, "B 读到的与 A 逐条一致");
     }
 
@@ -226,7 +245,9 @@ mod tests {
         let a = kp(1);
         let mut log_a = OpLog::new(a.did.as_str());
         for i in 0..51 {
-            log_a.append(&a, serde_json::json!({"i": i}), 1000 + i as u64).unwrap();
+            log_a
+                .append(&a, serde_json::json!({"i": i}), 1000 + i as u64)
+                .unwrap();
         }
         // B 先复制前 30 条 (截断视图)
         let first30: Vec<OpEntry> = log_a.traverse().into_iter().take(30).cloned().collect();
@@ -254,7 +275,9 @@ mod tests {
             vec![b.did.as_str().into()],
         ));
         for i in 0..5 {
-            log_a.append(&a, serde_json::json!({"i": i}), 1000 + i).unwrap();
+            log_a
+                .append(&a, serde_json::json!({"i": i}), 1000 + i)
+                .unwrap();
         }
         // B 复制
         let mut log_b = OpLog::with_acl(crate::oplog::WriteAcl::whitelist(
@@ -267,8 +290,14 @@ mod tests {
         assert!(report.converged);
 
         // B 继续写 (接在复制的 heads 上)
-        let b1 = log_b.append(&b, serde_json::json!({"i": 5, "by": "B"}), 2000).unwrap();
-        assert_eq!(b1.prev, heads.to_vec(), "B 的新 entry 接在复制来的 heads 上");
+        let b1 = log_b
+            .append(&b, serde_json::json!({"i": 5, "by": "B"}), 2000)
+            .unwrap();
+        assert_eq!(
+            b1.prev,
+            heads.to_vec(),
+            "B 的新 entry 接在复制来的 heads 上"
+        );
         assert_eq!(log_b.len(), 6);
 
         // A 拉 B 的新条目 → 双方再收敛 (4 条 A + 1 条 B = 6)
@@ -345,7 +374,10 @@ mod tests {
                 v
             }
         }
-        let ex = Poisoned { inner: MemoryExchange { from: &log_a }, poison: evil };
+        let ex = Poisoned {
+            inner: MemoryExchange { from: &log_a },
+            poison: evil,
+        };
         let report = replicate(&mut log_b, &ex, &heads);
         assert!(!report.converged, "伪造 entry 必须阻断复制");
         assert!(
@@ -362,7 +394,9 @@ mod tests {
         let a = kp(1);
         let mut log_a = OpLog::new(a.did.as_str());
         for i in 0..5 {
-            log_a.append(&a, serde_json::json!({"i": i}), 1000 + i).unwrap();
+            log_a
+                .append(&a, serde_json::json!({"i": i}), 1000 + i)
+                .unwrap();
         }
         let mut log_b = OpLog::new(a.did.as_str());
         let heads = log_a.heads().to_vec();

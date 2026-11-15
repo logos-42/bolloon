@@ -201,7 +201,9 @@ pub fn verify_invite_link(
     now_ms: u64,
     owner_pubkey: &[u8; 32],
 ) -> Result<(String, StoreManifest), InviteError> {
-    let rest = link.strip_prefix("bolloon://join/").ok_or(InviteError::BadLink)?;
+    let rest = link
+        .strip_prefix("bolloon://join/")
+        .ok_or(InviteError::BadLink)?;
     let (group_id, query) = rest.split_once('?').ok_or(InviteError::BadLink)?;
     if group_id.is_empty() {
         return Err(InviteError::BadLink);
@@ -286,7 +288,10 @@ impl GroupOrbitHub {
     /// 打开 (或新建) 一个 hub; 索引落盘在 `root/groups.json`
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
-        let hub = Self { root, inner: Mutex::new(HubInner::default()) };
+        let hub = Self {
+            root,
+            inner: Mutex::new(HubInner::default()),
+        };
         hub.load_index();
         hub
     }
@@ -426,12 +431,7 @@ impl GroupOrbitHub {
     }
 
     /// 加入群 (按 manifest 开**同一个** store; 幂等: 已在本地则直接返回)
-    pub fn import_group(
-        &self,
-        id: &str,
-        manifest: StoreManifest,
-        now_ms: u64,
-    ) -> GroupMeta {
+    pub fn import_group(&self, id: &str, manifest: StoreManifest, now_ms: u64) -> GroupMeta {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let address = manifest.address();
         if let Some(existing) = inner.metas.get(id).cloned() {
@@ -540,7 +540,15 @@ impl GroupOrbitHub {
         reply_to: &str,
         now_ms: u64,
     ) -> Result<OpEntry, GroupOrbitError> {
-        self.append(group_id, kp, "message", from, text, Some(reply_to.to_string()), now_ms)
+        self.append(
+            group_id,
+            kp,
+            "message",
+            from,
+            text,
+            Some(reply_to.to_string()),
+            now_ms,
+        )
     }
 
     /// 追加一条群事件 (kind: message | guide | member-join)
@@ -593,7 +601,11 @@ impl GroupOrbitHub {
     }
 
     /// 读群历史 (线性序 ⇒ 全节点一致; limit = 取最近 N 条)
-    pub fn history(&self, group_id: &str, limit: usize) -> Result<Vec<GroupMessage>, GroupOrbitError> {
+    pub fn history(
+        &self,
+        group_id: &str,
+        limit: usize,
+    ) -> Result<Vec<GroupMessage>, GroupOrbitError> {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let store = inner
             .stores
@@ -728,7 +740,8 @@ mod tests {
     }
 
     fn tmp_root(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("bolloon-group-orbit-{tag}-{}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("bolloon-group-orbit-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -798,7 +811,10 @@ mod tests {
 
         // 父群: 有 topic 创建记录, 但**没有**子讨论的消息
         let parent = hub.history("g1", 20).unwrap();
-        assert!(parent.iter().any(|m| m.kind == "topic"), "父群应有 topic 记录");
+        assert!(
+            parent.iter().any(|m| m.kind == "topic"),
+            "父群应有 topic 记录"
+        );
         assert!(
             !parent.iter().any(|m| m.text == "小组内部意见"),
             "子讨论消息不混进父群: {parent:?}"
@@ -824,7 +840,13 @@ mod tests {
         let owner = kp(1);
         let outsider = kp(9);
         let hub = GroupOrbitHub::new(root.clone());
-        hub.create_group("g1", "内部群", owner.did.as_str(), GroupAcl::OwnerOnly, 1000);
+        hub.create_group(
+            "g1",
+            "内部群",
+            owner.did.as_str(),
+            GroupAcl::OwnerOnly,
+            1000,
+        );
         let denied = hub.create_topic(
             "g1",
             "t-x",
@@ -836,7 +858,10 @@ mod tests {
         assert!(denied.is_err(), "父群写不进 ⇒ 不能开子讨论");
         assert!(hub.topics("g1").is_empty(), "失败不能留下孤儿子讨论");
         assert!(
-            !hub.history("g1", 20).unwrap().iter().any(|m| m.kind == "topic"),
+            !hub.history("g1", 20)
+                .unwrap()
+                .iter()
+                .any(|m| m.kind == "topic"),
             "父群不该被写进 topic 记录"
         );
     }
@@ -846,8 +871,7 @@ mod tests {
         let root = tmp_root("create");
         let owner = kp(1);
         let hub = GroupOrbitHub::new(&root);
-        let meta = hub
-            .create_group("g1", "测试群", owner.did.as_str(), GroupAcl::Open, 1000);
+        let meta = hub.create_group("g1", "测试群", owner.did.as_str(), GroupAcl::Open, 1000);
         assert!(!meta.address.is_empty());
         let e = hub.say("g1", &owner, "Leo", "大家好", 1100).unwrap();
         assert_eq!(hub.entry_count("g1"), 1);
@@ -888,7 +912,10 @@ mod tests {
         hub.create_group("g2", "再删一个", owner.did.as_str(), GroupAcl::Open, 2000);
         let addr2 = hub.address_of("g2").unwrap();
         assert!(hub.remove_group("g2", true));
-        assert!(!root.join(&addr2).exists(), "硬删要连 blocks/manifest/heads 一起没");
+        assert!(
+            !root.join(&addr2).exists(),
+            "硬删要连 blocks/manifest/heads 一起没"
+        );
         // 不存在的群再删 = false, 不 panic
         assert!(!hub.remove_group("nope", true));
     }
@@ -899,8 +926,16 @@ mod tests {
         let owner = kp(1);
         let stranger = kp(9);
         let hub = GroupOrbitHub::new(&root);
-        hub.create_group("g1", "独占群", owner.did.as_str(), GroupAcl::OwnerOnly, 1000);
-        let err = hub.say("g1", &stranger, "intruder", "hi", 1100).unwrap_err();
+        hub.create_group(
+            "g1",
+            "独占群",
+            owner.did.as_str(),
+            GroupAcl::OwnerOnly,
+            1000,
+        );
+        let err = hub
+            .say("g1", &stranger, "intruder", "hi", 1100)
+            .unwrap_err();
         assert!(matches!(err, GroupOrbitError::Store(_)), "{err:?}");
         assert_eq!(hub.entry_count("g1"), 0, "被拒的不落块");
     }
@@ -924,7 +959,8 @@ mod tests {
         let hub = GroupOrbitHub::new(&root);
         hub.create_group("g1", "群", owner.did.as_str(), GroupAcl::Open, 1000);
         let m1 = hub.say("g1", &owner, "Leo", "第一句", 1100).unwrap();
-        hub.reply("g1", &owner, "Leo", "接上句", &m1.hash, 1200).unwrap();
+        hub.reply("g1", &owner, "Leo", "接上句", &m1.hash, 1200)
+            .unwrap();
         let h = hub.history("g1", 0).unwrap();
         assert_eq!(h[1].reply_to.as_deref(), Some(m1.hash.as_str()));
     }
@@ -937,17 +973,32 @@ mod tests {
         let a = kp(1);
         let b = kp(2);
         let hub_a = GroupOrbitHub::new(&root_a);
-        let meta = hub_a
-            .create_group("g1", "群", a.did.as_str(), GroupAcl::Whitelist(vec![b.did.as_str().into()]), 1000);
+        let meta = hub_a.create_group(
+            "g1",
+            "群",
+            a.did.as_str(),
+            GroupAcl::Whitelist(vec![b.did.as_str().into()]),
+            1000,
+        );
         for i in 0..5 {
-            hub_a.say("g1", &a, "A", &format!("消息 {i}"), 1100 + i as u64).unwrap();
+            hub_a
+                .say("g1", &a, "A", &format!("消息 {i}"), 1100 + i as u64)
+                .unwrap();
         }
 
         // B 按**同一 manifest** 加入 (address 相同) —— 邀请链接带的就是它
-        let manifest = StoreManifest::group("群", a.did.as_str(), &GroupAcl::Whitelist(vec![b.did.as_str().into()]), 1000);
+        let manifest = StoreManifest::group(
+            "群",
+            a.did.as_str(),
+            &GroupAcl::Whitelist(vec![b.did.as_str().into()]),
+            1000,
+        );
         let hub_b = GroupOrbitHub::new(&root_b);
         let meta_b = hub_b.import_group("g1", manifest, 1000);
-        assert_eq!(meta_b.address, meta.address, "同一 manifest ⇒ 同一 address ⇒ 同一个 store");
+        assert_eq!(
+            meta_b.address, meta.address,
+            "同一 manifest ⇒ 同一 address ⇒ 同一个 store"
+        );
 
         // A 的磁盘当块源 (BlockExchange 端口形态)
         let ex = crate::replication::FileExchange::new(&root_a, &meta.address);
@@ -1000,7 +1051,15 @@ mod tests {
         );
         // 篡改 manifest (改群主) ⇒ 签名不过
         let link = make_invite_link("gw-1", &owner, &manifest, 5000, 1000).unwrap();
-        let tampered = link.replace(&manifest_b58(&manifest), &manifest_b58(&StoreManifest::group("群", "did:pi:evil", &GroupAcl::OwnerOnly, 1000)));
+        let tampered = link.replace(
+            &manifest_b58(&manifest),
+            &manifest_b58(&StoreManifest::group(
+                "群",
+                "did:pi:evil",
+                &GroupAcl::OwnerOnly,
+                1000,
+            )),
+        );
         assert_eq!(
             verify_invite_link(&tampered, 2000, &owner.public_bytes()).unwrap_err(),
             InviteError::BadSignature
@@ -1036,14 +1095,26 @@ mod tests {
         let a = kp(1);
         let b = kp(2);
         let hub_a = GroupOrbitHub::new(&root);
-        let meta = hub_a
-            .create_group("g1", "群", a.did.as_str(), GroupAcl::Whitelist(vec![b.did.as_str().into()]), 1000);
+        let meta = hub_a.create_group(
+            "g1",
+            "群",
+            a.did.as_str(),
+            GroupAcl::Whitelist(vec![b.did.as_str().into()]),
+            1000,
+        );
         hub_a.say("g1", &a, "A", "在吗", 1100).unwrap();
-        let manifest = StoreManifest::group("群", a.did.as_str(), &GroupAcl::Whitelist(vec![b.did.as_str().into()]), 1000);
+        let manifest = StoreManifest::group(
+            "群",
+            a.did.as_str(),
+            &GroupAcl::Whitelist(vec![b.did.as_str().into()]),
+            1000,
+        );
         let hub_b = GroupOrbitHub::new(tmp_root("memex-b"));
         hub_b.import_group("g1", manifest, 1000);
         // 内存交换需要一个 OpLog 引用 —— 用磁盘交换等价路径验证 (FileExchange 已在上面验过)
         let _ = meta;
-        let _ = MemoryExchange { from: &crate::oplog::OpLog::new(a.did.as_str()) };
+        let _ = MemoryExchange {
+            from: &crate::oplog::OpLog::new(a.did.as_str()),
+        };
     }
 }

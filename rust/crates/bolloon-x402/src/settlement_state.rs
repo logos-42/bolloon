@@ -106,7 +106,10 @@ pub enum SettlementError {
 }
 
 /// 写路径: 校验迁移合法, 不合法即拒 (不静默改写)
-pub fn transition(from: SettlementFact, to: SettlementFact) -> Result<SettlementFact, SettlementError> {
+pub fn transition(
+    from: SettlementFact,
+    to: SettlementFact,
+) -> Result<SettlementFact, SettlementError> {
     if allowed_transitions(from).contains(&to) {
         Ok(to)
     } else {
@@ -194,16 +197,30 @@ mod tests {
             SettlementFact::Refunded,
             SettlementFact::Unknown,
         ] {
-            assert_eq!(SettlementFact::parse(f.as_str()), Some(f), "{f:?} 串化后可还原");
+            assert_eq!(
+                SettlementFact::parse(f.as_str()),
+                Some(f),
+                "{f:?} 串化后可还原"
+            );
         }
-        assert_eq!(SettlementFact::parse("paid"), None, "未知串 → None, 不猜最接近的");
+        assert_eq!(
+            SettlementFact::parse("paid"),
+            None,
+            "未知串 → None, 不猜最接近的"
+        );
     }
 
     #[test]
     fn legal_transitions_pass() {
-        assert_eq!(transition(SettlementFact::Unpaid, SettlementFact::PaymentSubmitted), Ok(SettlementFact::PaymentSubmitted));
         assert_eq!(
-            transition(SettlementFact::PaymentSubmitted, SettlementFact::PaymentVerified),
+            transition(SettlementFact::Unpaid, SettlementFact::PaymentSubmitted),
+            Ok(SettlementFact::PaymentSubmitted)
+        );
+        assert_eq!(
+            transition(
+                SettlementFact::PaymentSubmitted,
+                SettlementFact::PaymentVerified
+            ),
             Ok(SettlementFact::PaymentVerified)
         );
         assert_eq!(
@@ -242,7 +259,10 @@ mod tests {
             chain_settled: Some(true),
             ..Default::default()
         };
-        assert_eq!(derive_settlement_fact(&rec2), SettlementFact::PaymentVerified);
+        assert_eq!(
+            derive_settlement_fact(&rec2),
+            SettlementFact::PaymentVerified
+        );
     }
 
     #[test]
@@ -268,21 +288,38 @@ mod tests {
 
     #[test]
     fn derive_paying_no_evidence_is_unknown() {
-        let rec = TxRecordInput { status: "paying".into(), ..Default::default() };
-        assert_eq!(derive_settlement_fact(&rec), SettlementFact::Unknown, "付没付不知道 → 先对账");
+        let rec = TxRecordInput {
+            status: "paying".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            derive_settlement_fact(&rec),
+            SettlementFact::Unknown,
+            "付没付不知道 → 先对账"
+        );
     }
 
     #[test]
     fn derive_txhash_is_submitted() {
-        let rec = TxRecordInput { status: "quoted".into(), tx_hash: Some("0xabc".into()), ..Default::default() };
-        assert_eq!(derive_settlement_fact(&rec), SettlementFact::PaymentSubmitted);
+        let rec = TxRecordInput {
+            status: "quoted".into(),
+            tx_hash: Some("0xabc".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            derive_settlement_fact(&rec),
+            SettlementFact::PaymentSubmitted
+        );
     }
 
     #[test]
     fn chain_backed_facts_only() {
         assert!(SettlementFact::PaymentVerified.is_chain_backed());
         assert!(SettlementFact::FullySettled.is_chain_backed());
-        assert!(!SettlementFact::PaymentSubmitted.is_chain_backed(), "提交过 ≠ 链上确认");
+        assert!(
+            !SettlementFact::PaymentSubmitted.is_chain_backed(),
+            "提交过 ≠ 链上确认"
+        );
         assert!(!SettlementFact::Unpaid.is_chain_backed());
     }
 

@@ -19,8 +19,8 @@
 
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// 队列上限 (界面只展示最近这些; 更早的在日志文件里)
 const MAX_EVENTS: usize = 64;

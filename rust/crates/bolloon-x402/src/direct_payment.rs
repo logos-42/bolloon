@@ -158,7 +158,10 @@ pub fn verify_direct_payment(
     // 判据 3: Transfer → to == payTo
     match &obs.transfer_to {
         Some(to) if *to == claim.pay_to.to_lowercase() => passed.push("transfer_to_payto".into()),
-        Some(to) => failed.push(format!("transfer_to_payto: to={to} ≠ payTo={}", claim.pay_to)),
+        Some(to) => failed.push(format!(
+            "transfer_to_payto: to={to} ≠ payTo={}",
+            claim.pay_to
+        )),
         None => failed.push("transfer_to_payto: 日志无 USDC Transfer".into()),
     }
 
@@ -238,7 +241,12 @@ fn decode_identity(nonce: &str, claim: &PaymentClaim) -> Option<Bol1Identity> {
     // seq 必须与订单一致才认自证
     let self_attested = self_attested && seq as u64 == claim.order_seq;
     Some(Bol1Identity {
-        mode: if self_attested { "self-attested" } else { "not-bol1" }.into(),
+        mode: if self_attested {
+            "self-attested"
+        } else {
+            "not-bol1"
+        }
+        .into(),
         self_attested,
         order_seq: seq,
         item_id_hash: item_id_hash?,
@@ -292,7 +300,9 @@ mod tests {
             status: 1,
             transfer_to: Some("0xb4e9dcf79055a8232670ebb1c8c664dff4e70066".into()),
             transfer_value_atomic: Some(10000),
-            authorization_nonce: Some(order_identity::compute_order_nonce("info_efficode_spec_pack", 0).unwrap()),
+            authorization_nonce: Some(
+                order_identity::compute_order_nonce("info_efficode_spec_pack", 0).unwrap(),
+            ),
             confirmations: 13,
         }
     }
@@ -381,7 +391,8 @@ mod tests {
     fn foreign_nonce_still_verified_not_self_attested() {
         let used = HashSet::new();
         let mut o1 = good_obs("a");
-        o1.authorization_nonce = Some(order_identity::compute_order_nonce("别的店的东西", 0).unwrap());
+        o1.authorization_nonce =
+            Some(order_identity::compute_order_nonce("别的店的东西", 0).unwrap());
         let mut o2 = good_obs("b");
         o2.authorization_nonce = o1.authorization_nonce.clone();
         let obs = vec![o1, o2];

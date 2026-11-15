@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 
 use crate::AppState;
 
@@ -79,7 +79,10 @@ pub fn read_events(path: &std::path::Path) -> Vec<PayEvent> {
 
 fn append(path: &std::path::Path, ev: &PayEvent) -> std::io::Result<()> {
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     writeln!(f, "{}", serde_json::to_string(ev).unwrap_or_default())
 }
 
@@ -295,7 +298,6 @@ pub async fn pay_claim(
     }))
 }
 
-
 /// 跨机充值请求的签名载荷 —— 收款人节点只凭 did:pi: 反解公钥验签, 不信任请求体自述身份。
 fn claim_message(did: &str, amount_micro: i64, channel: &str, proof: &str, ts_ms: u64) -> String {
     format!("pay_claim|{did}|{amount_micro}|{channel}|{proof}|{ts_ms}")
@@ -479,7 +481,9 @@ fn tier_multiplier(cfg: &serde_json::Value, tier: &str) -> f64 {
 }
 
 fn fx(cfg: &serde_json::Value) -> f64 {
-    cfg.get("fx_cny_per_usd").and_then(|v| v.as_f64()).unwrap_or(7.1)
+    cfg.get("fx_cny_per_usd")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(7.1)
 }
 
 /// 模型价 (元 / 1K tokens, 输入, 输出)
@@ -542,7 +546,10 @@ pub fn price_for(
     tokens_out: u64,
 ) -> Result<i64, String> {
     let (pin, pout) = model_price(cfg, model).ok_or_else(|| format!("未配置的模型: {model}"))?;
-    let tier = user_entry(cfg, did)["tier"].as_str().unwrap_or("standard").to_string();
+    let tier = user_entry(cfg, did)["tier"]
+        .as_str()
+        .unwrap_or("standard")
+        .to_string();
     let mult = tier_multiplier(cfg, &tier);
     if mult <= 0.0 {
         return Ok(0);
@@ -580,8 +587,16 @@ pub fn charge_model(
         }
     }
     let ev = PayEvent {
-        id: format!("{}-{}", if micro > 0 { "charge" } else { "usage" }, now_ms()),
-        kind: if micro > 0 { "charge".into() } else { "usage".into() },
+        id: format!(
+            "{}-{}",
+            if micro > 0 { "charge" } else { "usage" },
+            now_ms()
+        ),
+        kind: if micro > 0 {
+            "charge".into()
+        } else {
+            "usage".into()
+        },
         amount_micro: -micro,
         channel: String::new(),
         proof: String::new(),
@@ -639,12 +654,14 @@ pub async fn pay_set_user(Json(req): Json<serde_json::Value>) -> Json<serde_json
     let dir = crate::server::data_dir().join("pay");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("config.json");
-    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap_or_default()) {
+    if let Err(e) = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+    ) {
         return Json(serde_json::json!({ "error": e.to_string() }));
     }
-    Json(serde_json::json!({ "ok": true, "users": cfg["users"].clone(), "config_path": path }) )
+    Json(serde_json::json!({ "ok": true, "users": cfg["users"].clone(), "config_path": path }))
 }
-
 
 /// 今日 (本地时区零点起) 的用量与花费, 按模型分。**金额单位 micro-USD。**
 pub fn today_summary(events: &[PayEvent], account: &str) -> serde_json::Value {
@@ -659,9 +676,11 @@ pub fn today_summary(events: &[PayEvent], account: &str) -> serde_json::Value {
     let mut tin = 0u64;
     let mut tout = 0u64;
     let mut cost = 0i64;
-    let mut by_model: std::collections::BTreeMap<String, (u64, u64, u64, i64)> =
-        Default::default();
-    for e in events.iter().filter(|e| e.account == account && e.ts_ms >= midnight) {
+    let mut by_model: std::collections::BTreeMap<String, (u64, u64, u64, i64)> = Default::default();
+    for e in events
+        .iter()
+        .filter(|e| e.account == account && e.ts_ms >= midnight)
+    {
         if e.kind != "charge" && e.kind != "usage" {
             continue;
         }
@@ -670,7 +689,11 @@ pub fn today_summary(events: &[PayEvent], account: &str) -> serde_json::Value {
         tout += e.tokens_out;
         cost += -e.amount_micro;
         let slot = by_model
-            .entry(if e.model.is_empty() { "unknown".into() } else { e.model.clone() })
+            .entry(if e.model.is_empty() {
+                "unknown".into()
+            } else {
+                e.model.clone()
+            })
             .or_default();
         slot.0 += 1;
         slot.1 += e.tokens_in;
@@ -706,7 +729,10 @@ pub async fn pay_summary(
     let (balance, pending, _, _) = summarize(&events);
     let cfg = config();
     // 提醒阈值: 配置里 low_balance_usd (美元), 缺省 1 美元
-    let threshold = cfg.get("low_balance_usd").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let threshold = cfg
+        .get("low_balance_usd")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1.0);
     let bal_usd = balance as f64 / MICRO as f64;
     // 2026-10-30 (用户): 只有「没有可用的模型通路」时才该提醒充值 ——
     // 用户自带 key / 本地模型跑得动, 提醒他充钱就是噪音。
@@ -762,7 +788,10 @@ pub async fn pay_upstream() -> Json<serde_json::Value> {
     match resp {
         Ok(body) => {
             let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
-            let infos = v.get("balance_infos").cloned().unwrap_or(serde_json::json!([]));
+            let infos = v
+                .get("balance_infos")
+                .cloned()
+                .unwrap_or(serde_json::json!([]));
             Json(serde_json::json!({
                 "ok": true,
                 "available": v.get("is_available").cloned().unwrap_or(serde_json::json!(null)),
@@ -783,10 +812,12 @@ pub fn balance_for(st: &AppState, account: &str) -> i64 {
 /// 这个用户是否**需要付费** (等级乘数 > 0)。免费档 (本人/自带 key) 不查余额。
 pub fn needs_payment(did: &str) -> bool {
     let cfg = config();
-    let tier = user_entry(&cfg, did)["tier"].as_str().unwrap_or("standard").to_string();
+    let tier = user_entry(&cfg, did)["tier"]
+        .as_str()
+        .unwrap_or("standard")
+        .to_string();
     tier_multiplier(&cfg, &tier) > 0.0
 }
-
 
 /// GET /api/pay/qr/{name} → 只吐 pay 目录里的收款码图片。
 /// 安全: 只接受 [A-Za-z0-9._-] 的文件名 (拒 `..` 与任何路径分隔符), 只能读 pay 目录。
@@ -825,7 +856,6 @@ pub async fn pay_qr(
         Err(_) => (axum::http::StatusCode::NOT_FOUND, "没有这张收款码").into_response(),
     }
 }
-
 
 /// POST /api/pay/credit {did, amount_usd, channel?, proof?, note?} → **收款人手动入账**
 ///
@@ -922,7 +952,6 @@ mod tests {
         }
     }
 
-
     fn cfg_with_users() -> serde_json::Value {
         // 官方高峰价 (元/1M) × 1.25 (毛利率 20%): Flash 2/8 → 0.0025/0.010; Pro 9/27 → 0.01125/0.03375
         serde_json::json!({
@@ -945,15 +974,29 @@ mod tests {
     fn price_follows_model_and_tier() {
         let cfg = cfg_with_users();
         // 标准用户 10k in + 2k out: flash 0.045 元 ÷ 7.1 ⇒ 6339 micro-USD;  pro 0.18 元 ⇒ 25353
-        assert_eq!(price_for(&cfg, "did:pi:who", "deepseek-flash", 10_000, 2_000).unwrap(), 6339);
-        assert_eq!(price_for(&cfg, "did:pi:who", "deepseek-v4-pro", 10_000, 2_000).unwrap(), 25353);
+        assert_eq!(
+            price_for(&cfg, "did:pi:who", "deepseek-flash", 10_000, 2_000).unwrap(),
+            6339
+        );
+        assert_eq!(
+            price_for(&cfg, "did:pi:who", "deepseek-v4-pro", 10_000, 2_000).unwrap(),
+            25353
+        );
         // 朋友 7 折
-        assert_eq!(price_for(&cfg, "did:pi:friend", "deepseek-flash", 10_000, 2_000).unwrap(), 4437);
+        assert_eq!(
+            price_for(&cfg, "did:pi:friend", "deepseek-flash", 10_000, 2_000).unwrap(),
+            4437
+        );
         // 免费档 = 0 (只记用量, 不扣钱)
-        assert_eq!(price_for(&cfg, "did:pi:free", "deepseek-flash", 10_000, 2_000).unwrap(), 0);
+        assert_eq!(
+            price_for(&cfg, "did:pi:free", "deepseek-flash", 10_000, 2_000).unwrap(),
+            0
+        );
         // Pro 必须比 Flash 贵 (防「两个模型一个价」)
-        assert!(price_for(&cfg, "did:pi:who", "deepseek-v4-pro", 1000, 1000).unwrap()
-            > price_for(&cfg, "did:pi:who", "deepseek-flash", 1000, 1000).unwrap());
+        assert!(
+            price_for(&cfg, "did:pi:who", "deepseek-v4-pro", 1000, 1000).unwrap()
+                > price_for(&cfg, "did:pi:who", "deepseek-flash", 1000, 1000).unwrap()
+        );
     }
 
     #[test]
@@ -962,7 +1005,11 @@ mod tests {
         let cost: f64 = (10.0 / 1000.0) * 2.0 + (2.0 / 1000.0) * 8.0; // 10k in + 2k out, 元
         let sell: f64 = (10.0 / 1000.0) * 2.5 + (2.0 / 1000.0) * 10.0; // 同用量按售价, 元
         let margin: f64 = (sell - cost) / sell;
-        assert!((margin - 0.2).abs() < 0.001, "毛利率应恰好 20%, 实得 {:.4}", margin);
+        assert!(
+            (margin - 0.2).abs() < 0.001,
+            "毛利率应恰好 20%, 实得 {:.4}",
+            margin
+        );
     }
 
     #[test]
@@ -975,8 +1022,10 @@ mod tests {
     #[test]
     fn unknown_model_is_an_error_not_free() {
         let cfg = cfg_with_users();
-        assert!(price_for(&cfg, "did:pi:who", "gpt-9-secret", 1000, 1000).is_err(),
-            "未配置的模型必须报错, 不能按 0 处理 (漏算=白送)");
+        assert!(
+            price_for(&cfg, "did:pi:who", "gpt-9-secret", 1000, 1000).is_err(),
+            "未配置的模型必须报错, 不能按 0 处理 (漏算=白送)"
+        );
     }
 
     #[test]

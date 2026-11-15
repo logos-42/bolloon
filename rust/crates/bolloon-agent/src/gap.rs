@@ -146,7 +146,10 @@ pub fn detect_gaps(intent: &Intent, inv: &CapabilityInventory) -> GapReport {
                 paths.push(GapPath::Install);
                 missing.push(MissingCapability {
                     kind: CapKind::Service,
-                    note: format!("{} 场景无已登记供给 → 公告板委托或自建", intent.category.as_str()),
+                    note: format!(
+                        "{} 场景无已登记供给 → 公告板委托或自建",
+                        intent.category.as_str()
+                    ),
                 });
                 reason = "无同类供给 → 委托 + 兜底安装".into();
             }
@@ -186,7 +189,11 @@ mod tests {
 
     #[test]
     fn links_with_search_takes_search_path() {
-        let inv = CapabilityInventory { has_web_fetch: true, has_web_search: true, ..Default::default() };
+        let inv = CapabilityInventory {
+            has_web_fetch: true,
+            has_web_search: true,
+            ..Default::default()
+        };
         let g = detect_gaps(&intent_of("我在杭州找后端开发的工作"), &inv);
         assert_eq!(g.paths, vec![GapPath::Search]);
         assert!(g.missing.is_empty(), "有搜索源就不许编造缺失");
@@ -196,14 +203,21 @@ mod tests {
     #[test]
     fn links_without_search_reports_missing_honestly() {
         // 只有 fetch: 仍可 Search (定向抓), 但如实记"没配搜索源"
-        let inv = CapabilityInventory { has_web_fetch: true, has_web_search: false, ..Default::default() };
+        let inv = CapabilityInventory {
+            has_web_fetch: true,
+            has_web_search: false,
+            ..Default::default()
+        };
         let g = detect_gaps(&intent_of("我在杭州找后端开发的工作"), &inv);
         assert_eq!(g.paths, vec![GapPath::Search]);
         assert_eq!(g.missing.len(), 1);
         assert!(g.missing[0].note.contains("BOLLOON_WEB_SEARCH_URL"));
 
         // 完全没网络能力: 不许假装能查 → Install
-        let g2 = detect_gaps(&intent_of("我在杭州找后端开发的工作"), &CapabilityInventory::default());
+        let g2 = detect_gaps(
+            &intent_of("我在杭州找后端开发的工作"),
+            &CapabilityInventory::default(),
+        );
         assert_eq!(g2.paths, vec![GapPath::Install]);
         assert_eq!(g2.missing[0].kind, CapKind::Search);
     }
@@ -225,7 +239,10 @@ mod tests {
 
     #[test]
     fn people_without_supply_gets_search_plus_install_not_refusal() {
-        let g = detect_gaps(&intent_of("想认识一些爬山的朋友"), &CapabilityInventory::default());
+        let g = detect_gaps(
+            &intent_of("想认识一些爬山的朋友"),
+            &CapabilityInventory::default(),
+        );
         assert_eq!(g.paths, vec![GapPath::Search, GapPath::Install]);
         assert_eq!(g.missing[0].kind, CapKind::Companion);
     }
@@ -242,7 +259,8 @@ mod tests {
     /// 修订律: 差距报告永远至少给出一条路 — "没路"不是终点, 是 Install 的对象
     #[test]
     fn gap_report_never_empty_paths() {
-        for text in ["我想吃饭", "找工作", "找朋友", "学英语", "买二手", "去旅行"] {
+        for text in ["我想吃饭", "找工作", "找朋友", "学英语", "买二手", "去旅行"]
+        {
             let g = detect_gaps(&intent_of(text), &CapabilityInventory::default());
             assert!(!g.paths.is_empty(), "{text} 必须有可行路径");
         }

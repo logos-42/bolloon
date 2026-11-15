@@ -9,8 +9,8 @@
 //! - 账本是 append-only JSONL (`~/.bolloon/rust/router-ledger.jsonl`), 一行一次调用
 
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 路由执行开关 (默认影子)
 #[derive(Debug, Default)]
@@ -53,7 +53,11 @@ pub fn record(rec: serde_json::Value) {
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
         let _ = writeln!(f, "{}", serde_json::to_string(&rec).unwrap_or_default());
     }
 }
@@ -136,7 +140,10 @@ pub fn pick_provider(task: &str, available: &[String]) -> Option<String> {
         }
         let ok = r["ok"].as_bool().unwrap_or(false);
         let lat = r["latency_ms"].as_u64().unwrap_or(0) as u128;
-        let cost = r["cost_usd"].as_f64().map(|c| (c * 1e6) as u128).unwrap_or(0);
+        let cost = r["cost_usd"]
+            .as_f64()
+            .map(|c| (c * 1e6) as u128)
+            .unwrap_or(0);
         let e = agg.entry(p.to_string()).or_insert((0, 0, 0, 0));
         e.0 += 1;
         if ok {
@@ -164,7 +171,9 @@ pub fn pick_provider(task: &str, available: &[String]) -> Option<String> {
 }
 
 /// GET /api/router/state → 开关 + 最近一条账本
-pub async fn router_state(axum::extract::State(st): axum::extract::State<crate::AppState>) -> axum::Json<serde_json::Value> {
+pub async fn router_state(
+    axum::extract::State(st): axum::extract::State<crate::AppState>,
+) -> axum::Json<serde_json::Value> {
     let last = read_ledger(1).into_iter().next();
     axum::Json(serde_json::json!({
         "enforce": st.router.is_enforce(),
@@ -197,8 +206,12 @@ fn read_prices() -> serde_json::Value {
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_else(|| serde_json::json!({ "models": [] }));
     // 形状不合规 (旧版 / 手工编辑 / 写了一半) 时归一化, 不让 POST 直接 panic
-    if !v.is_object() { v = serde_json::json!({}); }
-    if !v["models"].is_array() { v["models"] = serde_json::json!([]); }
+    if !v.is_object() {
+        v = serde_json::json!({});
+    }
+    if !v["models"].is_array() {
+        v["models"] = serde_json::json!([]);
+    }
     v
 }
 
@@ -218,7 +231,9 @@ pub async fn router_prices_set(
     let cin = req["usd_per_1k_in"].as_f64();
     let cout = req["usd_per_1k_out"].as_f64();
     if id.is_empty() || cin.is_none() || cout.is_none() {
-        return axum::Json(serde_json::json!({ "ok": false, "error": "缺 id / usd_per_1k_in / usd_per_1k_out" }));
+        return axum::Json(
+            serde_json::json!({ "ok": false, "error": "缺 id / usd_per_1k_in / usd_per_1k_out" }),
+        );
     }
     let mut j = read_prices();
     let count;
@@ -259,7 +274,10 @@ mod tests {
         ];
         // 纯函数式校验: 用同样的聚合口径
         let n = rows.len() as u64;
-        let ok = rows.iter().filter(|r| r["ok"].as_bool() == Some(true)).count() as u64;
+        let ok = rows
+            .iter()
+            .filter(|r| r["ok"].as_bool() == Some(true))
+            .count() as u64;
         assert_eq!(n, 2);
         assert!((ok as f64 / n as f64 - 0.5).abs() < 1e-9);
     }

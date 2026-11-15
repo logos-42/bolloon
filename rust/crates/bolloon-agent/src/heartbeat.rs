@@ -87,7 +87,12 @@ mod tests {
     use super::*;
 
     fn hb(peer: &str, ts: u64, state: HeartbeatState) -> Heartbeat {
-        Heartbeat { peer_id: peer.into(), ts_ms: ts, pid: 100, state }
+        Heartbeat {
+            peer_id: peer.into(),
+            ts_ms: ts,
+            pid: 100,
+            state,
+        }
     }
 
     #[test]

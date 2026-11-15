@@ -10,14 +10,14 @@
 //!   ② 仪表盘区域行数 = 上边框 + 艺术字 + steps + spinner + 下边框, 靠它回退光标做**原地刷新**;
 //!   ③ `stop()` 一定把光标**显示回来** (HIDE/SHOW 成对)。
 
-use crate::boxart::{box_bottom, box_row, box_top, Align, SQ};
+use crate::boxart::{Align, SQ, box_bottom, box_row, box_top};
 use crate::brand::{pick_banner, robot_head};
 use crate::panel::status_symbol;
 use crate::theme::{C_WARN, RESET};
 use crate::width::{disp_width, term_width};
 
 use std::io::Write;
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -138,11 +138,7 @@ fn art_for(steps: &[LoadingStep], current: &str) -> Vec<String> {
         .collect();
     // 兜底: 即便降档后仍装不下 (极窄终端) ⇒ 宁可不画, 也不让它被折行
     let art_w = art.iter().map(|l| disp_width(l)).max().unwrap_or(0);
-    if art_w <= inner {
-        art
-    } else {
-        Vec::new()
-    }
+    if art_w <= inner { art } else { Vec::new() }
 }
 
 /** 仪表盘当前一帧 (**纯函数**, 可单测) — 与 TS `LoadingTUI.draw` 拼的内容逐行对齐 */
@@ -160,13 +156,26 @@ pub fn render_dashboard_frame(
         out.push(box_row(l, w, Align::Center, SQ));
     }
     for s in steps {
-        out.push(box_row(&format!("{} {}", status_symbol(&s.status), s.label), w, Align::Left, SQ));
+        out.push(box_row(
+            &format!("{} {}", status_symbol(&s.status), s.label),
+            w,
+            Align::Left,
+            SQ,
+        ));
     }
     if show_spinner {
-        let sp = format!("{C_WARN}{}{RESET}", LOADING_FRAMES[frame_idx % LOADING_FRAMES.len()]);
+        let sp = format!(
+            "{C_WARN}{}{RESET}",
+            LOADING_FRAMES[frame_idx % LOADING_FRAMES.len()]
+        );
         out.push(box_row(&format!("{sp} {current}"), w, Align::Left, SQ));
     } else {
-        out.push(box_row(&format!("{} Bolloon ready", status_symbol("ok")), w, Align::Left, SQ));
+        out.push(box_row(
+            &format!("{} Bolloon ready", status_symbol("ok")),
+            w,
+            Align::Left,
+            SQ,
+        ));
     }
     out.push(box_bottom(w, SQ));
     out.join("\n")
@@ -228,7 +237,10 @@ impl LoadingTui {
             let mut g = self.inner.lock().unwrap();
             g.steps = steps
                 .iter()
-                .map(|l| LoadingStep { label: (*l).to_string(), status: "pending".to_string() })
+                .map(|l| LoadingStep {
+                    label: (*l).to_string(),
+                    status: "pending".to_string(),
+                })
                 .collect();
         }
         if self.tx.is_some() {
@@ -387,9 +399,18 @@ mod tests {
 
     fn steps() -> Vec<LoadingStep> {
         vec![
-            LoadingStep { label: "身份".into(), status: "ok".into() },
-            LoadingStep { label: "记忆".into(), status: "active".into() },
-            LoadingStep { label: "内核".into(), status: "pending".into() },
+            LoadingStep {
+                label: "身份".into(),
+                status: "ok".into(),
+            },
+            LoadingStep {
+                label: "记忆".into(),
+                status: "active".into(),
+            },
+            LoadingStep {
+                label: "内核".into(),
+                status: "pending".into(),
+            },
         ]
     }
 
@@ -402,7 +423,10 @@ mod tests {
         let frame = render_dashboard_frame(&s, "加载中…", 0, true);
         assert_eq!(frame.lines().count(), region_lines(&s, "加载中…"));
         // 1 顶框 + N 艺术字 + 3 steps + 1 spinner + 1 底框
-        assert_eq!(frame.lines().count(), 1 + art_for(&s, "加载中…").len() + 3 + 1 + 1);
+        assert_eq!(
+            frame.lines().count(),
+            1 + art_for(&s, "加载中…").len() + 3 + 1 + 1
+        );
         crate::width::clear_term_size();
     }
 
@@ -415,7 +439,10 @@ mod tests {
         let frame = render_dashboard_frame(&s, "加载中…", 0, true);
         let widths: Vec<usize> = frame.lines().map(disp_width).collect();
         let first = widths[0];
-        assert!(widths.iter().all(|w| *w == first), "窄屏下行宽不一致: {widths:?}");
+        assert!(
+            widths.iter().all(|w| *w == first),
+            "窄屏下行宽不一致: {widths:?}"
+        );
         assert!(first <= 38, "帧宽不得超过 term_width()-2: {first}");
         crate::width::clear_term_size();
     }
@@ -447,10 +474,16 @@ mod tests {
         t.set_steps(&["身份", "记忆"]);
         t.start_step(0, None);
         let f = t.frame(true);
-        assert!(f.contains("身份") && f.contains("⠹"), "active 状态要带 ⠹: {f:?}");
+        assert!(
+            f.contains("身份") && f.contains("⠹"),
+            "active 状态要带 ⠹: {f:?}"
+        );
         t.complete_step(0, None, None);
         let f = t.frame(true);
-        assert!(f.contains("身份") && f.contains("✓"), "ok 状态要带 ✓: {f:?}");
+        assert!(
+            f.contains("身份") && f.contains("✓"),
+            "ok 状态要带 ✓: {f:?}"
+        );
         t.set_message("收尾");
         assert!(t.frame(true).contains("收尾"));
     }
@@ -516,8 +549,16 @@ mod tests {
         stream.push_str(&render_dashboard_frame(&s, "完成", 0, false));
         stream.push_str(&park_below_suffix(up));
         // 每一帧内部各 1 条顶/底框; 跨帧不累积 (控制序列只是移光标, 不重复打印边框行)
-        assert_eq!(stream.matches('┌').count(), 9, "9 帧应各 1 条顶框, 无残留: {stream}");
-        assert_eq!(stream.matches('└').count(), 9, "9 帧应各 1 条底框, 无残留: {stream}");
+        assert_eq!(
+            stream.matches('┌').count(),
+            9,
+            "9 帧应各 1 条顶框, 无残留: {stream}"
+        );
+        assert_eq!(
+            stream.matches('└').count(),
+            9,
+            "9 帧应各 1 条底框, 无残留: {stream}"
+        );
         crate::width::clear_term_size();
     }
 }

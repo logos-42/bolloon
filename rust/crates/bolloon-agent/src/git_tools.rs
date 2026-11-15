@@ -10,9 +10,9 @@
 //!   · 本地写（add / commit）= Write，需授予
 //!   · `git_push` = **不可逆外部副作用**，不随本地写授予（TS default 模式也是只禁 push）
 
+use crate::tool_contract::{ErrorCode, error_evidence, with_error};
 use async_trait::async_trait;
 use bolloon_harness::{EffectKind, ToolCall, ToolDef, ToolExecutor, ToolResult};
-use crate::tool_contract::{ErrorCode, error_evidence, with_error};
 
 /// 单条 git 命令超时（ms）
 const GIT_TIMEOUT_MS: u64 = 30_000;
@@ -53,7 +53,10 @@ impl ToolExecutor for GitExecutor {
                             output: "git_commit: message 必填".into(),
                             elapsed_ms: 0,
                             verified: Some(false),
-                            evidence: Some(error_evidence(ErrorCode::InvalidArgument, "message 必填")),
+                            evidence: Some(error_evidence(
+                                ErrorCode::InvalidArgument,
+                                "message 必填",
+                            )),
                         };
                     }
                 };
@@ -87,7 +90,11 @@ async fn do_push(call: &ToolCall) -> ToolResult {
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("")
         .to_string();
-    let force = call.arguments.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = call
+        .arguments
+        .get("force")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let protected = branch == "main" || branch == "master";
     if force && protected {
@@ -195,7 +202,11 @@ async fn run_git_tool(call: &ToolCall, args: &[&str]) -> ToolResult {
         }
     };
 
-    let body = if out.trim().is_empty() { err.trim().to_string() } else { out.trim().to_string() };
+    let body = if out.trim().is_empty() {
+        err.trim().to_string()
+    } else {
+        out.trim().to_string()
+    };
     ToolResult {
         ok,
         output: if body.is_empty() {
@@ -235,53 +246,93 @@ fn cwd_param() -> serde_json::Value {
 
 pub fn git_tool_defs() -> Vec<ToolDef> {
     vec![
-        def("git_status", "查看工作区改动（只读，--short）。", serde_json::json!({
-            "type": "object", "properties": cwd_param(), "additionalProperties": false
-        }), EffectKind::Read),
-        def("git_diff", "查看未暂存的差异（只读）。", serde_json::json!({
-            "type": "object", "properties": cwd_param(), "additionalProperties": false
-        }), EffectKind::Read),
-        def("git_log", "查看提交历史（只读，--oneline）。", serde_json::json!({
-            "type": "object",
-            "properties": {
-                "limit": { "type": "integer", "description": "条数（可选，默认 10，上限 100）" },
-                "path": { "type": "string", "description": "仓库路径（可选）" }
-            },
-            "additionalProperties": false
-        }), EffectKind::Read),
-        def("git_show", "查看最近一次提交的改动统计（只读）。", serde_json::json!({
-            "type": "object", "properties": cwd_param(), "additionalProperties": false
-        }), EffectKind::Read),
-        def("git_branch", "列出分支（只读）。", serde_json::json!({
-            "type": "object", "properties": cwd_param(), "additionalProperties": false
-        }), EffectKind::Read),
-        def("git_add", "暂存改动（本地写）。", serde_json::json!({
-            "type": "object",
-            "properties": {
-                "files": { "type": "string", "description": "要暂存的路径（可选，默认 `.`）" },
-                "path": { "type": "string", "description": "仓库路径（可选）" }
-            },
-            "additionalProperties": false
-        }), EffectKind::Write),
-        def("git_commit", "提交（本地写，需 message）。", serde_json::json!({
-            "type": "object",
-            "properties": {
-                "message": { "type": "string", "description": "提交说明（必填）" },
-                "path": { "type": "string", "description": "仓库路径（可选）" }
-            },
-            "required": ["message"],
-            "additionalProperties": false
-        }), EffectKind::Write),
-        def("git_push", "推送到远端（**不可逆外部副作用**，需显式授权；force push main/master 永远拒）。", serde_json::json!({
-            "type": "object",
-            "properties": {
-                "remote": { "type": "string", "description": "远端名（可选，默认 origin）" },
-                "branch": { "type": "string", "description": "分支（可选）" },
-                "force": { "type": "boolean", "description": "是否强推（可选，默认 false；保护分支永远拒）" },
-                "path": { "type": "string", "description": "仓库路径（可选）" }
-            },
-            "additionalProperties": false
-        }), EffectKind::Write),
+        def(
+            "git_status",
+            "查看工作区改动（只读，--short）。",
+            serde_json::json!({
+                "type": "object", "properties": cwd_param(), "additionalProperties": false
+            }),
+            EffectKind::Read,
+        ),
+        def(
+            "git_diff",
+            "查看未暂存的差异（只读）。",
+            serde_json::json!({
+                "type": "object", "properties": cwd_param(), "additionalProperties": false
+            }),
+            EffectKind::Read,
+        ),
+        def(
+            "git_log",
+            "查看提交历史（只读，--oneline）。",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "description": "条数（可选，默认 10，上限 100）" },
+                    "path": { "type": "string", "description": "仓库路径（可选）" }
+                },
+                "additionalProperties": false
+            }),
+            EffectKind::Read,
+        ),
+        def(
+            "git_show",
+            "查看最近一次提交的改动统计（只读）。",
+            serde_json::json!({
+                "type": "object", "properties": cwd_param(), "additionalProperties": false
+            }),
+            EffectKind::Read,
+        ),
+        def(
+            "git_branch",
+            "列出分支（只读）。",
+            serde_json::json!({
+                "type": "object", "properties": cwd_param(), "additionalProperties": false
+            }),
+            EffectKind::Read,
+        ),
+        def(
+            "git_add",
+            "暂存改动（本地写）。",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "files": { "type": "string", "description": "要暂存的路径（可选，默认 `.`）" },
+                    "path": { "type": "string", "description": "仓库路径（可选）" }
+                },
+                "additionalProperties": false
+            }),
+            EffectKind::Write,
+        ),
+        def(
+            "git_commit",
+            "提交（本地写，需 message）。",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string", "description": "提交说明（必填）" },
+                    "path": { "type": "string", "description": "仓库路径（可选）" }
+                },
+                "required": ["message"],
+                "additionalProperties": false
+            }),
+            EffectKind::Write,
+        ),
+        def(
+            "git_push",
+            "推送到远端（**不可逆外部副作用**，需显式授权；force push main/master 永远拒）。",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "remote": { "type": "string", "description": "远端名（可选，默认 origin）" },
+                    "branch": { "type": "string", "description": "分支（可选）" },
+                    "force": { "type": "boolean", "description": "是否强推（可选，默认 false；保护分支永远拒）" },
+                    "path": { "type": "string", "description": "仓库路径（可选）" }
+                },
+                "additionalProperties": false
+            }),
+            EffectKind::Write,
+        ),
     ]
 }
 
@@ -290,7 +341,11 @@ mod tests {
     use super::*;
 
     fn call(name: &str, args: serde_json::Value) -> ToolCall {
-        ToolCall { id: "c1".into(), name: name.into(), arguments: args }
+        ToolCall {
+            id: "c1".into(),
+            name: name.into(),
+            arguments: args,
+        }
     }
 
     /// 真仓库（临时 git init）—— 不依赖 bolloon 自身仓库状态
@@ -309,9 +364,21 @@ mod tests {
         }
         // 提交一次，保证 log/show 有内容
         std::fs::write(d.join("f.txt"), "hi").ok()?;
-        std::process::Command::new("git").args(["add", "."]).current_dir(&d).status().ok()?;
         std::process::Command::new("git")
-            .args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init"])
+            .args(["add", "."])
+            .current_dir(&d)
+            .status()
+            .ok()?;
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "init",
+            ])
             .current_dir(&d)
             .status()
             .ok()?;
@@ -323,10 +390,17 @@ mod tests {
         let Some(d) = tmp_repo("status") else { return }; // 无 git 环境则跳过
         std::fs::write(d.join("new.txt"), "x").unwrap();
         let r = GitExecutor
-            .execute(call("git_status", serde_json::json!({ "path": d.display().to_string() })))
+            .execute(call(
+                "git_status",
+                serde_json::json!({ "path": d.display().to_string() }),
+            ))
             .await;
         assert!(r.ok, "{}", r.output);
-        assert!(r.output.contains("new.txt"), "未跟踪文件应出现: {}", r.output);
+        assert!(
+            r.output.contains("new.txt"),
+            "未跟踪文件应出现: {}",
+            r.output
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -334,7 +408,10 @@ mod tests {
     async fn log_and_show_return_history() {
         let Some(d) = tmp_repo("log") else { return };
         let r = GitExecutor
-            .execute(call("git_log", serde_json::json!({ "path": d.display().to_string(), "limit": 5 })))
+            .execute(call(
+                "git_log",
+                serde_json::json!({ "path": d.display().to_string(), "limit": 5 }),
+            ))
             .await;
         assert!(r.ok, "{}", r.output);
         assert!(r.output.contains("init"), "提交说明应在: {}", r.output);
@@ -345,7 +422,10 @@ mod tests {
     #[tokio::test]
     async fn force_push_to_protected_branch_is_refused() {
         let r = GitExecutor
-            .execute(call("git_push", serde_json::json!({ "branch": "main", "force": true })))
+            .execute(call(
+                "git_push",
+                serde_json::json!({ "branch": "main", "force": true }),
+            ))
             .await;
         assert!(!r.ok, "必须拒绝");
         assert!(r.output.contains("拒绝"), "{}", r.output);
@@ -355,7 +435,9 @@ mod tests {
 
     #[tokio::test]
     async fn commit_requires_message() {
-        let r = GitExecutor.execute(call("git_commit", serde_json::json!({}))).await;
+        let r = GitExecutor
+            .execute(call("git_commit", serde_json::json!({})))
+            .await;
         assert!(!r.ok);
         assert!(r.output.contains("message 必填"), "{}", r.output);
     }

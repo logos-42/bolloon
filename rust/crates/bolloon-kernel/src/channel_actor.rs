@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::control::Control;
@@ -342,11 +342,7 @@ mod tests {
         registry.register(handle).await;
 
         for i in 0..5 {
-            let ev = ChannelEvent::new(
-                channel.clone(),
-                UserMessage,
-                Some(serde_json::json!(i)),
-            );
+            let ev = ChannelEvent::new(channel.clone(), UserMessage, Some(serde_json::json!(i)));
             registry.deliver(ev).await.unwrap();
         }
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;

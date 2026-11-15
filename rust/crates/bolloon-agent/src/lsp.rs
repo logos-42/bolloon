@@ -74,7 +74,9 @@ impl LspSession {
             return Err(LspError::NotInitialized);
         }
         if !self.documents.contains_key(uri) {
-            return Err(LspError::BadMessage(format!("didChange 前没 didOpen: {uri}")));
+            return Err(LspError::BadMessage(format!(
+                "didChange 前没 didOpen: {uri}"
+            )));
         }
         self.documents.insert(uri.into(), new_text.into());
         let msg = serde_json::json!({
@@ -160,13 +162,19 @@ mod tests {
         let mut s = LspSession::new();
         let (_, framed) = s.initialize_request("file:///p");
         let cut = &framed[..framed.len() / 2];
-        assert!(matches!(parse_frames(cut), Err(LspError::BadFrame(_))), "半包如实报错");
+        assert!(
+            matches!(parse_frames(cut), Err(LspError::BadFrame(_))),
+            "半包如实报错"
+        );
     }
 
     #[test]
     fn protocol_gate_before_initialize() {
         let mut s = LspSession::new();
-        assert_eq!(s.did_open("file:///a.rs", "fn main(){}").unwrap_err(), LspError::NotInitialized);
+        assert_eq!(
+            s.did_open("file:///a.rs", "fn main(){}").unwrap_err(),
+            LspError::NotInitialized
+        );
         s.on_initialized();
         assert!(s.did_open("file:///a.rs", "fn main(){}").is_ok());
     }

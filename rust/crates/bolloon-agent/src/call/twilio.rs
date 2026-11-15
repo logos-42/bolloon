@@ -13,11 +13,21 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TwilioInbound {
     Connected,
-    Started { stream_sid: String, call_sid: String },
-    Media { payload_b64: String, track: String },
-    Mark { name: String },
+    Started {
+        stream_sid: String,
+        call_sid: String,
+    },
+    Media {
+        payload_b64: String,
+        track: String,
+    },
+    Mark {
+        name: String,
+    },
     Stopped,
-    Unknown { event: String },
+    Unknown {
+        event: String,
+    },
 }
 
 fn s(v: &serde_json::Value, path: &str) -> Option<String> {
@@ -35,7 +45,9 @@ pub fn parse_inbound(raw: &str) -> Result<TwilioInbound, String> {
     Ok(match event.as_str() {
         "connected" => TwilioInbound::Connected,
         "start" => TwilioInbound::Started {
-            stream_sid: s(&v, "streamSid").or_else(|| s(&v, "start.streamSid")).unwrap_or_default(),
+            stream_sid: s(&v, "streamSid")
+                .or_else(|| s(&v, "start.streamSid"))
+                .unwrap_or_default(),
             call_sid: s(&v, "start.callSid").unwrap_or_default(),
         },
         "media" => TwilioInbound::Media {
@@ -46,7 +58,9 @@ pub fn parse_inbound(raw: &str) -> Result<TwilioInbound, String> {
             name: s(&v, "mark.name").unwrap_or_default(),
         },
         "stop" => TwilioInbound::Stopped,
-        other => TwilioInbound::Unknown { event: other.to_string() },
+        other => TwilioInbound::Unknown {
+            event: other.to_string(),
+        },
     })
 }
 
@@ -81,11 +95,17 @@ mod tests {
 
     #[test]
     fn parses_connected_and_started() {
-        assert_eq!(parse_inbound(r#"{"event":"connected"}"#).unwrap(), TwilioInbound::Connected);
+        assert_eq!(
+            parse_inbound(r#"{"event":"connected"}"#).unwrap(),
+            TwilioInbound::Connected
+        );
         let raw = r#"{"event":"start","start":{"streamSid":"MZ1","callSid":"CA1"}}"#;
         assert_eq!(
             parse_inbound(raw).unwrap(),
-            TwilioInbound::Started { stream_sid: "MZ1".into(), call_sid: "CA1".into() }
+            TwilioInbound::Started {
+                stream_sid: "MZ1".into(),
+                call_sid: "CA1".into()
+            }
         );
     }
 
@@ -94,11 +114,16 @@ mod tests {
         let raw = r#"{"event":"media","media":{"payload":"AAAA","track":"inbound"}}"#;
         assert_eq!(
             parse_inbound(raw).unwrap(),
-            TwilioInbound::Media { payload_b64: "AAAA".into(), track: "inbound".into() }
+            TwilioInbound::Media {
+                payload_b64: "AAAA".into(),
+                track: "inbound".into()
+            }
         );
         assert_eq!(
             parse_inbound(r#"{"event":"whatever"}"#).unwrap(),
-            TwilioInbound::Unknown { event: "whatever".into() }
+            TwilioInbound::Unknown {
+                event: "whatever".into()
+            }
         );
     }
 

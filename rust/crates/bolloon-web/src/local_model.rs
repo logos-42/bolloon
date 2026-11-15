@@ -7,7 +7,7 @@
 //! ③ 协议按 `Protocol::Ollama` 显式指定 (URL 含 11434/local 也能自动推断, 这里不赌);
 //! ④ 不自动设为默认, 除非显式 `activate=true`。
 
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 
 pub const LOCAL_PROVIDER_ID: &str = "local-small";
 pub const DEFAULT_LOCAL_URL: &str = "http://127.0.0.1:11434";
@@ -34,9 +34,7 @@ fn probe(base_url: &str) -> Result<(bool, Vec<String>), String> {
 }
 
 /// GET /api/models/local → 本地小模型接口状态 (是否登记 / 是否可达 / 已装模型)
-pub async fn local_status(
-    State(_st): State<crate::AppState>,
-) -> Json<serde_json::Value> {
+pub async fn local_status(State(_st): State<crate::AppState>) -> Json<serde_json::Value> {
     let cfg = bolloon_llm::config_store::load();
     let entry = cfg.custom_providers.get(LOCAL_PROVIDER_ID);
     let base = entry
@@ -84,7 +82,7 @@ pub async fn local_register(
             return Json(serde_json::json!({
                 "ok": false, "error": e,
                 "note": "本机模型服务没起来就先别登记; 例如先 `ollama serve`"
-            }))
+            }));
         }
     };
     let model = req["model"]
@@ -155,7 +153,11 @@ pub async fn ollama_register(
     State(st): State<crate::AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let key = req["api_key"].as_str().unwrap_or_default().trim().to_string();
+    let key = req["api_key"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if key.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 api_key" }));
     }
@@ -175,14 +177,25 @@ pub async fn ollama_register(
     let models: Vec<String> = match probe {
         Ok(resp) => {
             let v: serde_json::Value = resp.into_json().unwrap_or(serde_json::Value::Null);
-            v["models"].as_array().map(|a| a.iter().filter_map(|m| m["name"].as_str().map(String::from)).collect()).unwrap_or_default()
+            v["models"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|m| m["name"].as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
         }
-        Err(e) => return Json(serde_json::json!({
-            "ok": false, "error": format!("Ollama Cloud 探测失败: {e}"),
-            "note": "检查 key 是否有效 / 网络是否可达; 探测不通就不登记"
-        })),
+        Err(e) => {
+            return Json(serde_json::json!({
+                "ok": false, "error": format!("Ollama Cloud 探测失败: {e}"),
+                "note": "检查 key 是否有效 / 网络是否可达; 探测不通就不登记"
+            }));
+        }
     };
-    let model = req["model"].as_str().map(|s| s.trim().to_string())
+    let model = req["model"]
+        .as_str()
+        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| models.first().cloned().unwrap_or_default());
     if model.is_empty() {
@@ -223,15 +236,23 @@ pub async fn activate_model(
     State(st): State<crate::AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let provider = req["provider"].as_str().unwrap_or_default().trim().to_string();
+    let provider = req["provider"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if provider.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "缺 provider" }));
     }
     let llm = st.llm_snapshot();
     let Some(slot) = llm.provider(&provider) else {
-        return Json(serde_json::json!({ "ok": false, "error": format!("模型通路里没有 {provider}") }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": format!("模型通路里没有 {provider}") }),
+        );
     };
-    let model = req["model"].as_str().map(|s| s.trim().to_string())
+    let model = req["model"]
+        .as_str()
+        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| slot.default_model.clone());
     let mut cfg = bolloon_llm::config_store::load();

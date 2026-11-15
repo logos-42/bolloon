@@ -17,7 +17,7 @@ use serde_json::json;
 use bolloon_harness::{EffectKind, ToolCall, ToolDef, ToolExecutor, ToolResult};
 
 use crate::home::BolloonHome;
-use crate::scratch::{new_run_id, ScriptRunPort, ScriptRunRequest};
+use crate::scratch::{ScriptRunPort, ScriptRunRequest, new_run_id};
 
 const ALLOWED_LANGS: &[&str] = &["sh", "bash", "python3", "node"];
 const MAX_TIMEOUT_MS: u64 = 120_000;
@@ -49,9 +49,21 @@ fn load_plugin(name: &str) -> Option<(String, String, String)> {
     let arr: Vec<serde_json::Value> = serde_json::from_str(&raw).ok()?;
     for v in arr {
         if v.get("name").and_then(|x| x.as_str()) == Some(name) {
-            let body = v.get("body").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let desc = v.get("description").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let origin = v.get("origin").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let body = v
+                .get("body")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let desc = v
+                .get("description")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let origin = v
+                .get("origin")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             return Some((body, origin, desc));
         }
     }
@@ -62,7 +74,10 @@ fn load_plugin(name: &str) -> Option<(String, String, String)> {
 fn body_lang(body: &str) -> Option<String> {
     for line in body.lines().take(12) {
         let t = line.trim().trim_start_matches('-').trim();
-        if let Some(rest) = t.strip_prefix("lang:").or_else(|| t.strip_prefix("language:")) {
+        if let Some(rest) = t
+            .strip_prefix("lang:")
+            .or_else(|| t.strip_prefix("language:"))
+        {
             let v = rest.trim().trim_matches('"').trim_matches('\'').to_string();
             if !v.is_empty() {
                 return Some(v);
@@ -176,7 +191,9 @@ impl ToolExecutor for PluginExecutor {
                 output: format!("插件脚本运行失败: {e}"),
                 elapsed_ms: 0,
                 verified: Some(false),
-                evidence: Some(json!({ "plugin": name, "run_id": run_id, "error": format!("{e}") })),
+                evidence: Some(
+                    json!({ "plugin": name, "run_id": run_id, "error": format!("{e}") }),
+                ),
             },
         }
     }
@@ -210,8 +227,14 @@ mod tests {
 
     #[test]
     fn body_lang_reads_frontmatter() {
-        assert_eq!(body_lang("---\nlang: python3\n---\nprint(1)").as_deref(), Some("python3"));
-        assert_eq!(body_lang("lang: node\nconsole.log(1)").as_deref(), Some("node"));
+        assert_eq!(
+            body_lang("---\nlang: python3\n---\nprint(1)").as_deref(),
+            Some("python3")
+        );
+        assert_eq!(
+            body_lang("lang: node\nconsole.log(1)").as_deref(),
+            Some("node")
+        );
         // 普通代码围栏不当作 lang
         assert_eq!(body_lang("```python\nprint(1)\n```"), None);
         assert_eq!(body_lang("这是方法文本"), None);

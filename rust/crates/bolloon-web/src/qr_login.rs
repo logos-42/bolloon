@@ -16,9 +16,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use axum::Json;
 use axum::extract::{Query, State};
 use axum::response::{Html, IntoResponse};
-use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::server::AppState;
@@ -45,7 +45,9 @@ struct Pending {
 }
 
 fn store_path() -> PathBuf {
-    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."));
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
     home.join(".bolloon/rust/qr_login.json")
 }
 
@@ -67,7 +69,10 @@ fn save(m: &BTreeMap<String, Pending>) {
     if let Some(dir) = store_path().parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::fs::write(store_path(), serde_json::to_string_pretty(m).unwrap_or_default());
+    let _ = std::fs::write(
+        store_path(),
+        serde_json::to_string_pretty(m).unwrap_or_default(),
+    );
 }
 
 /// 6 位人类可读码（去掉 0/O/1/I，避免看错）
@@ -80,7 +85,9 @@ fn new_code() -> String {
     let mut seed = nanos ^ ((std::process::id() as u64) << 32);
     let mut code = String::new();
     for _ in 0..6 {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let i = ((seed >> 33) as usize) % ALPHABET.len();
         code.push(ALPHABET[i] as char);
     }
@@ -91,7 +98,8 @@ fn new_code() -> String {
 fn extract_code(raw: &str) -> String {
     let t = raw.trim();
     let part = t.split("code=").nth(1).unwrap_or(t);
-    part.trim_matches(|c: char| !c.is_ascii_alphanumeric()).to_uppercase()
+    part.trim_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_uppercase()
 }
 
 /// 二维码 SVG（服务端出图：手机/电脑只要能打开网页就能显示，不用前端库）
@@ -124,7 +132,12 @@ fn issue(via: &str) -> String {
     let code = new_code();
     m.insert(
         code.clone(),
-        Pending { ts_ms: now, used: false, approved: false, via: via.to_string() },
+        Pending {
+            ts_ms: now,
+            used: false,
+            approved: false,
+            via: via.to_string(),
+        },
     );
     save(&m);
     code
@@ -159,11 +172,17 @@ fn verify_token(kp: &bolloon_p2p::KeyPair, token: &str) -> Option<u64> {
 
 fn phone_of_this_node() -> Option<String> {
     std::fs::read_to_string(
-        std::env::var("HOME").map(|h| format!("{h}/.bolloon/rust/phone_binding.json")).unwrap_or_default(),
+        std::env::var("HOME")
+            .map(|h| format!("{h}/.bolloon/rust/phone_binding.json"))
+            .unwrap_or_default(),
     )
     .ok()
     .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-    .and_then(|v| v.get("phone").and_then(|x| x.as_str()).map(|s| s.to_string()))
+    .and_then(|v| {
+        v.get("phone")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string())
+    })
 }
 
 /// GET /login —— 电脑/手机出码页面（二维码 + 输码授权）
@@ -192,7 +211,10 @@ pub async fn qr_svg(
     let code = extract_code(q.get("code").map(|s| s.as_str()).unwrap_or_default());
     match svg_for(&login_payload(&code)) {
         Some(svg) => (
-            [(axum::http::header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "image/svg+xml; charset=utf-8",
+            )],
             svg,
         )
             .into_response(),
@@ -234,7 +256,9 @@ pub async fn qr_approve(Json(req): Json<serde_json::Value>) -> Json<serde_json::
 }
 
 /// GET /api/auth/qr/status?code=xxx —— 出码的一侧轮询"扫了/授权了没有"
-pub async fn qr_status(Query(q): Query<std::collections::HashMap<String, String>>) -> Json<serde_json::Value> {
+pub async fn qr_status(
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
     let code = extract_code(q.get("code").map(|s| s.as_str()).unwrap_or_default());
     let m = load();
     let Some(entry) = m.get(&code) else {
@@ -256,7 +280,10 @@ pub struct ClaimRequest {
 }
 
 /// POST /api/auth/qr/claim {code} —— 眼镜兑换会话令牌
-pub async fn qr_claim(State(st): State<AppState>, Json(req): Json<ClaimRequest>) -> Json<serde_json::Value> {
+pub async fn qr_claim(
+    State(st): State<AppState>,
+    Json(req): Json<ClaimRequest>,
+) -> Json<serde_json::Value> {
     // 扫出来可能是整条 URL，也可能只有码
     let code = extract_code(&req.code);
     if code.is_empty() {
@@ -276,7 +303,9 @@ pub async fn qr_claim(State(st): State<AppState>, Json(req): Json<ClaimRequest>)
     // 眼镜自己出的码必须有人（手机/电脑）授权过才给令牌：
     // 那串码就显示在镜片上，谁看到都能念出来，没授权等于没锁。
     if entry.via == "device" && !entry.approved {
-        return Json(serde_json::json!({ "ok": false, "error": "还没在手机/电脑上授权", "need_approve": true }));
+        return Json(
+            serde_json::json!({ "ok": false, "error": "还没在手机/电脑上授权", "need_approve": true }),
+        );
     }
 
     // 一次性码：兑换即废
@@ -305,10 +334,19 @@ pub struct ScanRequest {
 /// POST /api/auth/qr/scan {image_base64} —— 眼镜拍照，节点解二维码
 pub async fn qr_scan(Json(req): Json<ScanRequest>) -> Json<serde_json::Value> {
     use base64::Engine;
-    let raw = req.image_base64.split(',').next_back().unwrap_or(&req.image_base64).trim();
+    let raw = req
+        .image_base64
+        .split(',')
+        .next_back()
+        .unwrap_or(&req.image_base64)
+        .trim();
     let bytes = match base64::engine::general_purpose::STANDARD.decode(raw) {
         Ok(b) => b,
-        Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("base64 解码失败: {e}") })),
+        Err(e) => {
+            return Json(
+                serde_json::json!({ "ok": false, "error": format!("base64 解码失败: {e}") }),
+            );
+        }
     };
     if bytes.len() < 256 {
         return Json(serde_json::json!({ "ok": false, "error": "图片太小，可能没拍到" }));
@@ -317,7 +355,9 @@ pub async fn qr_scan(Json(req): Json<ScanRequest>) -> Json<serde_json::Value> {
         Ok(text) => {
             let code = extract_code(&text);
             if code.is_empty() {
-                Json(serde_json::json!({ "ok": false, "error": "扫到内容但不是登录码", "text": text }))
+                Json(
+                    serde_json::json!({ "ok": false, "error": "扫到内容但不是登录码", "text": text }),
+                )
             } else {
                 Json(serde_json::json!({ "ok": true, "code": code, "text": text }))
             }
@@ -360,8 +400,15 @@ mod tests {
     #[test]
     fn svg_for_produces_qr_svg() {
         let svg = svg_for(&login_payload("ABC234")).expect("qr");
-        assert!(svg.starts_with("<svg"), "内联 SVG 必须直接以 <svg 开头: {}", &svg[..40.min(svg.len())]);
-        assert!(svg.contains("<path") && svg.contains("d=\"M"), "二维码必须画出模块");
+        assert!(
+            svg.starts_with("<svg"),
+            "内联 SVG 必须直接以 <svg 开头: {}",
+            &svg[..40.min(svg.len())]
+        );
+        assert!(
+            svg.contains("<path") && svg.contains("d=\"M"),
+            "二维码必须画出模块"
+        );
         assert!(svg.contains("fill=\"#000000\""), "缺黑色模块色");
     }
 
@@ -378,7 +425,10 @@ mod tests {
         // 签名覆盖 code：只改码不重签 ⇒ 失效
         let msg = format!("glass|ABC234|{ts}");
         let wrong = format!("ABC235.{ts}.{}", hex::encode(mine.sign(msg.as_bytes())));
-        assert!(verify_token(&mine, &wrong).is_none(), "改码不换签名必须失效");
+        assert!(
+            verify_token(&mine, &wrong).is_none(),
+            "改码不换签名必须失效"
+        );
 
         let old = ts.saturating_sub(TOKEN_TTL_MS + 1_000);
         let expired = mint_token(&mine, "ABC234", old);
@@ -407,7 +457,9 @@ mod tests {
             1,
         );
         let state = AppState::new(llm);
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let _ = crate::server::serve_on(state, listener).await;
@@ -423,7 +475,11 @@ mod tests {
                     .unwrap()
             };
             let get = |path: &str| -> serde_json::Value {
-                ureq::get(&format!("{base}{path}")).call().unwrap().into_json().unwrap()
+                ureq::get(&format!("{base}{path}"))
+                    .call()
+                    .unwrap()
+                    .into_json()
+                    .unwrap()
             };
 
             // ① 屏幕出码：带 SVG、状态是未用
@@ -448,7 +504,10 @@ mod tests {
             assert_eq!(again["ok"], false, "一次性码不能被用两次: {again}");
 
             // ④ 伪装令牌不收
-            let forged = get(&format!("/api/auth/session?token={code}.{}.deadbeef", now_ms()));
+            let forged = get(&format!(
+                "/api/auth/session?token={code}.{}.deadbeef",
+                now_ms()
+            ));
             assert_eq!(forged["ok"], false, "假签名不许通过: {forged}");
 
             // ⑤ 设备码（眼镜出码）：没授权前不给令牌，手机授权后可以换
@@ -457,7 +516,10 @@ mod tests {
             assert_eq!(dev["via"], "device");
             let dcode = dev["code"].as_str().unwrap().to_string();
             let blocked = post("/api/auth/qr/claim", serde_json::json!({ "code": dcode }));
-            assert_eq!(blocked["ok"], false, "眼镜自己出的码没人授权不许登录: {blocked}");
+            assert_eq!(
+                blocked["ok"], false,
+                "眼镜自己出的码没人授权不许登录: {blocked}"
+            );
             assert_eq!(blocked["need_approve"], true, "{blocked}");
             let approved = post("/api/auth/qr/approve", serde_json::json!({ "code": dcode }));
             assert_eq!(approved["ok"], true, "{approved}");
@@ -473,9 +535,16 @@ mod tests {
             assert_eq!(via_url["ok"], true, "{via_url}");
 
             // ⑦ /login 页面真的能打开，且引用了出码接口
-            let page = ureq::get(&format!("{base}/login")).call().unwrap().into_string().unwrap();
+            let page = ureq::get(&format!("{base}/login"))
+                .call()
+                .unwrap()
+                .into_string()
+                .unwrap();
             assert!(page.contains("/api/auth/qr/issue"), "登录页要自己出码");
-            assert!(page.contains("授权这台眼镜"), "登录页要能输入眼镜上的 6 位码授权");
+            assert!(
+                page.contains("授权这台眼镜"),
+                "登录页要能输入眼镜上的 6 位码授权"
+            );
         })
         .await
         .unwrap();

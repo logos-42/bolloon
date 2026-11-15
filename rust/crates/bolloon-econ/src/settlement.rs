@@ -29,7 +29,6 @@ pub enum SettlementState {
     RolledBack,
 }
 
-
 /// 公共资源池现金视图 (现金与贡献**分开**记)。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PublicPool {

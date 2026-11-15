@@ -16,10 +16,12 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 
-use crate::wallet_crypto::{decrypt_secret, encrypt_secret, export_blob, parse_blob, EncWallet, WalletBlob};
 use crate::AppState;
+use crate::wallet_crypto::{
+    EncWallet, WalletBlob, decrypt_secret, encrypt_secret, export_blob, parse_blob,
+};
 
 const UNLOCK_TTL_SECS: u64 = 900;
 
@@ -95,7 +97,11 @@ fn unlock_cell() -> &'static Mutex<Option<UnlockState>> {
 
 fn set_unlocked(address: String, secret: String) {
     if let Ok(mut g) = unlock_cell().lock() {
-        *g = Some(UnlockState { address, secret, at: Instant::now() });
+        *g = Some(UnlockState {
+            address,
+            secret,
+            at: Instant::now(),
+        });
     }
 }
 
@@ -121,11 +127,15 @@ fn tokens_path() -> PathBuf {
 }
 
 fn wallet_path() -> PathBuf {
-    crate::server::data_dir().join("tokens").join("personal_wallet.json")
+    crate::server::data_dir()
+        .join("tokens")
+        .join("personal_wallet.json")
 }
 
 fn shared_path() -> PathBuf {
-    crate::server::data_dir().join("tokens").join("shared_wallet.json")
+    crate::server::data_dir()
+        .join("tokens")
+        .join("shared_wallet.json")
 }
 
 fn load() -> TokenFile {
@@ -286,14 +296,23 @@ struct Draft {
 }
 
 fn parse_draft(req: &serde_json::Value) -> Result<Draft, String> {
-    let name = req.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let name = req
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let symbol = req
         .get("symbol")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim()
         .to_uppercase();
-    let decimals = req.get("decimals").and_then(|v| v.as_u64()).unwrap_or(0).min(18) as u32;
+    let decimals = req
+        .get("decimals")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        .min(18) as u32;
     let supply = req.get("supply").and_then(|v| v.as_u64()).unwrap_or(0);
     let description = req
         .get("description")
@@ -312,7 +331,13 @@ fn parse_draft(req: &serde_json::Value) -> Result<Draft, String> {
     if supply == 0 {
         return Err("初始供应量必须大于 0".into());
     }
-    Ok(Draft { name, symbol, decimals, supply, description })
+    Ok(Draft {
+        name,
+        symbol,
+        decimals,
+        supply,
+        description,
+    })
 }
 
 fn supply_base(d: &Draft) -> u128 {
@@ -325,7 +350,9 @@ fn supply_base(d: &Draft) -> u128 {
 pub async fn wallet_status() -> Json<serde_json::Value> {
     let w = load_wallet();
     let (rpc, cid, net) = chain_config();
-    let pending = std::fs::metadata(shared_path()).map(|m| m.len() > 0).unwrap_or(false);
+    let pending = std::fs::metadata(shared_path())
+        .map(|m| m.len() > 0)
+        .unwrap_or(false);
     Json(serde_json::json!({
         "ok": true,
         "exists": w.is_some(),
@@ -438,9 +465,16 @@ pub async fn wallet_share() -> Json<serde_json::Value> {
 
 /// POST /api/wallet/restore { blob, passphrase, overwrite? } → 用备份串 + 口令恢复钱包。
 pub async fn wallet_restore(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
-    let blob = req.get("blob").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let blob = req
+        .get("blob")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
     let pass = req.get("passphrase").and_then(|v| v.as_str()).unwrap_or("");
-    let overwrite = req.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false);
+    let overwrite = req
+        .get("overwrite")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if blob.is_empty() {
         return err("请粘贴备份串");
     }
@@ -479,7 +513,11 @@ pub async fn wallet_restore(Json(req): Json<serde_json::Value>) -> Json<serde_js
 
 /// POST /api/wallet/adopt { blob } → 收下对端推来的共享密文（待口令解锁，不覆盖本机钱包）。
 pub async fn wallet_adopt(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
-    let blob = req.get("blob").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let blob = req
+        .get("blob")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
     if blob.is_empty() {
         return err("缺 blob");
     }
@@ -503,7 +541,10 @@ pub async fn wallet_adopt(Json(req): Json<serde_json::Value>) -> Json<serde_json
 /// POST /api/wallet/accept-share { passphrase, overwrite? } → 用待接收共享包解锁并落为主钱包。
 pub async fn wallet_accept_share(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
     let pass = req.get("passphrase").and_then(|v| v.as_str()).unwrap_or("");
-    let overwrite = req.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false);
+    let overwrite = req
+        .get("overwrite")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let raw = match std::fs::read_to_string(shared_path()) {
         Ok(s) => s,
         Err(_) => return err("没有待接收的共享钱包"),
@@ -544,7 +585,11 @@ pub async fn wallet_accept_share(Json(req): Json<serde_json::Value>) -> Json<ser
 
 /// POST /api/wallet/push { peer_base } → 把加密备份串经 peer_json 推到对端 /api/wallet/adopt。
 pub async fn wallet_push(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
-    let peer = req.get("peer_base").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let peer = req
+        .get("peer_base")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
     if peer.is_empty() {
         return err("请填写对端地址（如 http://192.168.1.20:8787）");
     }
@@ -591,19 +636,26 @@ pub async fn list(State(st): State<AppState>) -> Json<serde_json::Value> {
 
 /// POST /api/tokens/import { contract_address, chain_id? }
 /// → 用 eth_call 读 ERC-20 元数据 + 当前钱包余额，校验后纳入钱包（解决换机看不到币）。
-pub async fn import(State(st): State<AppState>, Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
-    let raw = req.get("contract_address").and_then(|v| v.as_str()).unwrap_or("");
+pub async fn import(
+    State(st): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let raw = req
+        .get("contract_address")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let contract = match normalize_address(raw) {
         Ok(c) => c,
         Err(e) => return err(&e),
     };
     let (rpc, cid, net) = chain_config();
-    let (name, symbol, decimals, total_base) = match crate::chain_tx::erc20_metadata(&rpc, &contract) {
-        Ok(v) => v,
-        Err(e) => {
-            return err(&format!("读取合约失败（该地址可能不是 ERC-20）：{e}"));
-        }
-    };
+    let (name, symbol, decimals, total_base) =
+        match crate::chain_tx::erc20_metadata(&rpc, &contract) {
+            Ok(v) => v,
+            Err(e) => {
+                return err(&format!("读取合约失败（该地址可能不是 ERC-20）：{e}"));
+            }
+        };
     if symbol.is_empty() {
         return err("合约 symbol 为空，拒绝导入");
     }
@@ -635,7 +687,11 @@ pub async fn import(State(st): State<AppState>, Json(req): Json<serde_json::Valu
         existing.balance_base = balance_base.to_string();
         existing.imported = true;
         let rec = existing.clone();
-        if let Some(t) = f.tokens.iter_mut().find(|t| t.did == did && t.contract_address.eq_ignore_ascii_case(&contract)) {
+        if let Some(t) = f
+            .tokens
+            .iter_mut()
+            .find(|t| t.did == did && t.contract_address.eq_ignore_ascii_case(&contract))
+        {
             t.owner_sig = hex::encode(st.identity.sign(canonical(&rec).as_bytes()));
         }
         if let Err(e) = save(&f) {
@@ -693,7 +749,11 @@ pub async fn prepare(
         Ok(d) => d,
         Err(e) => return err(&e),
     };
-    if load().tokens.iter().any(|t| t.did == did && t.symbol == d.symbol) {
+    if load()
+        .tokens
+        .iter()
+        .any(|t| t.did == did && t.symbol == d.symbol)
+    {
         return err("你的 DID 已使用同一符号发行过代币");
     }
     let from = match wallet_address() {
@@ -738,7 +798,11 @@ pub async fn confirm(
         Ok(d) => d,
         Err(e) => return err(&e),
     };
-    if load().tokens.iter().any(|t| t.did == did && t.symbol == d.symbol) {
+    if load()
+        .tokens
+        .iter()
+        .any(|t| t.did == did && t.symbol == d.symbol)
+    {
         return err("你的 DID 已使用同一符号发行过代币");
     }
     let (from, secret) = match signer() {
@@ -754,15 +818,27 @@ pub async fn confirm(
     };
     let res = match crate::chain_tx::deploy_contract(&rpc, &secret, cid, &creation).await {
         Ok(v) => v,
-        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e, "stage": "broadcast_or_receipt" })),
+        Err(e) => {
+            return Json(
+                serde_json::json!({ "ok": false, "error": e, "stage": "broadcast_or_receipt" }),
+            );
+        }
     };
-    if !res.get("status_ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if !res
+        .get("status_ok")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return Json(serde_json::json!({
             "ok": false, "error": "链上部署失败（交易回执 status=0）",
             "tx_hash": res.get("tx_hash").cloned().unwrap_or(serde_json::Value::Null),
         }));
     }
-    let contract_address = res.get("contract_address").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let contract_address = res
+        .get("contract_address")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if contract_address.is_empty() {
         return err("回执里没有 contractAddress（部署未成功）");
     }
@@ -779,9 +855,16 @@ pub async fn confirm(
         issuer_verified: true,
         owner_sig: String::new(),
         contract_address: contract_address.clone(),
-        tx_hash: res.get("tx_hash").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        tx_hash: res
+            .get("tx_hash")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         chain_id: cid,
-        block_number: res.get("block_number").and_then(|v| v.as_u64()).unwrap_or(0),
+        block_number: res
+            .get("block_number")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
         imported: false,
         balance_base: String::new(),
     };
@@ -854,7 +937,13 @@ mod tests {
 
     #[test]
     fn supply_base_scales_by_decimals() {
-        let d = Draft { name: "x".into(), symbol: "X".into(), decimals: 6, supply: 1000, description: String::new() };
+        let d = Draft {
+            name: "x".into(),
+            symbol: "X".into(),
+            decimals: 6,
+            supply: 1000,
+            description: String::new(),
+        };
         assert_eq!(supply_base(&d), 1_000_000_000u128);
     }
 

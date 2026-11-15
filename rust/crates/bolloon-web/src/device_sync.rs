@@ -168,10 +168,17 @@ pub async fn sync_once(st: &AppState) -> Value {
 
         // 顺带问对方还有哪些同组设备（设备自己扩散，不需要中心）
         if err.is_empty() {
-            if let Ok(list) = crate::native::peer_json("GET", format!("{base}/api/devices"), None).await {
+            if let Ok(list) =
+                crate::native::peer_json("GET", format!("{base}/api/devices"), None).await
+            {
                 let mut s = load();
                 for d in list["devices"].as_array().cloned().unwrap_or_default() {
-                    let u = d["url"].as_str().unwrap_or_default().trim().trim_end_matches('/').to_string();
+                    let u = d["url"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .trim()
+                        .trim_end_matches('/')
+                        .to_string();
                     if u.is_empty() || u == base || u == st.identity.did.as_str() {
                         continue;
                     }

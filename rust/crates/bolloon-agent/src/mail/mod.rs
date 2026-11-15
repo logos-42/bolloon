@@ -16,13 +16,13 @@ pub mod store;
 
 pub use adapters::local_sink::LocalSinkMailPort;
 pub use config::{
-    accounts_path, build_service, delete_mail_password, load_accounts, mail_dir, save_accounts,
-    set_mail_password, AccountConfig, AccountsFile,
+    AccountConfig, AccountsFile, accounts_path, build_service, delete_mail_password, load_accounts,
+    mail_dir, save_accounts, set_mail_password,
 };
 pub use ports::{
     AttachmentMeta, ContactMeta, ContactQuery, ContactsPort, ImportReport, MailBody, MailDraft,
     MailId, MailMeta, MailPort, MailPortError, MailQuery, MailResult, SmsId, SmsMeta, SmsPort,
     SmsQuery, SyncReport,
 };
-pub use service::{check_send_guard, GuardError, MailService, MailServiceError};
+pub use service::{GuardError, MailService, MailServiceError, check_send_guard};
 pub use store::MailStore;

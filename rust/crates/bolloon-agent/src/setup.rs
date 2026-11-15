@@ -31,8 +31,7 @@ impl SetupLayer {
 }
 
 /// 单层状态
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct LayerState {
     pub done: bool,
     /// 缺什么 (人话, 可操作)
@@ -41,7 +40,6 @@ pub struct LayerState {
     pub config_hash: Option<String>,
     pub checked_at_ms: Option<u64>,
 }
-
 
 /// 启动门禁结论
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -111,7 +109,11 @@ impl SetupStore {
     /// 启动硬门禁: 检查所有层
     pub fn gate(&self) -> GateReport {
         let mut blocked = Vec::new();
-        for layer in [SetupLayer::Identity, SetupLayer::Llm, SetupLayer::Connectivity] {
+        for layer in [
+            SetupLayer::Identity,
+            SetupLayer::Llm,
+            SetupLayer::Connectivity,
+        ] {
             let st = self.layers.get(&layer).cloned().unwrap_or_default();
             if !st.done {
                 let reason = if st.missing.is_empty() {
@@ -122,7 +124,10 @@ impl SetupStore {
                 blocked.push((layer.as_str().to_string(), reason));
             }
         }
-        GateReport { ready: blocked.is_empty(), blocked }
+        GateReport {
+            ready: blocked.is_empty(),
+            blocked,
+        }
     }
 
     /// 分层门禁: 只查某层 (CLI 按需挡功能)
@@ -159,7 +164,10 @@ mod tests {
     #[test]
     fn mark_missing_records_reasons() {
         let mut s = SetupStore::new();
-        s.mark_missing(SetupLayer::Llm, vec!["缺 provider 配置".into(), "缺 API key".into()]);
+        s.mark_missing(
+            SetupLayer::Llm,
+            vec!["缺 provider 配置".into(), "缺 API key".into()],
+        );
         let gate = s.gate();
         let llm = gate.blocked.iter().find(|(l, _)| l == "llm").unwrap();
         assert!(llm.1.contains("API key"));
@@ -174,7 +182,15 @@ mod tests {
         // 失效后要重测
         s.invalidate_on_config_change("hash-b");
         assert!(!s.gate_layer(SetupLayer::Connectivity));
-        assert_eq!(s.gate().blocked.iter().find(|(l, _)| l == "connectivity").unwrap().1, "配置已变更, 需重测连通性");
+        assert_eq!(
+            s.gate()
+                .blocked
+                .iter()
+                .find(|(l, _)| l == "connectivity")
+                .unwrap()
+                .1,
+            "配置已变更, 需重测连通性"
+        );
     }
 
     #[test]

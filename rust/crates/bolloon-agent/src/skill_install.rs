@@ -10,7 +10,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::skills_runtime::{SkillCandidate, SkillEvolver, SKILL_BODY_MAX};
+use crate::skills_runtime::{SKILL_BODY_MAX, SkillCandidate, SkillEvolver};
 use crate::world::IntentCategory;
 
 /// 登记条目 (一条 = 一个可安装技能)
@@ -141,7 +141,12 @@ pub fn apply_install(
     let cand = SkillCandidate {
         name: entry.name.clone(),
         description: if entry.description.is_empty() {
-            body.lines().next().unwrap_or_default().chars().take(60).collect()
+            body.lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(60)
+                .collect()
         } else {
             entry.description.clone()
         },
@@ -176,9 +181,15 @@ mod tests {
         let e = entry(&sha256_hex(body));
         let mut ev = SkillEvolver::new();
         apply_install(&mut ev, &e, body, 1).unwrap();
-        assert!(ev.registry.index_for_prompt().contains("简历投递法"), "装完下一轮索引可见");
+        assert!(
+            ev.registry.index_for_prompt().contains("简历投递法"),
+            "装完下一轮索引可见"
+        );
         assert_eq!(ev.registry.read_skill("简历投递法"), Some(body));
-        assert!(ev.log[0].contains("install:https://skills.example.com/resume.md"), "来源留证据");
+        assert!(
+            ev.log[0].contains("install:https://skills.example.com/resume.md"),
+            "来源留证据"
+        );
     }
 
     #[test]
@@ -209,7 +220,10 @@ mod tests {
         let mut ev = SkillEvolver::new();
         apply_install(&mut ev, &e, body, 1).unwrap();
         // 同内容再装 = 重复
-        assert_eq!(apply_install(&mut ev, &e, body, 2).unwrap_err(), InstallError::Duplicate);
+        assert_eq!(
+            apply_install(&mut ev, &e, body, 2).unwrap_err(),
+            InstallError::Duplicate
+        );
         // 同名不同正文 = 同名拒
         let mut e2 = entry(&sha256_hex("别的正文"));
         e2.name = "简历投递法".into();
@@ -223,14 +237,26 @@ mod tests {
     fn registry_finds_by_category_then_name() {
         let reg = SkillSourceRegistry {
             entries: vec![
-                entry(&sha256_hex("x")),                       // categories: work
-                SkillSourceEntry { name: "点餐指南food".into(), description: String::new(), url: "https://s.example/f.md".into(), sha256: "aa".into(), categories: vec![] },
+                entry(&sha256_hex("x")), // categories: work
+                SkillSourceEntry {
+                    name: "点餐指南food".into(),
+                    description: String::new(),
+                    url: "https://s.example/f.md".into(),
+                    sha256: "aa".into(),
+                    categories: vec![],
+                },
             ],
         };
         // work 精确命中第一条
-        assert_eq!(reg.find_for_category(IntentCategory::Work).unwrap().name, "简历投递法");
+        assert_eq!(
+            reg.find_for_category(IntentCategory::Work).unwrap().name,
+            "简历投递法"
+        );
         // food 无 categories 命中 → 名字含 "food" 兜底
-        assert_eq!(reg.find_for_category(IntentCategory::Food).unwrap().name, "点餐指南food");
+        assert_eq!(
+            reg.find_for_category(IntentCategory::Food).unwrap().name,
+            "点餐指南food"
+        );
         // other 没有任何命中
         assert!(reg.find_for_category(IntentCategory::Other).is_none());
     }
@@ -247,7 +273,9 @@ mod tests {
         let full = format!("[已抓取] https://s.example/r.md (text/markdown)\n\n{body}");
         assert_eq!(parse_fetch_output(&full), Some(body));
 
-        let trunc = format!("[已抓取] https://s.example/r.md (text/markdown) [截断: 显示前 32000 字符]\n\n{body}");
+        let trunc = format!(
+            "[已抓取] https://s.example/r.md (text/markdown) [截断: 显示前 32000 字符]\n\n{body}"
+        );
         assert_eq!(parse_fetch_output(&trunc), None, "截断 ⇒ 验真必败 ⇒ 如实拒");
 
         assert_eq!(parse_fetch_output("这不是 web_fetch 的输出"), None);

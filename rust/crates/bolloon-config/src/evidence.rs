@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::fs::{create_dir_all, OpenOptions};
+use std::fs::{OpenOptions, create_dir_all};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -127,7 +127,13 @@ impl ConfigEvidence {
     /// 某任务用过哪些版本 (正向追查: 这个任务跑的时候配置换过吗)
     pub fn versions_for_task(&self, task_id: &str) -> Vec<u64> {
         let mut out: Vec<u64> = vec![];
-        for b in self.buf.lock().unwrap().iter().filter(|b| b.task_id == task_id) {
+        for b in self
+            .buf
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|b| b.task_id == task_id)
+        {
             for v in &b.versions_observed {
                 if !out.contains(v) {
                     out.push(*v);

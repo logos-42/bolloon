@@ -25,36 +25,153 @@ struct Rule {
 
 /// 工具名 → 中文动作短语 (**顺序即优先级**, 与 TS 的 ACTIONS 表逐条对齐)
 const ACTIONS: &[Rule] = &[
-    Rule { pats: &["git_status"], kind: Kind::Exact, label: "查看 git 状态" },
-    Rule { pats: &["git_diff"], kind: Kind::Exact, label: "看改动差异" },
-    Rule { pats: &["git_log"], kind: Kind::Exact, label: "看提交历史" },
-    Rule { pats: &["git_commit"], kind: Kind::Exact, label: "提交改动" },
-    Rule { pats: &["git_push"], kind: Kind::Exact, label: "推送" },
-    Rule { pats: &["grep_files"], kind: Kind::Exact, label: "搜内容" },
-    Rule { pats: &["glob_files"], kind: Kind::Exact, label: "找文件" },
-    Rule { pats: &["list_files"], kind: Kind::Exact, label: "列目录" },
-    Rule { pats: &["read_file"], kind: Kind::Exact, label: "读文件" },
-    Rule { pats: &["read_document"], kind: Kind::Exact, label: "读文档" },
-    Rule { pats: &["write_file"], kind: Kind::Exact, label: "写文件" },
-    Rule { pats: &["edit_file", "patch"], kind: Kind::Exact, label: "改文件" },
-    Rule { pats: &["mkdir", "move_file", "delete_file", "copy_file"], kind: Kind::Exact, label: "改文件系统" },
-    Rule { pats: &["terminal"], kind: Kind::Exact, label: "跑命令" },
-    Rule { pats: &["execute_code"], kind: Kind::Exact, label: "跑代码" },
-    Rule { pats: &["tsc_check"], kind: Kind::Exact, label: "查类型" },
-    Rule { pats: &["list_tools"], kind: Kind::Exact, label: "看有哪些工具" },
+    Rule {
+        pats: &["git_status"],
+        kind: Kind::Exact,
+        label: "查看 git 状态",
+    },
+    Rule {
+        pats: &["git_diff"],
+        kind: Kind::Exact,
+        label: "看改动差异",
+    },
+    Rule {
+        pats: &["git_log"],
+        kind: Kind::Exact,
+        label: "看提交历史",
+    },
+    Rule {
+        pats: &["git_commit"],
+        kind: Kind::Exact,
+        label: "提交改动",
+    },
+    Rule {
+        pats: &["git_push"],
+        kind: Kind::Exact,
+        label: "推送",
+    },
+    Rule {
+        pats: &["grep_files"],
+        kind: Kind::Exact,
+        label: "搜内容",
+    },
+    Rule {
+        pats: &["glob_files"],
+        kind: Kind::Exact,
+        label: "找文件",
+    },
+    Rule {
+        pats: &["list_files"],
+        kind: Kind::Exact,
+        label: "列目录",
+    },
+    Rule {
+        pats: &["read_file"],
+        kind: Kind::Exact,
+        label: "读文件",
+    },
+    Rule {
+        pats: &["read_document"],
+        kind: Kind::Exact,
+        label: "读文档",
+    },
+    Rule {
+        pats: &["write_file"],
+        kind: Kind::Exact,
+        label: "写文件",
+    },
+    Rule {
+        pats: &["edit_file", "patch"],
+        kind: Kind::Exact,
+        label: "改文件",
+    },
+    Rule {
+        pats: &["mkdir", "move_file", "delete_file", "copy_file"],
+        kind: Kind::Exact,
+        label: "改文件系统",
+    },
+    Rule {
+        pats: &["terminal"],
+        kind: Kind::Exact,
+        label: "跑命令",
+    },
+    Rule {
+        pats: &["execute_code"],
+        kind: Kind::Exact,
+        label: "跑代码",
+    },
+    Rule {
+        pats: &["tsc_check"],
+        kind: Kind::Exact,
+        label: "查类型",
+    },
+    Rule {
+        pats: &["list_tools"],
+        kind: Kind::Exact,
+        label: "看有哪些工具",
+    },
     // 2026-10-13 (leo: 「加载技能记忆类似工具调用… 看到技能之后运行它, 上下文里就能看到」):
     //   技能加载走 📚 前缀 —— 一眼可辨"这是技能/记忆按需加载", 不是普通工具调用。
-    Rule { pats: &["list_skills"], kind: Kind::Exact, label: "📚 找技能" },
-    Rule { pats: &["read_skill"], kind: Kind::Exact, label: "📚 读技能" },
-    Rule { pats: &["memory_recall", "memory_search", "memory_query", "memory_load"], kind: Kind::Exact, label: "📚 取记忆" },
-    Rule { pats: &["process"], kind: Kind::Exact, label: "管后台进程/服务" },
-    Rule { pats: &["task", "plan", "todo"], kind: Kind::PrefixInsensitive, label: "理计划/待办" },
-    Rule { pats: &["send_", "broadcast", "check_inbox", "list_peers"], kind: Kind::Prefix, label: "发消息/看连接" },
-    Rule { pats: &["group", "create_group", "join_group"], kind: Kind::Prefix, label: "群聊操作" },
-    Rule { pats: &["wallet", "get_balance", "tx", "token"], kind: Kind::Prefix, label: "链上/钱包操作" },
-    Rule { pats: &["fetch_url", "web_search"], kind: Kind::Prefix, label: "联网取信息" },
-    Rule { pats: &["get_identity", "set_persona", "bolloon_config"], kind: Kind::Prefix, label: "看/改身份与配置" },
-    Rule { pats: &["delegate_task", "agent_call"], kind: Kind::Prefix, label: "派子智能体" },
+    Rule {
+        pats: &["list_skills"],
+        kind: Kind::Exact,
+        label: "📚 找技能",
+    },
+    Rule {
+        pats: &["read_skill"],
+        kind: Kind::Exact,
+        label: "📚 读技能",
+    },
+    Rule {
+        pats: &[
+            "memory_recall",
+            "memory_search",
+            "memory_query",
+            "memory_load",
+        ],
+        kind: Kind::Exact,
+        label: "📚 取记忆",
+    },
+    Rule {
+        pats: &["process"],
+        kind: Kind::Exact,
+        label: "管后台进程/服务",
+    },
+    Rule {
+        pats: &["task", "plan", "todo"],
+        kind: Kind::PrefixInsensitive,
+        label: "理计划/待办",
+    },
+    Rule {
+        pats: &["send_", "broadcast", "check_inbox", "list_peers"],
+        kind: Kind::Prefix,
+        label: "发消息/看连接",
+    },
+    Rule {
+        pats: &["group", "create_group", "join_group"],
+        kind: Kind::Prefix,
+        label: "群聊操作",
+    },
+    Rule {
+        pats: &["wallet", "get_balance", "tx", "token"],
+        kind: Kind::Prefix,
+        label: "链上/钱包操作",
+    },
+    Rule {
+        pats: &["fetch_url", "web_search"],
+        kind: Kind::Prefix,
+        label: "联网取信息",
+    },
+    Rule {
+        pats: &["get_identity", "set_persona", "bolloon_config"],
+        kind: Kind::Prefix,
+        label: "看/改身份与配置",
+    },
+    Rule {
+        pats: &["delegate_task", "agent_call"],
+        kind: Kind::Prefix,
+        label: "派子智能体",
+    },
 ];
 
 /** 一句话说清这一步在做什么; 认不出的工具 ⇒ 返回空 (调用方退回显示工具名) ✓ */
@@ -135,8 +252,16 @@ pub fn tool_args_summary(name: &str, args: Option<&serde_json::Value>) -> String
     } else if matches!(n, "grep_files" | "search_files") {
         let p = pick(&["pattern", "query"]);
         let d = pick(&["path", "dir"]);
-        [p, d].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" · ")
-    } else if matches!(n, "git_log" | "git_diff" | "git_status" | "git_commit" | "git_push") {
+        [p, d]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" · ")
+    } else if matches!(
+        n,
+        "git_log" | "git_diff" | "git_status" | "git_commit" | "git_push"
+    ) {
         pick(&["args", "message", "scope"])
     } else if matches!(n, "memory_recall" | "memory_search") {
         pick(&["query"])
@@ -213,16 +338,25 @@ mod tests {
             "src/index.ts"
         );
         assert_eq!(
-            tool_args_summary("grep_files", Some(&json!({"pattern": "foo", "path": "src"}))),
+            tool_args_summary(
+                "grep_files",
+                Some(&json!({"pattern": "foo", "path": "src"}))
+            ),
             "foo · src"
         );
     }
 
     #[test]
     fn args_summary_skips_null_and_string_form() {
-        assert_eq!(tool_args_summary("terminal", Some(&json!({"command": null}))), "");
+        assert_eq!(
+            tool_args_summary("terminal", Some(&json!({"command": null}))),
+            ""
+        );
         // string 形态不解析 (TS 同口径)
-        assert_eq!(tool_args_summary("terminal", Some(&json!("raw string"))), "");
+        assert_eq!(
+            tool_args_summary("terminal", Some(&json!("raw string"))),
+            ""
+        );
         assert_eq!(tool_args_summary("terminal", None), "");
     }
 

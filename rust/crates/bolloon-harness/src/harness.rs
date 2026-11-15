@@ -8,11 +8,11 @@
 //! 2. 工具执行前被拒 → 零执行 → 记录 → 可见结果（fail-closed）
 //! 3. 判据只加不减，禁为过测试而放宽门
 
+use async_trait::async_trait;
+use bolloon_config::{ConfigView, policy::RuntimePolicy};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use async_trait::async_trait;
 use tokio::sync::Mutex;
-use bolloon_config::{policy::RuntimePolicy, ConfigView};
 
 /// 工具调用（模型发来的原始调用）
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -282,7 +282,7 @@ impl Harness {
                     }),
                     result: None,
                     elapsed_ms: started.elapsed().as_millis() as u64,
-                }
+                };
             }
         };
 
@@ -449,7 +449,10 @@ impl Harness {
         }
 
         // 6. execute（带超时）。超时优先取自动态配置 (C 类); 否则用预算 max_ms (修复此前死字段)
-        let budget_max_ms = { let b = self.budget.lock().await; b.max_ms };
+        let budget_max_ms = {
+            let b = self.budget.lock().await;
+            b.max_ms
+        };
         let timeout_ms = match &self.config {
             Some(v) => {
                 let g = v.read().unwrap();
@@ -637,7 +640,11 @@ mod tests {
             .await;
         let d = out.denied.expect("配置白名单没给 shell ⇒ 必须拒");
         assert_eq!(d.policy, "permission");
-        assert!(d.reason.contains("granted_tools"), "要如实说是配置白名单挡的: {}", d.reason);
+        assert!(
+            d.reason.contains("granted_tools"),
+            "要如实说是配置白名单挡的: {}",
+            d.reason
+        );
 
         // ② 配置白名单给了 shell ⇒ 不需要 with_granted 也放行
         let mut cfg2 = bolloon_config::default_config();
@@ -657,7 +664,11 @@ mod tests {
                 arguments: serde_json::json!({}),
             })
             .await;
-        assert!(out2.denied.is_none(), "配置白名单给了 shell 就该放行: {:?}", out2.denied);
+        assert!(
+            out2.denied.is_none(),
+            "配置白名单给了 shell 就该放行: {:?}",
+            out2.denied
+        );
 
         // ③ 撤销优先于白名单
         let mut cfg3 = bolloon_config::default_config();
@@ -748,6 +759,10 @@ mod tests {
         let first = h.gate(call.clone()).await;
         let second = h.gate(call.clone()).await;
         assert_eq!(first.result.unwrap().output, "run#0");
-        assert_eq!(second.result.unwrap().output, "run#0", "同 id 重放应返回缓存结果");
+        assert_eq!(
+            second.result.unwrap().output,
+            "run#0",
+            "同 id 重放应返回缓存结果"
+        );
     }
 }

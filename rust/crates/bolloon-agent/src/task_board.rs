@@ -142,7 +142,11 @@ impl TaskBoard {
             }
         }
         // 已被别人认领
-        if let Some(existing) = self.claims.iter().find(|c| c.announcement_id == announcement_id) {
+        if let Some(existing) = self
+            .claims
+            .iter()
+            .find(|c| c.announcement_id == announcement_id)
+        {
             if existing.claimer == kp.did.as_str() {
                 return Err(ClaimError::DuplicateClaim);
             }
@@ -184,7 +188,10 @@ impl TaskBoard {
 
     /// 从快照恢复
     pub fn from_parts(announcements: Vec<Announcement>, claims: Vec<Claim>) -> Self {
-        Self { announcements, claims }
+        Self {
+            announcements,
+            claims,
+        }
     }
 
     /// JSON 文件加载 (与 CLI/Web 共用同一份落盘; 坏文件从空板开始)
@@ -209,8 +216,11 @@ impl TaskBoard {
             claims: &'a [Claim],
         }
         let (announcements, claims) = self.snapshot();
-        let raw = serde_json::to_string_pretty(&Dump { announcements: &announcements, claims: &claims })
-            .expect("task board serialize");
+        let raw = serde_json::to_string_pretty(&Dump {
+            announcements: &announcements,
+            claims: &claims,
+        })
+        .expect("task board serialize");
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -223,7 +233,8 @@ impl TaskBoard {
             return Err(ClaimError::BadSignature);
         }
         // id 必须能复算
-        let derived = derive_announcement_id(&ann.capability, &ann.digest, &ann.issuer, &ann.budget);
+        let derived =
+            derive_announcement_id(&ann.capability, &ann.digest, &ann.issuer, &ann.budget);
         if derived != ann.id {
             return Err(ClaimError::BadSignature);
         }
@@ -313,7 +324,11 @@ fn write_canonical(v: &serde_json::Value, out: &mut String) {
     }
 }
 
-fn verify_sig(issuer_did: &str, unsigned: &impl Serialize, sig_b58: &str) -> Result<(), ClaimError> {
+fn verify_sig(
+    issuer_did: &str,
+    unsigned: &impl Serialize,
+    sig_b58: &str,
+) -> Result<(), ClaimError> {
     use bolloon_p2p::identity::Did;
     // DID 后缀 = pubkey b58
     let pk_b58 = issuer_did
@@ -414,7 +429,10 @@ mod tests {
         let mut tampered = ann.clone();
         tampered.budget = "9999".into();
         tampered.id = id;
-        assert!(TaskBoard::verify_announcement(&tampered).is_err(), "改预算必须验签失败");
+        assert!(
+            TaskBoard::verify_announcement(&tampered).is_err(),
+            "改预算必须验签失败"
+        );
     }
 
     #[test]

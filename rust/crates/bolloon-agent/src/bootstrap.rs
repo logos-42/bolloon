@@ -121,20 +121,32 @@ pub fn bootstrap(
     });
 
     // 4. skills (内置种子注册)
-    let skills = run_step!(BootstrapStep::Skills, || -> Result<SkillsRegistry, String> {
-        let mut reg = SkillsRegistry::new();
-        for (name, desc, body) in builtin_skills {
-            reg.register(name, desc, body, 0)
-                .map_err(|e| format!("skill {name}: {e}"))?;
+    let skills = run_step!(
+        BootstrapStep::Skills,
+        || -> Result<SkillsRegistry, String> {
+            let mut reg = SkillsRegistry::new();
+            for (name, desc, body) in builtin_skills {
+                reg.register(name, desc, body, 0)
+                    .map_err(|e| format!("skill {name}: {e}"))?;
+            }
+            Ok(reg)
         }
-        Ok(reg)
-    });
+    );
 
     // 5. cron / heartbeat (模块级注册表由 runtime 持有; 这里验证可用性)
     let _: () = run_step!(BootstrapStep::Cron, || -> Result<(), String> { Ok(()) });
-    let _: () = run_step!(BootstrapStep::Heartbeat, || -> Result<(), String> { Ok(()) });
+    let _: () = run_step!(BootstrapStep::Heartbeat, || -> Result<(), String> {
+        Ok(())
+    });
 
-    Ok(BootstrapContext { home, docs, identity_did, memory_db, skills, reports })
+    Ok(BootstrapContext {
+        home,
+        docs,
+        identity_did,
+        memory_db,
+        skills,
+        reports,
+    })
 }
 
 #[cfg(test)]
@@ -151,7 +163,11 @@ mod tests {
     fn boot_sequence_all_ok() {
         let ctx = bootstrap(tmp_home("ok"), "a1", &[("review", "收尾核对", "正文")]).unwrap();
         assert_eq!(ctx.reports.len(), 6, "六步全跑");
-        assert!(ctx.reports.iter().all(|r| r.ok), "全部 ok: {:?}", ctx.reports);
+        assert!(
+            ctx.reports.iter().all(|r| r.ok),
+            "全部 ok: {:?}",
+            ctx.reports
+        );
         // 每步有耗时记录
         assert!(ctx.reports.iter().all(|r| r.elapsed_ms < 10_000));
         // skills 种子已注册
@@ -170,9 +186,16 @@ mod tests {
     #[test]
     fn identity_missing_reported_not_faked() {
         let ctx = bootstrap(tmp_home("noid"), "a1", &[]).unwrap();
-        let id_step = ctx.reports.iter().find(|r| r.step == BootstrapStep::Identity).unwrap();
+        let id_step = ctx
+            .reports
+            .iter()
+            .find(|r| r.step == BootstrapStep::Identity)
+            .unwrap();
         assert!(id_step.ok, "步骤本身 ok");
-        assert!(ctx.identity_did.contains("pending"), "缺身份如实标 pending, 不造假 DID");
+        assert!(
+            ctx.identity_did.contains("pending"),
+            "缺身份如实标 pending, 不造假 DID"
+        );
     }
 
     #[test]
@@ -195,7 +218,10 @@ mod tests {
         h.ensure_agent("a1").unwrap();
         std::fs::write(h.root().join("memory.db"), "not a db").unwrap();
         let err = bootstrap(h, "a1", &[]).unwrap_err();
-        assert!(err.contains("memory.db") || err.contains("file is not a database"), "{err}");
+        assert!(
+            err.contains("memory.db") || err.contains("file is not a database"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -107,8 +107,8 @@ pub fn to_world_card(
         tags: p.interests.clone(),
         actions: vec![],
         reply_to: None,
-    
-    content_rating: None,
+
+        content_rating: None,
     }
 }
 
@@ -117,7 +117,10 @@ mod tests {
     use super::*;
 
     fn tmpdir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("bolloon-profile-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "bolloon-profile-test-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -126,7 +129,10 @@ mod tests {
     fn roundtrip_and_update() {
         let dir = tmpdir("roundtrip");
         let store = ProfileCardStore::open(dir.join("world").join("profile.json")).unwrap();
-        assert!(store.load().unwrap().is_none(), "空 store = None, 不冒充有数据");
+        assert!(
+            store.load().unwrap().is_none(),
+            "空 store = None, 不冒充有数据"
+        );
 
         let card = store
             .update(42, |p| {
@@ -148,9 +154,17 @@ mod tests {
         let dir = tmpdir("perm");
         let store = ProfileCardStore::open(dir.join("profile.json")).unwrap();
         store
-            .save(&ProfileCard { name: "a".into(), intro: "b".into(), interests: vec![], updated_at_ms: 1 })
+            .save(&ProfileCard {
+                name: "a".into(),
+                intro: "b".into(),
+                interests: vec![],
+                updated_at_ms: 1,
+            })
             .unwrap();
-        let mode = std::fs::metadata(dir.join("profile.json")).unwrap().permissions().mode();
+        let mode = std::fs::metadata(dir.join("profile.json"))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600, "profile 落盘必须 0600");
     }
 

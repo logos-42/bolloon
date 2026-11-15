@@ -146,7 +146,10 @@ impl RunLifecycle {
         let now = chrono::Utc::now();
         rec.updated_at = now;
         self.store.save(&rec).await?;
-        self.records.lock().await.insert(rec.id.clone(), rec.clone());
+        self.records
+            .lock()
+            .await
+            .insert(rec.id.clone(), rec.clone());
         tracing::debug!(run = %rec.id, "run started");
         Ok(rec)
     }
@@ -219,7 +222,10 @@ impl RunLifecycle {
                 rec.status = RunStatus::Running;
                 rec.updated_at = chrono::Utc::now();
                 self.store.save(&rec).await?;
-                self.records.lock().await.insert(rec.id.clone(), rec.clone());
+                self.records
+                    .lock()
+                    .await
+                    .insert(rec.id.clone(), rec.clone());
             }
             return Ok(Some(rec));
         }
@@ -231,7 +237,10 @@ impl RunLifecycle {
                 rec.updated_at = chrono::Utc::now();
                 self.store.save(&rec).await?;
             }
-            self.records.lock().await.insert(rec.id.clone(), rec.clone());
+            self.records
+                .lock()
+                .await
+                .insert(rec.id.clone(), rec.clone());
             Ok(Some(rec))
         } else {
             Ok(None)

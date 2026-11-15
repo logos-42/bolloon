@@ -58,17 +58,24 @@ pub fn sniff_kind(value: &str) -> ContactKind {
     let v = value.trim();
     let at = v.find('@');
     match at {
-        Some(i) if i > 0 && {
-            let domain = &v[i + 1..];
-            domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
-        } => ContactKind::Email,
+        Some(i)
+            if i > 0 && {
+                let domain = &v[i + 1..];
+                domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
+            } =>
+        {
+            ContactKind::Email
+        }
         _ => ContactKind::Phone,
     }
 }
 
 /// 手机号归一化 (只留数字与 +)
 pub fn normalize_phone(value: &str) -> String {
-    value.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect()
+    value
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '+')
+        .collect()
 }
 
 /// 邮箱归一化 (trim + 小写)
@@ -87,7 +94,10 @@ pub fn normalize_contact(value: &str, kind: ContactKind) -> String {
 pub fn is_plausible_phone(value: &str) -> bool {
     let n = normalize_phone(value);
     let digits = n.trim_start_matches('+');
-    !digits.is_empty() && digits.len() >= 8 && digits.len() <= 15 && digits.chars().all(|c| c.is_ascii_digit())
+    !digits.is_empty()
+        && digits.len() >= 8
+        && digits.len() <= 15
+        && digits.chars().all(|c| c.is_ascii_digit())
 }
 
 /// 邮箱形状
@@ -109,8 +119,8 @@ pub fn blind_hash(value: &str, kind: ContactKind, salt: &str, pepper: &str) -> S
 }
 
 pub fn blind_hash_normalized(normalized: &str, salt: &str, pepper: &str) -> String {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(pepper.as_bytes())
-        .expect("HMAC 接受任意长度 key");
+    let mut mac =
+        <Hmac<Sha256> as Mac>::new_from_slice(pepper.as_bytes()).expect("HMAC 接受任意长度 key");
     mac.update(format!("{salt}||{normalized}").as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }
@@ -262,14 +272,17 @@ impl HumanDirectory {
         }
         let normalized = normalize_contact(value, kind);
         // 幂等: 同 normalized + 同 did 已在 → 返回既有
-        if let Some(_e) = self
-            .entries
-            .iter()
-            .find(|e| e.kind == kind && e.did == did && blind_hash_normalized(&normalized, &e.salt, pepper) == e.blind)
-        {
+        if let Some(_e) = self.entries.iter().find(|e| {
+            e.kind == kind
+                && e.did == did
+                && blind_hash_normalized(&normalized, &e.salt, pepper) == e.blind
+        }) {
             return Err(DirectoryError::AlreadyPublished);
         }
-        let salt = format!("salt-{:016x}", self.next_id + now_ms.wrapping_mul(2654435761) % 0xffff_ffff);
+        let salt = format!(
+            "salt-{:016x}",
+            self.next_id + now_ms.wrapping_mul(2654435761) % 0xffff_ffff
+        );
         self.next_id += 1;
         let blind = blind_hash_normalized(&normalized, &salt, pepper);
         let entry = DirectoryEntry {
@@ -521,12 +534,21 @@ pub fn is_lookup_reply_for(reply: &LookupReply, rpc_id: &str) -> bool {
 
 /// 多对端 reply 取首个命中 (全 miss → found:false)
 pub fn pick_first_hit(replies: &[LookupHit]) -> LookupHit {
-    replies.iter().find(|r| r.found).cloned().unwrap_or_else(LookupHit::miss)
+    replies
+        .iter()
+        .find(|r| r.found)
+        .cloned()
+        .unwrap_or_else(LookupHit::miss)
 }
 
 /// 接收侧: 用**本机 pepper** 在本机目录查别人给我的联系方式
 /// (形状不对 → found:false, 不猜; 对端拿不到我的 pepper)
-pub fn foreign_lookup(dir: &HumanDirectory, contact: &str, kind: Option<ContactKind>, pepper: &str) -> LookupHit {
+pub fn foreign_lookup(
+    dir: &HumanDirectory,
+    contact: &str,
+    kind: Option<ContactKind>,
+    pepper: &str,
+) -> LookupHit {
     let k = kind.unwrap_or_else(|| sniff_kind(contact));
     if !is_plausible_contact(contact, k) {
         return LookupHit::miss();
@@ -582,15 +604,19 @@ pub fn remote_add_friend(
     }
     // fail-closed: 没有有效 DID 归属签名的条目 = 谁都能往里写 did ⇒ 拒绝用它加好友
     if !hit.verified {
-        return Err(
-            "该条目没有有效的 DID 归属签名 (verified=false) — 不可信, 拒绝加好友".into(),
-        );
+        return Err("该条目没有有效的 DID 归属签名 (verified=false) — 不可信, 拒绝加好友".into());
     }
-    let r = contacts.inbound(&did, &hit.display_name.clone().unwrap_or_else(|| did.clone()), now_ms);
+    let r = contacts.inbound(
+        &did,
+        &hit.display_name.clone().unwrap_or_else(|| did.clone()),
+        now_ms,
+    );
     if r.status != FriendRequestStatus::Pending {
         return Ok(format!("已有请求 ({:?}) — 幂等, 不重复", r.status));
     }
-    Ok(format!("已向 {from_did} 的联系人目录发起好友请求 → {did} (待对方同意)"))
+    Ok(format!(
+        "已向 {from_did} 的联系人目录发起好友请求 → {did} (待对方同意)"
+    ))
 }
 
 #[cfg(test)]
@@ -625,8 +651,15 @@ mod tests {
 
     fn dir_with_phone() -> HumanDirectory {
         let mut d = HumanDirectory::new();
-        d.publish("+86 131-1571-8038", "did:key:alice", PEPPER, Some("Alice"), Some("aabb"), 1000)
-            .unwrap();
+        d.publish(
+            "+86 131-1571-8038",
+            "did:key:alice",
+            PEPPER,
+            Some("Alice"),
+            Some("aabb"),
+            1000,
+        )
+        .unwrap();
         d
     }
 
@@ -686,7 +719,12 @@ mod tests {
         assert_eq!(h1, h2, "归一化后同一输入 → 同一哈希");
         let h3 = blind_hash("+8613115718038", ContactKind::Phone, "salt2", PEPPER);
         assert_ne!(h1, h3, "salt 不同 → 哈希不同 (不可离线枚举)");
-        let h4 = blind_hash("+8613115718038", ContactKind::Phone, "salt1", "other-pepper");
+        let h4 = blind_hash(
+            "+8613115718038",
+            ContactKind::Phone,
+            "salt1",
+            "other-pepper",
+        );
         assert_ne!(h1, h4, "pepper 换 → 哈希全变");
     }
 
@@ -703,15 +741,32 @@ mod tests {
     #[test]
     fn publish_lookup_phone_and_email() {
         let mut d = HumanDirectory::new();
-        d.publish("+8613115718038", "did:key:alice", PEPPER, Some("Alice"), Some("aa"), 1)
-            .unwrap();
-        d.publish("leo@example.com", "did:key:leo", PEPPER, Some("Leo"), Some("bb"), 2)
-            .unwrap();
+        d.publish(
+            "+8613115718038",
+            "did:key:alice",
+            PEPPER,
+            Some("Alice"),
+            Some("aa"),
+            1,
+        )
+        .unwrap();
+        d.publish(
+            "leo@example.com",
+            "did:key:leo",
+            PEPPER,
+            Some("Leo"),
+            Some("bb"),
+            2,
+        )
+        .unwrap();
         let p = d.lookup("+86 131-1571-8038", PEPPER);
         assert!(p.found && p.did.as_deref() == Some("did:key:alice"));
         assert_eq!(p.public_key_hex.as_deref(), Some("aa"));
         let e = d.lookup("LEO@EXAMPLE.COM", PEPPER);
-        assert!(e.found && e.did.as_deref() == Some("did:key:leo"), "邮箱跨大小写命中");
+        assert!(
+            e.found && e.did.as_deref() == Some("did:key:leo"),
+            "邮箱跨大小写命中"
+        );
         // 未发布的
         assert!(!d.lookup("+8613900000000", PEPPER).found);
     }
@@ -720,12 +775,17 @@ mod tests {
     fn publish_rejects_implausible_and_duplicates() {
         let mut d = HumanDirectory::new();
         assert_eq!(
-            d.publish("123", "did:x", PEPPER, None, None, 1).unwrap_err(),
-            DirectoryError::Implausible { kind: ContactKind::Phone }
+            d.publish("123", "did:x", PEPPER, None, None, 1)
+                .unwrap_err(),
+            DirectoryError::Implausible {
+                kind: ContactKind::Phone
+            }
         );
-        d.publish("+8613115718038", "did:key:a", PEPPER, None, None, 1).unwrap();
+        d.publish("+8613115718038", "did:key:a", PEPPER, None, None, 1)
+            .unwrap();
         assert_eq!(
-            d.publish("+86 131-1571-8038", "did:key:a", PEPPER, None, None, 2).unwrap_err(),
+            d.publish("+86 131-1571-8038", "did:key:a", PEPPER, None, None, 2)
+                .unwrap_err(),
             DirectoryError::AlreadyPublished,
             "幂等: 同人同号重复发布不覆盖"
         );
@@ -760,33 +820,63 @@ mod tests {
 
     impl DirectoryTransport for TwoNode<'_> {
         fn lookup(&self, rpc: &LookupRpc) -> Vec<LookupReply> {
-            let contact = rpc.payload.contact.clone().unwrap_or_else(|| rpc.payload.phone.clone());
+            let contact = rpc
+                .payload
+                .contact
+                .clone()
+                .unwrap_or_else(|| rpc.payload.phone.clone());
             let kind = rpc.payload.kind;
             vec![
-                build_lookup_reply(&rpc.payload.rpc_id, foreign_lookup(self.a, &contact, kind, self.pepper_a)),
-                build_lookup_reply(&rpc.payload.rpc_id, foreign_lookup(self.b, &contact, kind, self.pepper_b)),
+                build_lookup_reply(
+                    &rpc.payload.rpc_id,
+                    foreign_lookup(self.a, &contact, kind, self.pepper_a),
+                ),
+                build_lookup_reply(
+                    &rpc.payload.rpc_id,
+                    foreign_lookup(self.b, &contact, kind, self.pepper_b),
+                ),
             ]
         }
     }
 
     #[test]
     fn rpc_frame_shape_v3() {
-        let rpc = build_lookup_rpc("rpc-1", "+8613115718038", Some(ContactKind::Phone), Some("pk"));
+        let rpc = build_lookup_rpc(
+            "rpc-1",
+            "+8613115718038",
+            Some(ContactKind::Phone),
+            Some("pk"),
+        );
         assert_eq!(rpc.v, 3);
         assert_eq!(rpc.op, DIRECTORY_LOOKUP_OP);
         assert_eq!(rpc.payload.contact.as_deref(), Some("+8613115718038"));
         assert_eq!(rpc.payload.phone, "+8613115718038", "兼容旧字段同值");
-        let reply = build_lookup_reply("rpc-1", LookupHit { found: true, did: Some("did:key:a".into()), ..LookupHit::miss() });
+        let reply = build_lookup_reply(
+            "rpc-1",
+            LookupHit {
+                found: true,
+                did: Some("did:key:a".into()),
+                ..LookupHit::miss()
+            },
+        );
         assert_eq!(reply.op, DIRECTORY_LOOKUP_REPLY_OP);
         assert!(is_lookup_reply_for(&reply, "rpc-1"));
-        assert!(!is_lookup_reply_for(&reply, "rpc-2"), "rpcId 不匹配 → 串台 reply 不收");
+        assert!(
+            !is_lookup_reply_for(&reply, "rpc-2"),
+            "rpcId 不匹配 → 串台 reply 不收"
+        );
     }
 
     #[test]
     fn cross_machine_lookup_phone_hit() {
         let d_alice = dir_with_phone(); // Alice 的目录里有手机号
         let d_bob = HumanDirectory::new(); // Bob 空目录
-        let t = TwoNode { a: &d_alice, b: &d_bob, pepper_a: PEPPER, pepper_b: PEPPER };
+        let t = TwoNode {
+            a: &d_alice,
+            b: &d_bob,
+            pepper_a: PEPPER,
+            pepper_b: PEPPER,
+        };
         let hit = lookup_remote(&t, "rpc-1", "+86 131-1571-8038", Some(ContactKind::Phone));
         assert!(hit.found, "跨机查到 (对端命中)");
         assert_eq!(hit.did.as_deref(), Some("did:key:alice"));
@@ -796,12 +886,27 @@ mod tests {
     fn cross_machine_lookup_email_hit() {
         let mut d_alice = HumanDirectory::new();
         d_alice
-            .publish("leo@example.com", "did:key:leo", PEPPER, Some("Leo"), Some("ccdd"), 1)
+            .publish(
+                "leo@example.com",
+                "did:key:leo",
+                PEPPER,
+                Some("Leo"),
+                Some("ccdd"),
+                1,
+            )
             .unwrap();
         let d_bob = HumanDirectory::new();
-        let t = TwoNode { a: &d_alice, b: &d_bob, pepper_a: PEPPER, pepper_b: PEPPER };
+        let t = TwoNode {
+            a: &d_alice,
+            b: &d_bob,
+            pepper_a: PEPPER,
+            pepper_b: PEPPER,
+        };
         let hit = lookup_remote(&t, "rpc-2", "Leo@Example.com", Some(ContactKind::Email));
-        assert!(hit.found && hit.did.as_deref() == Some("did:key:leo"), "邮箱跨机查询命中");
+        assert!(
+            hit.found && hit.did.as_deref() == Some("did:key:leo"),
+            "邮箱跨机查询命中"
+        );
         assert_eq!(hit.public_key_hex.as_deref(), Some("ccdd"));
     }
 
@@ -809,10 +914,25 @@ mod tests {
     fn cross_machine_miss_and_pick_first_hit() {
         let d_a = HumanDirectory::new();
         let d_b = HumanDirectory::new();
-        let t = TwoNode { a: &d_a, b: &d_b, pepper_a: PEPPER, pepper_b: PEPPER };
-        assert!(!lookup_remote(&t, "rpc-3", "+8613115718038", None).found, "全 miss → found:false");
+        let t = TwoNode {
+            a: &d_a,
+            b: &d_b,
+            pepper_a: PEPPER,
+            pepper_b: PEPPER,
+        };
+        assert!(
+            !lookup_remote(&t, "rpc-3", "+8613115718038", None).found,
+            "全 miss → found:false"
+        );
         // pick_first_hit 语义
-        let replies = vec![LookupHit::miss(), LookupHit { found: true, did: Some("did:x".into()), ..LookupHit::miss() }];
+        let replies = vec![
+            LookupHit::miss(),
+            LookupHit {
+                found: true,
+                did: Some("did:x".into()),
+                ..LookupHit::miss()
+            },
+        ];
         assert_eq!(pick_first_hit(&replies).did.as_deref(), Some("did:x"));
         assert!(!pick_first_hit(&[LookupHit::miss()]).found);
     }
@@ -821,7 +941,12 @@ mod tests {
     fn foreign_lookup_uses_local_pepper_only() {
         // 对端用自己的 pepper 查我的目录 → 查不到 (pepper 不同则哈希不匹配)
         let d = dir_with_phone();
-        let hit = foreign_lookup(&d, "+8613115718038", Some(ContactKind::Phone), "wrong-pepper");
+        let hit = foreign_lookup(
+            &d,
+            "+8613115718038",
+            Some(ContactKind::Phone),
+            "wrong-pepper",
+        );
         assert!(!hit.found, "pepper 不对 → 查不到 (明文与 pepper 都不外泄)");
     }
 
@@ -844,7 +969,12 @@ mod tests {
         let d_alice = signed_dir_with_phone(&alice);
         let alice_did = alice.did.as_str().to_string();
         let d_bob = HumanDirectory::new();
-        let t = TwoNode { a: &d_alice, b: &d_bob, pepper_a: PEPPER, pepper_b: PEPPER };
+        let t = TwoNode {
+            a: &d_alice,
+            b: &d_bob,
+            pepper_a: PEPPER,
+            pepper_b: PEPPER,
+        };
         // Bob 用手机号跨机查 Alice
         let hit = lookup_remote(&t, "rpc-9", "+8613115718038", Some(ContactKind::Phone));
         assert!(hit.found);
@@ -879,7 +1009,15 @@ mod tests {
         let kp = KeyPair::from_seed(&[77u8; 32]);
         let mut d = HumanDirectory::new();
         let e = d
-            .publish_signed("+86 131-1571-8038", kp.did.as_str(), PEPPER, Some("Alice"), None, &kp, 1000)
+            .publish_signed(
+                "+86 131-1571-8038",
+                kp.did.as_str(),
+                PEPPER,
+                Some("Alice"),
+                None,
+                &kp,
+                1000,
+            )
             .unwrap();
         assert!(!e.owner_sig.is_empty());
         assert!(verify_entry(&e), "自验必须过");
@@ -895,7 +1033,15 @@ mod tests {
         // 声明别人的 DID ⇒ 拒入库 (拿不到别人的私钥, 签不出来)
         let other = KeyPair::from_seed(&[78u8; 32]);
         let err = d
-            .publish_signed("+86 139-0000-0000", other.did.as_str(), PEPPER, None, None, &kp, 2)
+            .publish_signed(
+                "+86 139-0000-0000",
+                other.did.as_str(),
+                PEPPER,
+                None,
+                None,
+                &kp,
+                2,
+            )
             .unwrap_err();
         assert!(matches!(err, DirectoryError::Sign(_)), "{err:?}");
     }
@@ -903,7 +1049,8 @@ mod tests {
     #[test]
     fn add_friend_requires_hit() {
         let mut contacts = FriendBook::new();
-        let err = remote_add_friend(&LookupHit::miss(), &mut contacts, "did:key:me", 1).unwrap_err();
+        let err =
+            remote_add_friend(&LookupHit::miss(), &mut contacts, "did:key:me", 1).unwrap_err();
         assert!(err.contains("未查到"), "{err}");
     }
 }

@@ -31,8 +31,8 @@ pub use optimizer::{
     OptimizeError, ParamResponse, Proposal, RoundRecord, TrustLevel,
 };
 pub use schema::{
-    AppConfig, ConfigAuth, ConfigSnapshot, ConfigSource, EconomicConfig, EconomicMode, RuntimeConfig,
-    SafetyConfig, StartupConfig, TaskPolicyConfig,
+    AppConfig, ConfigAuth, ConfigSnapshot, ConfigSource, EconomicConfig, EconomicMode,
+    RuntimeConfig, SafetyConfig, StartupConfig, TaskPolicyConfig,
 };
 pub use validator::validate;
 

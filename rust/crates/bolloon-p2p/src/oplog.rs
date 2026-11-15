@@ -85,8 +85,20 @@ fn write_canonical(v: &serde_json::Value, out: &mut String) {
 }
 
 /// entry 的内容 id (sha256 of canonical unsigned)
-pub fn entry_hash(clock: u64, prev: &[String], signer: &str, payload: &serde_json::Value, ts: u64) -> String {
-    let unsigned = OpEntryUnsigned { clock, prev, signer, payload, timestamp_ms: ts };
+pub fn entry_hash(
+    clock: u64,
+    prev: &[String],
+    signer: &str,
+    payload: &serde_json::Value,
+    ts: u64,
+) -> String {
+    let unsigned = OpEntryUnsigned {
+        clock,
+        prev,
+        signer,
+        payload,
+        timestamp_ms: ts,
+    };
     let mut h = Sha256::new();
     h.update(canonical(&unsigned));
     hex::encode(h.finalize())
@@ -120,16 +132,28 @@ pub struct WriteAcl {
 
 impl WriteAcl {
     pub fn owner_only(owner: &str) -> Self {
-        Self { write_list: None, owner: owner.into(), open: false }
+        Self {
+            write_list: None,
+            owner: owner.into(),
+            open: false,
+        }
     }
 
     pub fn whitelist(owner: &str, list: Vec<String>) -> Self {
-        Self { write_list: Some(list), owner: owner.into(), open: false }
+        Self {
+            write_list: Some(list),
+            owner: owner.into(),
+            open: false,
+        }
     }
 
     /// 开放写 (任何 DID 都能写; owner 仍记录在 manifest 里)
     pub fn open(owner: &str) -> Self {
-        Self { write_list: None, owner: owner.into(), open: true }
+        Self {
+            write_list: None,
+            owner: owner.into(),
+            open: true,
+        }
     }
 
     pub fn allows(&self, did: &str) -> bool {
@@ -139,7 +163,10 @@ impl WriteAcl {
         if did == self.owner {
             return true;
         }
-        self.write_list.as_ref().map(|l| l.iter().any(|d| d == did)).unwrap_or(false)
+        self.write_list
+            .as_ref()
+            .map(|l| l.iter().any(|d| d == did))
+            .unwrap_or(false)
     }
 }
 
@@ -157,12 +184,18 @@ pub struct OpLog {
 impl OpLog {
     /// 新建 (owner 独占 ACL)
     pub fn new(owner: &str) -> Self {
-        Self { acl: Some(WriteAcl::owner_only(owner)), ..Default::default() }
+        Self {
+            acl: Some(WriteAcl::owner_only(owner)),
+            ..Default::default()
+        }
     }
 
     /// 以显式 ACL 新建 (白名单)
     pub fn with_acl(acl: WriteAcl) -> Self {
-        Self { acl: Some(acl), ..Default::default() }
+        Self {
+            acl: Some(acl),
+            ..Default::default()
+        }
     }
 
     /// 追加一条 (本地写入; prev = 当前 heads)
@@ -216,9 +249,18 @@ impl OpLog {
 
     /// 验证单条 entry (hash 一致 + 签名) — join 前必调
     pub fn verify_entry(entry: &OpEntry) -> Result<(), OpLogError> {
-        let actual = entry_hash(entry.clock, &entry.prev, &entry.signer, &entry.payload, entry.timestamp_ms);
+        let actual = entry_hash(
+            entry.clock,
+            &entry.prev,
+            &entry.signer,
+            &entry.payload,
+            entry.timestamp_ms,
+        );
         if actual != entry.hash {
-            return Err(OpLogError::HashMismatch { claimed: entry.hash.clone(), actual });
+            return Err(OpLogError::HashMismatch {
+                claimed: entry.hash.clone(),
+                actual,
+            });
         }
         // DID 后缀 = 公钥
         let Some(pk_b58) = entry.signer.strip_prefix("did:pi:") else {
@@ -289,7 +331,9 @@ impl OpLog {
                         .flat_map(|e| e.prev.clone())
                         .filter(|p| !self.entries.contains_key(p))
                         .collect();
-                    return Err(OpLogError::MissingPrev(missing.first().cloned().unwrap_or_default()));
+                    return Err(OpLogError::MissingPrev(
+                        missing.first().cloned().unwrap_or_default(),
+                    ));
                 }
                 break;
             }
@@ -315,8 +359,10 @@ impl OpLog {
     ///
     /// `remote_entries`: 远端提供的 entry 视图 (至少含 heads 沿链条目)
     pub fn missing_for(&self, remote_heads: &[String], remote_entries: &[OpEntry]) -> Vec<String> {
-        let by_hash: HashMap<&str, &OpEntry> =
-            remote_entries.iter().map(|e| (e.hash.as_str(), e)).collect();
+        let by_hash: HashMap<&str, &OpEntry> = remote_entries
+            .iter()
+            .map(|e| (e.hash.as_str(), e))
+            .collect();
         let mut missing = Vec::new();
         let mut stack: Vec<String> = remote_heads
             .iter()
@@ -372,10 +418,18 @@ mod tests {
     fn append_grows_head_and_clock() {
         let kp = kp(1);
         let mut log = OpLog::new(kp.did.as_str());
-        let e1 = log.append(&kp, serde_json::json!({"text": "m1"}), 100).unwrap();
-        let e2 = log.append(&kp, serde_json::json!({"text": "m2"}), 200).unwrap();
+        let e1 = log
+            .append(&kp, serde_json::json!({"text": "m1"}), 100)
+            .unwrap();
+        let e2 = log
+            .append(&kp, serde_json::json!({"text": "m2"}), 200)
+            .unwrap();
         assert_eq!(log.len(), 2);
-        assert_eq!(log.heads(), std::slice::from_ref(&e2.hash), "e1 有后继, 不再是 head");
+        assert_eq!(
+            log.heads(),
+            std::slice::from_ref(&e2.hash),
+            "e1 有后继, 不再是 head"
+        );
         assert!(e2.clock > e1.clock);
         assert_eq!(e2.prev, std::slice::from_ref(&e1.hash), "prev 指向前驱");
     }
@@ -397,7 +451,10 @@ mod tests {
     fn acl_whitelist_allows_member() {
         let owner = kp(1);
         let member = kp(2);
-        let mut log = OpLog::with_acl(WriteAcl::whitelist(owner.did.as_str(), vec![member.did.as_str().into()]));
+        let mut log = OpLog::with_acl(WriteAcl::whitelist(
+            owner.did.as_str(),
+            vec![member.did.as_str().into()],
+        ));
         assert!(log.append(&member, serde_json::json!({"x": 1}), 1).is_ok());
     }
 
@@ -405,9 +462,17 @@ mod tests {
     fn tampered_payload_fails_verify() {
         let kp = kp(1);
         let mut log = OpLog::new(kp.did.as_str());
-        let mut e = log.append(&kp, serde_json::json!({"text": "真消息"}), 1).unwrap();
+        let mut e = log
+            .append(&kp, serde_json::json!({"text": "真消息"}), 1)
+            .unwrap();
         e.payload = serde_json::json!({"text": "被改的消息"});
-        assert!(matches!(OpLog::verify_entry(&e), Err(OpLogError::HashMismatch { .. })), "改载荷 → hash 对不上");
+        assert!(
+            matches!(
+                OpLog::verify_entry(&e),
+                Err(OpLogError::HashMismatch { .. })
+            ),
+            "改载荷 → hash 对不上"
+        );
     }
 
     #[test]
@@ -420,7 +485,10 @@ mod tests {
         e.signer = impostor.did.as_str().into();
         // hash 也要跟着改才绕得过 hash 门 —— 模拟攻击者重算 hash
         e.hash = entry_hash(e.clock, &e.prev, &e.signer, &e.payload, e.timestamp_ms);
-        assert!(matches!(OpLog::verify_entry(&e), Err(OpLogError::BadSignature(_))), "重算 hash 也过不了签名门");
+        assert!(
+            matches!(OpLog::verify_entry(&e), Err(OpLogError::BadSignature(_))),
+            "重算 hash 也过不了签名门"
+        );
     }
 
     #[test]
@@ -428,7 +496,8 @@ mod tests {
         let kp = kp(1);
         let mut log = OpLog::new(kp.did.as_str());
         for i in 0..10 {
-            log.append(&kp, serde_json::json!({"i": i}), 100 + i).unwrap();
+            log.append(&kp, serde_json::json!({"i": i}), 100 + i)
+                .unwrap();
         }
         let t1: Vec<String> = log.traverse().iter().map(|e| e.hash.clone()).collect();
         let t2: Vec<String> = log.traverse().iter().map(|e| e.hash.clone()).collect();
@@ -446,17 +515,31 @@ mod tests {
         // A、B 各自独立写 (同一创世 prev), join 合并 → 分叉再合并, 不丢消息
         let a = kp(1);
         let b = kp(2);
-        let mut log_a = OpLog::with_acl(WriteAcl::whitelist(a.did.as_str(), vec![b.did.as_str().into()]));
-        let e0 = log_a.append(&a, serde_json::json!({"text": "创世"}), 100).unwrap();
+        let mut log_a = OpLog::with_acl(WriteAcl::whitelist(
+            a.did.as_str(),
+            vec![b.did.as_str().into()],
+        ));
+        let e0 = log_a
+            .append(&a, serde_json::json!({"text": "创世"}), 100)
+            .unwrap();
 
         // B 拿到 e0 后独立写两条
-        let mut log_b = OpLog::with_acl(WriteAcl::whitelist(a.did.as_str(), vec![b.did.as_str().into()]));
+        let mut log_b = OpLog::with_acl(WriteAcl::whitelist(
+            a.did.as_str(),
+            vec![b.did.as_str().into()],
+        ));
         log_b.join(std::slice::from_ref(&e0)).unwrap();
-        let b1 = log_b.append(&b, serde_json::json!({"text": "B 的消息 1"}), 200).unwrap();
-        let b2 = log_b.append(&b, serde_json::json!({"text": "B 的消息 2"}), 300).unwrap();
+        let b1 = log_b
+            .append(&b, serde_json::json!({"text": "B 的消息 1"}), 200)
+            .unwrap();
+        let b2 = log_b
+            .append(&b, serde_json::json!({"text": "B 的消息 2"}), 300)
+            .unwrap();
 
         // A 也独立写一条 (分叉)
-        let a1 = log_a.append(&a, serde_json::json!({"text": "A 的消息"}), 250).unwrap();
+        let a1 = log_a
+            .append(&a, serde_json::json!({"text": "A 的消息"}), 250)
+            .unwrap();
 
         // 交换: A 收 B 的两条, B 收 A 的一条
         log_a.join(&[b1.clone(), b2.clone()]).unwrap();
@@ -482,7 +565,9 @@ mod tests {
         let stranger = kp(9);
         let mut log = OpLog::new(a.did.as_str());
         let mut foreign = OpLog::new(stranger.did.as_str());
-        let e = foreign.append(&stranger, serde_json::json!({"evil": true}), 1).unwrap();
+        let e = foreign
+            .append(&stranger, serde_json::json!({"evil": true}), 1)
+            .unwrap();
         assert!(matches!(log.join(&[e]), Err(OpLogError::NotAllowed(_))));
     }
 
@@ -502,14 +587,27 @@ mod tests {
         let kp = kp(1);
         let mut log = OpLog::new(kp.did.as_str());
         for i in 0..20 {
-            log.append(&kp, serde_json::json!({"seq": i, "text": format!("消息 {i}")}), 1000 + i).unwrap();
+            log.append(
+                &kp,
+                serde_json::json!({"seq": i, "text": format!("消息 {i}")}),
+                1000 + i,
+            )
+            .unwrap();
         }
         // 模拟: 只拿到 entries (无 head 信息) → 重建
         let all: Vec<OpEntry> = log.traverse().iter().map(|e| (*e).clone()).collect();
         let mut rebuilt = OpLog::new(kp.did.as_str());
         rebuilt.join(&all).unwrap();
-        let orig_view: Vec<String> = log.traverse().iter().map(|e| e.payload["text"].as_str().unwrap().to_string()).collect();
-        let new_view: Vec<String> = rebuilt.traverse().iter().map(|e| e.payload["text"].as_str().unwrap().to_string()).collect();
+        let orig_view: Vec<String> = log
+            .traverse()
+            .iter()
+            .map(|e| e.payload["text"].as_str().unwrap().to_string())
+            .collect();
+        let new_view: Vec<String> = rebuilt
+            .traverse()
+            .iter()
+            .map(|e| e.payload["text"].as_str().unwrap().to_string())
+            .collect();
         assert_eq!(orig_view, new_view, "重建视图与原逐条一致");
     }
 

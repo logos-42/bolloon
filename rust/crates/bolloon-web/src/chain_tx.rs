@@ -7,7 +7,7 @@
 //! 诚实边界：本模块**只做真实链上广播**（不是本地模拟）。广播失败/无回执一律如实报错，
 //! 不会伪造 tx_hash / 合约地址。链/gas 由调用方给（默认 Base Sepolia）。
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn rpc(url: &str, method: &str, params: Value) -> Result<Value, String> {
     let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }).to_string();
@@ -19,7 +19,8 @@ fn rpc(url: &str, method: &str, params: Value) -> Result<Value, String> {
         .send_string(&body)
         .map_err(|e| format!("{method}: {e}"))?;
     let text = resp.into_string().map_err(|e| format!("{method}: {e}"))?;
-    let v: Value = serde_json::from_str(&text).map_err(|e| format!("{method}: 非 JSON 响应 {e}"))?;
+    let v: Value =
+        serde_json::from_str(&text).map_err(|e| format!("{method}: 非 JSON 响应 {e}"))?;
     if let Some(err) = v.get("error") {
         return Err(format!("{method}: RPC 报错 {err}"));
     }
@@ -90,7 +91,8 @@ fn rlp_list(items: &[Vec<u8>]) -> Vec<u8> {
 pub fn evm_address_of(secret_hex: &str) -> Result<String, String> {
     use k256::elliptic_curve::sec1::ToEncodedPoint;
     use sha3::{Digest, Keccak256};
-    let bytes = hex::decode(secret_hex.trim_start_matches("0x")).map_err(|e| format!("私钥 hex: {e}"))?;
+    let bytes =
+        hex::decode(secret_hex.trim_start_matches("0x")).map_err(|e| format!("私钥 hex: {e}"))?;
     let sk = k256::SecretKey::from_slice(&bytes).map_err(|e| format!("私钥无效: {e}"))?;
     let point = sk.public_key().to_encoded_point(false);
     let raw = point.as_bytes();
@@ -115,7 +117,8 @@ pub fn sign_eip155(
     use k256::ecdsa::SigningKey;
     use sha3::{Digest, Keccak256};
 
-    let sk_bytes = hex::decode(secret_hex.trim_start_matches("0x")).map_err(|e| format!("私钥 hex: {e}"))?;
+    let sk_bytes =
+        hex::decode(secret_hex.trim_start_matches("0x")).map_err(|e| format!("私钥 hex: {e}"))?;
     let sk = SigningKey::from_slice(&sk_bytes).map_err(|e| format!("私钥无效: {e}"))?;
     let to_bytes = match to {
         Some(a) => hex::decode(a.trim_start_matches("0x")).map_err(|e| format!("to 地址: {e}"))?,
@@ -265,12 +268,20 @@ pub fn abi_decode_string(bytes: &[u8]) -> Result<String, String> {
     // 动态 string 的偏移是高半零的 u256；高半非零视为 bytes32 编码，走下面的回退。
     if w0[..16].iter().all(|b| *b == 0) {
         let off = u128::from_be_bytes(w0[16..32].try_into().unwrap()) as usize;
-        if off.checked_add(32).map(|e| e <= bytes.len()).unwrap_or(false) {
+        if off
+            .checked_add(32)
+            .map(|e| e <= bytes.len())
+            .unwrap_or(false)
+        {
             let len_word = &bytes[off..off + 32];
             if len_word[..16].iter().all(|b| *b == 0) {
                 let len = u128::from_be_bytes(len_word[16..32].try_into().unwrap()) as usize;
                 let s = off + 32;
-                if len <= 4096 && s.checked_add(len).map(|e| e <= bytes.len()).unwrap_or(false) {
+                if len <= 4096
+                    && s.checked_add(len)
+                        .map(|e| e <= bytes.len())
+                        .unwrap_or(false)
+                {
                     if let Ok(txt) = String::from_utf8(bytes[s..s + len].to_vec()) {
                         return Ok(txt.trim_matches('\0').to_string());
                     }
@@ -296,7 +307,10 @@ pub fn abi_decode_uint(bytes: &[u8]) -> Result<u128, String> {
 }
 
 /// 读 ERC-20 元数据 `(name, symbol, decimals, totalSupply)`。
-pub fn erc20_metadata(rpc_url: &str, contract: &str) -> Result<(String, String, u32, u128), String> {
+pub fn erc20_metadata(
+    rpc_url: &str,
+    contract: &str,
+) -> Result<(String, String, u32, u128), String> {
     let name = abi_decode_string(&eth_call(rpc_url, contract, &selector("name()"))?)?;
     let symbol = abi_decode_string(&eth_call(rpc_url, contract, &selector("symbol()"))?)?;
     let decimals = abi_decode_uint(&eth_call(rpc_url, contract, &selector("decimals()"))?)? as u32;
@@ -339,17 +353,22 @@ pub async fn deploy_contract(
 ) -> Result<Value, String> {
     let from = evm_address_of(secret_hex)?;
     let nonce = {
-        let v = rpc(
-            rpc_url,
-            "eth_getTransactionCount",
-            json!([from, "pending"]),
-        )?;
+        let v = rpc(rpc_url, "eth_getTransactionCount", json!([from, "pending"]))?;
         parse_hex_u128(v.as_str().ok_or("nonce 无字符串")?)?
     };
     let gp = gas_price(rpc_url)?;
     let est = estimate_deploy_gas(rpc_url, &from, creation_data).unwrap_or(300_000);
     let gas_limit = est + 80_000; // 缓冲
-    let raw = sign_eip155(secret_hex, cid, nonce, gp, gas_limit, None, 0, creation_data)?;
+    let raw = sign_eip155(
+        secret_hex,
+        cid,
+        nonce,
+        gp,
+        gas_limit,
+        None,
+        0,
+        creation_data,
+    )?;
     let tx_hash = rpc(rpc_url, "eth_sendRawTransaction", json!([raw]))?
         .as_str()
         .map(|s| s.to_string())
@@ -360,8 +379,14 @@ pub async fn deploy_contract(
         let r = rpc(rpc_url, "eth_getTransactionReceipt", json!([tx_hash]))?;
         if !r.is_null() {
             let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("");
-            let addr = r.get("contractAddress").and_then(|v| v.as_str()).unwrap_or("");
-            let block = r.get("blockNumber").and_then(|v| v.as_str()).unwrap_or("0x0");
+            let addr = r
+                .get("contractAddress")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let block = r
+                .get("blockNumber")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0x0");
             return Ok(json!({
                 "tx_hash": tx_hash,
                 "contract_address": addr,
@@ -410,7 +435,14 @@ mod tests {
 
     #[test]
     fn abi_ctor_encoding_layout() {
-        let enc = abi_encode_ctor("Alice Coin", "ALC", 6, 1000, "0x000000000000000000000000000000000000dEaD").unwrap();
+        let enc = abi_encode_ctor(
+            "Alice Coin",
+            "ALC",
+            6,
+            1000,
+            "0x000000000000000000000000000000000000dEaD",
+        )
+        .unwrap();
         // head 5 words + name data(32+32) + symbol data(32+32) = 160+64+64 = 288
         assert_eq!(enc.len(), 288);
         // 第一个 word = name offset = 160

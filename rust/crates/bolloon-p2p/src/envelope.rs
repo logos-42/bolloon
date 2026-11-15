@@ -227,7 +227,10 @@ mod tests {
         let other = KeyPair::generate();
         let mut env = SignedEnvelope::seal(&kp, "t", serde_json::json!({}), 1);
         env.pubkey = bs58::encode(other.public_bytes()).into_string();
-        assert!(matches!(env.verify(), Err(EnvelopeError::PubkeyDidMismatch)));
+        assert!(matches!(
+            env.verify(),
+            Err(EnvelopeError::PubkeyDidMismatch)
+        ));
     }
 
     #[test]
@@ -242,6 +245,10 @@ mod tests {
         let kp = KeyPair::generate();
         let e1 = SignedEnvelope::seal(&kp, "t", serde_json::json!({"x": 1}), 42);
         let e2 = SignedEnvelope::seal(&kp, "t", serde_json::json!({"x": 1}), 42);
-        assert_eq!(e1.content_hash(), e2.content_hash(), "同内容同哈希 (与签名无关)");
+        assert_eq!(
+            e1.content_hash(),
+            e2.content_hash(),
+            "同内容同哈希 (与签名无关)"
+        );
     }
 }

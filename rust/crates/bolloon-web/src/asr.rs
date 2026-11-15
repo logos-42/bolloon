@@ -15,11 +15,13 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use axum::body::Bytes;
 use axum::Json;
+use axum::body::Bytes;
 
 fn home() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn asr_bin() -> PathBuf {
@@ -84,11 +86,14 @@ pub async fn asr(body: Bytes) -> Json<serde_json::Value> {
     let output = tokio::time::timeout(
         Duration::from_secs(90),
         tokio::process::Command::new(&bin)
-            .arg("-m").arg(&model)
-            .arg("-f").arg(&wav_path)
-            .arg("-l").arg(asr_lang())
-            .arg("-nt")   // 不要时间戳
-            .arg("-np")   // 不要进度/系统信息
+            .arg("-m")
+            .arg(&model)
+            .arg("-f")
+            .arg(&wav_path)
+            .arg("-l")
+            .arg(asr_lang())
+            .arg("-nt") // 不要时间戳
+            .arg("-np") // 不要进度/系统信息
             .output(),
     )
     .await;
@@ -99,12 +104,12 @@ pub async fn asr(body: Bytes) -> Json<serde_json::Value> {
         Err(_) => {
             return Json(serde_json::json!({
                 "ok": false, "text": "", "error": "whisper 超时 (90s)"
-            }))
+            }));
         }
         Ok(Err(e)) => {
             return Json(serde_json::json!({
                 "ok": false, "text": "", "error": format!("启动 whisper 失败: {e}")
-            }))
+            }));
         }
         Ok(Ok(out)) => {
             if !out.status.success() {

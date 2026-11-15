@@ -103,7 +103,10 @@ impl ProcessManager {
 
     /// 追加 stdout/stderr (有界缓冲)
     pub fn stream(&mut self, id: &str, is_stderr: bool, chunk: &str) -> Result<(), ProcessError> {
-        let rec = self.procs.get_mut(id).ok_or(ProcessError::NotFound(id.into()))?;
+        let rec = self
+            .procs
+            .get_mut(id)
+            .ok_or(ProcessError::NotFound(id.into()))?;
         if is_stderr {
             append_tail(&mut rec.stderr_tail, chunk, STREAM_TAIL_MAX);
         } else {
@@ -114,7 +117,10 @@ impl ProcessManager {
 
     /// 优雅终止请求 (标 Killed; 真信号由 executor 发)
     pub fn terminate(&mut self, id: &str, now_ms: u64, exit_code: i32) -> Result<(), ProcessError> {
-        let rec = self.procs.get_mut(id).ok_or(ProcessError::NotFound(id.into()))?;
+        let rec = self
+            .procs
+            .get_mut(id)
+            .ok_or(ProcessError::NotFound(id.into()))?;
         if rec.status != ProcessStatus::Running {
             return Err(ProcessError::NotRunning(id.into()));
         }
@@ -126,7 +132,10 @@ impl ProcessManager {
 
     /// 自然退出 (标 Exited)
     pub fn exited(&mut self, id: &str, now_ms: u64, exit_code: i32) -> Result<(), ProcessError> {
-        let rec = self.procs.get_mut(id).ok_or(ProcessError::NotFound(id.into()))?;
+        let rec = self
+            .procs
+            .get_mut(id)
+            .ok_or(ProcessError::NotFound(id.into()))?;
         if rec.status != ProcessStatus::Running {
             return Err(ProcessError::NotRunning(id.into()));
         }
@@ -138,7 +147,10 @@ impl ProcessManager {
 
     /// spawn 失败 (标 Failed)
     pub fn fail(&mut self, id: &str, now_ms: u64) -> Result<(), ProcessError> {
-        let rec = self.procs.get_mut(id).ok_or(ProcessError::NotFound(id.into()))?;
+        let rec = self
+            .procs
+            .get_mut(id)
+            .ok_or(ProcessError::NotFound(id.into()))?;
         if rec.status != ProcessStatus::Running {
             return Err(ProcessError::NotRunning(id.into()));
         }
@@ -161,7 +173,8 @@ impl ProcessManager {
             .procs
             .values()
             .filter(|p| {
-                p.status == ProcessStatus::Running && now_ms.saturating_sub(p.started_at_ms) > max_ms
+                p.status == ProcessStatus::Running
+                    && now_ms.saturating_sub(p.started_at_ms) > max_ms
             })
             .map(|p| p.id.clone())
             .collect();
@@ -210,7 +223,11 @@ mod tests {
         for i in 0..1000 {
             append_tail(&mut buf, &format!("line {i}\n"), 100);
         }
-        assert!(buf.chars().count() <= 100, "有界缓冲不膨胀: {}", buf.chars().count());
+        assert!(
+            buf.chars().count() <= 100,
+            "有界缓冲不膨胀: {}",
+            buf.chars().count()
+        );
         assert!(buf.contains("line 999"), "保留尾部 (最新输出)");
         assert!(!buf.contains("line 0\n"), "最老的被裁掉");
     }
@@ -221,7 +238,10 @@ mod tests {
         let rec = pm.spawn("x", "/ws", None, 1);
         let id = rec.id.clone();
         pm.exited(&id, 2, 0).unwrap();
-        assert!(matches!(pm.exited(&id, 3, 0), Err(ProcessError::NotRunning(_))));
+        assert!(matches!(
+            pm.exited(&id, 3, 0),
+            Err(ProcessError::NotRunning(_))
+        ));
     }
 
     #[test]

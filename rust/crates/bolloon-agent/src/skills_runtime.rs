@@ -71,7 +71,13 @@ impl SkillsRegistry {
     }
 
     /// 注册内置 skill (启动时装载)
-    pub fn register(&mut self, name: &str, description: &str, body: &str, now_ms: u64) -> Result<(), CandidateError> {
+    pub fn register(
+        &mut self,
+        name: &str,
+        description: &str,
+        body: &str,
+        now_ms: u64,
+    ) -> Result<(), CandidateError> {
         let h = content_hash(body);
         if self.hashes.contains(&h) {
             return Err(CandidateError::Duplicate);
@@ -138,7 +144,10 @@ impl SkillsRegistry {
     }
 
     pub fn learned_count(&self) -> usize {
-        self.skills.values().filter(|s| s.origin == SkillOrigin::Learned).count()
+        self.skills
+            .values()
+            .filter(|s| s.origin == SkillOrigin::Learned)
+            .count()
     }
 }
 
@@ -175,7 +184,10 @@ impl SkillEvolver {
             reg.hashes.insert(content_hash(&s.body));
             reg.skills.insert(s.name.clone(), s);
         }
-        Self { registry: reg, log: vec![] }
+        Self {
+            registry: reg,
+            log: vec![],
+        }
     }
 
     pub fn new() -> Self {
@@ -233,7 +245,10 @@ impl SkillEvolver {
                 created_at_ms: now_ms,
             },
         );
-        self.log.push(format!("promoted: {} (from {})", cand.name, cand.source_run));
+        self.log.push(format!(
+            "promoted: {} (from {})",
+            cand.name, cand.source_run
+        ));
         Ok(())
     }
 }
@@ -280,7 +295,12 @@ fn parse_frontmatter(raw: &str) -> (BTreeMap<String, String>, String) {
             continue;
         }
         if let Some((k, v)) = t.split_once(':') {
-            let v = v.trim().trim_matches('"').trim_matches('\'').trim().to_string();
+            let v = v
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim()
+                .to_string();
             kv.insert(k.trim().to_lowercase(), v);
         }
     }
@@ -313,7 +333,11 @@ pub fn doc_from_file(path: &std::path::Path, fallback_name: &str) -> Option<Skil
                 .map(|l| l.trim().trim_start_matches('#').trim().to_string())
         })
         .unwrap_or_default();
-    Some(SkillDoc { name, description, body })
+    Some(SkillDoc {
+        name,
+        description,
+        body,
+    })
 }
 
 /// 扫描仓库技能目录: `skills/<dir>/SKILL.md` 与 `skills/*.md`, 名字升序
@@ -330,7 +354,10 @@ pub fn scan_skill_docs(root: &std::path::Path) -> Vec<SkillDoc> {
         // 以前只收 SKILL.md, 文档承诺的 `skills/*.md` 静默扫不到。
         .filter(|p| {
             let skill_md = p.file_name().map(|n| n == "SKILL.md").unwrap_or(false);
-            let flat_md = p.extension().map(|e| e.eq_ignore_ascii_case("md")).unwrap_or(false);
+            let flat_md = p
+                .extension()
+                .map(|e| e.eq_ignore_ascii_case("md"))
+                .unwrap_or(false);
             (skill_md || flat_md) && p.is_file()
         })
         .collect();
@@ -402,15 +429,13 @@ mod tests {
     fn index_is_lightweight_lines() {
         let mut r = SkillsRegistry::new();
         let long_body = "全文".repeat(500);
-        r.register("review", "收尾前逐条核对判据", &long_body, 1).unwrap();
+        r.register("review", "收尾前逐条核对判据", &long_body, 1)
+            .unwrap();
         r.register("compress", "历史压缩管道", "正文", 2).unwrap();
         let idx = r.index_for_prompt();
         assert!(idx.contains("- review: 收尾前逐条核对判据"));
         assert!(idx.contains("- compress: 历史压缩管道"));
-        assert!(
-            !idx.contains(&long_body),
-            "索引不含全文 (防上下文腐烂)"
-        );
+        assert!(!idx.contains(&long_body), "索引不含全文 (防上下文腐烂)");
         // 索引行数 = 头 + 条数
         assert_eq!(idx.lines().count(), 3);
     }
@@ -465,35 +490,47 @@ mod tests {
         // 重复内容拒
         let c2 = e.distill("# 别的名字\n正文", "r2").unwrap();
         // 注意: body 是整段 (含名字行), 改名字行 = body 变 → 不算重复 (如实固化这条语义)
-        assert!(e.promote(&c2, 2).is_ok(), "只改名字 ⇒ body 不同 ⇒ 不是同一件, 不误杀");
+        assert!(
+            e.promote(&c2, 2).is_ok(),
+            "只改名字 ⇒ body 不同 ⇒ 不是同一件, 不误杀"
+        );
         // 模拟真重复:
         assert!(matches!(
-            e.promote(&SkillCandidate {
-                name: "方法 A".into(),
-                description: "d".into(),
-                body: "# 方法 A\n正文".into(),
-                source_run: "r".into(),
-            }, 2),
+            e.promote(
+                &SkillCandidate {
+                    name: "方法 A".into(),
+                    description: "d".into(),
+                    body: "# 方法 A\n正文".into(),
+                    source_run: "r".into(),
+                },
+                2
+            ),
             Err(CandidateError::Duplicate)
         ));
         // 同名拒
         assert!(matches!(
-            e.promote(&SkillCandidate {
-                name: "方法 A".into(),
-                description: "d".into(),
-                body: "不同正文".into(),
-                source_run: "r".into(),
-            }, 3),
+            e.promote(
+                &SkillCandidate {
+                    name: "方法 A".into(),
+                    description: "d".into(),
+                    body: "不同正文".into(),
+                    source_run: "r".into(),
+                },
+                3
+            ),
             Err(CandidateError::NameExists)
         ));
         // 空拒
         assert!(matches!(
-            e.promote(&SkillCandidate {
-                name: "空".into(),
-                description: String::new(),
-                body: "   ".into(),
-                source_run: "r".into(),
-            }, 4),
+            e.promote(
+                &SkillCandidate {
+                    name: "空".into(),
+                    description: String::new(),
+                    body: "   ".into(),
+                    source_run: "r".into(),
+                },
+                4
+            ),
             Err(CandidateError::Empty)
         ));
     }
@@ -521,7 +558,8 @@ mod tests {
 
     #[test]
     fn frontmatter_parsed_name_desc_and_body() {
-        let (fm, body) = parse_frontmatter("---\nname: review\ndescription: \"收尾核对\"\n---\n正文\n");
+        let (fm, body) =
+            parse_frontmatter("---\nname: review\ndescription: \"收尾核对\"\n---\n正文\n");
         assert_eq!(fm.get("name").map(String::as_str), Some("review"));
         assert_eq!(fm.get("description").map(String::as_str), Some("收尾核对"));
         assert_eq!(body.trim(), "正文");
@@ -536,7 +574,11 @@ mod tests {
         let root = tmp_root("scan");
         let d1 = root.join("skills").join("写周报");
         std::fs::create_dir_all(&d1).unwrap();
-        std::fs::write(d1.join("SKILL.md"), "---\ndescription: 周五汇总\ntriggers: [周报]\n---\n步骤一").unwrap();
+        std::fs::write(
+            d1.join("SKILL.md"),
+            "---\ndescription: 周五汇总\ntriggers: [周报]\n---\n步骤一",
+        )
+        .unwrap();
         let d2 = root.join("skills").join("compress");
         std::fs::create_dir_all(&d2).unwrap();
         std::fs::write(d2.join("SKILL.md"), "# 压缩历史").unwrap();
@@ -571,7 +613,11 @@ mod tests {
         let root = tmp_root("merge");
         let d = root.join("skills").join("review");
         std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("SKILL.md"), "---\nname: review\ndescription: 磁盘版\n---\nx").unwrap();
+        std::fs::write(
+            d.join("SKILL.md"),
+            "---\nname: review\ndescription: 磁盘版\n---\nx",
+        )
+        .unwrap();
         let d2 = root.join("skills").join("只读盘点");
         std::fs::create_dir_all(&d2).unwrap();
         std::fs::write(d2.join("SKILL.md"), "---\ndescription: 盘点本机\n---\ny").unwrap();
@@ -588,7 +634,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&empty_root);
     }
 }
-
 
 /// 「Shell 直接操作」内置技能 (2026-11-06 leo): 启动时播种进运行时注册表,
 /// 精简版同时进 capability_block。用户给的速查表粘贴时丢了 `$ | ` 等符号, 这里按 POSIX 语义还原。
@@ -669,9 +714,19 @@ mod shell_direct_tests {
 
     #[test]
     fn cheatsheet_restores_symbols_lost_in_paste() {
-        for must in ["echo hi > a.txt", "echo hi >> a.txt", "$HOME", "${name:-guest}",
-                     "now=$(date)", "make && make install", "cmd || echo", "ls | grep txt",
-                     "[ -f a.txt ]", ">&2", "2> err.log"] {
+        for must in [
+            "echo hi > a.txt",
+            "echo hi >> a.txt",
+            "$HOME",
+            "${name:-guest}",
+            "now=$(date)",
+            "make && make install",
+            "cmd || echo",
+            "ls | grep txt",
+            "[ -f a.txt ]",
+            ">&2",
+            "2> err.log",
+        ] {
             assert!(SHELL_DIRECT_BODY.contains(must), "缺 {must}");
         }
     }
