@@ -1,0 +1,99 @@
+name: Rust Nightly
+
+# 高成本检查：完整集成测试 / 全量安全 / 性能基线（当前无 bench，明确 SKIP）。
+# 每天 03:00 UTC 跑一次，也可手动触发。
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: rust-nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  unit-tests:
+    name: full unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - run: cargo test --workspace --lib --no-fail-fast
+
+  integration-tests:
+    name: full integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - name: integration
+        run: bash scripts/ci/integration.sh
+
+  bench:
+    name: performance baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      # 仓库当前 0 个 benches/ —— 不伪造性能数字，明确 SKIP 并提示如何接入。
+      - name: detect benches
+        run: |
+          n=$(find crates -maxdepth 2 -type d -name benches | wc -l | tr -d ' ')
+          echo "benches dirs: $n"
+          if [ "$n" = "0" ]; then
+            echo "SKIP: 未配置 criterion bench（L4 基线待建立，见 docs/ci/quality-gates.md）"
+            echo "SKIP_NO_BENCH=true" >> "$GITHUB_ENV"
+          fi
+      - name: cargo bench
+        if: env.SKIP_NO_BENCH != 'true'
+        run: cargo bench --workspace
+
+  security:
+    name: full security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit
+      - name: cargo deny (if configured)
+        run: |
+          if [ ! -f deny.toml ]; then echo "SKIP: deny.toml 未配置"; exit 0; fi
+          cargo install cargo-deny --locked
+          cargo deny check
+      - name: secret scan
+        working-directory: .
+        run: bash scripts/ci/security.sh

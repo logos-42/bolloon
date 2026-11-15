@@ -1,0 +1,139 @@
+name: Rust CI
+
+# Rust 工程 PR/主干门禁（取代旧的 rust.yml）。
+# 设计要点：
+#   - 每个检查独立 job 并行；失败会向上传播（除非显式 continue-on-error）。
+#   - 统一入口：L1/L2/L3/L5 都调 scripts/ci/*.sh —— 本地怎么跑，CI 就怎么跑，避免两套命令漂移。
+#   - fmt / cargo check(三档 feature) / 单测 / locked / secret 阻断；clippy 存量债只报告。
+
+on:
+  pull_request:
+    paths:
+      - 'rust/**'
+      - 'scripts/ci/**'
+      - 'docs/ci/**'
+      - '.github/workflows/rust-ci.yml'
+  push:
+    branches: [master, Rust]
+    paths:
+      - 'rust/**'
+      - 'scripts/ci/**'
+      - 'docs/ci/**'
+      - '.github/workflows/rust-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: rust-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── L1 代码质量（fmt + check 三档 feature + clippy 统计）──────
+  l1-quality:
+    name: L1 · scripts/ci/check.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - name: L1
+        run: bash scripts/ci/check.sh
+      - name: clippy log
+        if: always()
+        run: |
+          if [ -f /tmp/bolloon-clippy.log ]; then
+            echo "clippy warning lines: $(grep -cE ': (warning|error):' /tmp/bolloon-clippy.log || true)"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clippy-log
+          path: /tmp/bolloon-clippy.log
+          if-no-files-found: ignore
+
+  # ── L2 单元测试 ─────────────────────────────────────────────
+  l2-tests:
+    name: L2 · scripts/ci/test.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - name: L2
+        run: bash scripts/ci/test.sh
+
+  # ── L3 集成测试（PR 不跑，push/手动跑）─────────────────────
+  l3-integration:
+    name: L3 · scripts/ci/integration.sh
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - name: L3
+        run: bash scripts/ci/integration.sh
+
+  # ── L5 安全（locked + audit + secret + unsafe 清单）─────────
+  l5-security:
+    name: L5 · scripts/ci/security.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - uses: taiki-e/install-action@cargo-audit
+      - name: L5
+        run: bash scripts/ci/security.sh
+
+  # ── 跨平台编译（仅编译，不等于运行兼容）───────────────────
+  cross-compile:
+    name: cross · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true # 首次接入：平台差异先暴露、不阻断；稳定后转阻断
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - name: cargo check (compile only)
+        run: cargo check --workspace --all-targets

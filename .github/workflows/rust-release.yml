@@ -1,0 +1,121 @@
+name: Rust Release
+
+# Rust 二进制发布门禁。
+# - 只有打 tag（v*）或手动触发才会跑；PR 永远拿不到发布权限。
+# - publish job 走 GitHub Environment `rust-release`（需在仓库设置里配 Required reviewers）。
+# - 先跑门禁（fmt/check/test），再构建多平台产物，最后生成 SHA256 并挂到 Release。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # 手动触发只做构建（github.ref 不是 tag ⇒ publish 不会执行），用于演练/排障。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    name: release gate (fmt/check/test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - run: cargo fmt --all -- --check
+      - run: cargo check --workspace --all-targets
+      - run: cargo check --workspace --all-targets --all-features
+      - run: cargo test --workspace --lib --no-fail-fast
+
+  build:
+    name: build · ${{ matrix.os }}
+    needs: gate
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: bolloon-linux-x86_64
+          - os: macos-latest
+            asset: bolloon-macos-arm64
+          - os: windows-latest
+            asset: bolloon-windows-x86_64.exe
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - name: cargo build --release
+        run: cargo build --release -p bolloon-cli
+      - name: stage artifact
+        shell: bash
+        run: |
+          mkdir -p "${{ github.workspace }}/out"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/release/bolloon.exe "${{ github.workspace }}/out/${{ matrix.asset }}"
+          else
+            cp target/release/bolloon "${{ github.workspace }}/out/${{ matrix.asset }}"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ github.workspace }}/out/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    # dispatch 时 github.ref 是分支 ⇒ 不会进入发布；只有 tag 才发。
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: rust-release # 需在 GitHub 仓库设置中配置保护规则（必需审批）
+    permissions:
+      contents: write # 只有发布 job 需要写权限
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: SHA256
+        run: |
+          find dist -type f -print0 | sort -z | xargs -0 sha256sum > dist/SHA256SUMS.txt
+          cat dist/SHA256SUMS.txt
+      - name: create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/**/bolloon-*
+            dist/SHA256SUMS.txt
+          generate_release_notes: false
+          body: |
+            Rust release build for tag ${{ github.ref_name }}.
+            产物附带 SHA256SUMS.txt；源 Commit: ${{ github.sha }}

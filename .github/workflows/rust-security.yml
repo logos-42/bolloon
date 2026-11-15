@@ -1,0 +1,80 @@
+name: Rust Security
+
+# 依赖安全与合规：PR 基础扫描 + 每日全量。
+# 与 rust-ci.yml 的 L5 有重叠：CI 里跑快检（locked + audit + secret），
+# 这里额外做 deny（许可证/重复依赖）与 unsafe 清单归档。
+
+on:
+  pull_request:
+    paths:
+      - 'rust/Cargo.toml'
+      - 'rust/Cargo.lock'
+      - 'rust/**/Cargo.toml'
+      - 'scripts/ci/security.sh'
+      - '.github/workflows/rust-security.yml'
+  schedule:
+    - cron: '30 2 * * *' # 每天 02:30 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: rust-security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: cargo audit + deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - uses: taiki-e/install-action@cargo-audit
+      - name: cargo audit
+        run: cargo audit
+
+      # deny 需要策略文件；没有就明确跳过（不伪报通过）
+      - name: cargo deny
+        run: |
+          if [ ! -f deny.toml ]; then
+            echo "SKIP: rust/deny.toml 未配置"
+            exit 0
+          fi
+          cargo install cargo-deny --locked
+          cargo deny check
+
+  secret-and-unsafe:
+    name: secret scan + unsafe inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - name: run security script
+        run: bash scripts/ci/security.sh
+      - name: unsafe inventory
+        run: |
+          grep -rnE 'unsafe[[:space:]]*\{|unsafe[[:space:]]+fn|unsafe[[:space:]]+impl' \
+            rust/crates --include='*.rs' > /tmp/unsafe.txt || true
+          echo "unsafe 行数: $(wc -l < /tmp/unsafe.txt)"
+          cat /tmp/unsafe.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unsafe-inventory
+          path: /tmp/unsafe.txt
+          if-no-files-found: ignore
