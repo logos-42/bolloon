@@ -28,6 +28,9 @@ ureq = { version = "2", features = ["json"] }
 sha2.workspace = true
 k256 = { version = "0.13", features = ["ecdsa"] }
 sha3 = "0.10"
+# 钱包私钥本地加密（口令 PBKDF2-HMAC-SHA256 → AES-256-GCM；纯 Rust，无 C 依赖）
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
 futures.workspace = true
 chrono.workspace = true
 hex.workspace = true

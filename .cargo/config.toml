@@ -1,0 +1,11 @@
+# Cargo 配置（2026-11-15）
+#
+# 背景：第三方传递依赖 `imap-proto v0.10.2`（由 `imap v2.4.1` 引入）触发 cargo 的
+# 「future-incompat」报告：
+#   warning: the following packages contain code that will be rejected by a future version of Rust
+#
+# 这条报告来自依赖本身，不是本仓代码；升级 imap 3.x 会改动邮件适配层，暂不动。
+# 这里只关掉「future-incompat 报告」的打印，**不关闭任何编译告警** ——
+# 自有代码（本 workspace）的 warning/error 仍会正常显示。
+[future-incompat-report]
+frequency = "never"

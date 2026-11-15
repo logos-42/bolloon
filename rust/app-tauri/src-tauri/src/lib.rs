@@ -50,7 +50,10 @@ pub fn run() {
             //    2026-10-30 (用户): 「bolloon 的左上角按钮打开也是英文的」⇒ 自己装一份中文菜单。
             //    菜单项全用 PredefinedMenuItem: 动作仍是系统标准实现 (退出/复制/粘贴/最小化…),
             //    壳不写业务; 只在文字上做本地化。
-            #[cfg(desktop)]
+            // 2026-11-15 (用户): Windows 版窗口顶部有一条白色透明的「编辑」栏 —— 那是 Tauri
+            //   原生菜单 (应用/编辑/窗口) 画在窗口内。macOS 上菜单在系统菜单栏 (不在窗口内),
+            //   所以只在 macOS 安装; Windows/Linux 不设原生菜单 ⇒ 窗口顶部不再有菜单栏。
+            #[cfg(target_os = "macos")]
             install_chinese_menu(app)?;
             // 菜单栏图标 (macOS 顶部菜单栏右侧) — 用户: 「Mac 栏的菜单栏图标要有」
             #[cfg(desktop)]
@@ -288,7 +291,7 @@ fn reveal_main_window(app: &tauri::AppHandle) {
 /// Window / Help)。2026-10-30 用户: 「bolloon 的左上角按钮打开也是英文的」⇒ 换成中文。
 /// 纪律: 全部用 `PredefinedMenuItem` —— 退出/隐藏/复制/粘贴/最小化这些动作仍由系统实现,
 /// 壳只负责文字, 不写业务逻辑。
-#[cfg(desktop)]
+#[cfg(target_os = "macos")]
 fn install_chinese_menu(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, PredefinedMenuItem as P, SubmenuBuilder};
 

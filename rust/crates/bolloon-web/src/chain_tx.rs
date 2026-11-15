@@ -225,6 +225,98 @@ pub fn native_balance(rpc_url: &str, address: &str) -> Result<u128, String> {
     parse_hex_u128(v.as_str().ok_or("eth_getBalance 无字符串")?)
 }
 
+// ─────────────────────── ERC-20 只读（eth_call + ABI 解码）───────────────────────
+
+fn selector(sig: &str) -> [u8; 4] {
+    use sha3::{Digest, Keccak256};
+    let d = Keccak256::digest(sig.as_bytes());
+    [d[0], d[1], d[2], d[3]]
+}
+
+/// `eth_call`（只读，不广播），返回原始返回字节。
+pub fn eth_call(rpc_url: &str, to: &str, data: &[u8]) -> Result<Vec<u8>, String> {
+    let v = rpc(
+        rpc_url,
+        "eth_call",
+        json!([{ "to": to, "data": hex0x(data) }, "latest"]),
+    )?;
+    let s = v.as_str().ok_or("eth_call 无字符串结果")?;
+    let h = s.trim_start_matches("0x");
+    if h.is_empty() {
+        return Ok(vec![]);
+    }
+    hex::decode(h).map_err(|e| format!("eth_call 返回非 hex: {e}"))
+}
+
+fn word(bytes: &[u8], i: usize) -> Result<&[u8], String> {
+    let start = i * 32;
+    if bytes.len() < start + 32 {
+        return Err("ABI 返回长度不足".into());
+    }
+    Ok(&bytes[start..start + 32])
+}
+
+/// 解码动态 `string` 返回值（若合约返回 bytes32，回退按 32 字节截断取）。
+pub fn abi_decode_string(bytes: &[u8]) -> Result<String, String> {
+    if bytes.is_empty() {
+        return Err("空返回（该地址可能不是 ERC-20 合约）".into());
+    }
+    let w0 = word(bytes, 0)?;
+    // 动态 string 的偏移是高半零的 u256；高半非零视为 bytes32 编码，走下面的回退。
+    if w0[..16].iter().all(|b| *b == 0) {
+        let off = u128::from_be_bytes(w0[16..32].try_into().unwrap()) as usize;
+        if off.checked_add(32).map(|e| e <= bytes.len()).unwrap_or(false) {
+            let len_word = &bytes[off..off + 32];
+            if len_word[..16].iter().all(|b| *b == 0) {
+                let len = u128::from_be_bytes(len_word[16..32].try_into().unwrap()) as usize;
+                let s = off + 32;
+                if len <= 4096 && s.checked_add(len).map(|e| e <= bytes.len()).unwrap_or(false) {
+                    if let Ok(txt) = String::from_utf8(bytes[s..s + len].to_vec()) {
+                        return Ok(txt.trim_matches('\0').to_string());
+                    }
+                }
+            }
+        }
+    }
+    // bytes32 回退（老式合约）
+    let raw = word(bytes, 0)?;
+    let end = raw.iter().position(|b| *b == 0).unwrap_or(32);
+    String::from_utf8(raw[..end].to_vec()).map_err(|e| format!("string/bytes32 解码失败: {e}"))
+}
+
+/// 解码 `uint` 返回值（>128 位溢出报错，避免静默截断）。
+pub fn abi_decode_uint(bytes: &[u8]) -> Result<u128, String> {
+    if bytes.len() < 32 {
+        return Err("uint 返回不足 32 字节".into());
+    }
+    if bytes[..16].iter().any(|b| *b != 0) {
+        return Err("uint 超过 128 位，拒绝静默截断".into());
+    }
+    Ok(u128::from_be_bytes(bytes[16..32].try_into().unwrap()))
+}
+
+/// 读 ERC-20 元数据 `(name, symbol, decimals, totalSupply)`。
+pub fn erc20_metadata(rpc_url: &str, contract: &str) -> Result<(String, String, u32, u128), String> {
+    let name = abi_decode_string(&eth_call(rpc_url, contract, &selector("name()"))?)?;
+    let symbol = abi_decode_string(&eth_call(rpc_url, contract, &selector("symbol()"))?)?;
+    let decimals = abi_decode_uint(&eth_call(rpc_url, contract, &selector("decimals()"))?)? as u32;
+    let supply = abi_decode_uint(&eth_call(rpc_url, contract, &selector("totalSupply()"))?)?;
+    Ok((name, symbol, decimals, supply))
+}
+
+/// 读 `balanceOf(owner)`（最小单位）。
+pub fn erc20_balance_of(rpc_url: &str, contract: &str, owner: &str) -> Result<u128, String> {
+    let mut data = selector("balanceOf(address)").to_vec();
+    let mut w = [0u8; 32];
+    let b = hex::decode(owner.trim_start_matches("0x")).map_err(|e| format!("地址 hex: {e}"))?;
+    if b.len() != 20 {
+        return Err("地址需 20 字节".into());
+    }
+    w[12..].copy_from_slice(&b);
+    data.extend_from_slice(&w);
+    abi_decode_uint(&eth_call(rpc_url, contract, &data)?)
+}
+
 /// 估算部署 gas（data-only）。失败时给保守默认值。
 pub fn estimate_deploy_gas(rpc_url: &str, from: &str, data: &[u8]) -> Result<u128, String> {
     let v = rpc(
@@ -323,5 +415,40 @@ mod tests {
         assert_eq!(enc.len(), 288);
         // 第一个 word = name offset = 160
         assert_eq!(u128::from_be_bytes(enc[16..32].try_into().unwrap()), 160);
+    }
+
+    #[test]
+    fn erc20_selectors_match_known_values() {
+        assert_eq!(hex::encode(selector("name()")), "06fdde03");
+        assert_eq!(hex::encode(selector("symbol()")), "95d89b41");
+        assert_eq!(hex::encode(selector("decimals()")), "313ce567");
+        assert_eq!(hex::encode(selector("totalSupply()")), "18160ddd");
+        assert_eq!(hex::encode(selector("balanceOf(address)")), "70a08231");
+    }
+
+    #[test]
+    fn abi_decode_string_roundtrip_and_bytes32_fallback() {
+        // 标准动态 string: offset=32, len=3, "ALC"
+        let mut b = vec![0u8; 32 + 32 + 32];
+        b[31] = 32;
+        b[32 + 31] = 3;
+        b[64] = b'A';
+        b[65] = b'L';
+        b[66] = b'C';
+        assert_eq!(abi_decode_string(&b).unwrap(), "ALC");
+        // bytes32 回退
+        let mut w = vec![0u8; 32];
+        w[..3].copy_from_slice(b"ETH");
+        assert_eq!(abi_decode_string(&w).unwrap(), "ETH");
+    }
+
+    #[test]
+    fn abi_decode_uint_rejects_overflow() {
+        let mut b = vec![0u8; 32];
+        b[0] = 1; // 高位非零
+        assert!(abi_decode_uint(&b).is_err());
+        let mut ok = vec![0u8; 32];
+        ok[31] = 42;
+        assert_eq!(abi_decode_uint(&ok).unwrap(), 42);
     }
 }

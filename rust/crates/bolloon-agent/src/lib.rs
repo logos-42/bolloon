@@ -58,6 +58,7 @@ pub mod prompt;
 pub mod runtime;
 pub mod scratch;
 pub mod scratch_tools;
+pub mod plugin_tools;
 pub mod search_tools;
 pub mod skill_authoring;
 pub mod skill_install;

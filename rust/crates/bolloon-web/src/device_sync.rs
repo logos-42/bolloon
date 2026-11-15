@@ -124,7 +124,7 @@ pub fn register(st: &AppState, url: &str, did: &str) -> SyncState {
 /// 立即同步一轮：拉增量 → 幂等合并 → 推进水位 → 顺带扩散设备列表。
 pub async fn sync_once(st: &AppState) -> Value {
     let group = group_of(st);
-    let mut state = {
+    let state = {
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut s = load();
         if s.group.is_empty() {

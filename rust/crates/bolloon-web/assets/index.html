@@ -562,6 +562,29 @@
     border-bottom:1px solid var(--line);color:var(--accent);font-weight:700;font-size:13px;letter-spacing:.3px;user-select:none;
   }
   body.desktop3col #topBar .grow{flex:1}
+  /* 2026-11-15: 顶部标签按钮 + 左键下拉菜单 (钱包/智能体/世界/群组/模型/退出) */
+  body.desktop3col #topBar .top-tabs-btn{
+    display:inline-flex;align-items:center;gap:5px;
+    background:transparent;border:0;padding:2px 6px;border-radius:6px;
+    color:var(--accent);font:inherit;font-weight:700;letter-spacing:.3px;cursor:pointer;
+  }
+  body.desktop3col #topBar .top-tabs-btn:hover,
+  body.desktop3col #topBar .top-tabs-btn[aria-expanded="true"]{background:rgba(127,127,127,.16)}
+  #topBar .tt-caret{font-size:10px;opacity:.7;line-height:1}
+  .top-tabs-menu{
+    position:fixed;z-index:2147483000;min-width:176px;
+    background:var(--panel,#1b1b1b);border:1px solid var(--line);border-radius:10px;
+    padding:6px;box-shadow:0 12px 34px rgba(0,0,0,.30);
+    display:flex;flex-direction:column;gap:2px;font-size:13px;
+  }
+  .top-tabs-menu[hidden]{display:none}
+  .top-tabs-menu .tt-item{
+    display:flex;align-items:center;gap:8px;width:100%;text-align:left;
+    background:transparent;border:0;color:inherit;font:inherit;
+    padding:8px 10px;border-radius:7px;cursor:pointer;
+  }
+  .top-tabs-menu .tt-item:hover{background:rgba(127,127,127,.18)}
+  .top-tabs-menu .tt-quit{margin-top:4px;border-top:1px solid var(--line)}
   /* 2026-11-05 (Windows 壳): 顶部提示栏与第一栏一律**不透明**, 边框保持实色;
      Mac 继续用上面的 --glass + blur(20px), 不受影响。
      窗口级透明已经在 Tauri 壳里按平台关掉 (build_main_window)。 */
@@ -787,7 +810,8 @@
 </dialog>
 
 <!-- 2026-10-30 (用户): 智能体钱包 —— 在这里创建本地钱包 / 绑定已有地址; 只收地址, 不收私钥 -->
-<dialog id="walletDlg" style="width:min(520px,94vw)">
+<!-- 2026-11-15: 改名 agentWalletDlg —— 原来和「个人代币钱包」共用 id=walletDlg，导致点钱包按钮弹错弹窗 -->
+<dialog id="agentWalletDlg" style="width:min(520px,94vw)">
   <div class="pay-head">
     <div><b>智能体钱包</b><span class="pay-sub" id="walletSub"></span></div>
     <button class="pay-x" id="walletClose" aria-label="关闭">✕</button>
@@ -861,6 +885,8 @@
       <button class="rail-btn" id="railRoomBtn" title="内部商议"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
       <!-- 2026-11-15: 钱包 — 管理智能体钱包 + 自己的个人代币 -->
       <button class="rail-btn" id="railWalletBtn" title="钱包（智能体钱包 + 我的个人代币）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 14.5h2.5"/></svg></button>
+      <!-- 2026-11-15: 插件栏 — 智能体自己生成的插件 + 分享/导入的插件 -->
+      <button class="rail-btn" id="railPluginsBtn" title="插件（智能体生成的 + 分享的）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9h3a2 2 0 1 1 4 0h3v3a2 2 0 1 0 0 4v3h-3a2 2 0 1 1-4 0H4v-3a2 2 0 1 0 0-4z"/></svg></button>
     </div>
     <div class="rail-gap"></div>
     <!-- 更新入口: 与侧栏 #updateBtn 同源 — 默认 display:none, 有更新才由 renderUpdate() 显形 (点击 relay 到同一套安装流) -->
@@ -876,9 +902,18 @@
        红绿灯原地不动 (macOS 默认位) 浮在第一栏顶部, 本栏从它们右边开始 (padding-left 22px 让开),
        同一行右侧就是品牌 + 帛龙订阅 —— 不再有单独的壳条, 也没有 34px 空带。 -->
   <div id="topBar" data-tauri-drag-region="deep">
-    <span class="tb-brand">Bolloon</span>
+    <button id="topTabsBtn" class="top-tabs-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="左键打开标签栏：钱包 / 智能体 / 世界 / 群组 / 模型 / 退出">Bolloon <span class="tt-caret" aria-hidden="true">▾</span></button>
     <span class="grow"></span>
     <button id="dragonSubBtn" class="dragon-btn" title="订阅 Bolloon 更新（帛龙）" aria-label="订阅"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.6 15.2c-3.6-.6-6.2-3.9-5.6-7.5.6-3.6 3.9-6.2 7.5-5.6 2.6.4 4.7 2.2 5.4 4.6"/><path d="M12 8.6c-1.9 0-3.4 1.5-3.4 3.4s1.5 3.4 3.4 3.4 3.4-1.5 3.4-3.4"/><circle cx="18.4" cy="6.2" r="2.4"/><path d="M18.1 3.9c-.2-1.2.3-2.2 1.4-2.7M20.5 4.6c.9-.7 2-.9 3-.5"/><circle cx="19.2" cy="5.8" r=".5" fill="currentColor" stroke="none"/><path d="M16.2 6.9c-1.2-.6-2.2-.6-3.1 0"/></svg></button>
+  </div>
+  <!-- 2026-11-15: 顶部标签左键弹出的导航（放在拖拽区之外，避免点击被拖窗吞掉） -->
+  <div id="topTabsMenu" class="top-tabs-menu" role="menu" hidden>
+    <button class="tt-item" data-tt="wallet" type="button" role="menuitem">💰 钱包</button>
+    <button class="tt-item" data-tt="agents" type="button" role="menuitem">智能体</button>
+    <button class="tt-item" data-tt="world" type="button" role="menuitem">世界</button>
+    <button class="tt-item" data-tt="groups" type="button" role="menuitem">群组</button>
+    <button class="tt-item" data-tt="models" type="button" role="menuitem">模型</button>
+    <button class="tt-item tt-quit" data-tt="quit" type="button" role="menuitem">退出</button>
   </div>
   <aside>
     <div class="brand">
@@ -1206,8 +1241,28 @@
   <div class="hint" id="walletDidLine"></div>
   <div class="hint" id="walletVerifyBox" style="margin:6px 0"></div>
 
+  <!-- 2026-11-15: 钱包安全 —— 私钥本地加密 / 解锁 / 备份 / 跨设备共享 -->
+  <h4 style="margin:12px 0 4px">钱包安全</h4>
+  <div id="walletSecBox" class="hint"></div>
+  <div class="row" id="walletSecBtns" style="flex-wrap:wrap;gap:6px;margin:6px 0">
+    <button class="mini" id="walletSetupBtn" type="button">设置口令</button>
+    <button class="mini" id="walletUnlockBtn" type="button">解锁</button>
+    <button class="mini" id="walletLockBtn" type="button">锁定</button>
+    <button class="mini" id="walletBackupBtn" type="button">导出备份</button>
+    <button class="mini" id="walletRestoreBtn" type="button">用备份恢复</button>
+    <button class="mini" id="walletPushBtn" type="button">推送到设备</button>
+  </div>
+  <div class="hint" id="walletSecHint" style="word-break:break-all"></div>
+
   <h4 style="margin:12px 0 4px">我的个人代币</h4>
   <div id="walletTokens" class="hint"></div>
+
+  <!-- 2026-11-15: 发现/导入链上代币 —— 换机/重装也能把链上代币纳入钱包 -->
+  <div class="row" style="margin-top:6px">
+    <input id="tokImportAddr" placeholder="导入代币合约地址 0x…（链上校验后纳入钱包）" style="flex:1" autocomplete="off">
+    <button class="mini" id="tokImportBtn" type="button">发现/导入</button>
+  </div>
+  <div class="hint" id="tokImportHint"></div>
 
   <div id="walletIssueBox" style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px">
     <div class="hint" style="margin-bottom:4px">发行个人代币（绑定 DID；未通过真人验证不可发行）</div>
@@ -1224,6 +1279,28 @@
   <div id="walletAgentBox" class="hint"></div>
 
   <div class="row" style="margin-top:12px"><button onclick="document.getElementById('walletDlg').close()">关闭</button></div>
+</dialog>
+
+<!-- 2026-11-15: 插件栏 — 智能体自己生成的技能 + 分享/导入插件 -->
+<dialog id="pluginsDlg" style="width:min(92vw,560px)">
+  <h3 style="margin:0 0 6px">插件</h3>
+  <div class="hint">智能体自己生成的技能会自动出现在这里；也可以导入别人分享的插件。</div>
+  <div class="hint" style="opacity:.75">方法型插件：智能体可直接「按方法照做」；脚本型插件（带 lang: sh/python3/node）：需在设置里开启「完全访问」或单独授权后才能真实执行。</div>
+  <div id="pluginsList" class="hint" style="margin-top:8px;max-height:44vh;overflow:auto"></div>
+
+  <div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+    <div class="hint" style="margin-bottom:4px">新建插件（本机）</div>
+    <div class="row"><input id="plugName" placeholder="插件名" style="flex:1" autocomplete="off"><input id="plugDesc" placeholder="一句话描述（可选）" style="flex:2" autocomplete="off"></div>
+    <div class="row"><textarea id="plugBody" placeholder="插件内容（做法 / 提示词 / 脚本，≤4000 字）" rows="3" style="flex:1"></textarea></div>
+    <div class="row"><button class="primary" id="plugCreateBtn" type="button">创建插件</button></div>
+  </div>
+
+  <div style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px">
+    <div class="hint" style="margin-bottom:4px">导入别人分享的插件</div>
+    <div class="row"><input id="plugBlob" placeholder="粘贴插件分享串" style="flex:1" autocomplete="off"><button class="mini" id="plugImportBtn" type="button">导入</button></div>
+  </div>
+
+  <div class="row" style="margin-top:12px"><button onclick="document.getElementById('pluginsDlg').close()">关闭</button></div>
 </dialog>
 
 <script>
@@ -2497,9 +2574,9 @@ document.addEventListener('click',e=>{
 
 // ── 2026-10-30 (用户): 智能体钱包弹窗 —— 创建本地钱包 / 绑定已有地址 (只收地址, 不收私钥) ──
 let walletAgentId='';
-async function openWallet(agentId){
+async function openAgentWallet(agentId){
   walletAgentId=agentId||'';
-  const d=$('walletDlg'); if(!d) return;
+  const d=$('agentWalletDlg'); if(!d) return;
   if(!d.open) d.showModal();
   const a=(state.agents||[]).find(x=>x.id===walletAgentId)||{};
   $('walletSub').textContent=a.name?('· '+a.name):'';
@@ -2526,7 +2603,7 @@ async function refreshWallets(){
     catch(e){ toast('解绑失败：'+e.message); }
   });
 }
-$('walletClose').onclick=()=>$('walletDlg').close();
+$('walletClose').onclick=()=>$('agentWalletDlg').close();
 $('walletCreate').onclick=async()=>{
   try{
     const r=await api('/api/agents/'+encodeURIComponent(walletAgentId)+'/wallets/create',{method:'POST',body:JSON.stringify({})});
@@ -2643,7 +2720,7 @@ function openAgentMenu(e,id){
   const m=$('agentMenu');
   m.innerHTML=`
     <button onclick="renameAgentGlobal()">改默认全局名称</button>
-    <button onclick="openWallet(menuAgentId)">钱包（创建 / 绑定）</button>
+    <button onclick="openAgentWallet(menuAgentId)">钱包（创建 / 绑定）</button>
     <button onclick="pinAgent()">${(state.agent_pin||[]).includes(id)?'取消置顶':'固定（置顶 + ping 一次）'}</button>
     <button onclick="shareAgentDid(menuAgentId)">分享 DID</button>
     <button onclick="openGrantsDialog(menuAgentId)">开放给好友（权限）</button>
@@ -5010,6 +5087,7 @@ async function openWallet(){
 }
 async function loadWallet(){
   try{
+    refreshWalletSec();
     const st=await api('/api/verify/status');
     const didLine=$('walletDidLine');
     if(didLine)didLine.textContent='DID：'+(st.did||'—');
@@ -5038,7 +5116,7 @@ async function loadWallet(){
           const whole=(x.supply/Math.pow(10,x.decimals||0));
           return '<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid var(--line)">'
             +'<b>'+escapeHTML(x.name)+' ('+escapeHTML(x.symbol)+')</b>'
-            +'<span style="opacity:.7">供应 '+whole+' · 精度 '+(x.decimals||0)+' · '+(x.contract_address?('链上 '+escapeHTML(String(x.contract_address).slice(0,10))+'…'):'未上链')+'</span></div>';
+            +'<span style="opacity:.7">供应 '+whole+' · 精度 '+(x.decimals||0)+' · '+(x.contract_address?('链上 '+escapeHTML(String(x.contract_address).slice(0,10))+'…'):'未上链')+(x.imported?' · 导入':'')+'</span></div>';
         }).join('');
       }
     }
@@ -5061,6 +5139,133 @@ async function loadWallet(){
     const box=$('walletTokens'); if(box)box.textContent='读取失败：'+e.message;
   }
 }
+// ── 2026-11-15: 钱包安全（本地加密/解锁/备份/跨设备共享）+ 发现/导入代币 ──
+async function refreshWalletSec(){
+  try{
+    const s=await api('/api/wallet/status');
+    const box=$('walletSecBox');
+    if(box){
+      const addr=s.address?escapeHTML(s.address):'（未创建）';
+      let st;
+      if(!s.exists) st='（还没有钱包）';
+      else if(!s.encrypted) st='⚠ 未加密（旧格式，建议设置口令）';
+      else st=s.unlocked?'🔓 已解锁':'🔒 已加密（已锁定）';
+      box.innerHTML='钱包地址 <b>'+addr+'</b><br>状态：'+st;
+    }
+    const hint=$('walletSecHint');
+    if(hint && s.pending_share) hint.innerHTML='📥 收到共享钱包密文，点「用备份恢复」或输入口令解锁同一钱包。';
+  }catch(_){}
+}
+async function walletSetup(){
+  const p=prompt('设置钱包口令（至少 8 位；忘记无法恢复，务必记牢）：'); if(!p)return;
+  try{ const r=await api('/api/wallet/setup',{method:'POST',body:JSON.stringify({passphrase:p})}); if(!r.ok){toast(r.error||'设置失败');return;} toast('钱包已加密并解锁'); await loadWallet(); }catch(e){toast('设置失败：'+e.message);}
+}
+async function walletUnlock(){
+  const p=prompt('输入钱包口令：'); if(!p)return;
+  try{ const r=await api('/api/wallet/unlock',{method:'POST',body:JSON.stringify({passphrase:p})}); if(!r.ok){toast(r.error||'解锁失败');return;} toast('已解锁'); await loadWallet(); }catch(e){toast('解锁失败：'+e.message);}
+}
+async function walletLock(){
+  try{ await api('/api/wallet/lock',{method:'POST',body:'{}'}); toast('已锁定（内存里的明文私钥已清除）'); await loadWallet(); }catch(e){toast('锁定失败：'+e.message);}
+}
+async function walletBackup(){
+  try{
+    const r=await api('/api/wallet/backup'); if(!r.ok){toast(r.error||'导出失败');return;}
+    const hint=$('walletSecHint'); if(hint)hint.textContent='备份串（只含密文；到另一台设备用同一口令恢复）：'+r.blob;
+    try{ await navigator.clipboard.writeText(r.blob); toast('备份串已复制'); }catch(_){ toast('备份串已显示，请手动复制'); }
+  }catch(e){toast('导出失败：'+e.message);}
+}
+async function walletRestore(){
+  const blob=prompt('粘贴备份串：'); if(!blob)return;
+  const p=prompt('输入该钱包口令：'); if(!p)return;
+  let ow=false;
+  try{ const s=await api('/api/wallet/status'); if(s.exists) ow=confirm('本机已有钱包，是否覆盖为备份里的钱包？'); }catch(_){}
+  try{ const r=await api('/api/wallet/restore',{method:'POST',body:JSON.stringify({blob,passphrase:p,overwrite:ow})}); if(!r.ok){toast(r.error||'恢复失败');return;} toast('已恢复并解锁 '+String(r.address||'').slice(0,10)+'…'); await loadWallet(); }catch(e){toast('恢复失败：'+e.message);}
+}
+async function walletPush(){
+  const peer=prompt('推送到设备地址（如 http://192.168.1.20:8787）：'); if(!peer)return;
+  try{ const r=await api('/api/wallet/push',{method:'POST',body:JSON.stringify({peer_base:peer})}); if(!r.ok){toast(r.error||'推送失败');return;} toast('已把加密备份推送到对端'); }catch(e){toast('推送失败：'+e.message);}
+}
+async function importToken(){
+  const addr=($('tokImportAddr')?.value||'').trim(); const hint=$('tokImportHint');
+  if(!addr){ if(hint)hint.textContent='请填合约地址'; return; }
+  if(hint)hint.textContent='正在链上读取合约…';
+  try{
+    const r=await api('/api/tokens/import',{method:'POST',body:JSON.stringify({contract_address:addr})});
+    if(!r.ok){ if(hint)hint.textContent='导入失败：'+(r.error||''); return; }
+    if(hint)hint.textContent='';
+    toast('已导入 '+(r.token&&r.token.symbol||'')); await loadWallet();
+  }catch(e){ if(hint)hint.textContent='导入失败：'+e.message; }
+}
+$('walletSetupBtn')?.addEventListener('click',walletSetup);
+$('walletUnlockBtn')?.addEventListener('click',walletUnlock);
+$('walletLockBtn')?.addEventListener('click',walletLock);
+$('walletBackupBtn')?.addEventListener('click',walletBackup);
+$('walletRestoreBtn')?.addEventListener('click',walletRestore);
+$('walletPushBtn')?.addEventListener('click',walletPush);
+$('tokImportBtn')?.addEventListener('click',importToken);
+
+// ── 2026-11-15: 插件栏（内置技能注册表：智能体生成的 + 分享/导入的）──
+async function openPlugins(){
+  const d=$('pluginsDlg'); if(!d)return;
+  if(typeof d.showModal==='function'){ if(!d.open)d.showModal(); } else { d.open=true; }
+  await loadPlugins();
+}
+async function loadPlugins(){
+  const box=$('pluginsList'); if(!box)return;
+  box.innerHTML='读取中…';
+  try{
+    const r=await api('/api/plugins');
+    const ps=r.plugins||[];
+    if(!ps.length){ box.innerHTML='<div style="opacity:.7">还没有插件。智能体生成技能后会自动出现在这里，或从下方导入。</div>'; return; }
+    box.innerHTML=ps.map(p=>{
+      const origin=p.origin==='learned'?'生成':'内置';
+      return '<div style="padding:6px 0;border-bottom:1px solid var(--line)">'
+        +'<div style="display:flex;justify-content:space-between;gap:8px"><b>'+escapeHTML(p.name)+'</b>'
+        +'<span style="opacity:.7">'+origin+' · '+escapeHTML(String(p.description||'').slice(0,40))+'</span></div>'
+        +'<div class="row" style="gap:6px;margin-top:4px"><button class="mini" data-share="'+escapeHTML(p.name)+'" type="button">分享</button><button class="mini" data-rm="'+escapeHTML(p.name)+'" type="button">删除</button></div>'
+        +'</div>';
+    }).join('');
+    box.querySelectorAll('[data-share]').forEach(b=>b.onclick=()=>sharePlugin(b.dataset.share));
+    box.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>removePlugin(b.dataset.rm));
+  }catch(e){ box.innerHTML='读取失败：'+escapeHTML(e.message); }
+}
+async function createPlugin(){
+  const name=($('plugName')?.value||'').trim(), description=($('plugDesc')?.value||'').trim(), body=($('plugBody')?.value||'').trim();
+  if(!name||!body){ toast('插件名和内容必填'); return; }
+  try{
+    const r=await api('/api/plugins/create',{method:'POST',body:JSON.stringify({name,description,body})});
+    if(!r.ok){ toast(r.error||'创建失败'); return; }
+    toast('已创建 '+name); await loadPlugins();
+  }catch(e){ toast('创建失败：'+e.message); }
+}
+async function importPlugin(){
+  const blob=($('plugBlob')?.value||'').trim(); if(!blob){ toast('请粘贴分享串'); return; }
+  try{
+    const r=await api('/api/plugins/import',{method:'POST',body:JSON.stringify({blob})});
+    if(!r.ok){ toast(r.error||'导入失败'); return; }
+    toast('已导入 '+r.name); await loadPlugins();
+  }catch(e){ toast('导入失败：'+e.message); }
+}
+async function sharePlugin(name){
+  try{
+    const r=await api('/api/plugins/share?name='+encodeURIComponent(name));
+    if(!r.ok){ toast(r.error||'分享失败'); return; }
+    try{ await navigator.clipboard.writeText(r.blob); toast('分享串已复制'); }
+    catch(_){ prompt('分享串（复制给好友）：', r.blob); }
+  }catch(e){ toast('分享失败：'+e.message); }
+}
+async function removePlugin(name){
+  if(!confirm('删除插件「'+name+'」？')) return;
+  try{
+    const r=await api('/api/plugins/remove',{method:'POST',body:JSON.stringify({name})});
+    if(!r.ok){ toast(r.error||'删除失败'); return; }
+    toast('已删除'); await loadPlugins();
+  }catch(e){ toast('删除失败：'+e.message); }
+}
+$('railPluginsBtn')?.addEventListener('click',openPlugins);
+$('plugCreateBtn')?.addEventListener('click',createPlugin);
+$('plugImportBtn')?.addEventListener('click',importPlugin);
+
 let _tokDraft=null;
 function tokFormDraft(){
   return {
@@ -5121,6 +5326,60 @@ async function verifyByCode(){
 $('railWalletBtn')?.addEventListener('click',openWallet);
 // 2026-11-15: 钱包入口在「用户页面(设置)」里 —— 点它先关设置再开钱包
 $('settingsWalletBtn')?.addEventListener('click',()=>{const p=$('profileDlg');if(p&&p.open)p.close();openWallet();});
+
+// ── 2026-11-15: 顶部标签左键 → 导航标签栏（钱包/智能体/世界/群组/模型/退出）──
+(function initTopTabs(){
+  const btn=$('topTabsBtn'), menu=$('topTabsMenu');
+  if(!btn||!menu) return;
+  let open=false;
+  function closeMenu(){ open=false; menu.hidden=true; btn.setAttribute('aria-expanded','false'); }
+  function openMenu(){
+    const r=btn.getBoundingClientRect();
+    menu.hidden=false;
+    const mw=menu.offsetWidth||180, mh=menu.offsetHeight||220;
+    let left=r.left, top=r.bottom+6;
+    if(left+mw>innerWidth-8) left=Math.max(8, innerWidth-mw-8);
+    if(top+mh>innerHeight-8) top=Math.max(8, innerHeight-mh-8);
+    menu.style.left=left+'px'; menu.style.top=top+'px';
+    open=true; btn.setAttribute('aria-expanded','true');
+  }
+  btn.addEventListener('click',(e)=>{
+    e.preventDefault(); e.stopPropagation();
+    if(open) closeMenu(); else openMenu();
+  });
+  btn.addEventListener('contextmenu',(e)=>e.preventDefault());
+  document.addEventListener('click',(e)=>{
+    if(open && !menu.contains(e.target) && e.target!==btn) closeMenu();
+  });
+  document.addEventListener('keydown',(e)=>{ if(e.key==='Escape'&&open) closeMenu(); });
+  function quitApp(){
+    try{
+      const t=window.__TAURI__;
+      if(t&&t.window&&t.window.getCurrentWindow){ t.window.getCurrentWindow().close(); return; }
+    }catch(_){}
+    try{ window.close(); }catch(_){}
+  }
+  const actions={
+    wallet:()=>{ if(typeof openWallet==='function') openWallet(); },
+    agents:()=>{ if(typeof setDesktopModule==='function') setDesktopModule('chat'); if(typeof setPanel==='function') setPanel('chat'); },
+    world:()=>{ if(typeof setDesktopModule==='function') setDesktopModule('world'); if(typeof setPanel==='function') setPanel('world'); },
+    groups:()=>{
+      try{ if(typeof activeGroupId!=='undefined'&&activeGroupId&&typeof closeGroup==='function') closeGroup(); }catch(_){}
+      if(typeof setDesktopModule==='function') setDesktopModule('contacts');
+      if(typeof setPanel==='function') setPanel('contacts');
+      if(typeof loadContacts==='function') loadContacts();
+    },
+    models:()=>{ if(typeof openModelPool==='function') openModelPool(); },
+    quit:quitApp,
+  };
+  menu.querySelectorAll('.tt-item').forEach(b=>{
+    b.addEventListener('click',(e)=>{
+      e.preventDefault(); e.stopPropagation();
+      const k=b.dataset.tt; closeMenu();
+      const fn=actions[k]; if(fn) fn();
+    });
+  });
+})();
 $('tokIssueBtn')?.addEventListener('click',prepareToken);
 $('tokConfirmBtn')?.addEventListener('click',confirmToken);
 $('groupClose').onclick=closeGroup;

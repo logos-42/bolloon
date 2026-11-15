@@ -97,6 +97,22 @@ async fn do_read_skill(call: ToolCall) -> ToolResult {
             json!({ "skill": name, "found": true, "source": "registry" }),
         );
     }
+    // 2026-11-15: 插件栏写的是 ~/.bolloon/rust/skills.json（与 run_plugin 同源）。
+    //   系统提示把插件列进「可用技能」，所以 read_skill 也必须能读到，否则"存在却读不到"。
+    let plugins_path = crate::home::BolloonHome::resolve().root().join("skills.json");
+    if let Ok(raw) = std::fs::read_to_string(&plugins_path) {
+        if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) {
+            for v in arr {
+                if v.get("name").and_then(|x| x.as_str()) == Some(name.as_str()) {
+                    let body = v.get("body").and_then(|x| x.as_str()).unwrap_or("");
+                    return ok(
+                        format!("# {name}\n\n{body}"),
+                        json!({ "skill": name, "found": true, "source": "plugins" }),
+                    );
+                }
+            }
+        }
+    }
     // 索引里也有仓库磁盘技能 (`skills/<dir>/SKILL.md`) —— 名字点了就该读得到,
     // 不能因为"没进 skills.json"就报 not found。
     for doc in scan_repo_skills() {
@@ -439,12 +455,8 @@ mod tests {
     use super::*;
     use bolloon_harness::ToolExecutor;
 
-    /// 进程级锁: `BOLLOON_AGENT_DIR` 是全局环境变量, 并行测试必须串行;
-    /// 每个测试再用独立目录, 避免 remember/todo/skill 互相覆盖 (2026-11-06 flaky 根因)。
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-    /// 与 belief_tools 共用 crate 级锁 (两把私锁仍会并行改 BOLLOON_AGENT_DIR)
+    /// `BOLLOON_AGENT_DIR` 是全局环境变量；`test_env::isolate` 提供 crate 级串行锁 +
+    /// 每个测试独立目录，避免 remember/todo/skill 互相覆盖（2026-11-06 flaky 根因）。
     fn setup() -> (std::sync::MutexGuard<'static, ()>, std::path::PathBuf) {
         crate::test_env::isolate("dom")
     }

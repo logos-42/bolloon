@@ -117,6 +117,22 @@ impl SkillsRegistry {
         self.skills.keys().cloned().collect()
     }
 
+    /// 全部条目 (插件栏/技能面板只读展示用)
+    pub fn entries(&self) -> Vec<&Skill> {
+        self.skills.values().collect()
+    }
+
+    /// 删除一个条目 (插件栏「删除」; 同步移除去重哈希，允许日后重新导入)
+    pub fn remove(&mut self, name: &str) -> bool {
+        if let Some(s) = self.skills.remove(name) {
+            let h = content_hash(&s.body);
+            self.hashes.remove(&h);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
     }

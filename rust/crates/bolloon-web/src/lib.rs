@@ -53,4 +53,8 @@ pub mod verify;
 pub mod personal_token;
 /// 真实 EVM 交易签名 + 广播（个人代币部署上链）
 pub mod chain_tx;
+/// 钱包私钥本地加密（口令 PBKDF2 → AES-256-GCM；备份串可跨设备）
+pub mod wallet_crypto;
+/// 插件栏（技能注册表的浏览 / 分享 / 导入）
+pub mod plugins;
 pub use server::*;

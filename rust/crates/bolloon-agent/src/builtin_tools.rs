@@ -195,6 +195,8 @@ pub fn builtin_tool_defs() -> Vec<ToolDef> {
     defs.extend(crate::domain_tools::domain_tool_defs());
     defs.extend(crate::updater_tools::updater_tool_defs());
     defs.extend(crate::scratch_tools::scratch_tool_defs());
+    // 插件执行 (2026-11-15): 插件栏里的插件作为工具被模型调用 (默认 fail-closed)
+    defs.extend(crate::plugin_tools::plugin_tool_defs());
     // 经济层工具：只有注入了 econ 上下文才真正可用（否则执行时如实说未启用）
     defs.extend(crate::econ_tools::econ_tool_defs());
     defs.extend(crate::invite_tools::invite_tool_defs());
@@ -221,6 +223,8 @@ pub struct BuiltinExecutor {
     updater: Arc<crate::updater_tools::UpdaterExecutor>,
     shell: Arc<ShellExecutor>,
     scratch: Arc<crate::scratch_tools::ScratchExecutor>,
+    /// 插件执行器（与 scratch 共享同一 ScriptRunPort；方法型返回正文，脚本型真执行）
+    plugin: Arc<crate::plugin_tools::PluginExecutor>,
     /// 经济层工具上下文（None = 未接线，执行时如实说"未启用"）
     econ: Option<crate::econ_tools::EconTools>,
     /// 邮件工具上下文（None = 没配账号 / 未注入，执行时如实说"未接线"）
@@ -245,7 +249,8 @@ impl BuiltinExecutor {
             domain: Arc::new(crate::domain_tools::DomainExecutor),
             updater: Arc::new(crate::updater_tools::UpdaterExecutor),
             shell: Arc::new(ShellExecutor::with_mode(cancel, bypass)),
-            scratch: Arc::new(crate::scratch_tools::ScratchExecutor::new(script_run)),
+            scratch: Arc::new(crate::scratch_tools::ScratchExecutor::new(script_run.clone())),
+            plugin: Arc::new(crate::plugin_tools::PluginExecutor::new(script_run)),
             econ: None,
             mail: None,
         }
@@ -288,6 +293,7 @@ impl ToolExecutor for BuiltinExecutor {
             "check_update" => self.updater.execute(call).await,
             "shell" => self.shell.execute(call).await,
             "run_scratch_script" => self.scratch.execute(call).await,
+            "run_plugin" => self.plugin.execute(call).await,
             "group_invite" | "group_join" | "group_members" | "group_read" | "immune_report"
             | "immune_status" => {
                 crate::invite_tools::execute_sync(&call)
@@ -394,6 +400,9 @@ pub const DEFAULT_GRANTED_TOOLS: &[&str] = &[
     "git_add",
     "git_commit",
     "run_scratch_script",
+    // 2026-11-15 (用户: 「默认授予」): 插件执行默认放行。
+    //   注意: 导入的插件无签名校验, 脚本型插件因此在本机默认可执行 —— 这是用户的明确选择。
+    "run_plugin",
     // IPFS 原语: 只碰本地节点, 可逆 (内容寻址, 不改本机文件)
     "ipfs_add",
     "ipfs_cat",
@@ -457,14 +466,43 @@ pub async fn builtin_harness_with_mail(
     bypass: bool,
     mail: Option<Arc<crate::mail::MailService>>,
 ) -> (Arc<Harness>, Vec<ToolSchema>) {
+    builtin_harness_with_mail_ports(
+        calls,
+        budget_ms,
+        cancel,
+        bypass,
+        mail,
+        crate::scratch::ScriptRunPort::noop(),
+    )
+    .await
+}
+
+/// 生产 web 路径：除邮件外，把**真实脚本执行端口**也接进来（插件/scratch 才能真执行）。
+pub async fn builtin_harness_with_ports(
+    calls: u32,
+    budget_ms: u64,
+    cancel: Arc<AtomicBool>,
+    bypass: bool,
+    script_run: crate::scratch::ScriptRunPort,
+) -> (Arc<Harness>, Vec<ToolSchema>) {
+    let mail = crate::mail::build_service(&crate::home::BolloonHome::resolve())
+        .ok()
+        .map(std::sync::Arc::new);
+    builtin_harness_with_mail_ports(calls, budget_ms, cancel, bypass, mail, script_run).await
+}
+
+async fn builtin_harness_with_mail_ports(
+    calls: u32,
+    budget_ms: u64,
+    cancel: Arc<AtomicBool>,
+    bypass: bool,
+    mail: Option<Arc<crate::mail::MailService>>,
+    script_run: crate::scratch::ScriptRunPort,
+) -> (Arc<Harness>, Vec<ToolSchema>) {
     let budget = Budget::new(calls, budget_ms);
     let reg = Arc::new(ToolRegistry::new());
     register_builtin_tools(&reg).await;
-    let mut exec = BuiltinExecutor::new(
-        cancel,
-        bypass,
-        crate::scratch::ScriptRunPort::noop(),
-    );
+    let mut exec = BuiltinExecutor::new(cancel, bypass, script_run);
     if let Some(m) = mail {
         exec = exec.with_mail(m);
     }

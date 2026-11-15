@@ -2583,11 +2583,12 @@ pub async fn reply_with_agent_cfg(
             full_access,
         ).await
     } else {
-        bolloon_agent::builtin_tools::builtin_harness(
+        bolloon_agent::builtin_tools::builtin_harness_with_ports(
             opts.tool_budget,
             opts.max_secs.saturating_mul(1000),
             cancel.clone(),
             full_access,
+            st.script_run.clone(),
         )
         .await
     };
@@ -8294,16 +8295,17 @@ async fn discover_by(
 }
 
 /// 把发现记录里的 DIAP 地址登记成可连对端（url 只是标识，不必 HTTP 可达）。
-async fn register_discovered(st: &AppState, rec: &serde_json::Value, kind: &str, value: &str) {
+async fn register_discovered(st: &AppState, _rec: &serde_json::Value, kind: &str, value: &str) {
+    // `_rec` 只在启用 diap-backend 时被用到；其余 feature 组合下不告警。
     #[cfg(feature = "diap-backend")]
-    if !rec["diap"].is_null() {
+    if !_rec["diap"].is_null() {
         if let Some(hub) = crate::diap_hub::global() {
             let tag: String = bolloon_agent::directory::discovery_topic_for_hex(kind, value)
                 .chars()
                 .take(12)
                 .collect();
             let url = format!("http://diap-{tag}:54188");
-            hub.register(&url, rec["diap"].clone()).await;
+            hub.register(&url, _rec["diap"].clone()).await;
             let mut fs = st.forge.lock().await;
             if !fs.directory_peers.iter().any(|p| p == &url) {
                 fs.directory_peers.push(url.clone());
