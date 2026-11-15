@@ -372,6 +372,15 @@
   .menu button{display:block;width:100%;text-align:left;background:transparent;border:none;border-radius:7px;padding:7px 9px;font-size:13px;color:var(--text)}
   .menu button:hover{background:var(--active)}
   .msg img{max-width:220px;border-radius:8px;display:block;margin-top:6px}
+  /* 2026-11-15: 队列条 (输入框上方) — 排队中/执行中 + 逐条撤回 */
+  .queue-list{display:flex;flex-direction:column;gap:6px;padding:8px 16px;border-top:1px solid var(--line);background:var(--panel);max-height:150px;overflow-y:auto}
+  .queue-item{display:flex;align-items:center;gap:8px;font-size:12px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:5px 10px}
+  .queue-item .q-badge{flex:none;font-size:10px;padding:1px 7px;border-radius:999px;background:rgba(196,214,64,.14);color:var(--accent);white-space:nowrap}
+  .queue-item[data-status="running"] .q-badge{background:rgba(196,214,64,.26)}
+  .queue-item .q-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+  .queue-item .q-retract{flex:none;background:transparent;border:1px solid var(--line);border-radius:7px;padding:2px 9px;font-size:11px;color:var(--muted,#909088);cursor:pointer}
+  .queue-item .q-retract:hover{color:#ef4444;border-color:#ef4444}
+  .queue-more{flex:none;background:transparent;border:none;color:var(--muted,#909088);font-size:11px;cursor:pointer;text-decoration:underline;padding:0 2px}
   .composer{border-top:1px solid var(--line);padding:12px 16px 6px;display:flex;gap:8px;align-items:flex-end}
   .composer textarea{flex:1;resize:none;height:46px;max-height:140px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:12px}
   .composer .edit-btn{display:grid;place-items:center;width:36px;height:38px;padding:0;border-radius:11px;flex:none}
@@ -850,6 +859,8 @@
       <button class="rail-btn" data-module="world" title="世界（机会流）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18z"/></svg></button>
       <button class="rail-btn" data-module="contacts" title="通讯录（好友 / 群聊）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M6 15c0-1.7 1.3-3 3-3s3 1.3 3 3"/><path d="M14 8h4M14 12h4M14 16h4"/></svg></button>
       <button class="rail-btn" id="railRoomBtn" title="内部商议"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
+      <!-- 2026-11-15: 钱包 — 管理智能体钱包 + 自己的个人代币 -->
+      <button class="rail-btn" id="railWalletBtn" title="钱包（智能体钱包 + 我的个人代币）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 14.5h2.5"/></svg></button>
     </div>
     <div class="rail-gap"></div>
     <!-- 更新入口: 与侧栏 #updateBtn 同源 — 默认 display:none, 有更新才由 renderUpdate() 显形 (点击 relay 到同一套安装流) -->
@@ -947,6 +958,8 @@
         <button class="gear" id="settingsBtn" title="设置">⚙</button>
       </div>
       <div class="who"><b id="accountName">用户</b><small id="accountDid">did:…</small></div>
+      <!-- 2026-11-15: 左下角个人页面钱包入口 -->
+      <button id="accountWalletBtn" class="mini" title="钱包（智能体钱包 + 我的个人代币）" style="padding:3px 9px;font-size:11px;white-space:nowrap">💰 钱包</button>
       <!-- 2026-10-30 (leo: 网页端没有订阅栏按钮): 额度/订阅入口 (桌面壳在 #topBar, 网页端在这里) -->
       <button id="payBtn" class="mini" title="额度 / 订阅（按连接的付费路由计费，先充值后使用）" style="margin-left:auto;padding:3px 8px;font-size:11px;white-space:nowrap">额度</button>
     </div>
@@ -1082,6 +1095,9 @@
       </div>
     </div>
     <div id="imgPreview"></div>
+    <!-- 2026-11-15: 队列条在输入框**上方** — 显示「排队中 / 执行中」并可逐条撤回。
+         世界 / 群组 / 智能体共用同一底部 composer，所以三端都能看到并撤回。 -->
+    <div id="queueList" class="queue-list" style="display:none"></div>
     <div class="composer">
       <button id="toolsBtn" title="添加图片">＋</button>
       <textarea id="input" placeholder="发送消息；Enter 发送，Shift+Enter 换行"></textarea>
@@ -1094,7 +1110,6 @@
       <button id="atBtn" class="edit-btn world-only" title="指定接话的智能体 / 群组（不指定=默认本机智能体）">@</button>
       <button class="primary" id="send">发送</button>
     </div>
-    <div id="queueHint" class="hint" style="display:none"></div>
     <div class="composer-footer">
       <button id="modelBtn" class="mini" title="选择模型">⚙ 模型：<span id="modelLabel">…</span></button>
       <span id="clarityToggleSlot"></span>
@@ -1185,6 +1200,30 @@
   <div class="row"><button onclick="document.getElementById('toolsDlg').close()">取消</button><button class="primary" id="toolsSave">保存</button></div>
 </dialog>
 
+<!-- 2026-11-15: 钱包弹窗 — 智能体钱包 + 我的个人代币 + DID 真人验证门 -->
+<dialog id="walletDlg" style="width:min(92vw,580px)">
+  <h3 style="margin:0 0 6px">钱包</h3>
+  <div class="hint" id="walletDidLine"></div>
+  <div class="hint" id="walletVerifyBox" style="margin:6px 0"></div>
+
+  <h4 style="margin:12px 0 4px">我的个人代币</h4>
+  <div id="walletTokens" class="hint"></div>
+
+  <div id="walletIssueBox" style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px">
+    <div class="hint" style="margin-bottom:4px">发行个人代币（绑定 DID；未通过真人验证不可发行）</div>
+    <div class="row"><input id="tokName" placeholder="代币名称（≤32字）" style="flex:2"><input id="tokSymbol" placeholder="符号（2-8位）" style="flex:1"></div>
+    <div class="row"><input id="tokSupply" type="number" placeholder="初始供应量" style="flex:1"><input id="tokDecimals" type="number" placeholder="精度 0-18" value="6" style="flex:1"></div>
+    <div class="row"><input id="tokDesc" placeholder="简介（可选）" style="flex:1"></div>
+    <div class="row"><button class="primary" id="tokIssueBtn">发行代币</button></div>
+    <div class="hint" id="tokIssueHint"></div>
+  </div>
+
+  <h4 style="margin:14px 0 4px">智能体钱包</h4>
+  <div id="walletAgentBox" class="hint"></div>
+
+  <div class="row" style="margin-top:12px"><button onclick="document.getElementById('walletDlg').close()">关闭</button></div>
+</dialog>
+
 <script>
 let state=null, update=null, models=null, pendingImages=[], editingAgentId='', menuSessionId='', editingMessageIndex=null, editingSessionId='';
 const busySessions=new Set(), aborts=new Map(), resumeTimers=new Map();
@@ -1194,11 +1233,13 @@ const privacyBlocked=(text)=>PRIVATE_INPUT.test(text||'');
 const isBusy=(id)=>{const sid=id||(state&&state.active_session_id);return !!(sid&&busySessions.has(sid));};
 function setBusy(id,on){if(!id)return;if(on)busySessions.add(id);else{busySessions.delete(id);flushQueue(id);}renderSendState();}
 const queueLen=(id)=>{const sid=id||(state&&state.active_session_id);const q=sid&&sendQueues.get(sid);return q?q.length:0;};
+let _qseq=0;
+const qid=()=>'q'+(++_qseq)+'-'+Date.now().toString(36);
 function enqueueSend(text,images){
   const sid=state&&state.active_session_id;
   if(!sid)return;
   if(!sendQueues.has(sid))sendQueues.set(sid,[]);
-  sendQueues.get(sid).push({text,images});
+  sendQueues.get(sid).push({id:qid(),text,images});
   renderSendState();
 }
 async function flushQueue(sid){
@@ -1214,6 +1255,42 @@ async function flushQueue(sid){
 function clearQueue(sid){
   sid=sid||(state&&state.active_session_id);
   sendQueues.delete(sid);renderSendState();
+}
+// 2026-11-15: 撤回单条排队消息 (按 id)；撤掉后不再发送
+function retractQueued(id){
+  const sid=state&&state.active_session_id;
+  if(!sid)return;
+  const q=sendQueues.get(sid);
+  if(!q)return;
+  const i=q.findIndex(x=>x&&x.id===id);
+  if(i<0)return;
+  q.splice(i,1);
+  if(!q.length)sendQueues.delete(sid);
+  renderSendState();
+}
+// 2026-11-15: 渲染输入框上方队列条 — 「排队中」+ 逐条「撤回」。
+// 聊天 / 世界 / 群组 / 智能体共用同一底部 composer，所以三端都能看到并撤回。
+function renderQueue(){
+  const el=$('queueList');
+  if(!el)return;
+  const sid=state&&state.active_session_id;
+  const q=(sid&&sendQueues.get(sid))||[];
+  if(!q.length){el.style.display='none';el.innerHTML='';return;}
+  el.style.display='';
+  el.innerHTML=q.map(it=>{
+    const raw=(it.text||'').trim();
+    const label=raw?escapeHTML(raw.slice(0,120)):((it.images&&it.images.length)?'（图片消息）':'（空消息）');
+    return `<div class="queue-item" data-status="queued">
+      <span class="q-badge">排队中</span>
+      <span class="q-label">${label}</span>
+      <button class="q-retract" data-qid="${it.id||''}" title="撤回这条排队消息">撤回</button>
+    </div>`;
+  }).join('') + `<button class="queue-more" title="清空全部排队消息">清空全部</button>`;
+  el.querySelectorAll('.q-retract').forEach(btn=>{
+    btn.onclick=()=>{const id=btn.getAttribute('data-qid');if(id)retractQueued(id);};
+  });
+  const more=el.querySelector('.queue-more');
+  if(more)more.onclick=()=>clearQueue();
 }
 
 const $=(id)=>document.getElementById(id);
@@ -3187,12 +3264,8 @@ function renderSendState(){
   }else{
     b.classList.remove('stop');b.title='发送';b.textContent='发送';
   }
-  const qh=$('queueHint');
-  if(qh){
-    const n=queueLen();
-    if(n>0){qh.style.display='';qh.innerHTML=`已排队 ${n} 条，本轮结束后依次发送 · <a href="#" onclick="clearQueue();return false;">清空队列</a>`;}
-    else qh.style.display='none';
-  }
+  // 2026-11-15: 输入框上方队列条 (排队中 + 逐条撤回)，替代旧的下方「已排队 N 条」提示
+  renderQueue();
 }
 async function stopStreaming(){
   const s=state&&state.sessions.find(x=>x.id===state.active_session_id);
@@ -4926,6 +4999,93 @@ async function sendGroup(){
   }catch(e){ $('groupMeta').textContent='发送失败: '+e.message; }
 }
 $('groupSend').onclick=sendGroup;
+
+// ── 2026-11-15: 钱包弹窗 —— 智能体钱包 + 我的个人代币 + DID 真人验证门 ──
+async function openWallet(){
+  const dlg=$('walletDlg'); if(!dlg)return;
+  if(typeof dlg.showModal==='function'){ if(!dlg.open)dlg.showModal(); } else { dlg.open=true; }
+  await loadWallet();
+}
+async function loadWallet(){
+  try{
+    const st=await api('/api/verify/status');
+    const didLine=$('walletDidLine');
+    if(didLine)didLine.textContent='DID：'+(st.did||'—');
+    const vb=$('walletVerifyBox');
+    if(vb){
+      if(st.verified){
+        vb.style.color='var(--accent)';
+        vb.innerHTML='✅ 已通过真人验证（'+escapeHTML(st.method||'')+'）';
+      }else{
+        vb.style.color='var(--muted)';
+        vb.innerHTML='⚠ 未通过真人验证 —— 发币前需完成验证。'
+          +'<span style="display:inline-flex;gap:6px;margin-left:8px">'
+          +'<button class="mini" id="verifyCodeBtn" type="button">用邀请码验证</button>'
+          +'<button class="mini" id="verifyBindBtn" type="button">绑定手机/邮箱</button></span>';
+        const vc=$('verifyCodeBtn'); if(vc)vc.onclick=verifyByCode;
+        const vbn=$('verifyBindBtn'); if(vbn)vbn.onclick=()=>toast('请先在「个人资料」绑定并证明手机号/邮箱，或用邀请码验证');
+      }
+    }
+    const t=await api('/api/tokens');
+    const box=$('walletTokens');
+    if(box){
+      if(!t.tokens||!t.tokens.length){
+        box.innerHTML='<div style="opacity:.7">还没有代币。'+(t.verified?'':'（需先完成真人验证才能发行）')+'</div>';
+      }else{
+        box.innerHTML=t.tokens.map(x=>{
+          const whole=(x.supply/Math.pow(10,x.decimals||0));
+          return '<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid var(--line)">'
+            +'<b>'+escapeHTML(x.name)+' ('+escapeHTML(x.symbol)+')</b>'
+            +'<span style="opacity:.7">供应 '+whole+' · 精度 '+(x.decimals||0)+' · '+(x.issuer_verified?'已验证':'')+'</span></div>';
+        }).join('');
+      }
+    }
+    const issueBox=$('walletIssueBox');
+    if(issueBox){issueBox.style.opacity=t.verified?'1':'.5';issueBox.style.pointerEvents=t.verified?'auto':'none';}
+    const ab=$('walletAgentBox');
+    if(ab){
+      const aid=(state&&state.active_agent_id)||'';
+      if(!aid){ab.textContent='（先选中一个智能体）';}
+      else{
+        try{
+          const w=await api('/api/agents/'+encodeURIComponent(aid)+'/wallets');
+          ab.innerHTML=(w.wallets&&w.wallets.length)
+            ? w.wallets.map(x=>'<div style="padding:3px 0;border-bottom:1px solid var(--line)">'+escapeHTML(x.label||x.source)+' · <span style="opacity:.7">'+escapeHTML(x.address)+'</span></div>').join('')
+            : '（该智能体还没有钱包）';
+        }catch(_){ab.textContent='（读取智能体钱包失败）';}
+      }
+    }
+  }catch(e){
+    const box=$('walletTokens'); if(box)box.textContent='读取失败：'+e.message;
+  }
+}
+async function issueToken(){
+  const hint=$('tokIssueHint');
+  const name=($('tokName')?.value||'').trim();
+  const symbol=($('tokSymbol')?.value||'').trim();
+  const supply=parseInt(($('tokSupply')?.value||'0'),10)||0;
+  const decimals=parseInt(($('tokDecimals')?.value||'6'),10)||0;
+  const description=($('tokDesc')?.value||'').trim();
+  if(!name||!symbol||!supply){if(hint)hint.textContent='名称 / 符号 / 供应量必填';return;}
+  try{
+    const r=await api('/api/tokens/issue',{method:'POST',body:JSON.stringify({name,symbol,decimals,supply,description})});
+    if(!r.ok){ if(hint)hint.textContent='发行失败：'+(r.error||'未知错误'); if(r.need_verify)loadWallet(); return; }
+    if(hint)hint.textContent='已发行：'+r.token.symbol;
+    await loadWallet();
+  }catch(e){ if(hint)hint.textContent='发行失败：'+e.message; }
+}
+async function verifyByCode(){
+  const code=prompt('输入邀请码（运营提供；未配置邀请码则请用手机/邮箱归属证明）');
+  if(!code)return;
+  try{
+    const r=await api('/api/verify/personhood',{method:'POST',body:JSON.stringify({code})});
+    if(!r.ok){ toast('验证失败：'+(r.error||'')); return; }
+    toast('真人验证通过'); await loadWallet();
+  }catch(e){ toast('验证失败：'+e.message); }
+}
+$('railWalletBtn')?.addEventListener('click',openWallet);
+$('accountWalletBtn')?.addEventListener('click',(e)=>{e.stopPropagation();openWallet();});
+$('tokIssueBtn')?.addEventListener('click',issueToken);
 $('groupClose').onclick=closeGroup;
 $('groupInput').addEventListener('keydown',e=>{
   if(e.key==='Enter'&&!e.shiftKey){

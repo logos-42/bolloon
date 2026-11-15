@@ -498,6 +498,11 @@ pub fn app(state: AppState) -> Router {
         .route("/api/agents/{id}/wallets/create", post(crate::agent_wallet::create_wallet))
         .route("/api/agents/{id}/wallets/bind", post(crate::agent_wallet::bind_wallet))
         .route("/api/agents/{id}/wallets/remove", post(crate::agent_wallet::remove_wallet))
+        // 2026-11-15: 个人代币 + DID 真人验证（未通过真人验证不许发币）
+        .route("/api/verify/status", get(crate::verify::status))
+        .route("/api/verify/personhood", post(crate::verify::personhood))
+        .route("/api/tokens", get(crate::personal_token::list))
+        .route("/api/tokens/issue", post(crate::personal_token::issue))
         .route("/api/pay/credit", post(crate::pay::pay_credit))
         .route("/api/pay/accounts", get(crate::pay::pay_accounts))
         // 收款码图片 (支付宝/微信), 只读 pay 目录

@@ -47,4 +47,8 @@ pub mod x402_buy;
 pub mod updater;
 pub mod vision;
 pub mod wallet;
+/// DID 真人验证门（个人发币前置）
+pub mod verify;
+/// 个人代币发行（绑定 DID，未通过真人验证不许发币）
+pub mod personal_token;
 pub use server::*;
