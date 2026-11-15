@@ -4205,7 +4205,27 @@ async function syncState(force){
     // 之后就是「A 的会话 + 第一个智能体回答」= 记录串台。
     const keepAgent=state&&state.active_agent_id;
     const keepFocus=state&&state.active_session_id;
-    if(j&&j.state)state=j.state;          // 拿不到就保持原值, 绝不清空
+    // 2026-11-15 (用户: 「回复完成时气泡消失几秒」): /api/bootstrap 是整包替换，而服务端把
+    //   本轮消息落盘比收尾 render 慢；生成中/收尾瞬间整包替换会把本地刚画出来的气泡覆盖掉，
+    //   几秒后随下一次轮询才回来。对策: ①生成中先不整包替换(保留乐观气泡)；
+    //   ②收尾后若本地该会话消息"更靠后/更长"，以本地为准，等服务端追平再自然切换。
+    const prevActiveSess=(state&&keepFocus)?state.sessions.find(x=>x.id===keepFocus):null;
+    const prevMsgs=prevActiveSess&&Array.isArray(prevActiveSess.messages)?prevActiveSess.messages:null;
+    const busyNow=isBusy();
+    if(j&&j.state&&!busyNow)state=j.state; // 拿不到就保持原值, 绝不清空
+    if(!busyNow&&prevMsgs&&keepFocus&&state&&state.sessions){
+      const srv=state.sessions.find(x=>x.id===keepFocus);
+      if(srv){
+        const srvMsgs=Array.isArray(srv.messages)?srv.messages:[];
+        const localLast=prevMsgs[prevMsgs.length-1];
+        const srvLast=srvMsgs[srvMsgs.length-1];
+        const localAhead=prevMsgs.length>srvMsgs.length
+          ||(!!localLast&&localLast.role==='assistant'
+             &&(!srvLast||srvLast.role!=='assistant'
+                ||String(localLast.text||'').length>String(srvLast.text||'').length));
+        if(localAhead)srv.messages=prevMsgs;
+      }
+    }
     if(j&&j.update)update=j.update;
     if(keepAgent&&state.agents&&state.agents.some(x=>x.id===keepAgent))state.active_agent_id=keepAgent;
     if(keepFocus&&state.sessions&&state.sessions.some(x=>x.id===keepFocus))state.active_session_id=keepFocus;
