@@ -76,9 +76,12 @@ describe('B. 装配后真的进 prompt (防 maxChars 截断假绿)', () => {
     expect(text).toMatch(/send_message/);
     expect(text).toMatch(/kind: relationship|relationship/);
     expect(truncated, '新层不许进 truncated 名单 (预算被吃光)').not.toContain('core.social-proactivity');
-    // 截断标记: 新层正文必须完整 (结尾的关系维护句在)
+    // 新层正文必须完整 (结尾的关系维护句在)
     expect(text).toMatch(/上线接续/);
-    expect(text).not.toMatch(/\[… 已截断\]\s*$/);
+    // 注意: 末尾即便出现 `[… 已截断]` 也可能来自 `dynamic.project-context`
+    // （它按当前工作目录扫描，体积随仓库变化；本仓实测会截断到 7778 字）。
+    // 这与本层无关 —— 本层是否被截断已由上面的 `truncated` 名单断言，
+    // 因此这里不再对"全局末尾"做判断，避免环境相关的假红。
   });
 });
 

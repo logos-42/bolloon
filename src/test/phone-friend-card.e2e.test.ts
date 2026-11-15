@@ -94,14 +94,14 @@ describe('手机号加好友 → 对方传卡片到世界模式 (端到端)', ()
     registerContactTools({ tools } as any, new ContactChain({ home: fakeHome, ownerDid: 'did:e2e:a', displayName: 'leo' }));
 
     // lookup 工具
-    const look = await tools.get('directory.lookup')!.execute({ phone: '13812345678' });
+    const look = await tools.get('directory.lookup')!.execute({ contact: '13812345678' });
     expect(look.success).toBe(true);
     expect(look.found).toBe(true);
     expect(look.did).toBe(B_DID);
     expect(look.publicKeyHex).toBe(B.pub.toString('hex'));
 
     // add_friend 工具 (默认主动)
-    const add = await tools.get('directory.add_friend')!.execute({ phone: '13812345678', message: '我是 leo, 加个好友' });
+    const add = await tools.get('directory.add_friend')!.execute({ contact: '13812345678', message: '我是 leo, 加个好友' });
     expect(add.success).toBe(true);
     expect(add.requestId).toBe('req-e2e-1');
     // 好友申请真的发出去了, 且 target = 对方公钥 (不是自己/不是空)
@@ -114,9 +114,9 @@ describe('手机号加好友 → 对方传卡片到世界模式 (端到端)', ()
   it('手机号未发布目录 → lookup 未命中, add_friend 拒绝 (不瞎发申请)', async () => {
     const tools = new Map<string, any>();
     registerContactTools({ tools } as any, new ContactChain({ home: fakeHome, ownerDid: 'did:e2e:a', displayName: 'leo' }));
-    const look = await tools.get('directory.lookup')!.execute({ phone: '13900000000' });
+    const look = await tools.get('directory.lookup')!.execute({ contact: '13900000000' });
     expect(look.found).toBe(false);
-    const add = await tools.get('directory.add_friend')!.execute({ phone: '13900000000' });
+    const add = await tools.get('directory.add_friend')!.execute({ contact: '13900000000' });
     expect(add.success).toBe(true); // 工具本身成功 (found:false 语义)
     expect(add.found).toBe(false);
     expect(friendRequests).toHaveLength(0); // 没发申请

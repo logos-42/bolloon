@@ -54,6 +54,7 @@
     "prepublishOnly": "npm run build:all && npm run smoke:esm && node scripts/build-native.mjs --check",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:ui": "playwright test",
     "test:pi-sdk": "tsx src/test/pi-sdk.test.ts",
     "postinstall": "node scripts/postinstall.js",
     "verify:ipns": "tsx scripts/verify-ipns-pipeline.ts",
