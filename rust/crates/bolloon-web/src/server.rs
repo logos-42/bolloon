@@ -502,7 +502,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/verify/status", get(crate::verify::status))
         .route("/api/verify/personhood", post(crate::verify::personhood))
         .route("/api/tokens", get(crate::personal_token::list))
-        .route("/api/tokens/issue", post(crate::personal_token::issue))
+        .route("/api/tokens/prepare", post(crate::personal_token::prepare))
+        .route("/api/tokens/confirm", post(crate::personal_token::confirm))
         .route("/api/pay/credit", post(crate::pay::pay_credit))
         .route("/api/pay/accounts", get(crate::pay::pay_accounts))
         // 收款码图片 (支付宝/微信), 只读 pay 目录

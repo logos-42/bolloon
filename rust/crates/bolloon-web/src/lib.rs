@@ -51,4 +51,6 @@ pub mod wallet;
 pub mod verify;
 /// 个人代币发行（绑定 DID，未通过真人验证不许发币）
 pub mod personal_token;
+/// 真实 EVM 交易签名 + 广播（个人代币部署上链）
+pub mod chain_tx;
 pub use server::*;

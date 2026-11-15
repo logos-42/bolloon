@@ -1214,7 +1214,9 @@
     <div class="row"><input id="tokName" placeholder="代币名称（≤32字）" style="flex:2"><input id="tokSymbol" placeholder="符号（2-8位）" style="flex:1"></div>
     <div class="row"><input id="tokSupply" type="number" placeholder="初始供应量" style="flex:1"><input id="tokDecimals" type="number" placeholder="精度 0-18" value="6" style="flex:1"></div>
     <div class="row"><input id="tokDesc" placeholder="简介（可选）" style="flex:1"></div>
-    <div class="row"><button class="primary" id="tokIssueBtn">发行代币</button></div>
+    <div class="row"><button class="primary" id="tokIssueBtn">预览并确认</button></div>
+    <div id="tokPreview" class="hint" style="margin-top:6px"></div>
+    <div class="row" id="tokConfirmRow" style="display:none"><button class="primary" id="tokConfirmBtn">确认上链（真实部署 ERC-20）</button></div>
     <div class="hint" id="tokIssueHint"></div>
   </div>
 
@@ -5036,7 +5038,7 @@ async function loadWallet(){
           const whole=(x.supply/Math.pow(10,x.decimals||0));
           return '<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid var(--line)">'
             +'<b>'+escapeHTML(x.name)+' ('+escapeHTML(x.symbol)+')</b>'
-            +'<span style="opacity:.7">供应 '+whole+' · 精度 '+(x.decimals||0)+' · '+(x.issuer_verified?'已验证':'')+'</span></div>';
+            +'<span style="opacity:.7">供应 '+whole+' · 精度 '+(x.decimals||0)+' · '+(x.contract_address?('链上 '+escapeHTML(String(x.contract_address).slice(0,10))+'…'):'未上链')+'</span></div>';
         }).join('');
       }
     }
@@ -5059,20 +5061,53 @@ async function loadWallet(){
     const box=$('walletTokens'); if(box)box.textContent='读取失败：'+e.message;
   }
 }
-async function issueToken(){
-  const hint=$('tokIssueHint');
-  const name=($('tokName')?.value||'').trim();
-  const symbol=($('tokSymbol')?.value||'').trim();
-  const supply=parseInt(($('tokSupply')?.value||'0'),10)||0;
-  const decimals=parseInt(($('tokDecimals')?.value||'6'),10)||0;
-  const description=($('tokDesc')?.value||'').trim();
-  if(!name||!symbol||!supply){if(hint)hint.textContent='名称 / 符号 / 供应量必填';return;}
+let _tokDraft=null;
+function tokFormDraft(){
+  return {
+    name:($('tokName')?.value||'').trim(),
+    symbol:($('tokSymbol')?.value||'').trim(),
+    supply:parseInt(($('tokSupply')?.value||'0'),10)||0,
+    decimals:parseInt(($('tokDecimals')?.value||'6'),10)||0,
+    description:($('tokDesc')?.value||'').trim(),
+  };
+}
+// 第一步：预览（链 / 发行地址 / 估算 gas 费 / 余额是否够），不广播
+async function prepareToken(){
+  const hint=$('tokIssueHint'), prev=$('tokPreview'), crow=$('tokConfirmRow');
+  const d=tokFormDraft();
+  if(!d.name||!d.symbol||!d.supply){if(hint)hint.textContent='名称 / 符号 / 供应量必填';return;}
+  if(hint)hint.textContent='正在估算链上费用…';
   try{
-    const r=await api('/api/tokens/issue',{method:'POST',body:JSON.stringify({name,symbol,decimals,supply,description})});
-    if(!r.ok){ if(hint)hint.textContent='发行失败：'+(r.error||'未知错误'); if(r.need_verify)loadWallet(); return; }
-    if(hint)hint.textContent='已发行：'+r.token.symbol;
+    const r=await api('/api/tokens/prepare',{method:'POST',body:JSON.stringify(d)});
+    if(!r.ok){ if(hint)hint.textContent='预览失败：'+(r.error||''); if(r.need_verify)loadWallet(); return; }
+    _tokDraft=d;
+    if(hint)hint.textContent='';
+    const p=r.preview||{};
+    const costEth=(Number(p.cost_wei||0)/1e18), balEth=(Number(p.balance_wei||0)/1e18);
+    if(prev)prev.innerHTML='即将在 <b>'+escapeHTML(p.network||'')+'</b>（chain '+p.chain_id+'）部署真实 ERC-20：<br>'
+      +'名称 '+escapeHTML(p.name)+' · 符号 '+escapeHTML(p.symbol)+' · 供应 '+p.supply+' · 精度 '+p.decimals+'<br>'
+      +'发行地址 <span style="opacity:.7">'+escapeHTML(p.from||'')+'</span><br>'
+      +'估算 gas 费 ~'+costEth.toFixed(6)+' ETH · 余额 '+balEth.toFixed(6)+' ETH '
+      +(p.sufficient_native?'':'<b style="color:#ef4444">（不足，请先给该地址充 gas）</b>');
+    if(crow)crow.style.display=p.sufficient_native?'':'none';
+    if(!p.sufficient_native&&hint)hint.textContent='发行地址 gas 不足，请先充值后再确认上链';
+  }catch(e){ if(hint)hint.textContent='预览失败：'+e.message; }
+}
+// 第二步：确认上链（真实广播合约创建交易并等回执）
+async function confirmToken(){
+  const hint=$('tokIssueHint');
+  const d=_tokDraft||tokFormDraft();
+  if(!d.name||!d.symbol||!d.supply){if(hint)hint.textContent='请先点「预览并确认」';return;}
+  if(hint)hint.textContent='正在广播部署交易并等待回执（可能 10–60 秒）…';
+  try{
+    const r=await api('/api/tokens/confirm',{method:'POST',body:JSON.stringify(d)});
+    if(!r.ok){ if(hint)hint.textContent='部署失败：'+(r.error||''); return; }
+    const c=r.chain||{};
+    if(hint)hint.innerHTML='✅ 已上链！合约 <b>'+escapeHTML(c.contract_address||'')+'</b><br>tx '+escapeHTML(c.tx_hash||'')+' · block '+c.block_number;
+    _tokDraft=null;
+    const crow=$('tokConfirmRow'); if(crow)crow.style.display='none';
     await loadWallet();
-  }catch(e){ if(hint)hint.textContent='发行失败：'+e.message; }
+  }catch(e){ if(hint)hint.textContent='部署失败：'+e.message; }
 }
 async function verifyByCode(){
   const code=prompt('输入邀请码（运营提供；未配置邀请码则请用手机/邮箱归属证明）');
@@ -5086,7 +5121,8 @@ async function verifyByCode(){
 $('railWalletBtn')?.addEventListener('click',openWallet);
 // 2026-11-15: 钱包入口在「用户页面(设置)」里 —— 点它先关设置再开钱包
 $('settingsWalletBtn')?.addEventListener('click',()=>{const p=$('profileDlg');if(p&&p.open)p.close();openWallet();});
-$('tokIssueBtn')?.addEventListener('click',issueToken);
+$('tokIssueBtn')?.addEventListener('click',prepareToken);
+$('tokConfirmBtn')?.addEventListener('click',confirmToken);
 $('groupClose').onclick=closeGroup;
 $('groupInput').addEventListener('keydown',e=>{
   if(e.key==='Enter'&&!e.shiftKey){
