@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#141412">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Bolloon</title>
+<style>
+:root{
+  --bg:#141412; --card:#1e1e1b; --card2:#242420; --line:#32322c;
+  --text:#e8e8dc; --muted:#8a8a80; --accent:#c4d640; --accent-ink:#1a1a18;
+  --danger:#e06a5a; --ok:#7fc86a;
+  --safe-t:env(safe-area-inset-top,0px); --safe-b:env(safe-area-inset-bottom,0px);
+  --nav:62px;
+}
+html[data-theme="light"]{
+  --bg:#f4f4ee; --card:#ffffff; --card2:#f0f0e8; --line:#dcdcd2;
+  --text:#1c1c18; --muted:#70706a; --accent:#7f8c22; --accent-ink:#ffffff;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans SC",sans-serif;
+  overscroll-behavior-y:contain;
+}
+button,input,textarea,select{font:inherit;color:inherit}
+button{appearance:none;border:0;background:none;padding:0}
+.ico{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+
+/* ── 顶栏 ── */
+.top{
+  position:sticky;top:0;z-index:20;
+  padding:calc(var(--safe-t) + 10px) 16px 10px;
+  background:linear-gradient(var(--bg) 72%,transparent);
+  display:flex;align-items:center;gap:10px;
+}
+.top .who{min-width:0;flex:1}
+.top .name{font-weight:650;font-size:17px;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.top .sub{font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--muted)}
+.dot.on{background:var(--ok);box-shadow:0 0 0 3px rgba(127,200,106,.15)}
+.round{width:36px;height:36px;border-radius:50%;border:1px solid var(--line);display:grid;place-items:center;background:var(--card)}
+
+/* ── 视图 ── */
+.view{display:none;padding:0 16px calc(var(--nav) + var(--safe-b) + 18px)}
+.view.on{display:block}
+.h-title{font-size:12px;color:var(--muted);letter-spacing:.08em;margin:18px 2px 8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px}
+.row{display:flex;align-items:center;gap:10px}
+.col{display:flex;flex-direction:column;gap:10px}
+.grow{flex:1;min-width:0}
+.muted{color:var(--muted)}
+.small{font-size:12px}
+.tiny{font-size:11px}
+.truncate{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* 智能体横向条 */
+.agents{display:flex;gap:8px;overflow-x:auto;padding:2px 0 6px;scrollbar-width:none}
+.agents::-webkit-scrollbar{display:none}
+.agent{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;
+  padding:8px 12px 8px 8px;border-radius:999px;border:1px solid var(--line);
+  background:var(--card);color:var(--muted);font-size:13px
+}
+.agent.on{border-color:var(--accent);color:var(--text)}
+.av{width:28px;height:28px;border-radius:50%;background:var(--card2);display:grid;place-items:center;font-size:12px;font-weight:700;color:var(--accent);overflow:hidden}
+.av img{width:100%;height:100%;object-fit:cover}
+
+/* 会话/列表 */
+.list{display:flex;flex-direction:column;gap:8px}
+.item{
+  display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:14px;
+  background:var(--card);border:1px solid var(--line)
+}
+.item:active{background:var(--card2)}
+.item .t{font-size:14.5px;font-weight:550}
+.item .d{font-size:11.5px;color:var(--muted);margin-top:2px}
+.badge{font-size:10px;padding:2px 7px;border-radius:999px;background:var(--card2);color:var(--muted);border:1px solid var(--line)}
+
+/* 快捷功能 */
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.fn{
+  display:flex;align-items:center;gap:12px;padding:15px 14px;border-radius:16px;
+  background:var(--card);border:1px solid var(--line);text-align:left
+}
+.fn:active{border-color:var(--accent)}
+.fn .fi{width:38px;height:38px;border-radius:12px;background:var(--card2);display:grid;place-items:center;color:var(--accent)}
+.fn b{display:block;font-size:14px;font-weight:600}
+.fn span{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+
+/* 世界卡片 */
+.feed{display:flex;flex-direction:column;gap:10px}
+.feedcard{padding:14px;border-radius:16px;background:var(--card);border:1px solid var(--line)}
+.feedcard h4{margin:0 0 6px;font-size:14.5px;line-height:1.4}
+.feedcard p{margin:0;font-size:12.5px;color:var(--muted);line-height:1.55}
+.feedcard .meta{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+
+/* 聊天 */
+.chat{padding-bottom:calc(var(--nav) + var(--safe-b) + 66px)}
+.msgs{display:flex;flex-direction:column;gap:10px;padding:4px 0 12px}
+.msg{max-width:86%;padding:10px 13px;border-radius:16px;font-size:14px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.msg.me{align-self:flex-end;background:var(--accent);color:var(--accent-ink);border-bottom-right-radius:5px}
+.msg.ai{align-self:flex-start;background:var(--card);border:1px solid var(--line);border-bottom-left-radius:5px}
+.msg .meta{display:block;font-size:10.5px;opacity:.6;margin-bottom:3px}
+.composer{
+  position:fixed;left:0;right:0;bottom:calc(var(--nav) + var(--safe-b));z-index:19;
+  padding:8px 12px;background:linear-gradient(transparent,var(--bg) 30%);
+  display:flex;gap:8px;align-items:flex-end
+}
+.composer textarea{
+  flex:1;resize:none;max-height:110px;min-height:40px;padding:10px 12px;
+  border-radius:20px;border:1px solid var(--line);background:var(--card);color:var(--text);
+  outline:none
+}
+.send{width:40px;height:40px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;flex:0 0 auto}
+.send:disabled{opacity:.4}
+
+/* 空态 */
+.empty{padding:36px 20px;text-align:center;color:var(--muted);font-size:13px}
+.empty b{display:block;color:var(--text);font-size:15px;margin-bottom:6px}
+
+/* 底部导航 */
+.nav{
+  position:fixed;left:0;right:0;bottom:0;z-index:21;height:calc(var(--nav) + var(--safe-b));
+  padding-bottom:var(--safe-b);display:grid;grid-template-columns:repeat(4,1fr);
+  background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(14px);
+  border-top:1px solid var(--line)
+}
+.nav button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:var(--muted);font-size:10.5px}
+.nav button.on{color:var(--accent)}
+.nav .ico{width:22px;height:22px}
+
+/* 子页（钱包/插件/模型/额度） */
+.sub{
+  position:fixed;inset:0;z-index:30;background:var(--bg);
+  transform:translateX(100%);transition:transform .22s ease;
+  display:flex;flex-direction:column
+}
+.sub.on{transform:translateX(0)}
+.sub .bar{
+  padding:calc(var(--safe-t) + 10px) 14px 10px;display:flex;align-items:center;gap:10px;
+  border-bottom:1px solid var(--line);background:var(--bg)
+}
+.sub .bar .t{font-weight:650;font-size:16px}
+.sub .body{flex:1;overflow:auto;padding:14px 16px calc(var(--safe-b) + 22px)}
+.field{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+.field label{font-size:12px;color:var(--muted)}
+.field input,.field textarea,.field select{
+  width:100%;padding:11px 12px;border-radius:11px;border:1px solid var(--line);
+  background:var(--card);color:var(--text);outline:none
+}
+.btn{
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  padding:12px 14px;border-radius:12px;border:1px solid var(--line);
+  background:var(--card);color:var(--text);font-size:14px;font-weight:550
+}
+.btn:active{background:var(--card2)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.btn.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 40%,var(--line))}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+.btns .btn{flex:1;min-width:120px}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:7px 0;font-size:13px;border-bottom:1px solid var(--line)}
+.kv:last-child{border-bottom:0}
+.kv .k{color:var(--muted)}
+.kv .v{text-align:right;word-break:break-all;max-width:62%}
+pre.blob{white-space:pre-wrap;word-break:break-all;font-size:11px;line-height:1.5;background:var(--card2);padding:10px;border-radius:10px;max-height:160px;overflow:auto}
+
+/* toast */
+#toast{
+  position:fixed;left:50%;bottom:calc(var(--nav) + var(--safe-b) + 20px);transform:translateX(-50%) translateY(20px);
+  background:var(--text);color:var(--bg);padding:9px 14px;border-radius:999px;font-size:12.5px;
+  opacity:0;pointer-events:none;transition:.2s;z-index:60;max-width:86vw;text-align:center
+}
+#toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+.hide{display:none!important}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="av" id="topAv">B</div>
+  <div class="who">
+    <div class="name" id="topName">Bolloon</div>
+    <div class="sub"><span class="dot on"></span><span id="topSub">本地内核</span></div>
+  </div>
+  <button class="round" id="btnNewChat" aria-label="新对话">
+    <svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+</header>
+
+<main>
+  <!-- 对话 -->
+  <section class="view on" id="v-chat">
+    <div class="agents" id="agentBar"></div>
+    <div class="h-title">最近对话</div>
+    <div class="list" id="sessionList"></div>
+    <div class="h-title">快捷</div>
+    <div class="grid">
+      <button class="fn" data-open="wallet"><span class="fi"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/><circle cx="16.5" cy="14.5" r="1.2"/></svg></span><span><b>钱包</b><span>资产与代币</span></span></button>
+      <button class="fn" data-open="plugins"><span class="fi"><svg class="ico" viewBox="0 0 24 24"><path d="M9 4v3M15 4v3M7 7h10v5a5 5 0 0 1-10 0z"/><path d="M12 17v3"/></svg></span><span><b>插件</b><span>技能与分享</span></span></button>
+      <button class="fn" data-open="models"><span class="fi"><svg class="ico" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg></span><span><b>模型</b><span>推理与路由</span></span></button>
+      <button class="fn" data-open="pay"><span class="fi"><svg class="ico" viewBox="0 0 24 24"><rect x="2.5" y="5.5" width="19" height="13" rx="3"/><path d="M2.5 10h19"/><path d="M6 15h4"/></svg></span><span><b>额度</b><span>用量与充值</span></span></button>
+    </div>
+  </section>
+
+  <!-- 联系人 -->
+  <section class="view" id="v-contacts">
+    <div class="row" style="margin-top:6px">
+      <input id="contactSearch" placeholder="搜索 DID / 备注名" style="flex:1;padding:11px 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);outline:none">
+      <button class="round" id="btnAddContact" aria-label="添加">
+        <svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </div>
+    <div class="h-title">联系人</div>
+    <div class="list" id="contactList"></div>
+    <div class="h-title">待处理</div>
+    <div class="list" id="requestList"></div>
+  </section>
+
+  <!-- 世界 -->
+  <section class="view" id="v-world">
+    <div class="row" style="margin-top:10px">
+      <div class="grow">
+        <div style="font-size:19px;font-weight:700">世界</div>
+        <div class="small muted">按你的意图匹配，不刷屏</div>
+      </div>
+      <button class="round" id="btnWorldRefresh" aria-label="刷新">
+        <svg class="ico" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v5h-5"/></svg>
+      </button>
+    </div>
+    <div class="h-title">机会流</div>
+    <div class="feed" id="worldFeed"></div>
+  </section>
+
+  <!-- 我 -->
+  <section class="view" id="v-me">
+    <div class="card" style="margin-top:10px">
+      <div class="row">
+        <div class="av" id="meAv" style="width:52px;height:52px;font-size:18px">B</div>
+        <div class="grow">
+          <div style="font-size:17px;font-weight:650" id="meName">未命名</div>
+          <div class="tiny muted truncate" id="meDid">—</div>
+        </div>
+        <button class="btn" id="btnEditProfile" style="padding:8px 12px;font-size:12px">编辑</button>
+      </div>
+      <div class="row" style="margin-top:14px;gap:16px">
+        <div><div style="font-size:18px;font-weight:700" id="statAgents">0</div><div class="tiny muted">智能体</div></div>
+        <div><div style="font-size:18px;font-weight:700" id="statSessions">0</div><div class="tiny muted">对话</div></div>
+        <div><div style="font-size:18px;font-weight:700" id="statContacts">0</div><div class="tiny muted">联系人</div></div>
+      </div>
+    </div>
+    <div class="h-title">功能</div>
+    <div class="list">
+      <button class="item" data-open="wallet"><span class="av">W</span><span class="grow"><span class="t">钱包与代币</span><span class="d">地址、备份、导入与发币</span></span><span class="badge">›</span></button>
+      <button class="item" data-open="plugins"><span class="av">P</span><span class="grow"><span class="t">插件</span><span class="d">创建、导入、分享</span></span><span class="badge">›</span></button>
+      <button class="item" data-open="models"><span class="av">M</span><span class="grow"><span class="t">模型</span><span class="d">供应商与连接测试</span></span><span class="badge">›</span></button>
+      <button class="item" data-open="pay"><span class="av">¥</span><span class="grow"><span class="t">额度</span><span class="d">余额、用量、申报充值</span></span><span class="badge">›</span></button>
+      <button class="item" data-open="grants"><span class="av">G</span><span class="grow"><span class="t">授权</span><span class="d">命令、路径与工具白名单</span></span><span class="badge">›</span></button>
+    </div>
+    <div class="h-title">偏好</div>
+    <div class="list">
+      <button class="item" id="btnTheme"><span class="av">◐</span><span class="grow"><span class="t">外观</span><span class="d" id="themeLabel">跟随系统</span></span><span class="badge">切换</span></button>
+      <div class="item"><span class="av">i</span><span class="grow"><span class="t">版本</span><span class="d" id="appVersion">—</span></span></div>
+    </div>
+  </section>
+
+  <!-- 聊天详情 -->
+  <section class="view chat hide" id="v-room">
+    <div class="row" style="margin:8px 0 2px">
+      <button class="round" id="btnRoomBack" aria-label="返回">
+        <svg class="ico" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <div class="grow">
+        <div style="font-weight:650" id="roomTitle">对话</div>
+        <div class="tiny muted" id="roomSub">—</div>
+      </div>
+    </div>
+    <div class="msgs" id="msgs"></div>
+  </section>
+</main>
+
+<div class="composer hide" id="composer">
+  <textarea id="input" rows="1" placeholder="说点什么…"></textarea>
+  <button class="send" id="btnSend" aria-label="发送">
+    <svg class="ico" viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z"/></svg>
+  </button>
+</div>
+
+<nav class="nav">
+  <button class="on" data-tab="chat"><svg class="ico" viewBox="0 0 24 24"><path d="M4 6.5h16v9H9l-5 4z"/></svg><span>对话</span></button>
+  <button data-tab="contacts"><svg class="ico" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.8-3 3-4.6 5.5-4.6S13.7 16 14.5 19"/><path d="M17 8v6M14 11h6"/></svg><span>联系人</span></button>
+  <button data-tab="world"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.5 3.8 5.5 3.8 8.5S14.5 18 12 20.5C9.5 18 8.2 15 8.2 12S9.5 6 12 3.5z"/></svg><span>世界</span></button>
+  <button data-tab="me"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></svg><span>我</span></button>
+</nav>
+
+<!-- 子页容器 -->
+<div class="sub" id="sub">
+  <div class="bar">
+    <button class="round" id="subBack" aria-label="返回"><svg class="ico" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+    <div class="t" id="subTitle">功能</div>
+  </div>
+  <div class="body" id="subBody"></div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(function(){
+'use strict';
+const $=(s,r=document)=>r.querySelector(s);
+const $$=(s,r=document)=>Array.from(r.querySelectorAll(s));
+const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const num=(v,d=0)=>{const n=Number(v);return Number.isFinite(n)?n:d;};
+
+/* ── API ─────────────────────────────────────────────── */
+const api={
+  async get(p){
+    const r=await fetch(p,{headers:{Accept:'application/json'}});
+    const t=await r.text();
+    let d; try{d=JSON.parse(t);}catch(_){d=t;}
+    if(!r.ok) throw new Error((d&&d.error)||('GET '+p+' → '+r.status));
+    return d;
+  },
+  async post(p,b){
+    const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:b?JSON.stringify(b):undefined});
+    const t=await r.text();
+    let d; try{d=JSON.parse(t);}catch(_){d=t;}
+    if(!r.ok) throw new Error((d&&d.error)||('POST '+p+' → '+r.status));
+    return d;
+  }
+};
+
+let toastTimer=0;
+function toast(msg,ms=2200){
+  const el=$('#toast'); if(!el) return;
+  el.textContent=String(msg||''); el.classList.add('on');
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.classList.remove('on'),ms);
+}
+function fail(e){ toast(e&&e.message?e.message:'操作失败',3200); console.error(e); }
+
+/* ── 主题 ─────────────────────────────────────────────── */
+const THEME_KEY='bolloon_theme';
+function themePref(){ try{return localStorage.getItem(THEME_KEY)||'auto';}catch(_){return 'auto';} }
+function applyTheme(pref){
+  const sys=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';
+  const mode=pref==='light'||pref==='dark'?pref:sys;
+  document.documentElement.dataset.theme=mode;
+  const label=pref==='auto'?'跟随系统':(pref==='light'?'浅色':'深色');
+  const el=$('#themeLabel'); if(el) el.textContent=label;
+  try{localStorage.setItem(THEME_KEY,pref);}catch(_){}
+}
+function cycleTheme(){
+  const p=themePref();
+  applyTheme(p==='auto'?'light':(p==='light'?'dark':'auto'));
+}
+
+/* ── 状态 ─────────────────────────────────────────────── */
+const S={boot:null,agents:[],sessions:[],contacts:[],agentId:'',sessionId:'',tab:'chat',tabBeforeRoom:'chat'};
+
+function sessionsOf(agentId){
+  return S.sessions.filter(s=>!agentId||s.agent_id===agentId)
+    .sort((a,b)=>(b.pinned?1:0)-(a.pinned?1:0)||num(b.created_at_ms)-num(a.created_at_ms));
+}
+function activeSession(){ return S.sessions.find(s=>s.id===S.sessionId)||null; }
+
+async function refreshBoot(){
+  const d=await api.get('/api/bootstrap');
+  const st=d.state||{};
+  S.boot=d; S.agents=st.agents||[]; S.sessions=st.sessions||[];
+  S.agentId=st.active_agent_id||S.agentId||(S.agents[0]&&S.agents[0].id)||'';
+  S.sessionId=st.active_session_id||S.sessionId;
+  renderTop(); renderAgents(); renderSessions(); renderMe();
+  return d;
+}
+
+/* ── 渲染：顶栏/智能体/会话 ───────────────────────────── */
+function renderTop(){
+  const a=S.agents.find(x=>x.id===S.agentId)||S.agents[0]||null;
+  const name=a?a.name||('智能体 '+a.id):'Bolloon';
+  $('#topName').textContent=name;
+  $('#topSub').textContent=S.agents.length?('本地内核 · '+S.agents.length+' 个智能体'):'本地内核';
+  const av=$('#topAv');
+  av.innerHTML=a&&a.avatar?'<img alt="" src="'+esc(a.avatar)+'">':esc((name[0]||'B').toUpperCase());
+  const me=$('#meAv'), meName=$('#meName'), meDid=$('#meDid');
+  if(me) me.innerHTML=(S.boot&&S.boot.state&&S.boot.state.profile&&S.boot.state.profile.avatar)?'<img alt="" src="'+esc(S.boot.state.profile.avatar)+'">':esc((((S.boot&&S.boot.state&&S.boot.state.profile&&S.boot.state.profile.name)||'B')[0]||'B').toUpperCase());
+  if(meName) meName.textContent=(S.boot&&S.boot.state&&S.boot.state.profile&&S.boot.state.profile.name)||'未命名';
+  if(meDid) meDid.textContent=(S.boot&&S.boot.state&&S.boot.state.did)||'—';
+  $('#statAgents').textContent=String(S.agents.length);
+  $('#statSessions').textContent=String(S.sessions.length);
+  const v=$('#appVersion'); if(v) v.textContent=(S.boot&&S.boot.version)||'—';
+}
+function renderAgents(){
+  const wrap=$('#agentBar'); if(!wrap) return;
+  wrap.innerHTML=S.agents.map(a=>{
+    const n=a.name||a.id;
+    const avatar=a.avatar?'<img alt="" src="'+esc(a.avatar)+'">':esc((n[0]||'A').toUpperCase());
+    return '<button class="agent'+(a.id===S.agentId?' on':'')+'" data-agent="'+esc(a.id)+'"><span class="av">'+avatar+'</span>'+esc(n)+'</button>';
+  }).join('');
+}
+function renderSessions(){
+  const wrap=$('#sessionList'); if(!wrap) return;
+  const list=sessionsOf(S.agentId);
+  if(!list.length){ wrap.innerHTML='<div class="empty"><b>还没有对话</b>右上角 + 新建一个</div>'; return; }
+  wrap.innerHTML=list.map(s=>{
+    const last=(s.messages&&s.messages.length)?(s.messages[s.messages.length-1].content||''):'';
+    return '<button class="item" data-session="'+esc(s.id)+'"><span class="av">'+(s.pinned?'★':'C')+'</span><span class="grow"><span class="t truncate">'+esc(s.title||'新对话')+'</span><span class="d truncate">'+esc(last||'点击继续')+'</span></span><span class="badge">›</span></button>';
+  }).join('');
+}
+
+/* ── 标签切换 ─────────────────────────────────────────── */
+function showTab(t){
+  S.tab=t;
+  $$('.view').forEach(v=>v.classList.remove('on'));
+  const v=$('#v-'+t); if(v) v.classList.add('on');
+  $$('.nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
+  const room=$('#v-room'), comp=$('#composer');
+  if(room) room.classList.add('hide');
+  if(comp) comp.classList.add('hide');
+  if(t==='contacts') loadContacts().catch(fail);
+  if(t==='world') loadWorld().catch(fail);
+  if(t==='me') renderMe();
+}
+function openRoom(sessionId){
+  S.tabBeforeRoom=S.tab;
+  S.sessionId=sessionId||S.sessionId;
+  const s=activeSession();
+  $('#roomTitle').textContent=s?(s.title||'对话'):'对话';
+  $('#roomSub').textContent=(S.agents.find(a=>a.id===S.agentId)||{}).name||'智能体';
+  $$('.view').forEach(v=>v.classList.remove('on'));
+  $('#v-room').classList.remove('hide'); $('#v-room').classList.add('on');
+  $('#composer').classList.remove('hide');
+  renderMsgs();
+}
+function closeRoom(){
+  $('#v-room').classList.add('hide');
+  $('#v-room').classList.remove('on');
+  $('#composer').classList.add('hide');
+  showTab(S.tabBeforeRoom||'chat');
+}
+
+/* ── 聊天 ─────────────────────────────────────────────── */
+function renderMsgs(){
+  const s=activeSession();
+  const box=$('#msgs'); if(!box) return;
+  const msgs=(s&&s.messages)||[];
+  box.innerHTML=msgs.map(m=>{
+    const role=m.role==='user'?'me':'ai';
+    return '<div class="msg '+role+'">'+esc(m.content||'')+'</div>';
+  }).join('')||'<div class="empty"><b>开始对话</b>输入你的问题</div>';
+  box.scrollTop=box.scrollHeight;
+}
+async function sendMsg(){
+  const ta=$('#input'); const text=(ta.value||'').trim(); if(!text) return;
+  const btn=$('#btnSend'); btn.disabled=true;
+  const s=activeSession();
+  if(!s){ toast('先新建对话'); btn.disabled=false; return; }
+  const box=$('#msgs');
+  const empty=box.querySelector('.empty'); if(empty) empty.remove();
+  box.insertAdjacentHTML('beforeend','<div class="msg me">'+esc(text)+'</div>');
+  ta.value=''; ta.style.height='auto'; box.scrollTop=box.scrollHeight;
+  try{
+    const d=await api.post('/api/chat',{message:text,session_id:s.id,agent_id:S.agentId});
+    const reply=(d&&(d.reply||d.message))||'（无回复）';
+    box.insertAdjacentHTML('beforeend','<div class="msg ai">'+esc(reply)+'</div>');
+    box.scrollTop=box.scrollHeight;
+    s.messages=s.messages||[]; s.messages.push({role:'user',content:text},{role:'assistant',content:reply});
+    renderSessions();
+  }catch(e){ fail(e); }
+  finally{ btn.disabled=false; }
+}
+async function newChat(){
+  try{
+    const d=await api.post('/api/sessions',{agent_id:S.agentId});
+    await refreshBoot();
+    S.sessionId=(d&&(d.id||d.session_id))||S.sessionId;
+    openRoom(S.sessionId);
+  }catch(e){ fail(e); }
+}
+async function pickSession(id){
+  S.sessionId=id;
+  try{ await api.post('/api/active',{agent_id:S.agentId,session_id:id}); }catch(_){}
+  openRoom(id);
+}
+
+/* ── 联系人 ───────────────────────────────────────────── */
+async function loadContacts(){
+  const d=await api.get('/api/contacts');
+  S.contacts=d.items||[];
+  const wrap=$('#contactList');
+  const q=($('#contactSearch').value||'').trim().toLowerCase();
+  const list=S.contacts.filter(c=>{
+    if(!q) return true;
+    return String(c.name||'').toLowerCase().includes(q)||String(c.did||'').toLowerCase().includes(q);
+  });
+  wrap.innerHTML=list.length?list.map(c=>{
+    const n=c.name||c.did||'未命名';
+    return '<button class="item" data-contact="'+esc(c.did||'')+'"><span class="av">'+esc((n[0]||'?').toUpperCase())+'</span><span class="grow"><span class="t truncate">'+esc(n)+'</span><span class="d truncate">'+esc(c.did||'')+'</span></span><span class="badge">'+(c.source==='friend'?'好友':'联系人')+'</span></button>';
+  }).join(''):'<div class="empty"><b>还没有联系人</b>点右上角 + 添加</div>';
+  const req=d.requests_in||[];
+  $('#requestList').innerHTML=req.length?req.map(r=>'<div class="item"><span class="av">!</span><span class="grow"><span class="t">'+esc(r.name||r.did||'请求')+'</span><span class="d">等待你确认</span></span></div>').join(''):'<div class="empty">没有待处理请求</div>';
+}
+async function addContact(){
+  const did=prompt('对方 DID（did:pi:...）'); if(!did) return;
+  const name=prompt('备注名（可留空）')||'';
+  try{ await api.post('/api/contacts/set',{did,name}); toast('已保存'); loadContacts(); }
+  catch(e){ fail(e); }
+}
+
+/* ── 世界 ─────────────────────────────────────────────── */
+async function loadWorld(){
+  const wrap=$('#worldFeed'); wrap.innerHTML='<div class="empty">加载中…</div>';
+  let d={};
+  try{ d=await api.get('/api/world/feed'); }catch(_){ d={}; }
+  const feed=(d.feed||d.items||d.cards||[]);
+  if(!feed.length){ wrap.innerHTML='<div class="empty"><b>暂时没有新机会</b>世界有真实流入时才会出现</div>'; return; }
+  wrap.innerHTML=feed.map(x=>{
+    const title=x.title||x.summary||x.text||x.capability||'未命名机会';
+    const body=x.summary||x.description||x.digest||'';
+    const score=x.score!=null?Math.round(num(x.score)*100)+'%':'';
+    return '<article class="feedcard"><h4>'+esc(title)+'</h4>'+(body?'<p>'+esc(body)+'</p>':'')+'<div class="meta">'+(score?'<span class="badge">匹配 '+score+'</span>':'')+(x.issuer?'<span class="badge">'+esc(x.issuer)+'</span>':'')+'</div></article>';
+  }).join('');
+}
+
+/* ── 我 / 资料 ────────────────────────────────────────── */
+function renderMe(){
+  renderTop();
+}
+function editProfile(){
+  const p=(S.boot&&S.boot.state&&S.boot.state.profile)||{};
+  const name=prompt('昵称',p.name||''); if(name==null) return;
+  const avatar=prompt('头像 URL / dataURL（留空清除）',p.avatar||'')||'';
+  api.post('/api/profile',{name,avatar}).then(()=>{toast('已保存');return refreshBoot();}).catch(fail);
+}
+
+/* ── 子页：通用 ───────────────────────────────────────── */
+const SUBS={wallet:'钱包与代币',plugins:'插件',models:'模型',pay:'额度',grants:'授权'};
+function openSub(key){
+  const t=SUBS[key]; if(!t) return;
+  $('#subTitle').textContent=t;
+  $('#sub').classList.add('on');
+  const body=$('#subBody'); body.innerHTML='<div class="empty">加载中…</div>';
+  const fn=SUBLD[key];
+  if(fn) fn().catch(e=>{body.innerHTML='<div class="empty"><b>加载失败</b>'+esc(e.message||e)+'</div>';});
+}
+function closeSub(){ $('#sub').classList.remove('on'); }
+const SUBLD={};
+
+/* 钱包 */
+SUBLD.wallet=async()=>{
+  const [st,tk]=await Promise.all([
+    api.get('/api/wallet/status').catch(()=>({})),
+    api.get('/api/tokens').catch(()=>({tokens:[]})),
+  ]);
+  const tokens=tk.tokens||[];
+  const body=$('#subBody');
+  body.innerHTML=
+    '<div class="card">'+
+      '<div class="kv"><span class="k">地址</span><span class="v">'+esc(st.address||'未创建')+'</span></div>'+
+      '<div class="kv"><span class="k">状态</span><span class="v">'+(st.exists?(st.unlocked?'已解锁':'已锁定'):'未创建')+'</span></div>'+
+      '<div class="kv"><span class="k">网络</span><span class="v">'+esc((st.chain&&(st.chain.network||st.chain.chain_id))||'—')+'</span></div>'+
+    '</div>'+
+    '<div class="h-title">钱包操作</div>'+
+    '<div class="card col">'+
+      '<div class="field"><label>口令（≥8 位，仅用于本地加密）</label><input id="wPass" type="password" placeholder="输入口令"></div>'+
+      '<div class="btns">'+
+        (st.exists?'':'<button class="btn primary" id="wSetup">创建钱包</button>')+
+        (st.exists&&!st.unlocked?'<button class="btn primary" id="wUnlock">解锁</button>':'')+
+        (st.exists&&st.unlocked?'<button class="btn" id="wLock">锁定</button>':'')+
+        '<button class="btn" id="wBackup">导出密文</button>'+
+      '</div>'+
+      '<div id="wOut"></div>'+
+      '<div class="field" style="margin-top:10px"><label>恢复（粘贴备份串 + 口令）</label><textarea id="wBlob" rows="3" placeholder="eyJ2Ijox..." style="width:100%;padding:11px;border-radius:11px;border:1px solid var(--line);background:var(--card);color:var(--text)"></textarea></div>'+
+      '<button class="btn" id="wRestore">恢复钱包</button>'+
+    '</div>'+
+    '<div class="h-title">代币</div>'+
+    '<div class="card col">'+
+      '<div class="row"><input id="tokAddr" placeholder="ERC-20 合约地址 0x..." style="flex:1;padding:11px 12px;border-radius:11px;border:1px solid var(--line);background:var(--card);outline:none"><button class="btn primary" id="tokImport" style="padding:11px 14px">导入</button></div>'+
+      (tokens.length?tokens.map(t=>'<div class="kv"><span class="k">'+esc((t.symbol||'?')+' · '+(t.name||''))+'</span><span class="v">'+esc(t.balance||t.balance_base||'—')+'</span></div>').join(''):'<div class="small muted">还没有代币，导入一个合约地址试试</div>')+
+    '</div>'+
+    '<div class="h-title">发行代币</div>'+
+    '<div class="card col">'+
+      '<div class="row" style="gap:8px"><input id="tkName" placeholder="名称" style="flex:1;padding:11px;border-radius:11px;border:1px solid var(--line);background:var(--card)"><input id="tkSym" placeholder="符号" style="width:100px;padding:11px;border-radius:11px;border:1px solid var(--line);background:var(--card)"></div>'+
+      '<div class="row" style="gap:8px"><input id="tkDec" placeholder="精度 18" value="18" style="flex:1;padding:11px;border-radius:11px;border:1px solid var(--line);background:var(--card)"><input id="tkSup" placeholder="总量" style="flex:1;padding:11px;border-radius:11px;border:1px solid var(--line);background:var(--card)"></div>'+
+      '<div class="btns"><button class="btn" id="tkPrepare">预览手续费</button><button class="btn primary" id="tkConfirm">确认上链</button></div>'+
+      '<div id="tkOut"></div>'+
+    '</div>';
+  const pass=()=>($('#wPass').value||'');
+  const out=(html)=>{const el=$('#wOut'); if(el) el.innerHTML=html;};
+  $('#wSetup')&&($('#wSetup').onclick=()=>api.post('/api/wallet/setup',{passphrase:pass()}).then(d=>{toast(d.note||'已创建');SUBLD.wallet();}).catch(fail));
+  $('#wUnlock')&&($('#wUnlock').onclick=()=>api.post('/api/wallet/unlock',{passphrase:pass()}).then(d=>{toast(d.ok?'已解锁':'解锁失败');SUBLD.wallet();}).catch(fail));
+  $('#wLock')&&($('#wLock').onclick=()=>api.post('/api/wallet/lock',{}).then(()=>{toast('已锁定');SUBLD.wallet();}).catch(fail));
+  $('#wBackup')&&($('#wBackup').onclick=()=>api.get('/api/wallet/backup').then(d=>{
+    out('<div class="h-title">备份密文（含私钥密文，请离线保存）</div><pre class="blob">'+esc(d.blob||'')+'</pre><div class="small muted">口令不会包含在密文里，丢失无法恢复。</div>');
+  }).catch(fail));
+  $('#wRestore')&&($('#wRestore').onclick=()=>{
+    const blob=($('#wBlob').value||'').trim();
+    api.post('/api/wallet/restore',{blob,passphrase:pass(),overwrite:false}).then(d=>{toast(d.restored?'已恢复':'未变更');SUBLD.wallet();}).catch(fail);
+  });
+  $('#tokImport')&&($('#tokImport').onclick=()=>{
+    const contract_address=($('#tokAddr').value||'').trim();
+    api.post('/api/tokens/import',{contract_address}).then(d=>{toast(d.note||(d.imported?'已导入':'已存在'));SUBLD.wallet();}).catch(fail);
+  });
+  const tkOut=(h)=>{const el=$('#tkOut'); if(el) el.innerHTML=h;};
+  $('#tkPrepare')&&($('#tkPrepare').onclick=()=>api.post('/api/tokens/prepare',{
+    name:$('#tkName').value,symbol:$('#tkSym').value,decimals:Number($('#tkDec').value||18),supply:Number($('#tkSup').value||0)
+  }).then(d=>{
+    if(d.need_verify){ tkOut('<div class="small" style="color:var(--danger)">需要先完成真人验证（DID 验证码）</div>'); return; }
+    if(!d.ok){ tkOut('<div class="small" style="color:var(--danger)">'+esc(d.error||'预览失败')+'</div>'); return; }
+    const p=d.preview||{};
+    tkOut('<div class="kv"><span class="k">预计 gas</span><span class="v">'+esc(p.est_gas||'—')+'</span></div><div class="kv"><span class="k">余额足够</span><span class="v">'+(p.sufficient_native?'是':'否')+'</span></div>');
+  }).catch(fail));
+  $('#tkConfirm')&&($('#tkConfirm').onclick=()=>api.post('/api/tokens/confirm',{
+    name:$('#tkName').value,symbol:$('#tkSym').value,decimals:Number($('#tkDec').value||18),supply:Number($('#tkSup').value||0)
+  }).then(d=>{
+    if(!d.ok){ tkOut('<div class="small" style="color:var(--danger)">'+esc(d.error||'上链失败')+'</div>'); return; }
+    toast('已上链'); SUBLD.wallet();
+  }).catch(fail));
+};
+
+/* 插件 */
+SUBLD.plugins=async()=>{
+  const d=await api.get('/api/plugins');
+  const list=d.plugins||[];
+  $('#subBody').innerHTML=
+    '<div class="card col">'+
+      '<div class="field"><label>名称</label><input id="pName" placeholder="例如 论文速读"></div>'+
+      '<div class="field"><label>脚本正文（sh / bash / python3 / node）</label><textarea id="pBody" rows="4" placeholder="echo hello"></textarea></div>'+
+      '<button class="btn primary" id="pCreate">创建插件</button>'+
+      '<div class="field"><label>导入分享串</label><textarea id="pBlob" rows="3" placeholder="bolloon-plugin/1..."></textarea></div>'+
+      '<button class="btn" id="pImport">导入插件</button>'+
+    '</div>'+
+    '<div class="h-title">已安装 '+list.length+'</div>'+
+    '<div class="list">'+(list.length?list.map(p=>'<div class="card" style="margin-bottom:8px"><div class="row"><div class="grow"><div style="font-weight:600">'+esc(p.name)+'</div><div class="small muted">'+esc(p.description||'')+'</div></div></div><div class="btns" style="margin-top:10px"><button class="btn" data-pshare="'+esc(p.name)+'">分享</button><button class="btn danger" data-pdel="'+esc(p.name)+'">删除</button></div></div>').join(''):'<div class="empty">还没有插件</div>')+'</div>';
+  $('#pCreate').onclick=()=>api.post('/api/plugins/create',{name:$('#pName').value,body:$('#pBody').value}).then(()=>{toast('已创建');SUBLD.plugins();}).catch(fail);
+  $('#pImport').onclick=()=>api.post('/api/plugins/import',{blob:$('#pBlob').value}).then(()=>{toast('已导入');SUBLD.plugins();}).catch(fail);
+  $$('[data-pshare]').forEach(b=>b.onclick=()=>api.get('/api/plugins/share?name='+encodeURIComponent(b.dataset.pshare)).then(x=>{
+    const blob=x.blob||''; if(navigator.clipboard)navigator.clipboard.writeText(blob).catch(()=>{});
+    $('#subBody').insertAdjacentHTML('afterbegin','<div class="card"><div class="small muted">分享串（已尝试复制）</div><pre class="blob">'+esc(blob)+'</pre></div>');
+  }).catch(fail));
+  $$('[data-pdel]').forEach(b=>b.onclick=()=>{ if(!confirm('删除插件 '+b.dataset.pdel+'？')) return; api.post('/api/plugins/remove',{name:b.dataset.pdel}).then(()=>{toast('已删除');SUBLD.plugins();}).catch(fail); });
+};
+
+/* 模型 */
+SUBLD.models=async()=>{
+  const d=await api.get('/api/models');
+  const ps=d.providers||[];
+  $('#subBody').innerHTML='<div class="h-title">当前：'+esc(d.active||'—')+' / '+esc(d.active_model||'default')+'</div>'+
+    '<div class="list">'+ps.map(p=>'<div class="card" style="margin-bottom:8px"><div class="row"><div class="grow"><div style="font-weight:600">'+esc(p.display||p.name)+'</div><div class="small muted">'+esc(p.protocol||'')+(p.has_key?' · 已配置 Key':' · 未配置 Key')+'</div></div><span class="badge">'+(p.selectable?'可选':'不可选')+'</span></div><div class="btns" style="margin-top:10px"><button class="btn" data-msel="'+esc(p.name)+'">设为当前</button><button class="btn" data-mtest="'+esc(p.name)+'">测试</button></div></div>').join('')+'</div>';
+  $$('[data-msel]').forEach(b=>b.onclick=()=>api.post('/api/models/select',{provider:b.dataset.msel}).then(x=>{toast(x.ok?'已切换':'失败');SUBLD.models();}).catch(fail));
+  $$('[data-mtest]').forEach(b=>b.onclick=()=>api.post('/api/models/test',{provider:b.dataset.mtest}).then(x=>{
+    toast(x.ok?('连通 '+num(x.ms)+'ms'):(x.error||'失败'),3200);
+  }).catch(fail));
+};
+
+/* 额度 */
+SUBLD.pay=async()=>{
+  const [sum,info]=await Promise.all([api.get('/api/pay/summary').catch(()=>({})),api.get('/api/pay/info').catch(()=>({}))]);
+  $('#subBody').innerHTML=
+    '<div class="card">'+
+      '<div class="kv"><span class="k">余额</span><span class="v">$'+num(sum.balance_usd).toFixed(2)+'</span></div>'+
+      '<div class="kv"><span class="k">待结算</span><span class="v">$'+num(sum.pending_usd).toFixed(2)+'</span></div>'+
+      '<div class="kv"><span class="k">今日</span><span class="v">'+esc(JSON.stringify(sum.today||{}))+'</span></div>'+
+    '</div>'+
+    '<div class="h-title">申报充值</div>'+
+    '<div class="card col">'+
+      '<div class="field"><label>金额（USD）</label><input id="payAmt" type="number" step="0.01" placeholder="10"></div>'+
+      '<div class="field"><label>渠道</label><select id="payCh"><option value="crypto">crypto</option><option value="alipay">alipay</option><option value="wechat">wechat</option><option value="paypal">paypal</option></select></div>'+
+      '<div class="field"><label>凭证（交易哈希 / 截图说明）</label><input id="payProof" placeholder="0x..."></div>'+
+      '<button class="btn primary" id="payClaim">提交申报</button>'+
+    '</div>';
+  $('#payClaim').onclick=()=>api.post('/api/pay/claim',{amount_usd:Number($('#payAmt').value||0),channel:$('#payCh').value,proof:$('#payProof').value}).then(d=>{toast(d.ok?'已提交':'失败');}).catch(fail);
+};
+
+/* 授权 */
+SUBLD.grants=async()=>{
+  const d=await api.get('/api/grants');
+  const kinds=[['tools','工具'],['bins','命令'],['commands','命令前缀'],['paths','路径']];
+  $('#subBody').innerHTML=
+    '<div class="card col">'+
+      '<div class="field"><label>类型</label><select id="gKind">'+kinds.map(k=>'<option value="'+k[0]+'">'+k[1]+'</option>').join('')+'</select></div>'+
+      '<div class="field"><label>值</label><input id="gVal" placeholder="如 shell / /tmp"></div>'+
+      '<div class="btns"><button class="btn primary" id="gAdd">授予</button><button class="btn danger" id="gRevoke">收回</button></div>'+
+    '</div>'+
+    kinds.map(k=>'<div class="h-title">'+k[1]+'</div><div class="list">'+((d[k[0]]||[]).length?(d[k[0]]||[]).map(v=>'<div class="item"><span class="grow truncate">'+esc(v)+'</span><span class="badge">已授权</span></div>').join(''):'<div class="empty">无</div>')+'</div>').join('');
+  const body=()=>({kind:$('#gKind').value,value:$('#gVal').value});
+  $('#gAdd').onclick=()=>api.post('/api/grants',body()).then(()=>{toast('已授予');SUBLD.grants();}).catch(fail);
+  $('#gRevoke').onclick=()=>api.post('/api/grants/revoke',body()).then(()=>{toast('已收回');SUBLD.grants();}).catch(fail);
+};
+
+/* ── 事件绑定 ─────────────────────────────────────────── */
+document.addEventListener('click',(e)=>{
+  const nav=e.target.closest('.nav button');
+  if(nav){ showTab(nav.dataset.tab); return; }
+  const open=e.target.closest('[data-open]');
+  if(open){ openSub(open.dataset.open); return; }
+  const agent=e.target.closest('[data-agent]');
+  if(agent){
+    S.agentId=agent.dataset.agent;
+    const first=sessionsOf(S.agentId)[0]; S.sessionId=first?first.id:'';
+    api.post('/api/active',{agent_id:S.agentId,session_id:S.sessionId}).catch(()=>{});
+    renderTop();renderAgents();renderSessions();
+    return;
+  }
+  const sess=e.target.closest('[data-session]');
+  if(sess){ pickSession(sess.dataset.session); return; }
+  const contact=e.target.closest('[data-contact]');
+  if(contact){ toast(contact.dataset.contact||'联系人'); return; }
+});
+$('#btnNewChat').onclick=newChat;
+$('#btnRoomBack').onclick=closeRoom;
+$('#btnSend').onclick=sendMsg;
+$('#btnEditProfile').onclick=editProfile;
+$('#btnTheme').onclick=cycleTheme;
+$('#btnWorldRefresh').onclick=()=>loadWorld().catch(fail);
+$('#btnAddContact').onclick=addContact;
+$('#contactSearch').addEventListener('input',()=>loadContacts().catch(()=>{}));
+$('#subBack').onclick=closeSub;
+$('#input').addEventListener('input',(e)=>{e.target.style.height='auto';e.target.style.height=Math.min(e.target.scrollHeight,110)+'px';});
+$('#input').addEventListener('keydown',(e)=>{ if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendMsg();} });
+
+/* ── 启动 ─────────────────────────────────────────────── */
+applyTheme(themePref());
+refreshBoot().then(()=>{
+  showTab('chat');
+  if(!S.sessionId){
+    const first=sessionsOf(S.agentId)[0]; if(first) S.sessionId=first.id;
+  }
+  if(S.sessionId) openRoom(S.sessionId); else showTab('chat');
+}).catch(e=>{
+  toast('后端未就绪：'+((e&&e.message)||e),4000);
+  console.error(e);
+});
+})();
+</script>
+</body>
+</html>

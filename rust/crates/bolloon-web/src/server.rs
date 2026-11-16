@@ -1674,8 +1674,18 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
 }
 
 /// 主页面（内嵌 HTML）
-async fn index() -> Html<&'static str> {
-    Html(INDEX_HTML)
+async fn index(Query(q): Query<IndexQuery>) -> Html<&'static str> {
+    // 2026-11-16: 手机端独立 UI（不再复用桌面 index.html 的 body.mobile）
+    if q.app.as_deref() == Some("mobile") {
+        Html(MOBILE_HTML)
+    } else {
+        Html(INDEX_HTML)
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+struct IndexQuery {
+    app: Option<String>,
 }
 
 // ── 内嵌图标 (index.html 里写的是 `/icons/<file>`, 必须真能取到) ──
@@ -4705,6 +4715,8 @@ async fn x402_info_payment(
 
 /// 内嵌单页 HTML（hushforge 布局: 284px 侧栏 + 主聊天 + room 面板）
 const INDEX_HTML: &str = include_str!("../assets/index.html");
+/// 手机端独立 UI：`GET /?app=mobile` 返回（Tauri 移动端 WebView 直接加载）。
+const MOBILE_HTML: &str = include_str!("../assets/mobile.html");
 
 #[cfg(test)]
 mod route_tests {
