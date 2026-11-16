@@ -1,0 +1,13 @@
+{
+  "identifier": "mobile",
+  "description": "Bolloon 移动端（Android/iOS）：WebView 加载内嵌 axum 服务 http://127.0.0.1:<port>/?app=mobile，属于 remote 来源；只授予核心能力与壳命令，不授予桌面 updater。",
+  "platforms": ["android", "iOS"],
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
+  "permissions": [
+    "core:default",
+    "bolloon-default"
+  ]
+}
