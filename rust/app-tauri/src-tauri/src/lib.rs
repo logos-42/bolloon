@@ -111,19 +111,31 @@ pub fn run() {
             #[cfg(mobile)]
             {
                 // 移动端 WebView 已由 Tauri 创建: 等它可用后导航到内嵌服务 (同源 /api)
+                tracing::info!(
+                    "mobile windows: cfg={} live={:?}",
+                    app.config().app.windows.len(),
+                    app.webview_windows().keys().collect::<Vec<_>>()
+                );
                 let nav_handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
                     let url = format!("http://127.0.0.1:{port}/?app=mobile");
-                    for _ in 0..50 {
-                        if let Some(w) = nav_handle.get_webview_window("main") {
+                    // 持续重试：dev 模式下 WebView 先加载 1430 静态页，单次 replace 会被
+                    // 后续的页面加载覆盖；直到 URL 真正落在内嵌端口才算成功。
+                    for _ in 0..150 {
+                        let w = nav_handle
+                            .get_webview_window("main")
+                            .or_else(|| nav_handle.webview_windows().values().next().cloned());
+                        if let Some(w) = w {
                             let js = format!("window.location.replace({:?});", url);
-                            let _r: Result<(), _> = w.eval(js.as_str());
-                            if _r.is_ok() {
-                                tracing::info!("mobile webview → {url}");
-                                return;
+                            let _ = w.eval(js.as_str());
+                            if let Ok(cur) = w.url() {
+                                if cur.port() == Some(port) {
+                                    tracing::info!("mobile webview → {url}");
+                                    return;
+                                }
                             }
                         }
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                     }
                     tracing::error!("mobile webview 导航失败: 找不到 main window");
                 });
