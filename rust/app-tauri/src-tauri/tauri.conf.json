@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Bolloon",
-  "version": "0.7.11",
+  "version": "0.7.12",
   "identifier": "cn.bolloon.mobile",
   "build": {
     "frontendDist": "../../../dist/web"

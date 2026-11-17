@@ -560,8 +560,8 @@ function renderReplies(list){
   const th=(list||[]).filter(m=>m&&(m.text||m.content)).slice(-30).reverse();
   el.innerHTML=th.length?th.map(m=>'<div class="reply '+(m.role==='human'?'me':'')+'"><div class="who">'+esc(m.role==='human'?'我':(m.from||m.role||'世界'))+(m.ts?' · '+esc(fmtTs(m.ts)):'')+'</div><div class="txt">'+esc(m.text||m.content||'')+'</div></div>').join(''):'<div class="empty">还没有回应，发出需求后世界和联系人会在这里回应</div>';
 }
-async function loadHome(){
-  showProgress(true);
+async function loadHome(silent){
+  if(!silent)showProgress(true);
   try{
     const [ints,feed,cards,inbox,thread]=await Promise.all([
       api.get('/api/world/intents').catch(()=>({intents:[]})),
@@ -603,7 +603,18 @@ async function loadHome(){
       return '<article class="feedcard">'+media+'<h4>'+esc(title)+'</h4>'+(desc?'<p>'+esc(desc)+'</p>':'')+'<div class="meta">'+tags+'</div></article>';
     }).join(''):'<div class="empty"><b>暂时没有新卡片</b>联系人或其他节点分享后会出现在这里</div>';
     renderReplies(thread.thread||[]);
-  } finally { showProgress(false); }
+  } finally { if(!silent)showProgress(false); }
+}
+/* 世界模式自动加载：推荐引擎按本机意图/对话持续匹配，前端只做定时拉取与去重渲染 */
+let HTAB='world',WORLD_TIMER=0;
+function startWorldAuto(){
+  if(WORLD_TIMER)return;
+  WORLD_TIMER=window.setInterval(()=>{
+    if(S.tab==='home'&&HTAB==='world'&&!document.hidden)loadHome(true).catch(()=>{});
+  },15000);
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden&&S.tab==='home'&&HTAB==='world')loadHome(true).catch(()=>{});
+  });
 }
 async function sendNeed(){
   const ta=$('#needInput');const text=(ta.value||'').trim();if(!text){toast('先写下你的需求');return;}
@@ -953,6 +964,8 @@ document.addEventListener('click',e=>{
   const ht=e.target.closest('[data-htab]');
   if(ht){
     const k=ht.dataset.htab;
+    HTAB=k;
+    if(k==='world')loadHome(true).catch(()=>{});
     $$('#homeTabs [data-htab]').forEach(b=>b.classList.toggle('on',b===ht));
     $$('.htabpane').forEach(v=>v.classList.toggle('on',v.id==='pane-'+k));
     return;
@@ -1470,6 +1483,7 @@ applyTheme(themePref());
 api.get('/api/identity/check').then(d=>{if(d&&d.unique===false)toast('⚠ 本机 DID 与配对目标不一致，请重新配对',5200);}).catch(()=>{});
 refreshQr().then(()=>renderMe());
 qrTimer=setInterval(()=>{if(!qrFrozen())refreshQr();},15000);
+startWorldAuto();
 /* iOS 全屏 WebView 的 innerHeight 可能大于屏幕；限制 app 高度，避免底部出现黑区 */
 $('#drawer').classList.remove('on');
 $('#sub').classList.remove('on');
