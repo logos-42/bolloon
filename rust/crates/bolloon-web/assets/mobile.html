@@ -56,13 +56,23 @@ main{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
 /* 首页：信息流 + 底部输入栏 */
 #v-home.on{display:flex;flex-direction:column;padding:0;overflow:hidden}
 .homefeed{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:0 16px 12px}
-.hometabs{display:grid;grid-template-columns:1fr 1fr;gap:6px;position:sticky;top:0;z-index:6;background:var(--bg);padding:8px 0 10px}
-.hometabs button{height:38px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--muted);font-size:13.5px;font-weight:600}
-.hometabs button.on{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.top-tabs{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:6px;max-width:230px;margin:0 auto}
+.top-tabs button{height:32px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--muted);font-size:12.5px;font-weight:600}
+.top-tabs button.on{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+[hidden]{display:none!important}
 .htabpane{display:none}
 .htabpane.on{display:block}
 .intent-title{font-size:18px;font-weight:700;margin:4px 2px 10px}
 .intent-hint{margin-top:14px;font-size:12.5px;color:var(--muted);line-height:1.6}
+.replies{display:flex;flex-direction:column;gap:8px}
+.reply{padding:10px 12px;border-radius:12px;background:var(--card);border:1px solid var(--line)}
+.reply.me{background:color-mix(in srgb,var(--accent) 16%,var(--card));border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
+.reply .who{font-size:10.5px;color:var(--muted);margin-bottom:3px}
+.reply .txt{font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+/* 输入后的 3px 流光进度 */
+.homeprogress{flex:0 0 auto;height:3px;background:var(--line);overflow:hidden}
+.homeprogress i{display:block;height:100%;width:38%;background:linear-gradient(90deg,transparent,var(--accent),transparent);animation:flow 1.1s linear infinite}
+@keyframes flow{from{transform:translateX(-100%)}to{transform:translateX(300%)}}
 .homebar{flex:0 0 auto;display:flex;align-items:flex-end;gap:8px;padding:8px 12px;border-top:1px solid var(--line);background:var(--bg)}
 .homebar textarea{flex:1;resize:none;max-height:96px;min-height:40px;padding:10px 12px;border-radius:20px;border:1px solid var(--line);background:var(--card);outline:none}
 .homebar .send{width:40px;height:40px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;flex:0 0 auto}
@@ -153,7 +163,7 @@ pre.blob{white-space:pre-wrap;word-break:break-all;font-size:11px;background:var
 .empty{padding:36px 18px;text-align:center;color:var(--muted);font-size:13px}
 .empty b{display:block;color:var(--text);font-size:15px;margin-bottom:6px}
 
-#toast{position:fixed;left:50%;bottom:calc(var(--safe-b) + 74px);transform:translate(-50%,16px);background:var(--text);color:var(--bg);padding:9px 14px;border-radius:999px;font-size:12.5px;opacity:0;pointer-events:none;transition:.2s;z-index:60;max-width:86vw;text-align:center}
+#toast{position:fixed;left:50%;bottom:calc(var(--safe-b) + 122px);transform:translate(-50%,16px);background:var(--text);color:var(--bg);padding:9px 14px;border-radius:999px;font-size:12.5px;opacity:0;pointer-events:none;transition:.2s;z-index:60;max-width:86vw;text-align:center}
 #toast.on{opacity:1;transform:translate(-50%,0)}
 .hide{display:none!important}
 </style>
@@ -165,6 +175,10 @@ pre.blob{white-space:pre-wrap;word-break:break-all;font-size:11px;background:var
       <svg class="ico" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
     </button>
     <div class="title" id="topTitle">首页</div>
+    <div class="hometabs top-tabs" id="homeTabs" hidden>
+      <button type="button" class="on" data-htab="world">世界</button>
+      <button type="button" data-htab="intent">我的意图</button>
+    </div>
     <button class="round" id="btnNew" aria-label="新对话">
       <svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
     </button>
@@ -174,10 +188,6 @@ pre.blob{white-space:pre-wrap;word-break:break-all;font-size:11px;background:var
     <!-- 首页：世界意图 + 媒体卡片 -->
     <section class="view on" id="v-home">
       <div class="homefeed" id="homeScroll">
-        <div class="hometabs" id="homeTabs">
-          <button type="button" class="on" data-htab="world">世界</button>
-          <button type="button" data-htab="intent">我的意图</button>
-        </div>
         <div class="htabpane on" id="pane-world">
           <div class="feed" id="homeFeed"></div>
         </div>
@@ -185,8 +195,11 @@ pre.blob{white-space:pre-wrap;word-break:break-all;font-size:11px;background:var
           <div class="intent-title">我的意图</div>
           <div class="chips" id="intentChips"></div>
           <div class="intent-hint">在下方输入框说出你的需求，会分发给世界和联系人一起帮忙。</div>
+          <div class="h" style="margin-top:18px">回应</div>
+          <div class="replies" id="intentReplies"></div>
         </div>
       </div>
+      <div class="homeprogress" id="homeProgress" hidden><i></i></div>
       <div class="homebar">
         <button class="mic" id="btnMic" aria-label="语音输入">
           <svg class="ico" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></svg>
@@ -345,7 +358,10 @@ async function refreshBoot(){
 
 function renderTop(){
   const a=activeAgent();
-  $('#topTitle').textContent=S.tab==='home'?'首页':S.tab==='tasks'?'任务':S.tab==='contacts'?'联系人':'我';
+  const isHome=S.tab==='home';
+  const tt=$('#topTitle'), ht=$('#homeTabs');
+  if(tt){tt.hidden=isHome;tt.textContent=S.tab==='tasks'?'任务':S.tab==='contacts'?'联系人':'我';}
+  if(ht)ht.hidden=!isHome;
   const nm=a?a.name||a.id:'Bolloon';
   $('#drawerName').textContent=nm;
   $('#drawerSub').textContent=S.agents.length?('本地内核 · '+S.agents.length+' 个智能体'):'本地内核';
@@ -472,41 +488,82 @@ function mediaOf(x){
   return {img,video};
 }
 const SPEAK_SVG='<svg class="ico" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 9a4 4 0 0 1 0 6"/></svg>';
+function showProgress(on){const el=$('#homeProgress');if(el)el.hidden=!on;}
+function fmtTs(ts){const n=Number(ts);if(!Number.isFinite(n)||n<=0)return '';const d=new Date(n<1e12?n*1000:n);return d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
+function normCard(raw){
+  const nested=(raw&&raw.card&&typeof raw.card==='object')?raw.card:{};
+  const x=Object.assign({},nested,raw||{});
+  return {
+    id:x.id||x.card_id||'',
+    title:x.title||x.summary||x.text||'',
+    summary:x.summary||x.description||x.digest||'',
+    cover:x.cover||x.image||x.image_url||x.thumbnail||x.poster||'',
+    media:x.media||null,
+    video:x.video||x.video_url||'',
+    from:x.from||x.provider||x.issuer||'',
+    verification:x.verification||'',
+    ts:x.ts||x.created_at_ms||0,
+    score:x.score
+  };
+}
+function renderReplies(list){
+  const el=$('#intentReplies');if(!el)return;
+  const th=(list||[]).filter(m=>m&&(m.text||m.content)).slice(-30).reverse();
+  el.innerHTML=th.length?th.map(m=>'<div class="reply '+(m.role==='human'?'me':'')+'"><div class="who">'+esc(m.role==='human'?'我':(m.from||m.role||'世界'))+(m.ts?' · '+esc(fmtTs(m.ts)):'')+'</div><div class="txt">'+esc(m.text||m.content||'')+'</div></div>').join(''):'<div class="empty">还没有回应，发出需求后世界和联系人会在这里回应</div>';
+}
 async function loadHome(){
-  const [ints,feed]=await Promise.all([
-    api.get('/api/world/intents').catch(()=>({intents:[]})),
-    api.get('/api/world/feed').catch(()=>({feed:[]}))
-  ]);
-  const intents=ints.intents||[];
-  $('#intentChips').innerHTML=intents.length?intents.map(t=>'<span class="chip">'+esc(typeof t==='string'?t:(t.text||t.name||''))+'</span>').join(''):'<span class="small muted">还没有意图，先写下你的需求</span>';
-  const items=(feed.feed||feed.items||feed.cards||[]);
-  $('#homeFeed').innerHTML=items.length?items.map(x=>{
-    const title=x.title||x.summary||x.text||x.capability||'未命名机会';
-    const desc=x.summary||x.description||x.digest||'';
-    const score=x.score!=null?Math.round(num(x.score)*100)+'%':'';
-    const {img,video}=mediaOf(x);
-    const spoken=encodeURIComponent([title,desc].filter(Boolean).join('。'));
-    let media='';
-    if(video){
-      media='<div class="mediabox"><video src="'+esc(video)+'"'+(img?' poster="'+esc(img)+'"':'')+' controls playsinline preload="metadata"></video><button class="speak" data-speak="'+spoken+'" aria-label="朗读">'+SPEAK_SVG+'</button></div>';
-    }else if(img){
-      media='<div class="mediabox"><img loading="lazy" src="'+esc(img)+'" alt=""><button class="speak" data-speak="'+spoken+'" aria-label="朗读">'+SPEAK_SVG+'</button></div>';
-    }else{
-      media='<div class="mediabox"><div class="mediaph">世界</div></div>';
-    }
-    return '<article class="feedcard">'+media+'<h4>'+esc(title)+'</h4>'+(desc?'<p>'+esc(desc)+'</p>':'')+'<div class="meta">'+(score?'<span class="badge">匹配 '+score+'</span>':'')+(x.issuer?'<span class="badge">'+esc(x.issuer)+'</span>':'')+'</div></article>';
-  }).join(''):'<div class="empty"><b>暂时没有新卡片</b>世界有真实流入时才会出现</div>';
+  showProgress(true);
+  try{
+    const [ints,feed,cards,inbox,thread]=await Promise.all([
+      api.get('/api/world/intents').catch(()=>({intents:[]})),
+      api.get('/api/world/feed').catch(()=>({feed:[]})),
+      api.get('/api/world/cards').catch(()=>({cards:[]})),
+      api.get('/api/world/inbox').catch(()=>({items:[]})),
+      api.get('/api/world/thread').catch(()=>({thread:[]}))
+    ]);
+    const intents=ints.intents||[];
+    $('#intentChips').innerHTML=intents.length?intents.map(t=>'<span class="chip">'+esc(typeof t==='string'?t:(t.text||t.name||''))+'</span>').join(''):'<span class="small muted">还没有意图，先写下你的需求</span>';
+    const feedItems=(feed.feed||feed.items||[]);
+    const cardItems=(cards.cards||[]).map(normCard);
+    const inboxItems=(inbox.items||[]).filter(x=>!x.kind||x.kind==='card').map(normCard);
+    const seen=new Set();const items=[];
+    [...feedItems,...cardItems,...inboxItems].forEach(raw=>{
+      const x=normCard(raw);
+      if(!x.title&&!x.summary)return;
+      const k=x.id||((x.title||'')+'|'+x.from);
+      if(seen.has(k))return;seen.add(k);items.push(x);
+    });
+    items.sort((a,b)=>num(b.score)-num(a.score));
+    $('#homeFeed').innerHTML=items.length?items.map(x=>{
+      const title=x.title||'未命名机会';
+      const desc=x.summary||'';
+      const score=x.score!=null?Math.round(num(x.score)*100)+'%':'';
+      const {img,video}=mediaOf(x);
+      const spoken=encodeURIComponent([title,desc].filter(Boolean).join('。'));
+      let media='';
+      if(video){
+        media='<div class="mediabox"><video src="'+esc(video)+'"'+(img?' poster="'+esc(img)+'"':'')+' controls playsinline preload="metadata"></video><button class="speak" data-speak="'+spoken+'" aria-label="朗读">'+SPEAK_SVG+'</button></div>';
+      }else if(img){
+        media='<div class="mediabox"><img loading="lazy" src="'+esc(img)+'" alt=""><button class="speak" data-speak="'+spoken+'" aria-label="朗读">'+SPEAK_SVG+'</button></div>';
+      }else{
+        media='<div class="mediabox"><div class="mediaph">世界</div></div>';
+      }
+      const tags=(score?'<span class="badge">匹配 '+score+'</span>':'')+(x.from?'<span class="badge">'+esc(x.from)+'</span>':'')+(x.verification==='verified'?'<span class="badge">已验签</span>':'');
+      return '<article class="feedcard">'+media+'<h4>'+esc(title)+'</h4>'+(desc?'<p>'+esc(desc)+'</p>':'')+'<div class="meta">'+tags+'</div></article>';
+    }).join(''):'<div class="empty"><b>暂时没有新卡片</b>联系人或其他节点分享后会出现在这里</div>';
+    renderReplies(thread.thread||[]);
+  } finally { showProgress(false); }
 }
 async function sendNeed(){
   const ta=$('#needInput');const text=(ta.value||'').trim();if(!text){toast('先写下你的需求');return;}
-  const btn=$('#btnNeed');btn.disabled=true;
+  const btn=$('#btnNeed');btn.disabled=true;showProgress(true);
   try{
     await api.post('/api/world/say',{text});
     await api.post('/api/world/intents/broadcast',{}).catch(()=>{});
     ta.value='';ta.style.height='auto';
     toast('已分发到世界；联系人同步后会看到');
-    loadHome().catch(()=>{});
-  }catch(e){fail(e);}finally{btn.disabled=false;}
+    await loadHome();
+  }catch(e){fail(e);}finally{showProgress(false);btn.disabled=false;}
 }
 
 /* 语音输入：录音 → WAV → /api/asr（WKWebView 不支持 Web Speech） */
