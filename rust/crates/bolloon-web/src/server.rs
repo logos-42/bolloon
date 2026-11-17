@@ -1185,6 +1185,26 @@ pub fn app(state: AppState) -> Router {
             guard_state,
             full_access_guard,
         ))
+        // 手机端 dev 壳 (tauri://localhost) 直连回环 API 时需要 CORS；生产同源不受影响
+        .layer(axum::middleware::from_fn(cors_layer))
+}
+
+async fn cors_layer(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let preflight = req.method() == axum::http::Method::OPTIONS;
+    let mut res = if preflight {
+        axum::response::Response::new(axum::body::Body::empty())
+    } else {
+        next.run(req).await
+    };
+    let h = res.headers_mut();
+    h.insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+    h.insert("Access-Control-Allow-Methods", "*".parse().unwrap());
+    h.insert("Access-Control-Allow-Headers", "*".parse().unwrap());
+    h.insert("Access-Control-Max-Age", "600".parse().unwrap());
+    res
 }
 
 pub async fn serve(state: AppState, port: u16) -> anyhow::Result<()> {

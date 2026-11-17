@@ -331,9 +331,10 @@ const $$=(s,r=document)=>Array.from(r.querySelectorAll(s));
 const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const num=(v,d=0)=>{const n=Number(v);return Number.isFinite(n)?n:d;};
 
+const API_BASE=(location.protocol==='tauri:')?'http://127.0.0.1:54188':'';
 const api={
-  async get(p){const r=await fetch(p,{headers:{Accept:'application/json'}});const t=await r.text();let d;try{d=JSON.parse(t);}catch(_){d=t;}if(!r.ok)throw new Error((d&&d.error)||('GET '+p+' → '+r.status));return d;},
-  async post(p,b){const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:b?JSON.stringify(b):undefined});const t=await r.text();let d;try{d=JSON.parse(t);}catch(_){d=t;}if(!r.ok)throw new Error((d&&d.error)||('POST '+p+' → '+r.status));return d;}
+  async get(p){const r=await fetch(API_BASE+p,{headers:{Accept:'application/json'}});const t=await r.text();let d;try{d=JSON.parse(t);}catch(_){d=t;}if(!r.ok)throw new Error((d&&d.error)||('GET '+p+' → '+r.status));return d;},
+  async post(p,b){const r=await fetch(API_BASE+p,{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:b?JSON.stringify(b):undefined});const t=await r.text();let d;try{d=JSON.parse(t);}catch(_){d=t;}if(!r.ok)throw new Error((d&&d.error)||('POST '+p+' → '+r.status));return d;}
 };
 let toastTimer=0;
 function toast(m,ms=2400){const el=$('#toast');if(!el)return;el.textContent=String(m||'');el.classList.add('on');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('on'),ms);}
@@ -625,7 +626,7 @@ async function stopVoice(){
   const rate=ctx?ctx.sampleRate:44100;
   toast('识别中…',5000);
   try{
-    const r=await fetch('/api/asr',{method:'POST',headers:{'Content-Type':'audio/wav'},body:encodeWav(chunks,rate)});
+    const r=await fetch(API_BASE+'/api/asr',{method:'POST',headers:{'Content-Type':'audio/wav'},body:encodeWav(chunks,rate)});
     const d=await r.json();
     if(d.ok&&d.text){ $('#needInput').value=d.text; toast('已转成文字'); }
     else toast((d.error||'识别失败')+(d.hint?'：'+d.hint:''),4500);
