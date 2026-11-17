@@ -13,6 +13,17 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn local_diap() -> Option<serde_json::Value> {
+    #[cfg(feature = "diap-backend")]
+    {
+        crate::diap_hub::global().map(|h| h.address_json())
+    }
+    #[cfg(not(feature = "diap-backend"))]
+    {
+        None
+    }
+}
+
 fn identity_path() -> std::path::PathBuf {
     crate::server::data_dir().join("identity.json")
 }
@@ -59,12 +70,18 @@ pub async fn pair_code(
     let base = std::env::var("BOLLOON_PUBLIC_URL")
         .or_else(|_| std::env::var("BOLLOON_LOCAL_API"))
         .unwrap_or_default();
+    let quic = match &st.quic {
+        Some(q) => q.node_addr().await.ok().map(|a| a.to_string()),
+        None => None,
+    };
     let payload = serde_json::json!({
         "v": 1,
         "kind": "bolloon-identity",
         "did": st.identity.did.as_str(),
         "blob": enc,
         "url": base,
+        "diap": local_diap(),
+        "quic": quic,
         "at_ms": now_ms(),
     });
     use base64::Engine;
@@ -81,12 +98,14 @@ pub async fn pair_code(
 
 /// POST /api/identity/pair {code|payload, passphrase} → 写入本机身份（重启生效）
 pub async fn pair(
+    State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let pass = req["passphrase"].as_str().unwrap_or("");
     if pass.len() < 8 {
         return Json(serde_json::json!({ "ok": false, "error": "口令至少 8 位" }));
     }
+    let _ = &st;
     let code = req["code"].as_str().or_else(|| req["payload"].as_str()).unwrap_or("");
     let p = if let Some(q) = code.split("p=").nth(1) {
         q.split('&').next().unwrap_or("")
@@ -138,6 +157,19 @@ pub async fn pair(
         &expected_path(),
         &serde_json::to_string_pretty(&exp).unwrap_or_default(),
     );
+
+    // 配对码里的 DIAP/QUIC 地址 → 落盘设备表 + 注入内存 hub
+    let url = v["url"].as_str().unwrap_or("");
+    let diap = v.get("diap").filter(|x| !x.is_null()).cloned();
+    if !url.is_empty() {
+        crate::device_sync::register(&st, url, did, diap.clone());
+        #[cfg(feature = "diap-backend")]
+        if let Some(addr) = diap {
+            if let Some(hub) = crate::diap_hub::global() {
+                hub.register(url, addr).await;
+            }
+        }
+    }
     Json(serde_json::json!({
         "ok": true, "did": did, "restart_required": true,
         "note": "身份已写入；请重启手机/电脑端使其生效"

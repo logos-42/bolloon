@@ -38,6 +38,9 @@ pub struct Device {
     pub last_ok_ms: u64,
     #[serde(default)]
     pub last_error: String,
+    /// DIAP/iroh(QUIC) 对端地址；跨重启恢复，避免每次重新配对
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diap: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,7 +97,12 @@ fn save(s: &SyncState) {
 }
 
 /// 登记一台设备（幂等：同 URL 只更新 DID/地址）。
-pub fn register(st: &AppState, url: &str, did: &str) -> SyncState {
+pub fn register(
+    st: &AppState,
+    url: &str,
+    did: &str,
+    diap: Option<serde_json::Value>,
+) -> SyncState {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut s = load();
     if s.group.is_empty() {
@@ -107,6 +115,9 @@ pub fn register(st: &AppState, url: &str, did: &str) -> SyncState {
                 if !did.is_empty() {
                     d.did = did.to_string();
                 }
+                if diap.is_some() {
+                    d.diap = diap.clone();
+                }
             }
             None => s.devices.push(Device {
                 url: u,
@@ -114,11 +125,26 @@ pub fn register(st: &AppState, url: &str, did: &str) -> SyncState {
                 last_sync_ms: 0,
                 last_ok_ms: 0,
                 last_error: String::new(),
+                diap,
             }),
         }
     }
     save(&s);
     s
+}
+
+/// 启动时把已落盘的 DIAP 地址恢复到内存 hub（否则重启后退回 HTTP）。
+pub async fn restore_diap(_st: &AppState) {
+    #[cfg(feature = "diap-backend")]
+    {
+        if let Some(hub) = crate::diap_hub::global() {
+            for d in load().devices {
+                if let Some(addr) = d.diap {
+                    hub.register(&d.url, addr).await;
+                }
+            }
+        }
+    }
 }
 
 /// 立即同步一轮：拉增量 → 幂等合并 → 推进水位 → 顺带扩散设备列表。
@@ -211,6 +237,7 @@ pub async fn sync_once(st: &AppState) -> Value {
                             last_sync_ms: 0,
                             last_ok_ms: 0,
                             last_error: String::new(),
+                            diap: None,
                         });
                     }
                 }
@@ -307,7 +334,12 @@ pub async fn http_register(
             hub.register(&url, req["diap"].clone()).await;
         }
     }
-    let s = register(&st, &url, req["did"].as_str().unwrap_or_default());
+    let s = register(
+        &st,
+        &url,
+        req["did"].as_str().unwrap_or_default(),
+        req.get("diap").filter(|v| !v.is_null()).cloned(),
+    );
     axum::Json(serde_json::json!({
         "ok": true, "group": s.group, "count": s.devices.len(),
     }))

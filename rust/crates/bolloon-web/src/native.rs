@@ -10970,6 +10970,7 @@ pub(crate) async fn peer_json(
         if let Some(r) = hub.request_url(&url, method, body.clone()).await {
             // DIAP/iroh 底层就是 QUIC；只有成功才返回，失败回落 HTTP，避免一条断链卡死同步
             if let Ok(v) = r {
+                tracing::info!("peer_json via DIAP/QUIC: {url}");
                 return Ok(v);
             }
         }

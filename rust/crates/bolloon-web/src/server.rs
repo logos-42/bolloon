@@ -1340,6 +1340,8 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                 hub.spawn();
                 tracing::info!(node_id = %hub.node_id(), "DIAP 跨 NAT 隧道已启用");
                 crate::diap_hub::set_global(hub);
+                // 恢复上次配对保存的对端 DIAP 地址（QUIC 直通）
+                crate::device_sync::restore_diap(&state).await;
             }
             Err(e) => tracing::warn!("DIAP 启动失败 (回落 HTTP): {e}"),
         }
