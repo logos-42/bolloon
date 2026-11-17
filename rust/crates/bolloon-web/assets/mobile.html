@@ -962,6 +962,8 @@ document.addEventListener('click',e=>{
   if(e.target.closest('[data-close-drawer]')){closeDrawer();return;}
   const agent=e.target.closest('[data-agent]');
   if(agent){S.agentId=agent.dataset.agent;const first=sessionsOf(S.agentId)[0];S.sessionId=first?first.id:'';api.post('/api/active',{agent_id:S.agentId,session_id:S.sessionId}).catch(()=>{});renderTasks();renderDrawer();return;}
+  const sm=e.target.closest('[data-sessmenu]');
+  if(sm){e.stopPropagation();SESS_MENU_ID=sm.dataset.sessmenu;openSub('sessmenu');return;}
   const sess=e.target.closest('[data-session]');
   if(sess){closeDrawer();pickSession(sess.dataset.session);return;}
   const contact=e.target.closest('[data-contact]');
@@ -1006,11 +1008,12 @@ let tStart=null;
 document.addEventListener('touchstart',e=>{
   if(e.touches.length!==1)return;
   const t=e.target;
-  if(t.closest('input,textarea,video,.agents'))return;
+  if(t.closest('input,textarea,video,.agents,.sess-wrap'))return;
   tStart={x:e.touches[0].clientX,y:e.touches[0].clientY,time:Date.now()};
 },{passive:true});
 document.addEventListener('touchend',e=>{
   if(!tStart)return;
+  if(e.target.closest('.sess-wrap')){tStart=null;return;}
   const t=e.changedTouches[0];const dx=t.clientX-tStart.x,dy=t.clientY-tStart.y,dt=Date.now()-tStart.time;
   tStart=null;if(dt>700)return;
   const ax=Math.abs(dx),ay=Math.abs(dy);
@@ -1167,7 +1170,7 @@ renderTasks=function(){
   const list=sessionsOf(S.agentId);
   $('#taskList').innerHTML=list.length?list.map(s=>{
     const last=(s.messages&&s.messages.length)?(s.messages[s.messages.length-1].content||''):'';
-    return '<div class="sess-wrap" data-sid="'+esc(s.id)+'"><button class="item" data-session="'+esc(s.id)+'"><span class="av">'+(s.pinned?'★':'C')+'</span><span class="grow"><span class="t truncate">'+esc(s.title||'新对话')+'</span><span class="d truncate">'+esc(last||'点击继续')+'</span></span><span class="badge">›</span></button><button class="sess-del" data-del="'+esc(s.id)+'">删除</button></div>';
+    return '<div class="sess-wrap" data-sid="'+esc(s.id)+'"><button class="item" data-session="'+esc(s.id)+'"><span class="av">'+(s.pinned?'★':'C')+'</span><span class="grow"><span class="t truncate">'+esc(s.title||'新对话')+'</span><span class="d truncate">'+esc(last||'点击继续')+'</span></span><span class="badge" data-sessmenu="'+esc(s.id)+'" title="会话设置">⋯</span><span class="badge">›</span></button><button class="sess-del" data-del="'+esc(s.id)+'">删除</button></div>';
   }).join(''):'<div class="empty"><b>还没有会话</b>右上角 + 新建</div>';
 };
 const _sendMsg=sendMsg;
@@ -1373,6 +1376,56 @@ SUBLD.verify=async()=>{
       const d=await api.post('/api/verify/face/confirm',{image:url,receipt_id:faceReceipt});
       toast(d.ok?'人脸确认通过':(d.error||'核验失败'),4200);
     }catch(e){fail(e);}
+  };
+};
+
+/* ── 会话三点菜单：置顶 / 分享 / 加入群组 / 创建群组 ── */
+let SESS_MENU_ID='';
+SUBS.sessmenu='会话设置';
+SUBLD.sessmenu=async()=>{
+  const s=S.sessions.find(x=>x.id===SESS_MENU_ID)||{};
+  const g=await api.get('/api/groups').catch(()=>({groups:[]}));
+  const groups=g.groups||[];
+  $('#subBody').innerHTML='<div class="card"><div class="kv"><span class="k">会话</span><span class="v">'+esc(s.title||'未命名')+'</span></div></div>'+
+    '<div class="card col"><button class="btn" data-sm="pin">'+(s.pinned?'取消置顶':'置顶会话')+'</button>'+
+    '<button class="btn" data-sm="share">分享会话</button>'+
+    '<div class="field"><label>加入群组</label><select id="smGroup">'+groups.map(x=>'<option value="'+esc(x.id)+'">'+esc(x.name||x.id)+'</option>').join('')+'</select></div>'+
+    '<button class="btn" data-sm="join" '+(groups.length?'':'disabled')+'>让当前智能体加入该群组</button>'+
+    '<div class="field"><label>新群组名称</label><input id="smNewGroup" placeholder="例如 项目群"></div>'+
+    '<button class="btn primary" data-sm="create">创建群组并加入</button><div id="smOut"></div></div>';
+  const out=h=>{const e=$('#smOut');if(e)e.innerHTML=h;};
+  $('#subBody').onclick=async e=>{
+    const b=e.target.closest('[data-sm]');if(!b)return;
+    const id=s.id||SESS_MENU_ID;
+    try{
+      if(b.dataset.sm==='pin'){
+        await api.post('/api/sessions/update',{id,pinned:!s.pinned});
+        toast(s.pinned?'已取消置顶':'已置顶');closeSub();return refreshBoot();
+      }
+      if(b.dataset.sm==='share'){
+        const d=await api.post('/api/sessions/share',{id});
+        const url=location.origin+(d.url||'');
+        out('<div class="field"><label>分享链接</label><input id="smShare" readonly value="'+esc(url)+'"></div><button class="btn" id="smCopy">复制链接</button>');
+        $('#smCopy').onclick=()=>{const el=$('#smShare');if(el){el.select();if(navigator.clipboard)navigator.clipboard.writeText(el.value).catch(()=>{});}toast('已复制');};
+        return;
+      }
+      const agent=s.agent_id||S.agentId;
+      if(b.dataset.sm==='join'){
+        const gid=$('#smGroup')?$('#smGroup').value:'';
+        if(!gid){toast('先选群组');return;}
+        const d=await api.post('/api/groups/'+encodeURIComponent(gid)+'/agents',{agent_id:agent});
+        toast(d.ok?'已加入群组':(d.error||'加入失败'),3200);
+        return;
+      }
+      if(b.dataset.sm==='create'){
+        const name=($('#smNewGroup').value||'').trim();if(!name){toast('先填群名');return;}
+        const d=await api.post('/api/groups',{name});
+        const gid=d.id||d.group&&d.group.id||'';
+        if(!gid){toast(d.error||'创建失败');return;}
+        await api.post('/api/groups/'+encodeURIComponent(gid)+'/agents',{agent_id:agent}).catch(()=>{});
+        toast('已创建并加入');closeSub();return;
+      }
+    }catch(err){fail(err);}
   };
 };
 

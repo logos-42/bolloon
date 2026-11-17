@@ -9892,6 +9892,35 @@ pub async fn author_skill_for_intent(
 /// 本机签一张 join 邀请链接(复用 group_share 同一份实现), 发到对端
 /// `/api/agents/public/join-group`; 对端必须: 是好友 + 该智能体被授予 `invite_group`。
 /// 成功后在**本机议程**里登记这个外部智能体 id, 前端就会带 🌐 显示并可被 @。
+/// 让本机智能体加入本机群组（写一条 member-join 事件，签名来自本机身份）。
+pub async fn group_add_agent(
+    State(st): State<AppState>,
+    AxumPath(gid): AxumPath<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let agent_id = req["agent_id"].as_str().unwrap_or_default().trim().to_string();
+    if agent_id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 agent_id" }));
+    }
+    if !st.groups.list_groups().iter().any(|g| g.id == gid) {
+        return Json(serde_json::json!({ "ok": false, "error": "群组不存在" }));
+    }
+    match st.groups.append(
+        &gid,
+        &st.identity,
+        "member-join",
+        &agent_id,
+        "",
+        None,
+        now_ms(),
+    ) {
+        Ok(entry) => Json(serde_json::json!({
+            "ok": true, "group_id": gid, "agent_id": agent_id, "hash": entry.hash,
+        })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("加入失败: {e}") })),
+    }
+}
+
 pub async fn group_invite_agent(
     State(st): State<AppState>,
     AxumPath(gid): AxumPath<String>,

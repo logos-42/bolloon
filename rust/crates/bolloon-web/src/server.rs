@@ -1104,6 +1104,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/groups/external", get(crate::native::external_groups))
         .route("/api/groups/{id}/messages", get(group_messages))
         .route("/api/groups/{id}/say", post(group_say))
+        .route(
+            "/api/groups/{gid}/agents",
+            post(crate::native::group_add_agent),
+        )
         // 子讨论 (小组讨论 / 组织内部) + 统一分享 + 凭邀请加入
         .route(
             "/api/groups/{id}/topics",
