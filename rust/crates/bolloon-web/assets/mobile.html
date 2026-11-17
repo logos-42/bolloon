@@ -103,10 +103,10 @@ main{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
 .sess-wrap.swiped .item{transform:translateX(-76px);transition:transform .2s}
 .sess-del{position:absolute;right:0;top:0;bottom:0;width:76px;background:var(--danger);color:#fff;display:grid;place-items:center;font-size:13px;transform:translateX(100%);transition:transform .2s;z-index:1}
 .sess-wrap.swiped .sess-del{transform:none}
-.qrthumb{width:44px;height:44px;padding:4px;border-radius:10px;border:1px solid var(--line);background:#fff;display:grid;place-items:center;overflow:hidden}
+.qrthumb{width:58px;height:58px;padding:4px;border-radius:10px;border:1px solid var(--line);background:#fff;display:grid;place-items:center;overflow:hidden}
 .qrthumb svg{width:100%;height:100%}
 .qrbig{background:#fff;padding:18px;border-radius:18px;display:grid;place-items:center}
-.qrbig svg{width:min(72vw,320px);height:min(72vw,320px)}
+.qrbig svg{width:min(88vw,520px);height:min(88vw,520px)}
 .facebox{width:100%;aspect-ratio:3/4;background:#000;border-radius:14px;overflow:hidden;margin-bottom:10px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px}
 .facebox video,.facebox img{width:100%;height:100%;object-fit:cover;display:block}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
@@ -190,6 +190,9 @@ pre.blob{white-space:pre-wrap;word-break:break-all;font-size:11px;background:var
 .empty{padding:36px 18px;text-align:center;color:var(--muted);font-size:13px}
 .empty b{display:block;color:var(--text);font-size:15px;margin-bottom:6px}
 
+/* iOS 输入法候选/聚焦时不要出现白色浮层 */
+.composer textarea,#needInput{-webkit-appearance:none;appearance:none;background:var(--card)!important;color:var(--text)!important;outline:none;box-shadow:none;-webkit-tap-highlight-color:transparent}
+.composer textarea:focus,#needInput:focus{background:var(--card)!important;color:var(--text)!important;outline:none;box-shadow:none}
 #toast{position:fixed;left:50%;bottom:calc(var(--safe-b) + 108px);transform:translate(-50%,16px);background:var(--text);color:var(--bg);padding:9px 14px;border-radius:999px;font-size:12.5px;opacity:0;pointer-events:none;transition:.2s;z-index:60;max-width:86vw;text-align:center}
 #toast.on{opacity:1;transform:translate(-50%,0)}
 .hide{display:none!important}
@@ -231,7 +234,7 @@ pre.blob{white-space:pre-wrap;word-break:break-all;font-size:11px;background:var
         <button class="mic" id="btnMic" aria-label="语音输入">
           <svg class="ico" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></svg>
         </button>
-        <textarea id="needInput" rows="1" placeholder="说出你需要什么帮助…"></textarea>
+        <textarea id="needInput" rows="1" placeholder="说出你需要什么帮助…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send"></textarea>
         <button class="send" id="btnNeed" aria-label="发送">
           <svg class="ico" viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z"/></svg>
         </button>
@@ -301,10 +304,11 @@ pre.blob{white-space:pre-wrap;word-break:break-all;font-size:11px;background:var
       <div class="roomhead">
         <button class="round" id="btnRoomBack" aria-label="返回"><svg class="ico" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
         <div class="grow"><div style="font-weight:650" id="roomTitle">对话</div><div class="tiny muted" id="roomSub">—</div></div>
+        <button class="round" id="btnStop" aria-label="中断任务" title="中断任务">■</button>
       </div>
       <div class="msgs" id="msgs"></div>
       <div class="composer">
-        <textarea id="input" rows="1" placeholder="说点什么…"></textarea>
+        <textarea id="input" rows="1" placeholder="说点什么…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send"></textarea>
         <button class="send" id="btnSend" aria-label="发送"><svg class="ico" viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z"/></svg></button>
       </div>
     </section>
@@ -1231,6 +1235,87 @@ document.addEventListener('touchend',e=>{
   const dx=e.changedTouches[0].clientX-sx;
   if(dx<-60)w.classList.add('swiped');else if(dx>40)w.classList.remove('swiped');
 },{passive:true});
+
+/* ── 聊天队列 + 中断 ── */
+const _sendMsgQ=sendMsg;
+let CHAT_Q=Promise.resolve(),Q_LEN=0;
+sendMsg=function(){
+  Q_LEN++;
+  CHAT_Q=CHAT_Q.then(async()=>{try{await _sendMsgQ();}finally{Q_LEN--;}});
+  return CHAT_Q;
+};
+$('#btnSend').onclick=()=>sendMsg();
+$('#btnStop').onclick=()=>api.post('/api/chat/stop',{session_id:S.sessionId}).then(()=>toast('已请求中断')).catch(fail);
+
+/* ── 好友设置 / 昵称 ── */
+SUBS.friend='好友设置';SUBS.profileedit='修改昵称';
+let FRIEND_DID='';
+const CAPS={
+  general:['chat'],
+  trust:['chat','share_judgment','invite_group','command_readonly'],
+  full:['chat','share_judgment','invite_group','command_readonly','trust_write','trust_shell']
+};
+SUBLD.friend=async()=>{
+  const d=await api.get('/api/friends/access?did='+encodeURIComponent(FRIEND_DID)).catch(()=>({}));
+  const pinned=localStorage.getItem('bolloon.friend.pin.'+FRIEND_DID)==='1';
+  $('#subBody').innerHTML='<div class="card"><div class="kv"><span class="k">DID</span><span class="v">'+esc(FRIEND_DID)+'</span></div>'+
+    '<div class="kv"><span class="k">备注</span><span class="v">'+esc(d.name||'—')+'</span></div></div>'+
+    '<div class="h">关系</div><div class="card col"><div class="btns">'+
+    '<button class="btn '+(d.blocked?'danger':'')+'" data-fact="block">'+(d.blocked?'取消拉黑':'拉黑')+'</button>'+
+    '<button class="btn" data-fact="pin">'+(pinned?'取消置顶':'置顶')+'</button></div></div>'+
+    '<div class="h">权限</div><div class="card col">'+
+    '<button class="btn" data-fact="perm" data-level="general">一般 · 只能读和交流</button>'+
+    '<button class="btn" data-fact="perm" data-level="trust">信任 · 项目内可写</button>'+
+    '<button class="btn" data-fact="perm" data-level="full">完全信任 · 除钱包外可读写</button>'+
+    '<div class="small muted" style="line-height:1.55">写入当前智能体对该好友的 caps；钱包相关 payment_info 不在任何档位内。</div></div>';
+  $('#subBody').onclick=async e=>{
+    const b=e.target.closest('[data-fact]');if(!b)return;
+    try{
+      if(b.dataset.fact==='block'){
+        await api.post('/api/friends/block',{did:FRIEND_DID,on:!d.blocked});
+        toast(d.blocked?'已取消拉黑':'已拉黑');SUBLD.friend();
+      }else if(b.dataset.fact==='pin'){
+        const k='bolloon.friend.pin.'+FRIEND_DID;
+        localStorage.setItem(k,pinned?'0':'1');toast(pinned?'已取消置顶':'已置顶');SUBLD.friend();
+      }else if(b.dataset.fact==='perm'){
+        const a=activeAgent();if(!a){toast('没有智能体');return;}
+        const caps=CAPS[b.dataset.level]||CAPS.general;
+        await api.post('/api/agents/'+encodeURIComponent(a.id)+'/grants',{did:FRIEND_DID,caps});
+        toast('已授予：'+b.dataset.level);
+      }
+    }catch(err){fail(err);}
+  };
+};
+SUBLD.profileedit=async()=>{
+  const name=(S.boot&&S.boot.state&&S.boot.state.profile&&S.boot.state.profile.name)||'';
+  $('#subBody').innerHTML='<div class="card col"><div class="field"><label>昵称</label><input id="peName" value="'+esc(name)+'" maxlength="24"></div><button class="btn primary" id="peSave">保存</button></div>';
+  $('#peSave').onclick=()=>{const v=($('#peName').value||'').trim();if(!v){toast('昵称不能为空');return;}api.post('/api/profile',{name:v}).then(()=>{toast('已保存');return refreshBoot();}).catch(fail);};
+};
+
+const _loadContacts=loadContacts;
+loadContacts=async function(){
+  await _loadContacts();
+  const list=$('#contactList');
+  if(list){
+    list.querySelectorAll('[data-contact]').forEach(b=>{
+      const did=b.dataset.contact||'';
+      if(did&&!b.querySelector('[data-friend]'))b.insertAdjacentHTML('beforeend','<span class="badge" data-friend="'+esc(did)+'" title="好友设置">⚙</span>');
+    });
+    let box=$('#contactGroups');
+    if(!box){box=document.createElement('div');box.id='contactGroups';list.parentNode.appendChild(box);}
+    try{
+      const g=await api.get('/api/groups');const gs=g.groups||[];
+      box.innerHTML='<div class="h">本机群组 '+gs.length+'</div><div class="list">'+(gs.length?gs.map(x=>'<div class="item"><span class="av">G</span><span class="grow"><span class="t">'+esc(x.name||x.id)+'</span><span class="d">'+(x.pinned?'已置顶 · ':'')+esc(x.id)+'</span></span></div>').join(''):'<div class="empty">还没有群组</div>')+'</div>'+
+        '<div class="small muted">外部联系人智能体开放的群组需先从好友设置授予 chat 权限后读取。</div>';
+    }catch(_){box.innerHTML='<div class="h">本机群组</div><div class="empty">加载失败</div>';}
+  }
+};
+
+document.addEventListener('click',e=>{
+  const f=e.target.closest('[data-friend]');
+  if(f){e.stopPropagation();FRIEND_DID=f.dataset.friend||'';if(FRIEND_DID)openSub('friend');return;}
+  if(e.target.closest('#meName')){openSub('profileedit');}
+});
 
 applyTheme(themePref());
 refreshQr().then(()=>renderMe());
