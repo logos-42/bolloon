@@ -966,6 +966,8 @@ document.addEventListener('click',e=>{
   if(sm){e.stopPropagation();SESS_MENU_ID=sm.dataset.sessmenu;openSub('sessmenu');return;}
   const sess=e.target.closest('[data-session]');
   if(sess){closeDrawer();pickSession(sess.dataset.session);return;}
+  const group=e.target.closest('[data-group]');
+  if(group){e.stopPropagation();GROUP_ID=group.dataset.group||'';openSub('group');return;}
   const contact=e.target.closest('[data-contact]');
   if(contact){toast(contact.dataset.contact||'联系人');return;}
   const vp=e.target.closest('[data-vplay]');
@@ -1243,8 +1245,13 @@ document.addEventListener('click',e=>{
   if(e.target.closest('#btnQr')){openSub('qr');return;}
   const del=e.target.closest('[data-del]');
   if(del){
-    if(!confirm('删除这个会话？'))return;
-    api.post('/api/sessions/delete',{id:del.dataset.del}).then(()=>{toast('已删除');return refreshBoot();}).catch(fail);
+    const row=del.closest('.sess-wrap');
+    if(row)row.remove();
+    api.post('/api/sessions/delete',{id:del.dataset.del}).then(d=>{
+      if(d&&d.error){toast(d.error);return;}
+      toast('已删除');
+      return refreshBoot();
+    }).catch(e=>{toast('删除失败：'+((e&&e.message)||e));refreshBoot().catch(()=>{});});
     return;
   }
 });
@@ -1327,7 +1334,7 @@ loadContacts=async function(){
         api.get('/api/groups/external').catch(()=>({groups:[],notes:[]}))
       ]);
       const gs=g.groups||[],xs=x.groups||[];
-      const row=y=>'<div class="item"><span class="av">G</span><span class="grow"><span class="t">'+esc(y.name||y.id)+'</span><span class="d">'+esc(y.owner_did||y.id)+(y.cross_machine?' · 跨机':'')+'</span></span></div>';
+      const row=y=>'<div class="item" data-group="'+esc(y.id)+'"><span class="av">G</span><span class="grow"><span class="t">'+esc(y.name||y.id)+'</span><span class="d">'+esc(y.owner_did||y.id)+(y.cross_machine?' · 跨机':'')+'</span></span><span class="badge">›</span></div>';
       box.innerHTML='<div class="h">本机群组 '+gs.length+'</div><div class="list">'+(gs.length?gs.map(row).join(''):'<div class="empty">还没有群组</div>')+'</div>'+
         '<div class="h">好友/外部智能体群组 '+xs.length+'</div><div class="list">'+(xs.length?xs.map(row).join(''):'<div class="empty">'+(x.notes&&x.notes[0]?esc(x.notes[0]):'好友节点不可达或未开放群组')+'</div>')+'</div>';
     }catch(_){box.innerHTML='<div class="h">群组</div><div class="empty">加载失败</div>';}
@@ -1426,6 +1433,36 @@ SUBLD.sessmenu=async()=>{
         toast('已创建并加入');closeSub();return;
       }
     }catch(err){fail(err);}
+  };
+};
+
+/* ── 群组会话（OrbitDB 群组，桌面同链路） ── */
+let GROUP_ID='';
+SUBS.group='群组会话';
+SUBLD.group=async()=>{
+  const gs=await api.get('/api/groups').catch(()=>({groups:[]}));
+  const groups=gs.groups||[];
+  const gid=groups.some(g=>g.id===GROUP_ID)?GROUP_ID:(groups[0]&&groups[0].id||'');
+  GROUP_ID=gid;
+  const msgs=gid?await api.get('/api/groups/'+encodeURIComponent(gid)+'/messages').catch(()=>({messages:[]})):{messages:[]};
+  const list=msgs.messages||msgs.items||[];
+  $('#subBody').innerHTML='<div class="card col">'+
+    '<div class="field"><label>群组</label><select id="gSel">'+groups.map(g=>'<option value="'+esc(g.id)+'"'+(g.id===gid?' selected':'')+'>'+esc(g.name||g.id)+'</option>').join('')+'</select></div>'+
+    '<div class="small muted">签名 + hash 链由 OrbitDB 群组存储负责；与桌面版同一套 /api/groups。</div></div>'+
+    '<div class="list" id="gMsgs" style="max-height:46vh;overflow-y:auto">'+(list.length?list.map(m=>'<div class="card" style="margin-bottom:8px"><div class="small muted">'+esc(m.from||m.sender||'')+' · '+new Date((m.timestamp_ms||m.ts||0)).toLocaleString('zh-CN')+'</div><div style="white-space:pre-wrap;word-break:break-word">'+esc(m.content||m.text||'')+'</div></div>').join(''):'<div class="empty">群里还没有消息</div>')+'</div>'+
+    '<div class="card col" style="margin-top:10px"><textarea id="gInput" rows="2" placeholder="在群里说点什么…" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>'+
+    '<div class="btns"><button class="btn primary" id="gSend" '+(gid?'':'disabled')+'>发送</button><button class="btn" id="gRefresh">刷新</button></div>'+
+    '<div class="field"><label>智能体加入本群</label><select id="gAgent">'+(S.agents||[]).map(a=>'<option value="'+esc(a.id)+'">'+esc(a.name||a.id)+'</option>').join('')+'</select></div>'+
+    '<button class="btn" id="gJoin" '+(gid?'':'disabled')+'>加入</button></div>';
+  $('#gSel').onchange=e=>{GROUP_ID=e.target.value;SUBLD.group();};
+  $('#gRefresh').onclick=()=>SUBLD.group();
+  $('#gSend').onclick=()=>{
+    const text=($('#gInput').value||'').trim();if(!text){toast('先输入内容');return;}
+    api.post('/api/groups/'+encodeURIComponent(GROUP_ID)+'/say',{text}).then(()=>{toast('已发送');SUBLD.group();}).catch(fail);
+  };
+  $('#gJoin').onclick=()=>{
+    const agent=$('#gAgent').value;
+    api.post('/api/groups/'+encodeURIComponent(GROUP_ID)+'/agents',{agent_id:agent}).then(d=>toast(d.ok?'已加入':(d.error||'失败'))).catch(fail);
   };
 };
 
