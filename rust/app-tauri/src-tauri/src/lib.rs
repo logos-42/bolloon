@@ -110,6 +110,26 @@ pub fn run() {
 
             #[cfg(mobile)]
             {
+                // CLI 构建会合并 tauri.ios.conf.json；直接用 cargo 构建时没有窗口配置，
+                // 这里兜底创建一个指向内嵌服务的 WebView。
+                if app.webview_windows().is_empty() {
+                    let target = format!("http://127.0.0.1:{port}/?app=mobile");
+                    match target.parse::<tauri::Url>() {
+                        Ok(u) => {
+                            if let Err(e) = tauri::WebviewWindowBuilder::new(
+                                app.handle(),
+                                "main",
+                                tauri::WebviewUrl::External(u),
+                            )
+                            .title("Bolloon")
+                            .build()
+                            {
+                                tracing::error!("mobile window 创建失败: {e}");
+                            }
+                        }
+                        Err(e) => tracing::error!("mobile URL 解析失败: {e}"),
+                    }
+                }
                 // 移动端 WebView 已由 Tauri 创建: 等它可用后导航到内嵌服务 (同源 /api)
                 tracing::info!(
                     "mobile windows: cfg={} live={:?}",
