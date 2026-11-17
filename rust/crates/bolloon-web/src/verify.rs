@@ -86,6 +86,84 @@ fn save(f: &VerifyFile) -> Result<(), String> {
     Ok(())
 }
 
+/// POST /api/verify/attest {subject_kind, subject_id}
+/// 用本机身份私钥签发归属证明。`phone` 必须已经通过 `/api/phone/*` 验证绑定，
+/// 否则拒签；`agent` / `wallet` 只签本机确实拥有的对象。
+pub async fn attest(
+    State(st): State<crate::AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let kind = req["subject_kind"].as_str().unwrap_or("").trim();
+    let subject_id = req["subject_id"].as_str().unwrap_or("").trim();
+    if subject_id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 subject_id" }));
+    }
+
+    use bolloon_p2p::attestation::{self, OwnershipStatement, SubjectKind};
+    let subject_kind = match kind {
+        "phone" => SubjectKind::Phone,
+        "email" => SubjectKind::Email,
+        "agent" => SubjectKind::Agent,
+        "wallet" => SubjectKind::Wallet,
+        _ => return Json(serde_json::json!({ "ok": false, "error": "subject_kind 不支持" })),
+    };
+
+    // 主体真实性：只签本机已经能证明归属的对象
+    let final_subject = match subject_kind {
+        SubjectKind::Phone => {
+            let raw = std::fs::read_to_string(crate::server::data_dir().join("phone_binding.json"))
+                .unwrap_or_default();
+            let binding: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+            let phone = binding["phone"].as_str().unwrap_or("");
+            if phone.is_empty() {
+                return Json(serde_json::json!({
+                    "ok": false, "error": "手机号尚未绑定/验证，不能签发实名证明"
+                }));
+            }
+            if subject_id != phone {
+                return Json(serde_json::json!({
+                    "ok": false, "error": "subject_id 与已绑定手机号不一致"
+                }));
+            }
+            // 盲化：证明里不放明文手机号
+            use sha2::Digest;
+            hex::encode(sha2::Sha256::digest(phone.as_bytes()))
+        }
+        SubjectKind::Agent => {
+            let fs = st.forge.lock().await;
+            if !fs.agents.iter().any(|a| a.id == subject_id || a.did == subject_id) {
+                return Json(serde_json::json!({ "ok": false, "error": "不是本机智能体" }));
+            }
+            subject_id.to_string()
+        }
+        SubjectKind::Wallet => {
+            // 钱包归属证明需要先接钱包签名挑战；当前不签，避免伪造
+            return Json(serde_json::json!({
+                "ok": false, "error": "钱包归属签发待接入（需钱包签名挑战）"
+            }));
+        }
+        SubjectKind::Email => {
+            return Json(serde_json::json!({
+                "ok": false, "error": "邮箱归属验证尚未接入，拒签"
+            }))
+        }
+    };
+
+    let stmt = OwnershipStatement {
+        protocol: attestation::OWNERSHIP_PROTOCOL.into(),
+        subject_kind,
+        subject_id: final_subject,
+        owner_did: st.identity.did.as_str().to_string(),
+        issued_at_ms: now_ms(),
+        expires_at_ms: None,
+        nonce: format!("{:016x}{:016x}", now_ms(), now_ms().wrapping_mul(2_654_435_761)),
+    };
+    match attestation::sign_ownership(&stmt, &st.identity) {
+        Ok(att) => Json(serde_json::json!({ "ok": true, "attestation": att })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("签发失败: {e}") })),
+    }
+}
+
 /// POST /api/verify/face {image} —— 接收 DataURL/base64 自拍，落地**采集回执**。
 /// 明确不伪造认证：这里没有人脸检测/活体/比对服务，verified 恒 false。
 pub async fn face_capture(

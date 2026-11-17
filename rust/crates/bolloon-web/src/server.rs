@@ -545,6 +545,7 @@ pub fn app(state: AppState) -> Router {
         // 2026-11-15: 个人代币 + DID 真人验证（未通过真人验证不许发币）
         .route("/api/verify/status", get(crate::verify::status))
         .route("/api/verify/face", post(crate::verify::face_capture))
+        .route("/api/verify/attest", post(crate::verify::attest))
         .route("/api/verify/personhood", post(crate::verify::personhood))
         .route("/api/tokens", get(crate::personal_token::list))
         .route("/api/tokens/prepare", post(crate::personal_token::prepare))
@@ -1019,6 +1020,8 @@ pub fn app(state: AppState) -> Router {
             "/api/cross-chat/sessions",
             get(crate::cross_chat::http_sessions),
         )
+        .route("/api/sync/export", get(crate::sync_snapshot::export))
+        .route("/api/sync/import", post(crate::sync_snapshot::import))
         .route("/api/devices", get(crate::device_sync::http_list))
         .route(
             "/api/devices/register",

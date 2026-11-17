@@ -166,6 +166,28 @@ pub async fn sync_once(st: &AppState) -> Value {
             Err(e) => err = e,
         }
 
+        // 全量白名单快照：智能体 / 会话 / 群组 / 世界 / 联系人。
+        // 仍走 peer_json ⇒ DIAP/iroh(QUIC) 优先，失败回落 HTTP。
+        if err.is_empty() {
+            let snap_url = format!("{base}/api/sync/export?since_ms={since}");
+            match crate::native::peer_json("GET", snap_url, None).await {
+                Ok(snap) => {
+                    let r = crate::sync_snapshot::merge_snapshot(&st, &snap).await;
+                    if r["ok"].as_bool().unwrap_or(false) {
+                        let a = r["added"].as_object();
+                        let n = a
+                            .map(|m| m.values().filter_map(|v| v.as_u64()).sum::<u64>() as usize)
+                            .unwrap_or(0);
+                        added += n;
+                        total_added += n;
+                    } else {
+                        err = r["error"].as_str().unwrap_or("快照合并失败").to_string();
+                    }
+                }
+                Err(e) => err = e,
+            }
+        }
+
         // 顺带问对方还有哪些同组设备（设备自己扩散，不需要中心）
         if err.is_empty() {
             if let Ok(list) =

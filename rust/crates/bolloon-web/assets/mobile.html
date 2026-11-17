@@ -888,7 +888,20 @@ SUBLD.verify=async()=>{
     '<div class="facebox" id="faceBox">摄像头未开启</div>'+
     '<div class="btns"><button class="btn" id="faceStart">打开摄像头</button><button class="btn primary" id="faceShot">拍摄并核验</button></div>'+
     '<div class="small muted" style="line-height:1.55">扫脸比对需要后端人脸核验服务；当前后端只有 DID 验证码，采集结果不会假装通过。</div></div>'+
+    '<div class="h">DID 实名绑定（归属证明）</div><div class="card col">'+
+    '<div class="field"><label>已绑定手机号</label><input id="vPhone" placeholder="需先完成手机号绑定"></div>'+
+    '<div class="btns"><button class="btn" id="vAttest">签发证明</button><button class="btn primary" id="vProof">提交认证</button></div>'+
+    '<div class="small muted">只用 DID 私钥签已验证手机号的盲化哈希；未绑定手机号会拒签。</div></div>'+
     '<div class="h">DID 验证码</div><div class="card col"><input id="vCode" placeholder="输入验证码"><button class="btn primary" id="vSubmit">提交验证</button></div>';
+  let lastProof=null;
+  $('#vAttest').onclick=()=>api.post('/api/verify/attest',{subject_kind:'phone',subject_id:($('#vPhone').value||'').trim()}).then(d=>{
+    if(!d.ok){toast(d.error||'签发失败');return;}
+    lastProof=d.attestation;toast('证明已签发，可提交认证',3200);
+  }).catch(fail);
+  $('#vProof').onclick=()=>{
+    if(!lastProof){toast('请先签发证明');return;}
+    api.post('/api/verify/personhood',{proof:lastProof}).then(d=>{toast(d.ok?'实名认证成功':(d.error||'认证失败'),3200);if(d.ok)SUBLD.verify();}).catch(fail);
+  };
   let faceStream=null;
   const box=$('#faceBox');
   $('#faceStart').onclick=async()=>{

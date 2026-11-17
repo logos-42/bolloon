@@ -45,6 +45,7 @@ pub mod rendezvous;
 pub mod room_bus;
 pub mod router;
 pub mod server;
+pub mod sync_snapshot;
 pub mod specialize;
 /// QUIC/DIAP 交流历史 (去中心化通道留痕)
 pub mod transport_history;

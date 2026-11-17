@@ -10968,7 +10968,10 @@ pub(crate) async fn peer_json(
     #[cfg(feature = "diap-backend")]
     if let Some(hub) = crate::diap_hub::global() {
         if let Some(r) = hub.request_url(&url, method, body.clone()).await {
-            return r;
+            // DIAP/iroh 底层就是 QUIC；只有成功才返回，失败回落 HTTP，避免一条断链卡死同步
+            if let Ok(v) = r {
+                return Ok(v);
+            }
         }
     }
     let handle = tokio::task::spawn_blocking(move || {
