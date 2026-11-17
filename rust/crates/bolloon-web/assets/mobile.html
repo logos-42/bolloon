@@ -98,6 +98,15 @@ main{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
 #homeFeed .mediaph .mtitle{font-size:13.5px;-webkit-line-clamp:4}
 #homeFeed .mediaph .mtag{font-size:9px}
 .speak{position:absolute;right:8px;top:8px;width:32px;height:32px;border-radius:50%;background:rgba(20,20,18,.62);color:#fff;display:grid;place-items:center;backdrop-filter:blur(8px)}
+.sess-wrap{position:relative;overflow:hidden;border-radius:14px;margin-bottom:8px}
+.sess-wrap .item{background:var(--card);margin:0;border-radius:14px}
+.sess-wrap.swiped .item{transform:translateX(-76px);transition:transform .2s}
+.sess-del{position:absolute;right:0;top:0;bottom:0;width:76px;background:var(--danger);color:#fff;display:grid;place-items:center;font-size:13px;transform:translateX(100%);transition:transform .2s;z-index:1}
+.sess-wrap.swiped .sess-del{transform:none}
+.qrthumb{width:44px;height:44px;padding:4px;border-radius:10px;border:1px solid var(--line);background:#fff;display:grid;place-items:center;overflow:hidden}
+.qrthumb svg{width:100%;height:100%}
+.qrbig{background:#fff;padding:18px;border-radius:18px;display:grid;place-items:center}
+.qrbig svg{width:min(72vw,320px);height:min(72vw,320px)}
 .facebox{width:100%;aspect-ratio:3/4;background:#000;border-radius:14px;overflow:hidden;margin-bottom:10px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px}
 .facebox video,.facebox img{width:100%;height:100%;object-fit:cover;display:block}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
@@ -261,7 +270,7 @@ pre.blob{white-space:pre-wrap;word-break:break-all;font-size:11px;background:var
             <div style="font-size:17px;font-weight:650" id="meName">未命名</div>
             <div class="tiny muted truncate" id="meDid">—</div>
           </div>
-          <button class="btn" id="btnEditProfile" style="padding:8px 12px;font-size:12px">编辑</button>
+          <span id="qrSlot"></span>
         </div>
         <div class="row" style="margin-top:14px;gap:18px">
           <div><div style="font-size:18px;font-weight:700" id="statAgents">0</div><div class="tiny muted">智能体</div></div>
@@ -996,7 +1005,7 @@ document.addEventListener('touchend',e=>{
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeTop();});
 $('#needInput').addEventListener('input',e=>{e.target.style.height='auto';e.target.style.height=Math.min(e.target.scrollHeight,96)+'px';});
 $('#needInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendNeed();}});
-$('#btnEditProfile').onclick=()=>{
+($('#btnEditProfile')||{}).onclick=()=>{
   const p=(S.boot&&S.boot.state&&S.boot.state.profile)||{};
   const name=prompt('昵称',p.name||'');if(name==null)return;
   const avatar=prompt('头像 URL / dataURL（留空清除）',p.avatar||'')||'';
@@ -1129,7 +1138,103 @@ SUBLD.plugins=async()=>{
   };
 };
 
+/* ── 覆盖：任务页（新建智能体 + 左滑删除 + AI 命名） ── */
+const _renderTasks=renderTasks;
+renderTasks=function(){
+  const chips=$('#agentChips');if(!chips)return;
+  chips.innerHTML=S.agents.map(x=>'<button class="chip'+(x.id===S.agentId?' on':'')+'" data-agent="'+esc(x.id)+'">'+esc(x.name||x.id)+'</button>').join('')+'<button class="chip" id="btnAddAgent" title="新建智能体">＋</button>';
+  const list=sessionsOf(S.agentId);
+  $('#taskList').innerHTML=list.length?list.map(s=>{
+    const last=(s.messages&&s.messages.length)?(s.messages[s.messages.length-1].content||''):'';
+    return '<div class="sess-wrap" data-sid="'+esc(s.id)+'"><button class="item" data-session="'+esc(s.id)+'"><span class="av">'+(s.pinned?'★':'C')+'</span><span class="grow"><span class="t truncate">'+esc(s.title||'新对话')+'</span><span class="d truncate">'+esc(last||'点击继续')+'</span></span><span class="badge">›</span></button><button class="sess-del" data-del="'+esc(s.id)+'">删除</button></div>';
+  }).join(''):'<div class="empty"><b>还没有会话</b>右上角 + 新建</div>';
+};
+const _sendMsg=sendMsg;
+async function aiTitle(text,id){
+  try{
+    const tmp=await api.post('/api/sessions',{agent_id:S.agentId});
+    const r=await api.post('/api/chat',{message:'请只输出一个不超过 12 字的中文标题，不要解释、不要引号：'+String(text).slice(0,220),session_id:tmp.id,agent_id:S.agentId});
+    await api.post('/api/sessions/delete',{id:tmp.id}).catch(()=>{});
+    const name=String((r&&(r.reply||r.message))||'').trim().replace(/^["「『]|["」』]$/g,'').slice(0,20);
+    if(name){await api.post('/api/sessions/update',{id,title:name});await refreshBoot();}
+  }catch(_){}
+}
+const AI_TITLED=new Set();
+$('#btnSend').onclick=()=>sendMsg();
+sendMsg=async function(){
+  const s=activeSession(),ta=$('#input');
+  const first=(ta&&ta.value||'').trim();
+  const need=!!s && !AI_TITLED.has(s.id);
+  if(s)AI_TITLED.add(s.id);
+  await _sendMsg();
+  if(need&&first)setTimeout(()=>aiTitle(first,s.id),800);
+};
+
+/* ── 二维码连接（15s 轮换；展开时冻结） ── */
+let qrSvg='',qrUrl='',qrTimer=0;
+async function refreshQr(){
+  try{
+    const d=await api.post('/api/auth/qr/issue',{});
+    qrSvg=d.svg||'';qrUrl=d.url||'';
+    const t=$('#qrThumb');if(t)t.innerHTML=qrSvg;
+    const b=$('#qrBig');if(b)b.innerHTML=qrSvg;
+    const l=$('#qrLink');if(l)l.value=qrUrl;
+  }catch(_){}
+}
+function qrFrozen(){return !!document.querySelector('#sub.on')&&$('#subTitle').textContent==='连接二维码';}
+const _renderMe=renderMe;
+renderMe=function(){
+  _renderMe();
+  const box=$('#qrSlot');if(box)box.innerHTML='<button class="qrthumb" id="btnQr" title="连接二维码">'+qrSvg+'</button>';
+};
+SUBS.addagent='新建智能体';SUBS.qr='连接二维码';
+SUBLD.addagent=async()=>{
+  $('#subBody').innerHTML='<div class="card col"><div class="field"><label>智能体名字</label><input id="agName" placeholder="例如 研究助手"></div><button class="btn primary" id="agCreate">创建</button><div class="small muted">创建后可在智能体横滑栏切换。</div></div>';
+  $('#agCreate').onclick=()=>{
+    const name=($('#agName').value||'').trim();if(!name){toast('先填名字');return;}
+    api.post('/api/agents',{name}).then(async()=>{toast('已创建');await refreshBoot();closeSub();renderTasks();}).catch(fail);
+  };
+};
+SUBLD.qr=async()=>{
+  $('#subBody').innerHTML='<div class="card col"><div class="qrbig" id="qrBig">'+qrSvg+'</div>'+
+    '<div class="field"><label>bolloon 连接</label><input id="qrLink" readonly value="'+esc(qrUrl)+'"></div>'+
+    '<div class="btns"><button class="btn" id="qrCopy">复制链接</button><button class="btn primary" id="qrSave">保存图片</button></div>'+
+    '<div class="small muted" style="line-height:1.55">二维码每 15 秒自动更换；展开此页时冻结不换。手机扫码 / 打开 bolloon:// 链接即可连接本机。</div></div>';
+  $('#qrCopy').onclick=()=>{const v=$('#qrLink');if(v){v.select();if(navigator.clipboard)navigator.clipboard.writeText(v.value).catch(()=>{});toast('已复制');}};
+  $('#qrSave').onclick=()=>{
+    const svgEl=$('#qrBig svg');if(!svgEl){toast('二维码未加载');return;}
+    const s=new XMLSerializer().serializeToString(svgEl);
+    const img=new Image();const url=URL.createObjectURL(new Blob([s],{type:'image/svg+xml;charset=utf-8'}));
+    img.onload=()=>{
+      const c=document.createElement('canvas');c.width=c.height=512;const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,512,512);x.drawImage(img,0,0,512,512);
+      c.toBlob(blob=>{if(!blob)return;const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='bolloon-connect.png';a.click();toast('已保存');});
+      URL.revokeObjectURL(url);
+    };
+    img.onerror=()=>toast('保存失败');img.src=url;
+  };
+};
+
+document.addEventListener('click',e=>{
+  if(e.target.closest('#btnAddAgent')){openSub('addagent');return;}
+  if(e.target.closest('#btnQr')){openSub('qr');return;}
+  const del=e.target.closest('[data-del]');
+  if(del){
+    if(!confirm('删除这个会话？'))return;
+    api.post('/api/sessions/delete',{id:del.dataset.del}).then(()=>{toast('已删除');return refreshBoot();}).catch(fail);
+    return;
+  }
+});
+let sx=0;
+document.addEventListener('touchstart',e=>{const w=e.target.closest('.sess-wrap');if(w)sx=e.touches[0].clientX;},{passive:true});
+document.addEventListener('touchend',e=>{
+  const w=e.target.closest('.sess-wrap');if(!w)return;
+  const dx=e.changedTouches[0].clientX-sx;
+  if(dx<-60)w.classList.add('swiped');else if(dx>40)w.classList.remove('swiped');
+},{passive:true});
+
 applyTheme(themePref());
+refreshQr().then(()=>renderMe());
+qrTimer=setInterval(()=>{if(!qrFrozen())refreshQr();},15000);
 /* iOS 全屏 WebView 的 innerHeight 可能大于屏幕；限制 app 高度，避免底部出现黑区 */
 $('#drawer').classList.remove('on');
 $('#sub').classList.remove('on');
