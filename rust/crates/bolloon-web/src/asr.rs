@@ -15,6 +15,71 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// 用当前激活的 OpenAI 兼容 provider 调 `/audio/transcriptions`。
+/// 返回 None = 没配置 Key/BaseURL，交给本地 whisper 的错误提示。
+async fn remote_asr(audio: &[u8]) -> Option<Json<serde_json::Value>> {
+    let cfg = bolloon_llm::config_store::load();
+    let p = cfg.providers.get(&cfg.active_provider)?;
+    let key = std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| p.api_key.clone());
+    if key.trim().is_empty() || p.base_url.trim().is_empty() {
+        return None;
+    }
+    let base = p.base_url.trim_end_matches('/');
+    let url = if base.ends_with("/v1") {
+        format!("{base}/audio/transcriptions")
+    } else {
+        format!("{base}/v1/audio/transcriptions")
+    };
+    let boundary = format!("----bolloon{}", chrono::Utc::now().timestamp_millis());
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-1\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(audio);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {key}"))
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+        .timeout(Duration::from_secs(60))
+        .send()
+        .await;
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) => {
+            return Some(Json(serde_json::json!({
+                "ok": false, "text": "", "error": format!("远程 ASR 请求失败: {e}")
+            })))
+        }
+    };
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    let transcript = v["text"].as_str().unwrap_or("").trim().to_string();
+    if status.is_success() && !transcript.is_empty() {
+        return Some(Json(serde_json::json!({ "ok": true, "text": transcript, "via": "remote" })));
+    }
+    Some(Json(serde_json::json!({
+        "ok": false, "text": "",
+        "error": format!("远程 ASR 失败 ({status}): {}", text.chars().take(300).collect::<String>())
+    })))
+}
+
 use axum::Json;
 use axum::body::Bytes;
 
@@ -53,18 +118,24 @@ pub async fn asr(body: Bytes) -> Json<serde_json::Value> {
 
     let bin = asr_bin();
     let model = asr_model();
+    // 手机/无 whisper 的机器：回退到用户已配置的 OpenAI 兼容 Whisper API
+    if !bin.exists() || !model.exists() {
+        if let Some(remote) = remote_asr(&body).await {
+            return remote;
+        }
+    }
     if !bin.exists() {
         return Json(serde_json::json!({
             "ok": false, "text": "",
             "error": format!("whisper-cli 不存在: {}", bin.display()),
-            "hint": "设 BOLLOON_ASR_BIN，或跑 scripts/setup-asr.sh 安装 whisper.cpp"
+            "hint": "设 BOLLOON_ASR_BIN，或跑 scripts/setup-asr.sh 安装 whisper.cpp；也可在「模型」里配置 OpenAI Key 走远程转写"
         }));
     }
     if !model.exists() {
         return Json(serde_json::json!({
             "ok": false, "text": "",
             "error": format!("模型不存在: {}", model.display()),
-            "hint": "设 BOLLOON_ASR_MODEL，或跑 scripts/setup-asr.sh 下载 ggml 模型"
+            "hint": "设 BOLLOON_ASR_MODEL，或跑 scripts/setup-asr.sh 下载 ggml 模型；也可在「模型」里配置 OpenAI Key 走远程转写"
         }));
     }
 

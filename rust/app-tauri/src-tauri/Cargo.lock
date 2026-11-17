@@ -521,6 +521,7 @@ dependencies = [
  "k256",
  "pbkdf2",
  "qrcode",
+ "reqwest 0.13.5",
  "rustls",
  "serde",
  "serde_json",

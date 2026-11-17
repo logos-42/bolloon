@@ -1038,6 +1038,7 @@ dependencies = [
  "libp2p",
  "pbkdf2",
  "qrcode",
+ "reqwest 0.13.5",
  "rustls 0.23.46",
  "serde",
  "serde_json",
