@@ -9468,6 +9468,67 @@ pub fn caps_in(fs: &NativeState, agent_id: &str, did: &str) -> Vec<String> {
 }
 
 /// POST /api/friends/update {did, name?, note?} → 改昵称/备注
+/// 好友置顶：本机声明，跨端共享同一份 friend-access.json
+pub async fn friend_pin(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or_default().trim().to_string();
+    if did.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 did" }));
+    }
+    let pinned = req["pinned"].as_bool().unwrap_or(true);
+    crate::feature_pack::update_friend_settings(&did, Some(pinned), None);
+    Json(serde_json::json!({ "ok": true, "did": did, "pinned": pinned }))
+}
+
+/// 好友权限三档：general / trust / full（full 排除钱包 payment_info）
+pub async fn friend_permission(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let did = req["did"].as_str().unwrap_or_default().trim().to_string();
+    if did.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "缺 did" }));
+    }
+    let level = req["level"].as_str().unwrap_or("general");
+    let level = if ["general", "trust", "full"].contains(&level) { level } else { "general" };
+    crate::feature_pack::update_friend_settings(&did, None, Some(level));
+    Json(serde_json::json!({
+        "ok": true, "did": did, "level": level,
+        "caps": crate::feature_pack::friend_caps(level),
+    }))
+}
+
+/// 去中心化：遍历已登记好友，直接向对方节点拉 `/api/groups`。
+/// 不经过中心服务器；不可达就如实记 notes，不伪装成「没有群组」。
+pub async fn external_groups(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let dids: Vec<String> = {
+        let fs = st.forge.lock().await;
+        fs.friends.friends().iter().cloned().collect()
+    };
+    let mut groups = Vec::new();
+    let mut notes = Vec::new();
+    for did in dids {
+        let base = match peer_url_for_did(&st, &did).await {
+            Ok(u) => u.trim_end_matches('/').to_string(),
+            Err(_) => {
+                notes.push(format!("{did}: 没有已登记地址"));
+                continue;
+            }
+        };
+        match peer_json("GET", format!("{base}/api/groups"), None).await {
+            Ok(v) => {
+                let list = v.get("groups").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+                let mut g = list;
+                for item in g.iter_mut() {
+                    item["owner_did"] = serde_json::json!(did);
+                    item["cross_machine"] = serde_json::json!(true);
+                }
+                groups.extend(g);
+            }
+            Err(e) => notes.push(format!("{did}: {e}")),
+        }
+    }
+    Json(serde_json::json!({
+        "ok": true, "groups": groups, "count": groups.len(), "notes": notes
+    }))
+}
+
 pub async fn friend_update(
     State(st): State<AppState>,
     Json(req): Json<serde_json::Value>,

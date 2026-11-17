@@ -353,6 +353,45 @@ pub fn update_friend_access(did: &str, allow: Option<bool>, blocked: Option<bool
     true
 }
 
+/// 好友置顶 + 三档权限：落到同一份 friend-access.json，供手机/桌面共用。
+/// 权限只是**声明与回显**；真正工具权限仍由 grants 白名单执行，这里给出对应 caps。
+pub fn friend_caps(level: &str) -> Vec<&'static str> {
+    match level {
+        // 一般：读与交流
+        "general" => vec!["chat"],
+        // 信任：特定项目可写；不给 shell
+        "trust" => vec!["chat", "share_judgment", "invite_group", "command_readonly"],
+        // 完全信任：除钱包（payment_info）外全读写
+        "full" => vec![
+            "chat", "share_judgment", "invite_group", "command_readonly",
+            "trust_write", "trust_shell",
+        ],
+        _ => vec!["chat"],
+    }
+}
+
+pub fn update_friend_settings(did: &str, pinned: Option<bool>, level: Option<&str>) -> bool {
+    if pinned.is_none() && level.is_none() {
+        return false;
+    }
+    let _g = io_lock().lock();
+    let mut m = read_obj_locked("friend-access.json");
+    if !m[did].is_object() {
+        m[did] = serde_json::json!({});
+    }
+    if let Some(v) = pinned {
+        m[did]["pinned"] = serde_json::json!(v);
+    }
+    if let Some(level) = level {
+        let level = if ["general", "trust", "full"].contains(&level) { level } else { "general" };
+        m[did]["permission_level"] = serde_json::json!(level);
+        m[did]["caps"] = serde_json::json!(friend_caps(level));
+    }
+    m[did]["at_ms"] = serde_json::json!(now_ms());
+    write_obj_locked("friend-access.json", &m);
+    true
+}
+
 /// GET /api/friends/access?did= → 好友面板回显昵称/备注/两个开关 (不再每次打开都清零)
 pub async fn friend_access(
     State(st): State<crate::AppState>,
@@ -369,6 +408,9 @@ pub async fn friend_access(
         "note": card.map(|c| c.note.clone()).unwrap_or_default(),
         "allow_agent": row["allow_agent"].as_bool().unwrap_or(true),
         "blocked": row["blocked"].as_bool().unwrap_or(false),
+        "pinned": row["pinned"].as_bool().unwrap_or(false),
+        "permission_level": row["permission_level"].as_str().unwrap_or("general"),
+        "caps": row["caps"].clone(),
     }))
 }
 

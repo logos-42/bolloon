@@ -42,6 +42,18 @@ pub struct VerifyRec {
 pub struct VerifyFile {
     #[serde(default)]
     pub dids: std::collections::BTreeMap<String, VerifyRec>,
+    /// 扫脸采集回执：只证明「收到了一张图」，**不证明是真人/本人**
+    #[serde(default)]
+    pub faces: std::collections::BTreeMap<String, FaceRec>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct FaceRec {
+    pub at_ms: u64,
+    pub bytes: usize,
+    pub sha256: String,
+    #[serde(default)]
+    pub note: String,
 }
 
 fn path() -> PathBuf {
@@ -72,6 +84,49 @@ fn save(f: &VerifyFile) -> Result<(), String> {
     }
     std::fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// POST /api/verify/face {image} —— 接收 DataURL/base64 自拍，落地**采集回执**。
+/// 明确不伪造认证：这里没有人脸检测/活体/比对服务，verified 恒 false。
+pub async fn face_capture(
+    State(st): State<crate::AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let input = req["image"].as_str().unwrap_or_default().trim();
+    let raw = input.split(',').last().unwrap_or("");
+    use base64::Engine;
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(raw) {
+        Ok(b) => b,
+        Err(e) => {
+            return Json(serde_json::json!({ "ok": false, "error": format!("图片解码失败: {e}") }))
+        }
+    };
+    if bytes.is_empty() || bytes.len() > 2_000_000 {
+        return Json(serde_json::json!({
+            "ok": false, "error": "图片大小必须在 1B–2MB 之间"
+        }));
+    }
+    use sha2::Digest;
+    let hash = hex::encode(sha2::Sha256::digest(&bytes));
+    let did = st.identity.did.as_str().to_string();
+    let mut f = load();
+    f.faces.insert(
+        did.clone(),
+        FaceRec {
+            at_ms: now_ms(),
+            bytes: bytes.len(),
+            sha256: hash.clone(),
+            note: "仅采集回执；无人脸核验服务，未完成实名".into(),
+        },
+    );
+    if let Err(e) = save(&f) {
+        return Json(serde_json::json!({ "ok": false, "error": format!("保存失败: {e}") }));
+    }
+    Json(serde_json::json!({
+        "ok": true, "verified": false, "did": did,
+        "method": "face_capture_pending", "receipt_id": hash,
+        "note": "已保存采集回执；后端未接入人脸比对，实名状态未改变"
+    }))
 }
 
 /// 该 DID 是否已完成真人验证（发币门只认这个）。

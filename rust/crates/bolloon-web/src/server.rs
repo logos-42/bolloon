@@ -544,6 +544,7 @@ pub fn app(state: AppState) -> Router {
         )
         // 2026-11-15: 个人代币 + DID 真人验证（未通过真人验证不许发币）
         .route("/api/verify/status", get(crate::verify::status))
+        .route("/api/verify/face", post(crate::verify::face_capture))
         .route("/api/verify/personhood", post(crate::verify::personhood))
         .route("/api/tokens", get(crate::personal_token::list))
         .route("/api/tokens/prepare", post(crate::personal_token::prepare))
@@ -901,6 +902,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/friends/update", post(crate::native::friend_update))
         .route("/api/friends/remove", post(crate::native::friend_remove))
         .route("/api/friends/block", post(crate::native::friend_block))
+        .route("/api/friends/pin", post(crate::native::friend_pin))
+        .route("/api/friends/permission", post(crate::native::friend_permission))
         .route("/api/friends/mute", post(crate::native::friend_mute))
         .route(
             "/api/friends/revoke-grants",
@@ -1091,6 +1094,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/sql/query", post(sql_query))
         // 群聊
         .route("/api/groups", get(list_groups).post(create_group))
+        .route("/api/groups/external", get(crate::native::external_groups))
         .route("/api/groups/{id}/messages", get(group_messages))
         .route("/api/groups/{id}/say", post(group_say))
         // 子讨论 (小组讨论 / 组织内部) + 统一分享 + 凭邀请加入

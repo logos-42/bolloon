@@ -897,7 +897,7 @@ SUBLD.verify=async()=>{
       box.innerHTML='';const v=document.createElement('video');v.autoplay=true;v.playsInline=true;v.muted=true;v.srcObject=faceStream;box.appendChild(v);
     }catch(e){toast('无法打开摄像头：'+((e&&e.message)||e));}
   };
-  $('#faceShot').onclick=()=>{
+  $('#faceShot').onclick=async()=>{
     const v=box.querySelector('video');
     if(!v){toast('先打开摄像头');return;}
     const c=document.createElement('canvas');c.width=v.videoWidth||480;c.height=v.videoHeight||640;
@@ -905,7 +905,10 @@ SUBLD.verify=async()=>{
     const url=c.toDataURL('image/jpeg',0.85);
     box.innerHTML='<img src="'+url+'" alt="人脸采集">';
     if(faceStream){faceStream.getTracks().forEach(t=>t.stop());faceStream=null;}
-    toast('已采集；后端未接入人脸核验，未做认证',4200);
+    try{
+      const r=await api.post('/api/verify/face',{image:url});
+      toast(r.ok?'已保存采集回执（未认证）':(r.error||'保存失败'),4200);
+    }catch(e){toast('采集已拍下，回执上传失败',4200);}
   };
   $('#vSubmit').onclick=()=>api.post('/api/verify/personhood',{code:($('#vCode').value||'').trim()}).then(d=>{
     toast(d.ok?'认证成功':(d.error||'认证失败'),3200);
@@ -1257,16 +1260,16 @@ const CAPS={
 };
 SUBLD.friend=async()=>{
   const d=await api.get('/api/friends/access?did='+encodeURIComponent(FRIEND_DID)).catch(()=>({}));
-  const pinned=localStorage.getItem('bolloon.friend.pin.'+FRIEND_DID)==='1';
+  const pinned=!!d.pinned;
   $('#subBody').innerHTML='<div class="card"><div class="kv"><span class="k">DID</span><span class="v">'+esc(FRIEND_DID)+'</span></div>'+
     '<div class="kv"><span class="k">备注</span><span class="v">'+esc(d.name||'—')+'</span></div></div>'+
     '<div class="h">关系</div><div class="card col"><div class="btns">'+
     '<button class="btn '+(d.blocked?'danger':'')+'" data-fact="block">'+(d.blocked?'取消拉黑':'拉黑')+'</button>'+
     '<button class="btn" data-fact="pin">'+(pinned?'取消置顶':'置顶')+'</button></div></div>'+
     '<div class="h">权限</div><div class="card col">'+
-    '<button class="btn" data-fact="perm" data-level="general">一般 · 只能读和交流</button>'+
-    '<button class="btn" data-fact="perm" data-level="trust">信任 · 项目内可写</button>'+
-    '<button class="btn" data-fact="perm" data-level="full">完全信任 · 除钱包外可读写</button>'+
+    '<button class="btn'+(d.permission_level==='general'?' primary':'')+'" data-fact="perm" data-level="general">一般 · 只能读和交流</button>'+
+    '<button class="btn'+(d.permission_level==='trust'?' primary':'')+'" data-fact="perm" data-level="trust">信任 · 项目内可写</button>'+
+    '<button class="btn'+(d.permission_level==='full'?' primary':'')+'" data-fact="perm" data-level="full">完全信任 · 除钱包外可读写</button>'+
     '<div class="small muted" style="line-height:1.55">写入当前智能体对该好友的 caps；钱包相关 payment_info 不在任何档位内。</div></div>';
   $('#subBody').onclick=async e=>{
     const b=e.target.closest('[data-fact]');if(!b)return;
@@ -1275,13 +1278,11 @@ SUBLD.friend=async()=>{
         await api.post('/api/friends/block',{did:FRIEND_DID,on:!d.blocked});
         toast(d.blocked?'已取消拉黑':'已拉黑');SUBLD.friend();
       }else if(b.dataset.fact==='pin'){
-        const k='bolloon.friend.pin.'+FRIEND_DID;
-        localStorage.setItem(k,pinned?'0':'1');toast(pinned?'已取消置顶':'已置顶');SUBLD.friend();
+        await api.post('/api/friends/pin',{did:FRIEND_DID,pinned:!pinned});
+        toast(pinned?'已取消置顶':'已置顶');SUBLD.friend();
       }else if(b.dataset.fact==='perm'){
-        const a=activeAgent();if(!a){toast('没有智能体');return;}
-        const caps=CAPS[b.dataset.level]||CAPS.general;
-        await api.post('/api/agents/'+encodeURIComponent(a.id)+'/grants',{did:FRIEND_DID,caps});
-        toast('已授予：'+b.dataset.level);
+        const r=await api.post('/api/friends/permission',{did:FRIEND_DID,level:b.dataset.level});
+        toast('已授予：'+(r.level||b.dataset.level));
       }
     }catch(err){fail(err);}
   };
@@ -1304,10 +1305,15 @@ loadContacts=async function(){
     let box=$('#contactGroups');
     if(!box){box=document.createElement('div');box.id='contactGroups';list.parentNode.appendChild(box);}
     try{
-      const g=await api.get('/api/groups');const gs=g.groups||[];
-      box.innerHTML='<div class="h">本机群组 '+gs.length+'</div><div class="list">'+(gs.length?gs.map(x=>'<div class="item"><span class="av">G</span><span class="grow"><span class="t">'+esc(x.name||x.id)+'</span><span class="d">'+(x.pinned?'已置顶 · ':'')+esc(x.id)+'</span></span></div>').join(''):'<div class="empty">还没有群组</div>')+'</div>'+
-        '<div class="small muted">外部联系人智能体开放的群组需先从好友设置授予 chat 权限后读取。</div>';
-    }catch(_){box.innerHTML='<div class="h">本机群组</div><div class="empty">加载失败</div>';}
+      const [g,x]=await Promise.all([
+        api.get('/api/groups').catch(()=>({groups:[]})),
+        api.get('/api/groups/external').catch(()=>({groups:[],notes:[]}))
+      ]);
+      const gs=g.groups||[],xs=x.groups||[];
+      const row=y=>'<div class="item"><span class="av">G</span><span class="grow"><span class="t">'+esc(y.name||y.id)+'</span><span class="d">'+esc(y.owner_did||y.id)+(y.cross_machine?' · 跨机':'')+'</span></span></div>';
+      box.innerHTML='<div class="h">本机群组 '+gs.length+'</div><div class="list">'+(gs.length?gs.map(row).join(''):'<div class="empty">还没有群组</div>')+'</div>'+
+        '<div class="h">好友/外部智能体群组 '+xs.length+'</div><div class="list">'+(xs.length?xs.map(row).join(''):'<div class="empty">'+(x.notes&&x.notes[0]?esc(x.notes[0]):'好友节点不可达或未开放群组')+'</div>')+'</div>';
+    }catch(_){box.innerHTML='<div class="h">群组</div><div class="empty">加载失败</div>';}
   }
 };
 
