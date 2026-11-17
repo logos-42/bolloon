@@ -21,7 +21,7 @@ body{margin:0;color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"
 button,input,textarea,select{font:inherit;color:inherit}
 button{appearance:none;border:0;background:none;padding:0}
 .ico{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
-#app{height:100%;min-height:100%;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top)}
+#app{height:100dvh;min-height:100dvh;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);padding-bottom:calc(48px + env(safe-area-inset-bottom))}
 /* iOS 全屏 WebView 会关闭安全区自动 inset（env=0），用系统常量补偿刘海/底部 */
 @supports (-webkit-touch-callout: none){
   #app{padding-top:max(env(safe-area-inset-top),59px)}
@@ -42,7 +42,7 @@ main{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
 .room.on{display:flex}
 
 /* 底部导航：flex 触底，不留白 */
-.nav{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,1fr);background:var(--bg);border-top:1px solid var(--line);padding-bottom:var(--safe-b)}
+.nav{position:fixed;left:0;right:0;bottom:0;z-index:30;display:grid;grid-template-columns:repeat(4,1fr);background:var(--bg);border-top:1px solid var(--line);padding-bottom:var(--safe-b)}
 .nav button{height:48px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;color:var(--muted);font-size:10px}
 .nav button.on{color:var(--accent)}
 .nav .ico{width:20px;height:20px}
@@ -1010,15 +1010,85 @@ $('#input').addEventListener('input',e=>{e.target.style.height='auto';e.target.s
 $('#input').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendMsg();}});
 
 /* 启动 */
+/* ── 覆盖：简化钱包（本机钱包 + 智能体本地钱包 + 发币） ── */
+SUBLD.wallet=async()=>{
+  const st=await api.get('/api/wallet/status').catch(()=>({}));
+  const a=activeAgent();
+  const aw=a?await api.get('/api/agents/'+encodeURIComponent(a.id)+'/wallets').catch(()=>({wallets:[]})):{wallets:[]};
+  const ws=aw.wallets||[];
+  $('#subBody').innerHTML=
+    '<div class="card"><div class="kv"><span class="k">本机地址</span><span class="v">'+esc(st.address||'未创建')+'</span></div>'+
+    '<div class="kv"><span class="k">状态</span><span class="v">'+(st.exists?(st.unlocked?'已解锁':'已锁定'):'未创建')+'</span></div></div>'+
+    '<div class="card col"><div class="field"><label>口令（≥8 位，仅本机）</label><input id="wPass" type="password"></div>'+
+    '<div class="btns">'+(st.exists?'':'<button class="btn primary" data-wact="setup">创建钱包</button>')+
+    (st.exists&&!st.unlocked?'<button class="btn primary" data-wact="unlock">解锁</button>':'')+
+    (st.exists&&st.unlocked?'<button class="btn" data-wact="lock">锁定</button>':'')+
+    '<button class="btn" data-wact="backup">导出密文</button></div><div id="wOut"></div></div>'+
+    '<div class="h">智能体本地钱包'+(a?' · '+esc(a.name||a.id):'')+'</div><div class="card col">'+
+    (ws.length?ws.map(w=>'<div class="kv"><span class="k">'+esc(w.label||'钱包')+'</span><span class="v">'+esc(w.address)+'</span></div>').join(''):'<div class="small muted">还没有钱包</div>')+
+    '<div class="field"><label>标签</label><input id="awLabel" placeholder="例如 收款"></div>'+
+    '<button class="btn" data-wact="awcreate" '+(a?'':'disabled')+'>生成智能体钱包</button>'+
+    '<div class="small muted">私钥只保存在本机文件（0600），接口不回传。</div></div>'+
+    '<div class="h">发行自己的代币</div><div class="card col">'+
+    '<div class="field"><label>名称</label><input id="tkName" placeholder="我的代币"></div>'+
+    '<div class="row" style="gap:8px"><input id="tkSym" placeholder="符号" style="flex:1;padding:11px;border-radius:11px;border:1px solid var(--line);background:var(--bg)"><input id="tkSup" placeholder="总量" style="flex:1;padding:11px;border-radius:11px;border:1px solid var(--line);background:var(--bg)"></div>'+
+    '<div class="btns"><button class="btn" data-wact="tkprepare">预览</button><button class="btn primary" data-wact="tkconfirm">确认上链</button></div><div id="tkOut"></div></div>';
+  const pass=()=>($('#wPass').value||'');
+  const out=h=>{const e=$('#wOut');if(e)e.innerHTML=h;};
+  const tkout=h=>{const e=$('#tkOut');if(e)e.innerHTML=h;};
+  const issue=()=>({name:$('#tkName').value,symbol:$('#tkSym').value,decimals:18,supply:Number($('#tkSup').value||0)});
+  $('#subBody').onclick=async e=>{
+    const b=e.target.closest('[data-wact]');if(!b)return;
+    const act=b.dataset.wact;
+    try{
+      if(act==='setup'){const d=await api.post('/api/wallet/setup',{passphrase:pass()});toast(d.note||'已创建');SUBLD.wallet();}
+      else if(act==='unlock'){await api.post('/api/wallet/unlock',{passphrase:pass()});toast('已解锁');SUBLD.wallet();}
+      else if(act==='lock'){await api.post('/api/wallet/lock',{});toast('已锁定');SUBLD.wallet();}
+      else if(act==='backup'){const d=await api.get('/api/wallet/backup');out('<pre class="blob">'+esc(d.blob||'')+'</pre>');}
+      else if(act==='awcreate'&&a){const d=await api.post('/api/agents/'+encodeURIComponent(a.id)+'/wallets/create',{label:$('#awLabel').value||''});if(d.error){toast(d.error);return;}toast('已生成');SUBLD.wallet();}
+      else if(act==='tkprepare'){const d=await api.post('/api/tokens/prepare',issue());if(!d.ok){tkout('<div class="small" style="color:var(--danger)">'+esc(d.error||'预览失败')+'</div>');return;}tkout('<pre class="blob">'+esc(JSON.stringify(d.preview||{},null,2))+'</pre>');}
+      else if(act==='tkconfirm'){const d=await api.post('/api/tokens/confirm',issue());if(!d.ok){tkout('<div class="small" style="color:var(--danger)">'+esc(d.error||'上链失败')+'</div>');return;}toast('已上链');SUBLD.wallet();}
+    }catch(err){fail(err);}
+  };
+};
+
+/* ── 覆盖：跨机去中心化联系人搜索 ── */
+SUBLD.addcontact=async()=>{
+  $('#subBody').innerHTML='<div class="card col">'+
+    '<div class="field"><label>昵称 / 手机号 / 邮箱 / DID</label><input id="csQuery" placeholder="输入后点搜索"></div>'+
+    '<button class="btn primary" id="csGo">搜索</button>'+
+    '<div class="small muted" style="line-height:1.55">手机号与邮箱会走本机目录 + 已登记对端的跨机查询；DID 可直接发现。</div></div>'+
+    '<div id="csResult"></div>'+
+    '<div class="h">手动添加 DID</div><div class="card col"><div class="field"><label>DID</label><input id="csDid" placeholder="did:pi:..."></div>'+
+    '<div class="field"><label>备注</label><input id="csName"></div><button class="btn" id="csSave">保存</button></div>';
+  const render=d=>{
+    const box=$('#csResult');if(!box)return;
+    const locals=d.locals||[],dir=d.directory;
+    const rows=[];
+    locals.forEach(c=>rows.push('<div class="item"><span class="av">'+(c.name||'C')[0]+'</span><span class="grow"><span class="t">'+esc(c.name||c.did)+'</span><span class="d">'+esc(c.did||'')+' · 本机</span></span><button class="btn" data-cdid="'+esc(c.did||'')+'" style="padding:7px 10px">连接</button></div>'));
+    if(dir&&dir.did){
+      rows.push('<div class="item"><span class="av">D</span><span class="grow"><span class="t">'+esc(dir.name||dir.did)+'</span><span class="d">'+esc(dir.via||'')+(dir.cross_machine?' · 跨机命中':'')+'</span></span><button class="btn primary" data-cdid="'+esc(dir.did)+'" style="padding:7px 10px">连接</button></div>');
+    }
+    box.innerHTML='<div class="h">结果 '+(d.count||0)+'</div><div class="list">'+(rows.length?rows.join(''):'<div class="empty">'+esc((d.notes||[])[0]||'没有找到')+'</div>')+'</div>'+
+      (d.cross_machine_tried?'<div class="small muted">已尝试跨机查询</div>':'');
+  };
+  $('#csGo').onclick=async()=>{
+    const q=($('#csQuery').value||'').trim();if(!q){toast('先输入关键词');return;}
+    toast('搜索中…',1500);
+    try{render(await api.post('/api/contacts/search',{query:q}));}catch(e){fail(e);}
+  };
+  $('#csResult').onclick=async e=>{
+    const b=e.target.closest('[data-cdid]');if(!b)return;
+    try{const d=await api.post('/api/contacts/connect',{did:b.dataset.cdid});toast(d.ok?'已连接':'连接失败',3200);if(d.ok){closeSub();loadContacts().catch(()=>{});}}catch(err){fail(err);}
+  };
+  $('#csSave').onclick=()=>{
+    const did=($('#csDid').value||'').trim();if(!did){toast('先填 DID');return;}
+    api.post('/api/contacts/set',{did,name:$('#csName').value||''}).then(()=>{toast('已保存');closeSub();loadContacts().catch(()=>{});}).catch(fail);
+  };
+};
+
 applyTheme(themePref());
 /* iOS 全屏 WebView 的 innerHeight 可能大于屏幕；限制 app 高度，避免底部出现黑区 */
-function fitViewport(){
-  const el=$('#app');
-  const h=Math.min(window.innerHeight||0, window.screen.height||window.innerHeight||0);
-  if(el && h>0) el.style.height=h+'px';
-}
-fitViewport();
-window.addEventListener('resize',fitViewport);
 $('#drawer').classList.remove('on');
 $('#sub').classList.remove('on');
 refreshBoot().then(()=>{showTab('home');}).catch(e=>{toast('后端未就绪：'+((e&&e.message)||e),4000);console.error(e);});
