@@ -15,6 +15,62 @@ use std::collections::HashMap;
 
 use crate::server::AppState;
 
+/// QUIC 分块接收缓冲： sender → id → (total, chunks)
+type ChunkMap = std::collections::HashMap<String, (usize, Vec<Option<String>>)>;
+static QUIC_CHUNKS: std::sync::OnceLock<std::sync::Mutex<ChunkMap>> = std::sync::OnceLock::new();
+
+fn chunks() -> &'static std::sync::Mutex<ChunkMap> {
+    QUIC_CHUNKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 从 QUIC `sync.snapshot.chunk` 信封收一块；收齐后直接幂等合并。
+pub async fn ingest_chunk(st: &AppState, payload: &serde_json::Value) -> serde_json::Value {
+    let id = match payload["id"].as_str() {
+        Some(s) => s.to_string(),
+        None => return serde_json::json!({ "ok": false, "error": "缺 id" }),
+    };
+    let idx = match payload["index"].as_u64() {
+        Some(i) => i as usize,
+        None => return serde_json::json!({ "ok": false, "error": "缺 index" }),
+    };
+    let total = match payload["total"].as_u64() {
+        Some(t) => t as usize,
+        None => return serde_json::json!({ "ok": false, "error": "缺 total" }),
+    };
+    let b64 = payload["data"].as_str().unwrap_or("");
+    if total == 0 || total > 4096 || idx >= total {
+        return serde_json::json!({ "ok": false, "error": "分块参数不合法" });
+    }
+    let done = {
+        let mut m = chunks().lock().unwrap_or_else(|e| e.into_inner());
+        let e = m.entry(id.clone()).or_insert_with(|| (total, vec![None; total]));
+        if e.0 != total || e.1.len() != total {
+            *e = (total, vec![None; total]);
+        }
+        e.1[idx] = Some(b64.to_string());
+        e.1.iter().all(|x| x.is_some())
+    };
+    if !done {
+        return serde_json::json!({ "ok": true, "done": false });
+    }
+    let parts = {
+        let mut m = chunks().lock().unwrap_or_else(|e| e.into_inner());
+        m.remove(&id).map(|(_, v)| v).unwrap_or_default()
+    };
+    let joined: String = parts.into_iter().filter_map(|x| x).collect();
+    use base64::Engine;
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(joined) {
+        Ok(b) => b,
+        Err(e) => return serde_json::json!({ "ok": false, "error": format!("快照解码失败: {e}") }),
+    };
+    let snap: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(e) => return serde_json::json!({ "ok": false, "error": format!("快照 JSON 损坏: {e}") }),
+    };
+    let r = merge_snapshot(st, &snap).await;
+    serde_json::json!({ "ok": r["ok"].as_bool().unwrap_or(false), "done": true, "result": r })
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

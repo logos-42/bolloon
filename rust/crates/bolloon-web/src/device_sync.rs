@@ -16,6 +16,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use axum::extract::State;
+use bolloon_kernel::transport::Transport;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex as AsyncMutex;
@@ -211,6 +212,46 @@ pub async fn sync_once(st: &AppState) -> Value {
                     }
                 }
                 Err(e) => err = e,
+            }
+        }
+
+        // 原生 QUIC 直连：把本机快照分块推给对端（不经 HTTP / DIAP SDK）
+        #[cfg(feature = "quic-transport")]
+        if err.is_empty() && !dev.did.is_empty() {
+            if let Some(q) = st.quic.as_ref() {
+                let peers = q.peers().await.unwrap_or_default();
+                if peers.iter().any(|p| p.peer_id == dev.did) {
+                    let local = crate::sync_snapshot::export(
+                        axum::extract::State(st.clone()),
+                        axum::extract::Query(std::collections::HashMap::new()),
+                    )
+                    .await
+                    .0;
+                    if let Ok(bytes) = serde_json::to_vec(&local) {
+                        use base64::Engine;
+                        const CHUNK: usize = 512 * 1024;
+                        let parts: Vec<&[u8]> = bytes.chunks(CHUNK).collect();
+                        let id = format!("{}-{}", st.identity.did.as_str(), now_ms());
+                        for (i, part) in parts.iter().enumerate() {
+                            let msg = bolloon_kernel::transport::TransportMessage {
+                                to: Some(dev.did.clone()),
+                                topic: Some("sync.snapshot.chunk".into()),
+                                payload: serde_json::json!({
+                                    "id": id,
+                                    "index": i,
+                                    "total": parts.len(),
+                                    "data": base64::engine::general_purpose::STANDARD.encode(part),
+                                }),
+                                from: Some(st.identity.did.as_str().to_string()),
+                            };
+                            if let Err(e) = q.send(msg).await {
+                                tracing::warn!("QUIC 快照分块发送失败: {e}");
+                                break;
+                            }
+                        }
+                        tracing::info!("QUIC 快照已推送给 {} ({} 块)", dev.did, parts.len());
+                    }
+                }
             }
         }
 

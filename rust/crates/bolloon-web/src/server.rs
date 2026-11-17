@@ -1627,6 +1627,16 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
                 tokio::spawn(async move {
                     loop {
                         let env = q2.recv().await;
+                        if env.topic == "sync.snapshot.chunk" {
+                            let st2 = st.clone();
+                            tokio::spawn(async move {
+                                let r = crate::sync_snapshot::ingest_chunk(&st2, &env.payload).await;
+                                if !r["ok"].as_bool().unwrap_or(false) {
+                                    tracing::warn!("QUIC 快照合并失败: {r}");
+                                }
+                            });
+                            continue;
+                        }
                         if let Err(e) = crate::native::deliver_world_card(&st, &env).await {
                             tracing::warn!("QUIC 世界卡片投递失败: {e}");
                         }

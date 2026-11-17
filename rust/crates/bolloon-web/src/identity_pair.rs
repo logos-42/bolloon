@@ -161,6 +161,12 @@ pub async fn pair(
     // 配对码里的 DIAP/QUIC 地址 → 落盘设备表 + 注入内存 hub
     let url = v["url"].as_str().unwrap_or("");
     let diap = v.get("diap").filter(|x| !x.is_null()).cloned();
+    // QUIC 对端地址：原生 quic_transport，直接登记即可用于快照推送
+    if let Some(addr) = v["quic"].as_str().and_then(|a| a.parse::<std::net::SocketAddr>().ok()) {
+        if let Some(q) = st.quic.as_ref() {
+            q.add_peer(did, addr);
+        }
+    }
     if !url.is_empty() {
         crate::device_sync::register(&st, url, did, diap.clone());
         #[cfg(feature = "diap-backend")]
