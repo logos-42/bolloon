@@ -178,6 +178,14 @@ pub fn run() {
 /// **先 bind 再建窗** 是刻意的: bind 成功 = 内核已经在 listen (backlog 会替我们排队),
 /// 窗口首次导航就不会打到空端口 (白页 + 透明窗 = 整窗看不见)。
 fn bind_loopback() -> std::io::Result<std::net::TcpListener> {
+    // iOS: 固定端口，构建期窗口 URL 才能写死指向内嵌服务。
+    #[cfg(mobile)]
+    {
+        if let Ok(l) = std::net::TcpListener::bind(("127.0.0.1", 54188u16)) {
+            l.set_nonblocking(true)?;
+            return Ok(l);
+        }
+    }
     let mut last: Option<std::io::Error> = None;
     for _ in 0..64 {
         let port: u16 = 20000 + (rand::random::<u16>() % 20000);

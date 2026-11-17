@@ -454,6 +454,8 @@ pub fn app(state: AppState) -> Router {
     #[allow(unused_mut)]
     let mut router = Router::new()
         .route("/", get(index))
+        // 手机端独立页面（路径式，避免 Tauri dev 代理丢 query）
+        .route("/mobile", get(mobile_index))
         // 原生 UI 数据面 (前端 index.html 期望的形状: agents/sessions/profile/settings/update)
         .route("/api/bootstrap", get(crate::native::bootstrap_native))
         .route("/api/version", get(crate::native::version))
@@ -1674,6 +1676,10 @@ pub async fn serve_on(state: AppState, listener: tokio::net::TcpListener) -> any
 }
 
 /// 主页面（内嵌 HTML）
+async fn mobile_index() -> Html<&'static str> {
+    Html(MOBILE_HTML)
+}
+
 async fn index(Query(q): Query<IndexQuery>) -> Html<&'static str> {
     // 2026-11-16: 手机端独立 UI（不再复用桌面 index.html 的 body.mobile）
     if q.app.as_deref() == Some("mobile") {
