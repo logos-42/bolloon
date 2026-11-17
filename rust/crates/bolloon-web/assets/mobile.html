@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="theme-color" content="#141412">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -13,6 +13,7 @@
   --text:#e8e8dc;--muted:#8b8b80;--accent:#c4d640;--accent-ink:#1a1a18;
   --danger:#e06a5a;--ok:#7fc86a;
   --safe-b:env(safe-area-inset-bottom,0px);
+  --kb:0px;
 }
 html[data-theme="light"]{--bg:#f4f4ee;--card:#fff;--card2:#efefe6;--line:#dcdcd2;--text:#1c1c18;--muted:#6f6f68;--accent:#7f8c22;--accent-ink:#fff}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -21,7 +22,7 @@ body{margin:0;color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"
 button,input,textarea,select{font:inherit;color:inherit}
 button{appearance:none;border:0;background:none;padding:0}
 .ico{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
-#app{height:100dvh;min-height:100dvh;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);padding-bottom:calc(48px + env(safe-area-inset-bottom))}
+#app{height:100dvh;min-height:100dvh;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);padding-bottom:calc(48px + env(safe-area-inset-bottom) + var(--kb))}
 /* iOS 全屏 WebView 会关闭安全区自动 inset（env=0），用系统常量补偿刘海/底部 */
 @supports (-webkit-touch-callout: none){
   #app{padding-top:max(env(safe-area-inset-top),59px)}
@@ -42,7 +43,7 @@ main{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
 .room.on{display:flex}
 
 /* 底部导航：flex 触底，不留白 */
-.nav{position:fixed;left:0;right:0;bottom:0;z-index:30;display:grid;grid-template-columns:repeat(4,1fr);background:var(--bg);border-top:1px solid var(--line);padding-bottom:var(--safe-b)}
+.nav{position:fixed;left:0;right:0;bottom:var(--kb);z-index:30;display:grid;grid-template-columns:repeat(4,1fr);background:var(--bg);border-top:1px solid var(--line);padding-bottom:var(--safe-b)}
 .nav button{height:48px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;color:var(--muted);font-size:10px}
 .nav button.on{color:var(--accent)}
 .nav .ico{width:20px;height:20px}
@@ -1084,6 +1085,47 @@ SUBLD.addcontact=async()=>{
   $('#csSave').onclick=()=>{
     const did=($('#csDid').value||'').trim();if(!did){toast('先填 DID');return;}
     api.post('/api/contacts/set',{did,name:$('#csName').value||''}).then(()=>{toast('已保存');closeSub();loadContacts().catch(()=>{});}).catch(fail);
+  };
+};
+
+/* 键盘高度：visualViewport → --kb，避免底栏遮输入框 */
+const vv=window.visualViewport;
+if(vv){
+  const syncKb=()=>{
+    const kb=Math.max(0, Math.round((window.innerHeight||0)-(vv.height||0)-(vv.offsetTop||0)));
+    document.documentElement.style.setProperty('--kb',kb+'px');
+  };
+  vv.addEventListener('resize',syncKb);vv.addEventListener('scroll',syncKb);syncKb();
+}
+
+/* ── 覆盖：插件 = 智能体分享 + 自己生成 ── */
+SUBLD.plugins=async()=>{
+  const d=await api.get('/api/plugins').catch(()=>({plugins:[]}));
+  const list=d.plugins||[];
+  const isShared=p=>!!(p.shared_by||p.from_agent||p.source==='shared'||p.source==='imported'||p.owner&&p.owner!==(S.boot&&S.boot.state&&S.boot.state.did));
+  const group=(title,arr,empty)=>'<div class="h">'+title+' '+arr.length+'</div><div class="list">'+(arr.length?arr.map(p=>'<div class="card" style="margin-bottom:8px"><div class="row"><div class="grow"><div style="font-weight:600">'+esc(p.name)+'</div><div class="small muted">'+esc(p.description||p.shared_by||p.source||'')+'</div></div></div><div class="btns" style="margin-top:8px"><button class="btn" data-pshare="'+esc(p.name)+'">分享</button><button class="btn danger" data-pdel="'+esc(p.name)+'">删除</button></div></div>').join(''):'<div class="empty">'+empty+'</div>')+'</div>';
+  $('#subBody').innerHTML=
+    '<div class="card col"><div class="field"><label>自己生成插件</label><input id="pName" placeholder="名称"></div>'+
+    '<div class="field"><label>正文（sh / bash / python3 / node）</label><textarea id="pBody" rows="3" placeholder="echo hello"></textarea></div>'+
+    '<button class="btn primary" data-pact="create">创建</button>'+
+    '<div class="field"><label>导入别人分享的插件</label><textarea id="pBlob" rows="2" placeholder="bolloon-plugin/1..."></textarea></div>'+
+    '<button class="btn" data-pact="import">导入</button></div>'+
+    group('智能体 / 好友分享的插件',list.filter(isShared),'还没有收到的插件')+
+    group('自己生成的插件',list.filter(p=>!isShared(p)),'还没有自己生成的插件');
+  $('#subBody').onclick=async e=>{
+    const c=e.target.closest('[data-pact]');
+    if(c){
+      try{
+        if(c.dataset.pact==='create'){const r=await api.post('/api/plugins/create',{name:$('#pName').value,body:$('#pBody').value});toast(r.error||'已创建');}
+        else {const r=await api.post('/api/plugins/import',{blob:$('#pBlob').value});toast(r.error||'已导入');}
+        SUBLD.plugins();
+      }catch(err){fail(err);}
+      return;
+    }
+    const sh=e.target.closest('[data-pshare]');
+    if(sh){try{const r=await api.get('/api/plugins/share?name='+encodeURIComponent(sh.dataset.pshare));const blob=r.blob||'';if(navigator.clipboard)navigator.clipboard.writeText(blob).catch(()=>{});$('#subBody').insertAdjacentHTML('afterbegin','<div class="card"><pre class="blob">'+esc(blob)+'</pre></div>');}catch(err){fail(err);}return;}
+    const del=e.target.closest('[data-pdel]');
+    if(del&&confirm('删除 '+del.dataset.pdel+'？')){try{await api.post('/api/plugins/remove',{name:del.dataset.pdel});SUBLD.plugins();}catch(err){fail(err);}}
   };
 };
 

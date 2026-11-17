@@ -43,7 +43,11 @@ pub fn run() {
         )
         .init();
 
-    tauri::Builder::default()
+    #[cfg(not(target_os = "ios"))]
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "ios")]
+    let builder = tauri::Builder::default().plugin(tauri_plugin_ios_webview_insets::init());
+    builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // ⓪ 菜单: Tauri 缺省菜单是英文 (About Bolloon / Hide / Quit / File / Edit ...)。

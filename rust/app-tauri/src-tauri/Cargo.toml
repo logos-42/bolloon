@@ -32,6 +32,11 @@ bolloon-agent = { path = "../../crates/bolloon-agent" }
 tauri-build = { version = "2", features = [] }
 
 # 体积优化: Windows 便携 exe / Android .so 都要塞进 25 MiB 的分发上限
+[target.'cfg(target_os = "ios")'.dependencies]
+# iOS: WKWebView.scrollView.contentInsetAdjustmentBehavior = .never
+# 不设会在底部露出 window 背景色（黑条），见 docs/wiki/mobile-tauri.md
+tauri-plugin-ios-webview-insets = "0.1"
+
 [profile.release]
 lto = true
 codegen-units = 1
