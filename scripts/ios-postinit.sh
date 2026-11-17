@@ -24,6 +24,9 @@ anchor = '        EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64\n'
 add = ''
 if 'ASSETCATALOG_COMPILER_APPICON_NAME' not in s:
     add += '        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon\n'
+if 'NSMicrophoneUsageDescription' not in s:
+    s = s.replace('        LSRequiresIPhoneOS: true\n',
+                  '        LSRequiresIPhoneOS: true\n        NSMicrophoneUsageDescription: 用于语音输入，把你说的话转成文字\n')
 if 'NSAllowsLocalNetworking' not in s:
     s = s.replace('        LSRequiresIPhoneOS: true\n',
                   '        LSRequiresIPhoneOS: true\n        NSAppTransportSecurity:\n          NSAllowsLocalNetworking: true\n')

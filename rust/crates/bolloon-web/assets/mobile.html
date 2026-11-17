@@ -53,12 +53,28 @@ main{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
 .av img{width:100%;height:100%;object-fit:cover}
 .badge{font-size:10px;padding:2px 7px;border-radius:999px;background:var(--card2);color:var(--muted);border:1px solid var(--line);white-space:nowrap}
 
-/* 首页：意图 */
-.hero{background:linear-gradient(135deg,rgba(196,214,64,.13),transparent 62%),var(--card);border:1px solid var(--line);border-radius:18px;padding:16px}
-.hero h2{margin:0 0 4px;font-size:18px;letter-spacing:-.01em}
-.hero p{margin:0 0 12px;font-size:12.5px;color:var(--muted)}
-.hero textarea{width:100%;min-height:74px;resize:none;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:11px 12px;outline:none}
-.hero .send{width:100%;margin-top:10px;height:44px;border-radius:12px;background:var(--accent);color:var(--accent-ink);font-weight:650;display:flex;align-items:center;justify-content:center;gap:8px}
+/* 首页：信息流 + 底部输入栏 */
+#v-home.on{display:flex;flex-direction:column;padding:0;overflow:hidden}
+.homefeed{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:0 16px 12px}
+.hometabs{display:grid;grid-template-columns:1fr 1fr;gap:6px;position:sticky;top:0;z-index:6;background:var(--bg);padding:8px 0 10px}
+.hometabs button{height:38px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--muted);font-size:13.5px;font-weight:600}
+.hometabs button.on{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.htabpane{display:none}
+.htabpane.on{display:block}
+.intent-title{font-size:18px;font-weight:700;margin:4px 2px 10px}
+.intent-hint{margin-top:14px;font-size:12.5px;color:var(--muted);line-height:1.6}
+.homebar{flex:0 0 auto;display:flex;align-items:flex-end;gap:8px;padding:8px 12px;border-top:1px solid var(--line);background:var(--bg)}
+.homebar textarea{flex:1;resize:none;max-height:96px;min-height:40px;padding:10px 12px;border-radius:20px;border:1px solid var(--line);background:var(--card);outline:none}
+.homebar .send{width:40px;height:40px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;flex:0 0 auto}
+.mic{width:40px;height:40px;border-radius:50%;border:1px solid var(--line);background:var(--card);display:grid;place-items:center;flex:0 0 auto;color:var(--text)}
+.mic.rec{background:var(--danger);border-color:transparent;color:#fff;animation:pulse 1.1s infinite}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}
+}
+/* 媒体卡片 */
+.mediabox{position:relative;border-radius:14px;overflow:hidden;background:var(--card2);aspect-ratio:16/10;margin-bottom:10px}
+.mediabox img,.mediabox video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
+.mediaph{width:100%;height:100%;display:grid;place-items:center;background:linear-gradient(135deg,rgba(196,214,64,.22),transparent 60%),var(--card2);color:var(--accent);font-size:22px;font-weight:800;letter-spacing:.06em}
+.speak{position:absolute;right:8px;top:8px;width:32px;height:32px;border-radius:50%;background:rgba(20,20,18,.62);color:#fff;display:grid;place-items:center;backdrop-filter:blur(8px)}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{padding:6px 11px;border-radius:999px;border:1px solid var(--line);background:var(--card);font-size:12px;color:var(--muted)}
 .chip.on{border-color:var(--accent);color:var(--accent)}
@@ -69,13 +85,27 @@ main{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
 .item:active{background:var(--card2)}
 .item .t{font-size:14.5px;font-weight:550;display:block}
 .item .d{font-size:11.5px;color:var(--muted);display:block;margin-top:2px}
+/* 「我」页列表更紧凑 */
+#v-me .item{padding:6px 12px;gap:9px;border-radius:12px}
+#v-me .item .av{width:26px;height:26px;font-size:11px}
+#v-me .item .t{font-size:13.5px}
+#v-me .item .d{font-size:10.5px;margin-top:0}
 
-/* 世界卡片 */
+/* 世界卡片：双列 */
 .feed{display:flex;flex-direction:column;gap:10px}
+#homeFeed{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .feedcard{padding:14px;border-radius:16px;background:var(--card);border:1px solid var(--line)}
 .feedcard h4{margin:0 0 6px;font-size:14.5px;line-height:1.4}
 .feedcard p{margin:0;font-size:12.5px;color:var(--muted);line-height:1.55}
 .feedcard .meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+#homeFeed .feedcard{padding:10px;border-radius:14px}
+#homeFeed .feedcard h4{font-size:13px;margin-bottom:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+#homeFeed .feedcard p{font-size:11.5px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+#homeFeed .mediabox{aspect-ratio:9/16;margin-bottom:8px;border-radius:11px}
+#homeFeed .speak{width:26px;height:26px;right:6px;top:6px}
+#homeFeed .meta{margin-top:8px;gap:4px}
+#homeFeed .badge{font-size:9px;padding:2px 6px}
+#homeFeed .empty{grid-column:1/-1}
 
 /* 聊天 */
 .msgs{flex:1;overflow-y:auto;padding:8px 16px 12px;display:flex;flex-direction:column;gap:10px}
@@ -141,21 +171,31 @@ pre.blob{white-space:pre-wrap;word-break:break-all;font-size:11px;background:var
   </header>
 
   <main>
-    <!-- 首页：世界意图 -->
+    <!-- 首页：世界意图 + 媒体卡片 -->
     <section class="view on" id="v-home">
-      <div class="hero">
-        <h2>你需要什么帮助？</h2>
-        <p>说出你的需求，会分发给世界与联系人一起帮忙。</p>
-        <textarea id="needInput" placeholder="例如：帮我找 3 位懂 ERC-20 的开发者，本周内评估一份合约"></textarea>
-        <button class="send" id="btnNeed">
+      <div class="homefeed" id="homeScroll">
+        <div class="hometabs" id="homeTabs">
+          <button type="button" class="on" data-htab="world">世界</button>
+          <button type="button" data-htab="intent">我的意图</button>
+        </div>
+        <div class="htabpane on" id="pane-world">
+          <div class="feed" id="homeFeed"></div>
+        </div>
+        <div class="htabpane" id="pane-intent">
+          <div class="intent-title">我的意图</div>
+          <div class="chips" id="intentChips"></div>
+          <div class="intent-hint">在下方输入框说出你的需求，会分发给世界和联系人一起帮忙。</div>
+        </div>
+      </div>
+      <div class="homebar">
+        <button class="mic" id="btnMic" aria-label="语音输入">
+          <svg class="ico" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></svg>
+        </button>
+        <textarea id="needInput" rows="1" placeholder="说出你需要什么帮助…"></textarea>
+        <button class="send" id="btnNeed" aria-label="发送">
           <svg class="ico" viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z"/></svg>
-          发到世界
         </button>
       </div>
-      <div class="h">我的意图</div>
-      <div class="chips" id="intentChips"></div>
-      <div class="h">世界机会</div>
-      <div class="feed" id="homeFeed"></div>
     </section>
 
     <!-- 任务：对话 -->
@@ -325,12 +365,17 @@ function renderMe(){
 }
 
 function showTab(t){
+  const prev=S.tab;
   S.tab=t;
   $$('.view').forEach(v=>v.classList.remove('on'));
   const v=$('#v-'+t);if(v)v.classList.add('on');
   $$('.nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
   renderTop();
-  if(t==='tasks')renderTasks();
+  if(t==='tasks'){
+    // 每次进入任务页默认新会话；已有空会话则复用，历史会话仍在抽屉里
+    if(prev!=='tasks') ensureFreshSession().catch(fail);
+    else renderTasks();
+  }
   if(t==='contacts')loadContacts().catch(fail);
   if(t==='me')renderMe();
   if(t==='home')loadHome().catch(fail);
@@ -350,6 +395,7 @@ function renderTasks(){
 }
 
 function openRoom(id){
+  S.tab='tasks'; // 从抽屉/首页进入聊天后，关闭时回到任务页且不再新建会话
   S.sessionId=id||S.sessionId;
   const s=activeSession();
   $('#roomTitle').textContent=s?(s.title||'对话'):'对话';
@@ -391,6 +437,17 @@ async function newChat(){
   }catch(e){fail(e);}
 }
 async function pickSession(id){S.sessionId=id;try{await api.post('/api/active',{agent_id:S.agentId,session_id:id});}catch(_){}openRoom(id);}
+async function ensureFreshSession(){
+  await refreshBoot(); // 先拿最新会话与消息，避免用旧缓存误判“空会话”
+  const list=sessionsOf(S.agentId);
+  const last=list[0];
+  // 最新会话还是空的就不再造一条；否则新建，旧会话保留
+  if(last && (!last.messages || last.messages.length===0)){ S.sessionId=last.id; renderTasks(); return; }
+  const d=await api.post('/api/sessions',{agent_id:S.agentId});
+  await refreshBoot();
+  S.sessionId=(d&&(d.id||d.session_id))||S.sessionId;
+  renderTasks();
+}
 
 /* 抽屉：历史会话 */
 function renderDrawer(){
@@ -408,6 +465,13 @@ function openDrawer(){renderDrawer();$('#drawer').classList.add('on');}
 function closeDrawer(){$('#drawer').classList.remove('on');}
 
 /* 首页 */
+function mediaOf(x){
+  const m=(x.media&&typeof x.media==='object')?x.media:{};
+  const img=x.image||x.image_url||x.cover||x.cover_url||x.thumbnail||x.poster||(typeof x.media==='string'?x.media:'')||m.image||m.cover||m.url||'';
+  const video=x.video||x.video_url||m.video||'';
+  return {img,video};
+}
+const SPEAK_SVG='<svg class="ico" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 9a4 4 0 0 1 0 6"/></svg>';
 async function loadHome(){
   const [ints,feed]=await Promise.all([
     api.get('/api/world/intents').catch(()=>({intents:[]})),
@@ -420,8 +484,18 @@ async function loadHome(){
     const title=x.title||x.summary||x.text||x.capability||'未命名机会';
     const desc=x.summary||x.description||x.digest||'';
     const score=x.score!=null?Math.round(num(x.score)*100)+'%':'';
-    return '<article class="feedcard"><h4>'+esc(title)+'</h4>'+(desc?'<p>'+esc(desc)+'</p>':'')+'<div class="meta">'+(score?'<span class="badge">匹配 '+score+'</span>':'')+(x.issuer?'<span class="badge">'+esc(x.issuer)+'</span>':'')+'</div></article>';
-  }).join(''):'<div class="empty"><b>暂时没有新机会</b>世界有真实流入时才会出现</div>';
+    const {img,video}=mediaOf(x);
+    const spoken=encodeURIComponent([title,desc].filter(Boolean).join('。'));
+    let media='';
+    if(video){
+      media='<div class="mediabox"><video src="'+esc(video)+'"'+(img?' poster="'+esc(img)+'"':'')+' controls playsinline preload="metadata"></video><button class="speak" data-speak="'+spoken+'" aria-label="朗读">'+SPEAK_SVG+'</button></div>';
+    }else if(img){
+      media='<div class="mediabox"><img loading="lazy" src="'+esc(img)+'" alt=""><button class="speak" data-speak="'+spoken+'" aria-label="朗读">'+SPEAK_SVG+'</button></div>';
+    }else{
+      media='<div class="mediabox"><div class="mediaph">世界</div></div>';
+    }
+    return '<article class="feedcard">'+media+'<h4>'+esc(title)+'</h4>'+(desc?'<p>'+esc(desc)+'</p>':'')+'<div class="meta">'+(score?'<span class="badge">匹配 '+score+'</span>':'')+(x.issuer?'<span class="badge">'+esc(x.issuer)+'</span>':'')+'</div></article>';
+  }).join(''):'<div class="empty"><b>暂时没有新卡片</b>世界有真实流入时才会出现</div>';
 }
 async function sendNeed(){
   const ta=$('#needInput');const text=(ta.value||'').trim();if(!text){toast('先写下你的需求');return;}
@@ -429,10 +503,82 @@ async function sendNeed(){
   try{
     await api.post('/api/world/say',{text});
     await api.post('/api/world/intents/broadcast',{}).catch(()=>{});
-    ta.value='';
+    ta.value='';ta.style.height='auto';
     toast('已分发到世界；联系人同步后会看到');
     loadHome().catch(()=>{});
   }catch(e){fail(e);}finally{btn.disabled=false;}
+}
+
+/* 语音输入：录音 → WAV → /api/asr（WKWebView 不支持 Web Speech） */
+let voiceRec=null, recCtx=null, recStream=null, recNode=null, recBuf=[], recActive=false;
+function encodeWav(chunks, srcRate){
+  const total=chunks.reduce((n,c)=>n+c.length,0);
+  const pcm=new Float32Array(total); let off=0;
+  chunks.forEach(c=>{pcm.set(c,off);off+=c.length;});
+  const target=16000, ratio=srcRate/target;
+  const len=Math.floor(pcm.length/ratio), out=new Int16Array(len);
+  for(let i=0;i<len;i++){
+    let s=0,c=0; const a=Math.floor(i*ratio), b=Math.min(Math.floor((i+1)*ratio),pcm.length);
+    for(let j=a;j<b;j++){s+=pcm[j];c++;}
+    s=s/(c||1); out[i]=Math.max(-1,Math.min(1,s))*0x7fff;
+  }
+  const buf=new ArrayBuffer(44+out.length*2), v=new DataView(buf);
+  const ws=(o,str)=>{for(let i=0;i<str.length;i++)v.setUint8(o+i,str.charCodeAt(i));};
+  ws(0,'RIFF'); v.setUint32(4,36+out.length*2,true); ws(8,'WAVE'); ws(12,'fmt ');
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,16000,true); v.setUint32(28,32000,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
+  ws(36,'data'); v.setUint32(40,out.length*2,true); new Int16Array(buf,44).set(out);
+  return new Blob([buf],{type:'audio/wav'});
+}
+async function startVoice(){
+  const md=navigator.mediaDevices;
+  if(!md||!md.getUserMedia){ return fallbackSpeech(); }
+  try{
+    const stream=await md.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true}});
+    const Ctx=window.AudioContext||window.webkitAudioContext;
+    const ctx=new Ctx(); const src=ctx.createMediaStreamSource(stream);
+    const node=ctx.createScriptProcessor(4096,1,1); recBuf=[]; recActive=true;
+    node.onaudioprocess=e=>{ if(recActive) recBuf.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+    src.connect(node); node.connect(ctx.destination);
+    recCtx=ctx; recStream=stream; recNode=node;
+    $('#btnMic').classList.add('rec'); toast('录音中，再点一次结束',1600);
+  }catch(e){ toast('无法使用麦克风：'+((e&&e.message)||e)); }
+}
+async function stopVoice(){
+  recActive=false;
+  const ctx=recCtx, stream=recStream, node=recNode;
+  recCtx=null; recStream=null; recNode=null;
+  try{node&&node.disconnect();stream&&stream.getTracks().forEach(t=>t.stop());ctx&&ctx.close();}catch(_){}
+  $('#btnMic').classList.remove('rec');
+  const chunks=recBuf; recBuf=[];
+  if(!chunks.length){toast('没有录到声音');return;}
+  const rate=ctx?ctx.sampleRate:44100;
+  toast('识别中…',5000);
+  try{
+    const r=await fetch('/api/asr',{method:'POST',headers:{'Content-Type':'audio/wav'},body:encodeWav(chunks,rate)});
+    const d=await r.json();
+    if(d.ok&&d.text){ $('#needInput').value=d.text; toast('已转成文字'); }
+    else toast((d.error||'识别失败')+(d.hint?'：'+d.hint:''),4500);
+  }catch(_){ toast('识别请求失败'); }
+}
+function fallbackSpeech(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){toast('当前设备不支持语音输入');return;}
+  if(voiceRec){try{voiceRec.stop();}catch(_){}voiceRec=null;$('#btnMic').classList.remove('rec');return;}
+  voiceRec=new SR();voiceRec.lang='zh-CN';voiceRec.interimResults=true;
+  voiceRec.onresult=e=>{let t='';for(let i=e.resultIndex;i<e.results.length;i++)t+=e.results[i][0].transcript;const inp=$('#needInput');if(inp)inp.value=t;};
+  voiceRec.onerror=e=>toast('语音输入失败：'+(e.error||'未知'));
+  voiceRec.onend=()=>{voiceRec=null;$('#btnMic').classList.remove('rec');};
+  try{voiceRec.start();$('#btnMic').classList.add('rec');toast('请说话…',1500);}catch(_){toast('无法启动语音输入');}
+}
+function toggleVoice(){ if(recActive) stopVoice(); else startVoice(); }
+function speak(text){
+  if(!('speechSynthesis' in window)){toast('当前设备不支持朗读');return;}
+  try{
+    speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance(text);u.lang='zh-CN';
+    speechSynthesis.speak(u);
+  }catch(_){toast('朗读失败');}
 }
 
 /* 联系人 */
@@ -592,6 +738,13 @@ SUBLD.devices=async()=>{
 document.addEventListener('click',e=>{
   const nav=e.target.closest('.nav button');
   if(nav){showTab(nav.dataset.tab);return;}
+  const ht=e.target.closest('[data-htab]');
+  if(ht){
+    const k=ht.dataset.htab;
+    $$('#homeTabs [data-htab]').forEach(b=>b.classList.toggle('on',b===ht));
+    $$('.htabpane').forEach(v=>v.classList.toggle('on',v.id==='pane-'+k));
+    return;
+  }
   const open=e.target.closest('[data-open]');
   if(open){openSub(open.dataset.open);return;}
   if(e.target.closest('[data-close-drawer]')){closeDrawer();return;}
@@ -601,12 +754,17 @@ document.addEventListener('click',e=>{
   if(sess){closeDrawer();pickSession(sess.dataset.session);return;}
   const contact=e.target.closest('[data-contact]');
   if(contact){toast(contact.dataset.contact||'联系人');return;}
+  const sp=e.target.closest('[data-speak]');
+  if(sp){speak(decodeURIComponent(sp.dataset.speak||''));return;}
 });
 $('#btnMenu').onclick=openDrawer;
 $('#btnNew').onclick=newChat;
 $('#btnRoomBack').onclick=closeRoom;
 $('#btnSend').onclick=sendMsg;
 $('#btnNeed').onclick=sendNeed;
+$('#btnMic').onclick=toggleVoice;
+$('#needInput').addEventListener('input',e=>{e.target.style.height='auto';e.target.style.height=Math.min(e.target.scrollHeight,96)+'px';});
+$('#needInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendNeed();}});
 $('#btnEditProfile').onclick=()=>{
   const p=(S.boot&&S.boot.state&&S.boot.state.profile)||{};
   const name=prompt('昵称',p.name||'');if(name==null)return;
