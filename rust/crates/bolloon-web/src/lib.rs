@@ -32,6 +32,7 @@ pub mod kernel_bus;
 pub mod local_model;
 /// 邮件能力 HTTP 面 (`/api/mail/*`); CLI 直连 crate, 不走这里
 pub mod mail_api;
+pub mod identity_pair;
 pub mod native;
 pub mod pay;
 /// 个人代币发行（绑定 DID，未通过真人验证不许发币）

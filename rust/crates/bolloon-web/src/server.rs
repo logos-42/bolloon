@@ -543,8 +543,12 @@ pub fn app(state: AppState) -> Router {
             post(crate::agent_wallet::remove_wallet),
         )
         // 2026-11-15: 个人代币 + DID 真人验证（未通过真人验证不许发币）
+        .route("/api/identity/pair-code", post(crate::identity_pair::pair_code))
+        .route("/api/identity/pair", post(crate::identity_pair::pair))
+        .route("/api/identity/check", get(crate::identity_pair::check))
         .route("/api/verify/status", get(crate::verify::status))
         .route("/api/verify/face", post(crate::verify::face_capture))
+        .route("/api/verify/face/confirm", post(crate::verify::face_confirm))
         .route("/api/verify/attest", post(crate::verify::attest))
         .route("/api/verify/personhood", post(crate::verify::personhood))
         .route("/api/tokens", get(crate::personal_token::list))

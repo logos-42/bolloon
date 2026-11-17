@@ -920,6 +920,7 @@ SUBLD.verify=async()=>{
     if(faceStream){faceStream.getTracks().forEach(t=>t.stop());faceStream=null;}
     try{
       const r=await api.post('/api/verify/face',{image:url});
+      if(r.ok)faceReceipt=r.receipt_id||'';
       toast(r.ok?'已保存采集回执（未认证）':(r.error||'保存失败'),4200);
     }catch(e){toast('采集已拍下，回执上传失败',4200);}
   };
@@ -1336,7 +1337,47 @@ document.addEventListener('click',e=>{
   if(e.target.closest('#meName')){openSub('profileedit');}
 });
 
+/* ── 唯一 DID 配对 + 登录确认 ── */
+const _devicesPage=SUBLD.devices;
+SUBLD.devices=async()=>{
+  await _devicesPage();
+  const box=$('#subBody');if(!box)return;
+  const chk=await api.get('/api/identity/check').catch(()=>({did:'',unique:true}));
+  box.insertAdjacentHTML('afterbegin',
+    '<div class="card col"><div class="kv"><span class="k">唯一 DID</span><span class="v">'+esc(chk.did)+'</span></div>'+
+    '<div class="small muted">'+(chk.unique?'本机 DID 与配对目标一致':'⚠ DID 不一致，请重新导入配对码')+'</div>'+
+    '<div class="field"><label>配对口令（≥8 位）</label><input id="idPass" type="password"></div>'+
+    '<div class="btns"><button class="btn" id="idIssue">生成配对码</button><button class="btn primary" id="idImport">导入配对码</button></div>'+
+    '<textarea id="idCode" rows="2" placeholder="bolloon://pair?p=..."></textarea>'+
+    '<div class="small muted">手机与电脑必须同一个 DID；导入后重启生效。</div></div>');
+  $('#idIssue').onclick=()=>api.post('/api/identity/pair-code',{passphrase:$('#idPass').value}).then(d=>{
+    if(!d.ok){toast(d.error||'生成失败');return;}
+    $('#idCode').value=d.code;toast('配对码已生成');
+  }).catch(fail);
+  $('#idImport').onclick=()=>api.post('/api/identity/pair',{code:$('#idCode').value,passphrase:$('#idPass').value}).then(d=>{
+    toast(d.ok?'已导入，请重启生效':(d.error||'导入失败'),4200);
+  }).catch(fail);
+};
+
+/* 人脸确认：先采集拿回执，再交给核验服务 */
+let faceReceipt='';
+const _faceShot=SUBLD.verify;
+SUBLD.verify=async()=>{
+  await _faceShot();
+  const box=$('#subBody');if(!box)return;
+  box.insertAdjacentHTML('beforeend','<div class="card col"><button class="btn primary" id="faceConfirm">人脸确认（需核验服务）</button><div class="small muted">未配置 BOLLOON_FACE_VERIFY_URL 时会明确失败，采集回执不会被当作认证通过。</div></div>');
+  $('#faceConfirm').onclick=async()=>{
+    if(!faceReceipt){toast('请先拍摄采集');return;}
+    const url=$('#faceBox img')?$('#faceBox img').src:'';
+    try{
+      const d=await api.post('/api/verify/face/confirm',{image:url,receipt_id:faceReceipt});
+      toast(d.ok?'人脸确认通过':(d.error||'核验失败'),4200);
+    }catch(e){fail(e);}
+  };
+};
+
 applyTheme(themePref());
+api.get('/api/identity/check').then(d=>{if(d&&d.unique===false)toast('⚠ 本机 DID 与配对目标不一致，请重新配对',5200);}).catch(()=>{});
 refreshQr().then(()=>renderMe());
 qrTimer=setInterval(()=>{if(!qrFrozen())refreshQr();},15000);
 /* iOS 全屏 WebView 的 innerHeight 可能大于屏幕；限制 app 高度，避免底部出现黑区 */

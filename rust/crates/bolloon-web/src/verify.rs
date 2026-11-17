@@ -86,6 +86,75 @@ fn save(f: &VerifyFile) -> Result<(), String> {
     Ok(())
 }
 
+/// POST /api/verify/face/confirm {image, receipt_id}
+/// 把采集回执交给可配置的人脸核验服务（BOLLOON_FACE_VERIFY_URL）。
+/// 未配置就明确拒绝，不把“采集成功”伪装成“人脸确认成功”。
+pub async fn face_confirm(
+    State(st): State<crate::AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let input = req["image"].as_str().unwrap_or_default().trim();
+    let raw_b64 = input.split(',').last().unwrap_or("");
+    let receipt = req["receipt_id"].as_str().unwrap_or("").trim();
+    let did = st.identity.did.as_str().to_string();
+
+    let f = load();
+    let rec = match f.faces.get(&did) {
+        Some(r) => r,
+        None => return Json(serde_json::json!({ "ok": false, "verified": false, "error": "没有采集回执，请先 POST /api/verify/face" })),
+    };
+    if !receipt.is_empty() && receipt != rec.sha256 {
+        return Json(serde_json::json!({ "ok": false, "verified": false, "error": "receipt_id 与回执不匹配" }));
+    }
+    drop(f);
+
+    let url = match std::env::var("BOLLOON_FACE_VERIFY_URL") {
+        Ok(u) if !u.trim().is_empty() => u.trim().to_string(),
+        _ => return Json(serde_json::json!({
+            "ok": false, "verified": false,
+            "error": "未配置人脸核验服务 BOLLOON_FACE_VERIFY_URL；采集回执不能当作人脸确认"
+        })),
+    };
+    let client = reqwest::Client::new();
+    let resp = match client
+        .post(&url)
+        .json(&serde_json::json!({
+            "did": did, "image_base64": raw_b64, "receipt_id": receipt,
+        }))
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "verified": false, "error": format!("人脸核验服务不可达: {e}") })),
+    };
+    let code = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    if !code.is_success() || !v["verified"].as_bool().unwrap_or(false) {
+        return Json(serde_json::json!({
+            "ok": false, "verified": false,
+            "error": format!("人脸核验未通过 ({}): {}", code, text.chars().take(200).collect::<String>())
+        }));
+    }
+    let mut f = load();
+    f.dids.insert(did.clone(), VerifyRec {
+        verified: true,
+        method: "face".into(),
+        at_ms: now_ms(),
+        proof_id: receipt.to_string(),
+        subject_hint: v["subject"].as_str().unwrap_or("").to_string(),
+    });
+    if let Err(e) = save(&f) {
+        return Json(serde_json::json!({ "ok": false, "verified": false, "error": format!("保存认证状态失败: {e}") }));
+    }
+    Json(serde_json::json!({
+        "ok": true, "verified": true, "did": did,
+        "score": v["score"], "method": "face",
+        "note": "人脸核验服务确认通过"
+    }))
+}
+
 /// POST /api/verify/attest {subject_kind, subject_id}
 /// 用本机身份私钥签发归属证明。`phone` 必须已经通过 `/api/phone/*` 验证绑定，
 /// 否则拒签；`agent` / `wallet` 只签本机确实拥有的对象。
