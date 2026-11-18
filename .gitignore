@@ -19,6 +19,7 @@ release/
 .playwright-mcp
 py-bolloon/
 .codex/
+.swarm/
 .vscode
 .claude/
 .codex/
