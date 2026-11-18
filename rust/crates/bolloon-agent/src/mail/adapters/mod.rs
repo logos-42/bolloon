@@ -4,10 +4,12 @@
 //! 真协议 Adapter(IMAP/SMTP、Android ContactsContract、content://sms)在后续批次接入;
 //! 本批先落 `LocalSinkMailPort`, 让 Store / 硬拒 / 装配层能先跑通并单测。
 
+#[cfg(not(target_os = "android"))]
 pub mod imap_smtp;
 pub mod local_sink;
 pub mod vcard;
 
+#[cfg(not(target_os = "android"))]
 pub use imap_smtp::ImapSmtpAdapter;
 pub use local_sink::LocalSinkMailPort;
 pub use vcard::VcardCsvAdapter;
