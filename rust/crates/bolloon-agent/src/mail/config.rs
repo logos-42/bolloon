@@ -105,13 +105,19 @@ pub fn build_service(home: &BolloonHome) -> Result<MailService, String> {
             "local_sink" => {
                 adapters.push(Arc::new(LocalSinkMailPort::new(account, &dir)));
             }
-            "imap_smtp" => match super::adapters::ImapSmtpAdapter::from_config(&a) {
-                Ok(ad) => adapters.push(Arc::new(ad)),
-                Err(e) => {
-                    // 配置坏了要能看见, 不静默当成"没这个账号"
-                    tracing::warn!(account = %account, error = %e, "IMAP/SMTP 账号配置无效, 已跳过");
+            "imap_smtp" => {
+                #[cfg(not(target_os = "android"))]
+                match super::adapters::ImapSmtpAdapter::from_config(&a) {
+                    Ok(ad) => adapters.push(Arc::new(ad)),
+                    Err(e) => {
+                        // 配置坏了要能看见, 不静默当成"没这个账号"
+                        tracing::warn!(account = %account, error = %e, "IMAP/SMTP 账号配置无效, 已跳过");
+                    }
                 }
-            },
+                // 手机端不带 native-tls/OpenSSL ⇒ IMAP 适配器不编译, 这里如实告知并跳过
+                #[cfg(target_os = "android")]
+                tracing::warn!(account = %account, "手机端暂不支持 IMAP 收信 (桌面端可用), 已跳过该账号");
+            }
             other => {
                 // 明确告知, 不静默丢弃
                 tracing::warn!(
