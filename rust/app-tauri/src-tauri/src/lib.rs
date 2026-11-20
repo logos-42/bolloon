@@ -151,20 +151,23 @@ pub fn run() {
                 let nav_handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
                     let url = format!("http://127.0.0.1:{port}/?app=mobile");
-                    // 持续重试：dev 模式下 WebView 先加载 1430 静态页，单次 replace 会被
-                    // 后续的页面加载覆盖；直到 URL 真正落在内嵌端口才算成功。
-                    for _ in 0..150 {
+                    // 注意: 不要调用 `w.url()` —— WKWebView URL 尚未就绪时 wry 的
+                    // url_from_webview 会 unwrap  panic (SIGABRT)。直接 navigate 即可。
+                    let target = match url.parse::<tauri::Url>() {
+                        Ok(u) => u,
+                        Err(e) => {
+                            tracing::error!("mobile URL 解析失败: {e}");
+                            return;
+                        }
+                    };
+                    for _ in 0..50 {
                         let w = nav_handle
                             .get_webview_window("main")
                             .or_else(|| nav_handle.webview_windows().values().next().cloned());
                         if let Some(w) = w {
-                            let js = format!("window.location.replace({:?});", url);
-                            let _ = w.eval(js.as_str());
-                            if let Ok(cur) = w.url() {
-                                if cur.port() == Some(port) {
-                                    tracing::info!("mobile webview → {url}");
-                                    return;
-                                }
+                            if w.navigate(target.clone()).is_ok() {
+                                tracing::info!("mobile webview → {url}");
+                                return;
                             }
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
