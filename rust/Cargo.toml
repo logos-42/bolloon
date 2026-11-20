@@ -19,7 +19,6 @@ version = "0.7.12"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-authors = ["liuyuanjie <2844169590@qq.com>"]
 description = "Bolloon Rust Native Agent — 去中心化智能体资源交流网络 (Rust 原生版, 双内核架构)"
 
 [workspace.dependencies]
