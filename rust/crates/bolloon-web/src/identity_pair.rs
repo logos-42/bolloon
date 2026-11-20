@@ -164,7 +164,7 @@ pub async fn pair(
     // QUIC 对端地址：原生 quic_transport，直接登记即可用于快照推送
     if let Some(addr) = v["quic"].as_str().and_then(|a| a.parse::<std::net::SocketAddr>().ok()) {
         if let Some(q) = st.quic.as_ref() {
-            q.add_peer(did, addr);
+            q.add_peer(did, addr).await;
         }
     }
     if !url.is_empty() {

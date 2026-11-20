@@ -1833,7 +1833,8 @@ function renderTauriUpdate(){
       if(el)el.innerHTML=html; showBtn('⟳ 重启','更新完成，点击重启'); break;
     case 'failed':
       const sig=(tu.detail&&tu.detail.signature_failed)?'（签名验证失败，已拒绝安装）':'';
-      html='更新失败：'+((tu.error)||'未知错误')+sig+'<br><button class="mini" id="tuRetry">重试</button>';
+      const stage=(tu.detail&&tu.detail.stage)?' ['+esc(tu.detail.stage)+']':'';
+      html='更新失败'+stage+'：'+((tu.error)||'未知错误')+sig+'<br><button class="mini" id="tuRetry">重试</button>';
       if(el)el.innerHTML=html; showBtn('⚠ 更新失败','更新失败，点击重试'); break;
   }
   const bi=$('tuInstall'); if(bi)bi.onclick=()=>tauriInstallUpdate();

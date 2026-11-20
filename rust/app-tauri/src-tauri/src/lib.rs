@@ -21,6 +21,14 @@ use tauri_plugin_updater::UpdaterExt;
 /// 安装互斥: 同一应用只允许一条安装流 (重复点击/并发 invoke 不重复下载替换)
 static UPDATING: AtomicBool = AtomicBool::new(false);
 
+/// 缓存 check_update 拿到的 Update：安装时直接复用，避免第二次网络 check
+/// （多端点失败时每次最多等 30s，且 manifest 可能在两次检查间变化）。
+static PENDING_UPDATE: std::sync::OnceLock<std::sync::Mutex<Option<tauri_plugin_updater::Update>>> =
+    std::sync::OnceLock::new();
+fn pending_update() -> &'static std::sync::Mutex<Option<tauri_plugin_updater::Update>> {
+    PENDING_UPDATE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
 /// RAII 守卫: 离开作用域时复位 UPDATING (无论成功/失败/提前返回)
 struct UpdatingGuard;
 impl Drop for UpdatingGuard {
@@ -427,7 +435,7 @@ fn build_main_window(app: &tauri::AppHandle, port: u16) -> tauri::Result<()> {
 /// 构造 updater, 统一的 30s 网络超时 (要求: 网络超时可配置)。
 fn make_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
     app.updater_builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| format!("updater 初始化失败: {e}"))
 }
@@ -463,6 +471,10 @@ async fn check_update(app: tauri::AppHandle) -> Result<serde_json::Value, String
     };
     match update {
         Some(u) => {
+            // 缓存同一份已验签候选，避免 update_install 再跑一次多端点 check
+            if let Ok(mut p) = pending_update().lock() {
+                *p = Some(u.clone());
+            }
             emit_state(
                 &app,
                 "update-available",
@@ -501,16 +513,23 @@ async fn update_install(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
         return Err("已有更新正在安装".into());
     }
     let _guard = UpdatingGuard;
-    let updater = make_updater(&app)?;
-    let update = match updater.check().await {
-        Ok(Some(u)) => u,
-        Ok(None) => {
-            emit_state(&app, "failed", json!({ "stage": "install", "reason": "没有可安装的新版本" }));
-            return Err("没有可安装的新版本".into());
-        }
-        Err(e) => {
-            emit_state(&app, "failed", json!({ "stage": "checking", "reason": e.to_string() }));
-            return Err(format!("检查更新失败: {e}"));
+    // 优先复用 check_update 已拿到的候选（避免二次网络 check / manifest 漂移）
+    let cached = pending_update().lock().ok().and_then(|mut p| p.take());
+    let update = match cached {
+        Some(u) => u,
+        None => {
+            let updater = make_updater(&app)?;
+            match updater.check().await {
+                Ok(Some(u)) => u,
+                Ok(None) => {
+                    emit_state(&app, "failed", json!({ "stage": "install", "reason": "没有可安装的新版本" }));
+                    return Err("没有可安装的新版本".into());
+                }
+                Err(e) => {
+                    emit_state(&app, "failed", json!({ "stage": "checking", "reason": e.to_string() }));
+                    return Err(format!("检查更新失败: {e}"));
+                }
+            }
         }
     };
     let target_version = update.version.clone();
@@ -540,7 +559,11 @@ async fn update_install(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
                 );
             },
             move || {
-                // 下载完成 → 进入验签+安装前 (插件在 install 阶段真正验签)
+                // 下载完成 → 插件开始解包与验签，给用户明确状态而不是停在“下载中 100%”
+                let _ = verify_app.emit("update-state", json!({
+                    "state": "verifying",
+                    "detail": { "stage": "signature_and_extract" }
+                }));
                 let _ = verify_app.emit("update-progress", json!({ "downloaded": 0, "total": 0, "percent": 100 }));
             },
         )
@@ -556,12 +579,25 @@ async fn update_install(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
         Err(e) => {
             let reason = e.to_string();
             // 区分签名失败 / 网络失败 / 损坏包
-            let is_sig = reason.to_lowercase().contains("sign") || reason.to_lowercase().contains("signature");
+            let low = reason.to_lowercase();
+            let is_sig = low.contains("sign") || low.contains("signature") || low.contains("verify");
+            let stage = if is_sig {
+                "verifying"
+            } else if low.contains("permission")
+                || low.contains("denied")
+                || low.contains("locked")
+                || low.contains("install")
+                || low.contains("extract")
+            {
+                "installing"
+            } else {
+                "downloading"
+            };
             emit_state(
                 &app,
                 "failed",
                 json!({
-                    "stage": if is_sig { "verifying" } else { "downloading" },
+                    "stage": stage,
                     "reason": reason,
                     "signature_failed": is_sig,
                 }),
