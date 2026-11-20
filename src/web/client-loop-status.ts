@@ -221,8 +221,11 @@ if (typeof window !== 'undefined') {
   (window as any).LoopStatus = LoopStatusExports;
 }
 
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = LoopStatusExports;
+// 避免 ESM 里直接引用 CommonJS 全局 `module` 触发打包告警；
+// tsx 的 ESM 互操作仍通过上面的具名 export 提供 require() 可用字段。
+const cjsModule = (globalThis as unknown as { module?: { exports?: unknown } }).module;
+if (cjsModule && cjsModule.exports) {
+  cjsModule.exports = LoopStatusExports;
 }
 
 export {

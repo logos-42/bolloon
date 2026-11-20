@@ -5395,15 +5395,18 @@ fn open_in_browser(url: &str) -> std::io::Result<()> {
     {
         std::process::Command::new("xdg-open").arg(url).spawn()?;
     }
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        Ok(())
+    }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = url;
-        return Err(std::io::Error::new(
+        Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "unsupported os",
-        ));
+        ))
     }
-    Ok(())
 }
 
 // ────────────────────────── 世界模式 (对齐 TS routes-world.ts) ──────────────────────────
